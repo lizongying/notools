@@ -1,0 +1,112 @@
+// wc.no — wc utility
+// Count lines, words, and bytes in files
+// Usage: wc [-l] [-w] [-c] [files...]
+//   -l: count lines only
+//   -w: count words only
+//   -c: count bytes only
+//   files: files to count (read from stdin if none)
+
+wc-run = () {
+    argc = args()
+
+    count-lines = false
+    count-words = false
+    count-bytes = false
+    files []str
+
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-l' -> count-lines = true
+        a == '-w' -> count-words = true
+        a == '-c' -> count-bytes = true
+        !a.starts-with('-') -> files.push(a)
+    }
+
+    count-lines == false && count-words == false && count-bytes == false -> {
+        count-lines = true
+        count-words = true
+        count-bytes = true
+    }
+
+    total-lines = 0
+    total-words = 0
+    total-bytes = 0
+
+    files.len == 0 -> {
+        lines, words, bytes = wc-stdin(count-lines, count-words, count-bytes)
+        print-result(lines, words, bytes, count-lines, count-words, count-bytes, '')
+    }
+    files.len > 0 -> {
+        i <- [0..files.len): {
+            lines, words, bytes = wc-file(files[i], count-lines, count-words, count-bytes)
+            print-result(lines, words, bytes, count-lines, count-words, count-bytes, files[i])
+            total-lines = total-lines + lines
+            total-words = total-words + words
+            total-bytes = total-bytes + bytes
+        }
+        files.len > 1 -> {
+            print-result(total-lines, total-words, total-bytes, count-lines, count-words, count-bytes, 'total')
+        }
+    }
+}
+
+wc-stdin = (count-lines bool, count-words bool, count-bytes bool) (lines i64, words i64, bytes i64) {
+    lines = 0
+    words = 0
+    bytes = 0
+    !! {
+        line, ok = fs.get-line()
+        ok == false -> return
+        lines = lines + 1
+        bytes = bytes + line.len + 1
+        in-word = false
+        i <- [0..line.len): {
+            c = line[i]
+            c == 32 || c == 9 || c == 13 -> {
+                in-word = false
+            }
+            !in-word -> {
+                in-word = true
+                words = words + 1
+            }
+        }
+    }
+}
+
+wc-file = (file str, count-lines bool, count-words bool, count-bytes bool) (lines i64, words i64, bytes i64) {
+    content = fs.read-file(file)
+    bytes = content.len
+    lines = 0
+    words = 0
+
+    count-lines || count-words -> {
+        in-word = false
+        i <- [0..content.len): {
+            c = content[i]
+            c == 10 -> {
+                lines = lines + 1
+                in-word = false
+            }
+            c == 32 || c == 9 || c == 13 -> {
+                in-word = false
+            }
+            !in-word -> {
+                in-word = true
+                words = words + 1
+            }
+        }
+        content.len > 0 && content[content.len - 1] != 10 -> lines = lines + 1
+    }
+
+    !count-lines -> lines = 0
+    !count-words -> words = 0
+    !count-bytes -> bytes = 0
+}
+
+print-result = (lines i64, words i64, bytes i64, show-lines bool, show-words bool, show-bytes bool, name str) {
+    show-lines -> printf('%8d', lines)
+    show-words -> printf('%8d', words)
+    show-bytes -> printf('%8d', bytes)
+    name.len > 0 -> printf(' %s', name)
+    print('')
+}
