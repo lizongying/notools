@@ -1,0 +1,289 @@
+// zip.no — zip utility
+// Create zip archives
+// Usage: zip archive.zip files...
+//   archive.zip: output archive filename
+//   files: files to add to archive
+
+zip-run = () {
+    argc = args()
+
+    argc < 3 -> {
+        print('Usage: zip archive.zip files...')
+        os.exit(1)
+    }
+
+    filename = arg(2)
+    files []str
+    i <- [3..argc): {
+        files.push(arg(i))
+    }
+
+    zip-create(filename, files)
+}
+
+zip-create = (filename str, files []str) {
+    entries []zip-entry-info
+    data []byte
+    pos = 0
+
+    local-offsets []i64
+
+    i <- [0..files.len): {
+        path = files[i]
+        fs.is-file(path) -> {
+            content = fs.read-file(path)
+            content-bytes []byte
+            j <- [0..content.len): {
+                content-bytes[j] = content[j]
+            }
+            local-offsets.push(pos)
+            pos = zip-write-local-file(data, pos, path, content-bytes)
+            entries.push(zip-entry-info{
+                name: path,
+                offset: local-offsets[i],
+                size: content.len,
+                compressed-size: content.len,
+            })
+        }
+        fs.is-dir(path) -> {
+            dir-name = path
+            !dir-name.ends-with('/') -> dir-name = dir-name - '/'
+            local-offsets.push(pos)
+            pos = zip-write-local-file(data, pos, dir-name, [])
+            entries.push(zip-entry-info{
+                name: dir-name,
+                offset: local-offsets[i],
+                size: 0,
+                compressed-size: 0,
+            })
+            zip-add-dir(entries, data, pos, path, local-offsets)
+        }
+    }
+
+    cd-offset = pos
+    i <- [0..entries.len): {
+        e = entries[i]
+        pos = zip-write-cd-entry(data, pos, e)
+    }
+
+    eocd-offset = pos
+    pos = zip-write-eocd(data, pos, entries.len, cd-offset, pos - cd-offset)
+
+    fs.write-file(filename, data)
+}
+
+zip-add-dir = (entries []zip-entry-info, data []byte, pos i64, dir str, offsets []i64) {
+    dir-entries = fs.list-dir(dir)
+    i <- [0..dir-entries.len): {
+        name = dir-entries[i]
+        name == '.' || name == '..' -> continue
+        full = dir - '/' - name
+        fs.is-file(full) -> {
+            content = fs.read-file(full)
+            content-bytes []byte
+            j <- [0..content.len): {
+                content-bytes[j] = content[j]
+            }
+            offsets.push(pos)
+            pos = zip-write-local-file(data, pos, full, content-bytes)
+            entries.push(zip-entry-info{
+                name: full,
+                offset: offsets[offsets.len - 1],
+                size: content.len,
+                compressed-size: content.len,
+            })
+        }
+        fs.is-dir(full) -> {
+            dir-name = full
+            !dir-name.ends-with('/') -> dir-name = dir-name - '/'
+            offsets.push(pos)
+            pos = zip-write-local-file(data, pos, dir-name, [])
+            entries.push(zip-entry-info{
+                name: dir-name,
+                offset: offsets[offsets.len - 1],
+                size: 0,
+                compressed-size: 0,
+            })
+            zip-add-dir(entries, data, pos, full, offsets)
+        }
+    }
+}
+
+zip-entry-info {
+    name str
+    offset i64
+    size i64
+    compressed-size i64
+}
+
+zip-write-local-file = (data []byte, pos i64, name str, content []byte) (next i64) {
+    next = pos
+
+    data[next] = 0x50; next = next + 1
+    data[next] = 0x4B; next = next + 1
+    data[next] = 0x03; next = next + 1
+    data[next] = 0x04; next = next + 1
+
+    data[next] = 0x14; next = next + 1
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    name-len = name.len
+    data[next] = name-len & 255; next = next + 1
+    data[next] = (name-len >> 8) & 255; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    i <- [0..name-len): {
+        data[next] = name[i]; next = next + 1
+    }
+
+    crc = zip-crc32(content)
+    data[next] = crc & 255; next = next + 1
+    data[next] = (crc >> 8) & 255; next = next + 1
+    data[next] = (crc >> 16) & 255; next = next + 1
+    data[next] = (crc >> 24) & 255; next = next + 1
+
+    sz = content.len
+    data[next] = sz & 255; next = next + 1
+    data[next] = (sz >> 8) & 255; next = next + 1
+    data[next] = (sz >> 16) & 255; next = next + 1
+    data[next] = (sz >> 24) & 255; next = next + 1
+
+    data[next] = sz & 255; next = next + 1
+    data[next] = (sz >> 8) & 255; next = next + 1
+    data[next] = (sz >> 16) & 255; next = next + 1
+    data[next] = (sz >> 24) & 255; next = next + 1
+
+    i <- [0..content.len): {
+        data[next] = content[i]; next = next + 1
+    }
+}
+
+zip-write-cd-entry = (data []byte, pos i64, e zip-entry-info) (next i64) {
+    next = pos
+
+    data[next] = 0x50; next = next + 1
+    data[next] = 0x4B; next = next + 1
+    data[next] = 0x01; next = next + 1
+    data[next] = 0x02; next = next + 1
+
+    data[next] = 0x14; next = next + 1
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    name-len = e.name.len
+    data[next] = name-len & 255; next = next + 1
+    data[next] = (name-len >> 8) & 255; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    crc = zip-crc32-for-name(e.name)
+    data[next] = crc & 255; next = next + 1
+    data[next] = (crc >> 8) & 255; next = next + 1
+    data[next] = (crc >> 16) & 255; next = next + 1
+    data[next] = (crc >> 24) & 255; next = next + 1
+
+    data[next] = e.compressed-size & 255; next = next + 1
+    data[next] = (e.compressed-size >> 8) & 255; next = next + 1
+    data[next] = (e.compressed-size >> 16) & 255; next = next + 1
+    data[next] = (e.compressed-size >> 24) & 255; next = next + 1
+
+    data[next] = e.size & 255; next = next + 1
+    data[next] = (e.size >> 8) & 255; next = next + 1
+    data[next] = (e.size >> 16) & 255; next = next + 1
+    data[next] = (e.size >> 24) & 255; next = next + 1
+
+    data[next] = name-len & 255; next = next + 1
+    data[next] = (name-len >> 8) & 255; next = next + 1
+
+    data[next] = e.offset & 255; next = next + 1
+    data[next] = (e.offset >> 8) & 255; next = next + 1
+    data[next] = (e.offset >> 16) & 255; next = next + 1
+    data[next] = (e.offset >> 24) & 255; next = next + 1
+
+    i <- [0..name-len): {
+        data[next] = e.name[i]; next = next + 1
+    }
+}
+
+zip-write-eocd = (data []byte, pos i64, count i64, cd-offset i64, cd-size i64) (next i64) {
+    next = pos
+
+    data[next] = 0x50; next = next + 1
+    data[next] = 0x4B; next = next + 1
+    data[next] = 0x05; next = next + 1
+    data[next] = 0x06; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+
+    data[next] = count & 255; next = next + 1
+    data[next] = (count >> 8) & 255; next = next + 1
+
+    data[next] = count & 255; next = next + 1
+    data[next] = (count >> 8) & 255; next = next + 1
+
+    data[next] = cd-size & 255; next = next + 1
+    data[next] = (cd-size >> 8) & 255; next = next + 1
+    data[next] = (cd-size >> 16) & 255; next = next + 1
+    data[next] = (cd-size >> 24) & 255; next = next + 1
+
+    data[next] = cd-offset & 255; next = next + 1
+    data[next] = (cd-offset >> 8) & 255; next = next + 1
+    data[next] = (cd-offset >> 16) & 255; next = next + 1
+    data[next] = (cd-offset >> 24) & 255; next = next + 1
+
+    data[next] = 0x00; next = next + 1
+    data[next] = 0x00; next = next + 1
+}
+
+zip-crc32 = (data []byte) (crc i64) {
+    crc = 0xFFFFFFFF
+    i <- [0..data.len): {
+        crc = crc ^ data[i]
+        j <- [0..8): {
+            crc = crc & 1 == 1 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1
+        }
+    }
+    crc = crc ^ 0xFFFFFFFF
+}
+
+zip-crc32-for-name = (name str) (crc i64) {
+    crc = 0xFFFFFFFF
+    i <- [0..name.len): {
+        crc = crc ^ name[i]
+        j <- [0..8): {
+            crc = crc & 1 == 1 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1
+        }
+    }
+    crc = crc ^ 0xFFFFFFFF
+}

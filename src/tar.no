@@ -1,0 +1,160 @@
+// tar.no — tar utility
+// Create and extract tar archives
+// Usage: tar [-c|-x|-t] [-f archive] [-z] [files...]
+//   -c: create archive
+//   -x: extract archive
+//   -t: list contents
+//   -f: archive filename
+//   -z: use gzip compression
+
+tar-run = () {
+    argc = args()
+
+    create = false
+    extract = false
+    list = false
+    gzip = false
+    filename = ''
+    files []str
+
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-c' -> create = true
+        a == '-x' -> extract = true
+        a == '-t' -> list = true
+        a == '-z' -> gzip = true
+        a == '-f' -> {
+            i = i + 1
+            i < argc -> filename = arg(i)
+        }
+        !a.starts-with('-') -> files.push(a)
+    }
+
+    filename.len == 0 -> {
+        print('tar: no archive filename specified')
+        os.exit(1)
+    }
+
+    create -> {
+        tar-create(filename, files, gzip)
+    }
+    extract -> {
+        tar-extract(filename, gzip)
+    }
+    list -> {
+        tar-list(filename, gzip)
+    }
+    !(create || extract || list) -> {
+        print('tar: must specify one of -c, -x, -t')
+        os.exit(1)
+    }
+}
+
+tar-create = (filename str, files []str, gzip bool) {
+    builder = tar-builder{}
+
+    i <- [0..files.len): {
+        path = files[i]
+        fs.is-dir(path) -> {
+            builder.add-dir(path - '/')
+            tar-add-dir(builder, path)
+        }
+        fs.is-file(path) -> {
+            content = fs.read-file(path)
+            bytes []byte
+            j <- [0..content.len): {
+                bytes[j] = content[j]
+            }
+            builder.add-file(path, bytes)
+        }
+    }
+
+    archive = builder.finish()
+
+    raw []byte
+    k <- [0..archive.data.len): {
+        raw[k] = archive.data[k]
+    }
+
+    gzip -> {
+        compressed = gzip.gzip-compress(raw)
+        fs.write-file(filename, compressed)
+    }
+    !gzip -> {
+        fs.write-file(filename, raw)
+    }
+}
+
+tar-add-dir = (builder tar-builder, dir str) {
+    entries = fs.list-dir(dir)
+    i <- [0..entries.len): {
+        name = entries[i]
+        name == '.' || name == '..' -> continue
+        full = dir - '/' - name
+        fs.is-dir(full) -> {
+            builder.add-dir(full - '/')
+            tar-add-dir(builder, full)
+        }
+        fs.is-file(full) -> {
+            content = fs.read-file(full)
+            bytes []byte
+            j <- [0..content.len): {
+                bytes[j] = content[j]
+            }
+            builder.add-file(full, bytes)
+        }
+    }
+}
+
+tar-extract = (filename str, gzip bool) {
+    raw = fs.read-file(filename)
+    data []byte
+    i <- [0..raw.len): {
+        data[i] = raw[i]
+    }
+
+    gzip -> {
+        data = gzip.gzip-decompress(data)
+    }
+
+    archive = tar{
+        data: data
+    }
+
+    n = archive.count()
+    i <- [0..n): {
+        name = archive.name(i)
+        typ = archive.type(i)
+        typ == 'dir' -> {
+            os.mkdir(name, 493)
+        }
+        typ == 'file' -> {
+            content = archive.read(i)
+            fs.write-file(name, content)
+        }
+    }
+}
+
+tar-list = (filename str, gzip bool) {
+    raw = fs.read-file(filename)
+    data []byte
+    i <- [0..raw.len): {
+        data[i] = raw[i]
+    }
+
+    gzip -> {
+        data = gzip.gzip-decompress(data)
+    }
+
+    archive = tar{
+        data: data
+    }
+
+    n = archive.count()
+    i <- [0..n): {
+        name = archive.name(i)
+        typ = archive.type(i)
+        sz = archive.size(i)
+        print(name)
+    }
+}
