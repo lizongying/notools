@@ -1,0 +1,111 @@
+// tree.no — tree utility
+// Displays directory tree structure recursively
+// Usage: tree [-a] [-L n] [path]
+//   -a: show hidden files (starting with '.')
+//   -L n: limit depth to n levels
+//   path: directory to display (defaults to '.')
+
+// tree-walk recursively traverses a directory and prints its entries
+// in a tree-like format with proper indentation and connectors.
+// path str: directory path to walk
+// prefix str: indentation prefix accumulated from ancestors
+// depth i64: current depth (1-based for entries)
+// max-depth i64: maximum depth (0 means unlimited)
+// show-hidden bool: whether to show entries starting with '.'
+// returns dir-count i64, file-count i64: counts of directories and files
+tree-walk = (path str, prefix str, depth i64, max-depth i64, show-hidden bool) (dir-count i64, file-count i64) {
+    dir-count = 0
+    file-count = 0
+
+    // Get raw entries (includes '.' and '..')
+    raw = fs.list-dir(path)
+
+    // Filter: skip '.' and '..', and skip hidden unless show-hidden
+    entries []str
+    i <- [0..raw.len): {
+        name = raw[i]
+        skip = name == '.' || name == '..'
+        skip == false -> {
+            hidden = name.starts-with('.')
+            {
+                show-hidden || ! hidden -> entries.push(name)
+            }
+        }
+    }
+
+    // Walk through filtered entries
+    n = entries.len
+    i <- [0..n): {
+        name = entries[i]
+        full = path - '/' - name
+        is-last = i == n - 1
+        // Build connector and child prefix (defaults for non-last entry)
+        connector = '├── '
+        child-prefix = prefix - '│   '
+        is-last -> {
+            connector = '└── '
+            child-prefix = prefix - '    '
+        }
+        // Print this entry
+        print(prefix - connector - name)
+        // Count and recurse if directory
+        is-d = fs.is-dir(full)
+        is-d -> {
+            dir-count = dir-count + 1
+
+            // Recurse if depth allows: max-depth == 0 means unlimited
+            recurse = max-depth == 0 || depth < max-depth
+            recurse -> {
+                sub-dirs, sub-files = tree-walk(full, child-prefix, depth + 1, max-depth, show-hidden)
+                dir-count = dir-count + sub-dirs
+                file-count = file-count + sub-files
+            }
+        }
+        is-d == false -> file-count = file-count + 1
+    }
+}
+
+// tree-run is the main entry point for the tree utility.
+// Parses arguments and dispatches to tree-walk.
+tree-run = () {
+    argc = args()
+
+    show-hidden = false
+    max-depth = 0
+    dir = '.'
+
+    // Parse arguments after the 'tree' subcommand
+    // arg(0)=program, arg(1)='tree', arg(2)+=arguments
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-a' -> show-hidden = true
+        a == '-L' -> {
+            // Next argument is the depth number
+            i = i + 1
+            i < argc -> {
+                val-str = arg(i)
+                val = val-str.to-i64()
+                val: {
+                    ok -> max-depth = it
+                    -> max-depth = 0
+                }
+            }
+        }
+        a.starts-with('-') -> show-hidden = show-hidden || a.contains('a')
+        ! a.starts-with('-') -> dir = a
+
+        // Combined short flags like -al (best-effort)
+
+        i = i + 1
+    }
+
+    // Print root
+    print(dir)
+    dir-count, file-count = tree-walk(dir, '', 1, max-depth, show-hidden)
+
+    // Print summary
+    print('')
+    summary = sprintf('%d directories, %d files', dir-count, file-count)
+    print(summary)
+}

@@ -1,0 +1,70 @@
+// rm.no — rm utility
+// Removes files or directories
+// Usage: rm [-r] [-f] <path...>
+//   -r: recursively remove directories and their contents
+//   -f: force (ignore non-existent files, don't print errors)
+//   -rf: combined flags (recursive + force)
+//   path: file or directory to remove
+
+// rm-recursive removes a directory and all its contents.
+// path str: directory path to remove recursively
+rm-recursive = (path str) {
+    names = fs.list-dir(path)
+    i <- [0..names.len): {
+        name = names[i]
+        skip = name == '.' || name == '..'
+        skip == false -> {
+            full = path - '/' - name
+            {
+                fs.is-dir(full) -> rm-recursive(full)
+                -> fs.remove(full)
+            }
+        }
+    }
+    fs.remove(path)
+}
+
+// rm-run is the main entry point for the rm utility.
+// Parses arguments and dispatches to the appropriate helper.
+rm-run = () {
+    argc = args()
+
+    recursive = false
+    force = false
+
+    // Collect file arguments (non-flag args starting at index 2)
+    // arg(0)=program, arg(1)='rm', arg(2)+=arguments
+    files []str
+    i <- [2..argc): {
+        a = arg(i)
+        {
+            a.starts-with('-') -> {
+                recursive = recursive || a.contains('r')
+                force = force || a.contains('f')
+            }
+            -> files.push(a)
+        }
+    }
+
+    // No file arguments: print usage error
+    files.len == 0 -> {
+        print('Usage: rm [-r] [-f] <path...>')
+        os.exit(1)
+    }
+
+    // Process each file argument
+    i <- [0..files.len): {
+        path = files[i]
+        exists = fs.is-file(path) || fs.is-dir(path)
+        {
+            exists == false -> {
+                force == false -> io.io-errln('rm: ' - path - ': No such file or directory')
+            }
+            fs.is-dir(path) -> {
+                recursive -> rm-recursive(path)
+                -> io.io-errln('rm: ' - path - ': is a directory')
+            }
+            -> fs.remove(path)
+        }
+    }
+}
