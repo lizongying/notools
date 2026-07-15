@@ -20,7 +20,7 @@ cd notools
 no build
 
 # 产物位于 dist/main，可重命名为 notools
-cp dist/main /usr/local/bin/notools
+cp dist/notools /usr/local/bin/notools
 ```
 
 ## 工具列表
