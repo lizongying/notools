@@ -13,7 +13,7 @@ tar-run = () {
     create = false
     extract = false
     list = false
-    gzip = false
+    use-gzip = false
     filename = ''
     files []str
     skip-next = false
@@ -27,17 +27,17 @@ tar-run = () {
         a.starts-with('-') -> {
             j <- [1..a.len): {
                 c = a[j]
-                c == "c" -> create = true
-                c == "x" -> extract = true
-                c == "t" -> list = true
-                c == "z" -> gzip = true
-                c == "f" -> {
+                c == 'c' -> create = true
+                c == 'x' -> extract = true
+                c == 't' -> list = true
+                c == 'z' -> use-gzip = true
+                c == 'f' -> {
                     i + 1 < argc -> filename = arg(i + 1)
                     skip-next = true
                 }
             }
         }
-        -> files.push(a)
+        files.push(a)
     }
 
     filename.len == 0 -> {
@@ -45,65 +45,77 @@ tar-run = () {
         os.exit(1)
     }
 
-    create -> {
-        tar-create(filename, files, gzip)
-    }
-    extract -> {
-        tar-extract(filename, gzip)
-    }
-    list -> {
-        tar-list(filename, gzip)
-    }
-    !(create || extract || list) -> {
+    create -> tar-create(filename, files, use-gzip)
+    extract -> tar-extract(filename, use-gzip)
+    list -> tar-list(filename, use-gzip)
+    ! (create || extract || list) -> {
         print('tar: must specify one of -c, -x, -t')
         os.exit(1)
     }
 }
 
-tar-create = (filename str, files []str, gzip bool) {
-    builder = tar-builder{}
+// tar-collect 遞迴收集目錄下的所有檔案與子目錄路徑
+tar-collect = (path str, out []str) {
+    entries = fs.list-dir(path)
+    i <- [0..entries.len): {
+        name = entries[i]
+        name == '.' -> continue
+        name == '..' -> continue
+        full = path - '/' - name
+        fs.is-dir(full) -> {
+            out.push(full)
+            tar-collect(full, out)
+        }
+        fs.is-file(full) -> out.push(full)
+    }
+}
 
+tar-create = (filename str, files []str, use-gzip bool) {
+    // 收集所有檔案與目錄路徑
+    all []str
     i <- [0..files.len): {
         path = files[i]
         fs.is-dir(path) -> {
-            builder.add-dir(path - '/')
-            tar-add-dir(builder, path)
+            all.push(path)
+            tar-collect(path, all)
         }
+        fs.is-file(path) -> all.push(path)
+    }
+
+    // 計算總大小以預分配緩衝區
+    total = 1024
+    i <- [0..all.len): {
+        path = all[i]
+        fs.is-file(path) -> {
+            sz = fs.stat-size(path)
+            blocks = (sz + 511) / 512
+            total = total + 512 + blocks * 512
+        }
+        fs.is-dir(path) -> total = total + 512
+    }
+
+    // 構建歸檔
+    builder = tar-builder{}
+    builder.pre-alloc(total)
+    i <- [0..all.len): {
+        path = all[i]
         fs.is-file(path) -> {
             content = fs.read-file(path)
             builder.add-file(path, content.to-bytes())
         }
+        fs.is-dir(path) -> builder.add-dir(path)
     }
 
     archive = builder.finish()
 
-    gzip -> {
+    use-gzip -> {
         compressed = gzip.gzip-compress(archive.data)
         fs.write-file(filename, compressed)
     }
-    !gzip -> {
-        fs.write-file(filename, archive.data)
-    }
+    ! use-gzip -> fs.write-file(filename, archive.data)
 }
 
-tar-add-dir = (builder tar-builder, dir str) {
-    entries = fs.list-dir(dir)
-    i <- [0..entries.len): {
-        name = entries[i]
-        name == '.' || name == '..' -> continue
-        full = dir - '/' - name
-        fs.is-dir(full) -> {
-            builder.add-dir(full - '/')
-            tar-add-dir(builder, full)
-        }
-        fs.is-file(full) -> {
-            content = fs.read-file(full)
-            builder.add-file(full, content.to-bytes())
-        }
-    }
-}
-
-tar-extract = (filename str, gzip bool) {
+tar-extract = (filename str, use-gzip bool) {
     ! fs.is-file(filename) -> {
         print('tar: ' - filename - ': No such file or directory')
         os.exit(1)
@@ -111,10 +123,7 @@ tar-extract = (filename str, gzip bool) {
     raw = fs.read-file(filename)
     data = raw.to-bytes()
 
-    gzip -> {
-        data = gzip.gzip-decompress(data)
-    }
-
+    use-gzip -> data = gzip.gzip-decompress(data)
     archive = tar{
         data: data
     }
@@ -123,9 +132,7 @@ tar-extract = (filename str, gzip bool) {
     i <- [0..n): {
         name = archive.name(i)
         typ = archive.type(i)
-        typ == 'dir' -> {
-            os.mkdir(name, 493)
-        }
+        typ == 'dir' -> os.mkdir(name, 493)
         typ == 'file' -> {
             content = archive.read(i)
             fs.write-file(name, content)
@@ -133,7 +140,7 @@ tar-extract = (filename str, gzip bool) {
     }
 }
 
-tar-list = (filename str, gzip bool) {
+tar-list = (filename str, use-gzip bool) {
     ! fs.is-file(filename) -> {
         print('tar: ' - filename - ': No such file or directory')
         os.exit(1)
@@ -141,10 +148,7 @@ tar-list = (filename str, gzip bool) {
     raw = fs.read-file(filename)
     data = raw.to-bytes()
 
-    gzip -> {
-        data = gzip.gzip-decompress(data)
-    }
-
+    use-gzip -> data = gzip.gzip-decompress(data)
     archive = tar{
         data: data
     }
