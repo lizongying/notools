@@ -1,0 +1,269 @@
+// zip.no — zip utility
+// Create zip archives
+// Usage: zip archive.zip files...
+//   archive.zip: output archive filename
+//   files: files to add to archive
+
+zip-writer {
+    data []byte
+    pos i64
+    cd-data []byte
+    cd-pos i64
+    count i64
+}
+
+zip-run = () {
+    argc = args()
+
+    argc < 3 -> {
+        print('Usage: zip archive.zip files...')
+        os.exit(1)
+    }
+
+    filename = arg(2)
+    files []str
+    i <- [3..argc): {
+        files.push(arg(i))
+    }
+
+    zip-create(filename, files)
+}
+
+zip-create = (filename str, files []str) {
+    w = zip-writer{}
+
+    i <- [0..files.len): {
+        path = files[i]
+        fs.is-file(path) -> {
+            content = fs.read-file(path)
+            content-bytes = content.to-bytes()
+            crc = zip-crc32(content-bytes)
+            off = w.pos
+            w.write-local-file(path, content-bytes)
+            w.write-cd-entry(path, off, content.len, content.len, crc)
+            w.count = w.count + 1
+        }
+        fs.is-dir(path) -> {
+            dir-name = path
+            ! dir-name.ends-with('/') -> dir-name = dir-name - '/'
+            off = w.pos
+            w.write-local-file(dir-name, [])
+            w.write-cd-entry(dir-name, off, 0, 0, 0)
+            w.count = w.count + 1
+            zip-add-dir(w, path)
+        }
+    }
+
+    cd-offset = w.pos
+    cd-size = w.cd-pos
+    i <- [0..cd-size): {
+        w.data[w.pos] = w.cd-data[i]
+        w.pos = w.pos + 1
+    }
+
+    w.write-eocd(cd-offset, cd-size)
+
+    fs.write-file(filename, w.data)
+}
+
+zip-add-dir = (w zip-writer, dir str) {
+    dir-entries = fs.list-dir(dir)
+    i <- [0..dir-entries.len): {
+        name = dir-entries[i]
+        name == '.' || name == '..' -> {
+            continue
+        }
+        full = dir - '/' - name
+        fs.is-file(full) -> {
+            content = fs.read-file(full)
+            content-bytes = content.to-bytes()
+            crc = zip-crc32(content-bytes)
+            off = w.pos
+            w.write-local-file(full, content-bytes)
+            w.write-cd-entry(full, off, content.len, content.len, crc)
+            w.count = w.count + 1
+        }
+        fs.is-dir(full) -> {
+            dir-name = full
+            ! dir-name.ends-with('/') -> dir-name = dir-name - '/'
+            off = w.pos
+            w.write-local-file(dir-name, [])
+            w.write-cd-entry(dir-name, off, 0, 0, 0)
+            w.count = w.count + 1
+            zip-add-dir(w, full)
+        }
+    }
+}
+
+// ─── zip-writer methods ───────────────────────
+
+zip-writer.write-local-file = (name str, content []byte) {
+    .data[.pos] = 0x50; .pos = .pos + 1
+    .data[.pos] = 0x4B; .pos = .pos + 1
+    .data[.pos] = 0x03; .pos = .pos + 1
+    .data[.pos] = 0x04; .pos = .pos + 1
+
+    .data[.pos] = 0x14; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    crc = zip-crc32(content)
+    .data[.pos] = crc & 255; .pos = .pos + 1
+    .data[.pos] = (crc >> 8) & 255; .pos = .pos + 1
+    .data[.pos] = (crc >> 16) & 255; .pos = .pos + 1
+    .data[.pos] = (crc >> 24) & 255; .pos = .pos + 1
+
+    sz = content.len
+    .data[.pos] = sz & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 8) & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 16) & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 24) & 255; .pos = .pos + 1
+
+    .data[.pos] = sz & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 8) & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 16) & 255; .pos = .pos + 1
+    .data[.pos] = (sz >> 24) & 255; .pos = .pos + 1
+
+    name-len = name.len
+    .data[.pos] = name-len & 255; .pos = .pos + 1
+    .data[.pos] = (name-len >> 8) & 255; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    i <- [0..name-len): {
+        .data[.pos] = name[i]
+        .pos = .pos + 1
+    }
+
+    i <- [0..content.len): {
+        .data[.pos] = content[i]
+        .pos = .pos + 1
+    }
+}
+
+zip-writer.write-cd-entry = (name str, offset i64, size i64, compressed-size i64, crc i64) {
+    .cd-data[.cd-pos] = 0x50; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x4B; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x01; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x02; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x14; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x14; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = crc & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (crc >> 8) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (crc >> 16) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (crc >> 24) & 255; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = compressed-size & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (compressed-size >> 8) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (compressed-size >> 16) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (compressed-size >> 24) & 255; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = size & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (size >> 8) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (size >> 16) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (size >> 24) & 255; .cd-pos = .cd-pos + 1
+
+    name-len = name.len
+    .cd-data[.cd-pos] = name-len & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (name-len >> 8) & 255; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = 0x00; .cd-pos = .cd-pos + 1
+
+    .cd-data[.cd-pos] = offset & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (offset >> 8) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (offset >> 16) & 255; .cd-pos = .cd-pos + 1
+    .cd-data[.cd-pos] = (offset >> 24) & 255; .cd-pos = .cd-pos + 1
+
+    i <- [0..name-len): {
+        .cd-data[.cd-pos] = name[i]
+        .cd-pos = .cd-pos + 1
+    }
+}
+
+zip-writer.write-eocd = (cd-offset i64, cd-size i64) {
+    .data[.pos] = 0x50; .pos = .pos + 1
+    .data[.pos] = 0x4B; .pos = .pos + 1
+    .data[.pos] = 0x05; .pos = .pos + 1
+    .data[.pos] = 0x06; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+
+    .data[.pos] = .count & 255; .pos = .pos + 1
+    .data[.pos] = (.count >> 8) & 255; .pos = .pos + 1
+
+    .data[.pos] = .count & 255; .pos = .pos + 1
+    .data[.pos] = (.count >> 8) & 255; .pos = .pos + 1
+
+    .data[.pos] = cd-size & 255; .pos = .pos + 1
+    .data[.pos] = (cd-size >> 8) & 255; .pos = .pos + 1
+    .data[.pos] = (cd-size >> 16) & 255; .pos = .pos + 1
+    .data[.pos] = (cd-size >> 24) & 255; .pos = .pos + 1
+
+    .data[.pos] = cd-offset & 255; .pos = .pos + 1
+    .data[.pos] = (cd-offset >> 8) & 255; .pos = .pos + 1
+    .data[.pos] = (cd-offset >> 16) & 255; .pos = .pos + 1
+    .data[.pos] = (cd-offset >> 24) & 255; .pos = .pos + 1
+
+    .data[.pos] = 0x00; .pos = .pos + 1
+    .data[.pos] = 0x00; .pos = .pos + 1
+}
+
+zip-crc32 = (data []byte) (crc i64) {
+    crc = 4294967295
+    i <- [0..data.len): {
+        crc = crc ^ (data[i] & 255)
+        j <- [0..8): {
+            {
+                crc & 1 == 1 -> crc = (crc >> 1) ^ 3988292384
+                -> crc = crc >> 1
+            }
+        }
+    }
+    crc = crc ^ 4294967295
+}

@@ -16,18 +16,28 @@ tar-run = () {
     gzip = false
     filename = ''
     files []str
+    skip-next = false
 
     i <- [2..argc): {
-        a = arg(i)
-        a == '-c' -> create = true
-        a == '-x' -> extract = true
-        a == '-t' -> list = true
-        a == '-z' -> gzip = true
-        a == '-f' -> {
-            i = i + 1
-            i < argc -> filename = arg(i)
+        skip-next -> {
+            skip-next = false
+            continue
         }
-        !a.starts-with('-') -> files.push(a)
+        a = arg(i)
+        a.starts-with('-') -> {
+            j <- [1..a.len): {
+                c = a[j]
+                c == "c" -> create = true
+                c == "x" -> extract = true
+                c == "t" -> list = true
+                c == "z" -> gzip = true
+                c == "f" -> {
+                    i + 1 < argc -> filename = arg(i + 1)
+                    skip-next = true
+                }
+            }
+        }
+        -> files.push(a)
     }
 
     filename.len == 0 -> {
@@ -61,27 +71,18 @@ tar-create = (filename str, files []str, gzip bool) {
         }
         fs.is-file(path) -> {
             content = fs.read-file(path)
-            bytes []byte
-            j <- [0..content.len): {
-                bytes[j] = content[j]
-            }
-            builder.add-file(path, bytes)
+            builder.add-file(path, content.to-bytes())
         }
     }
 
     archive = builder.finish()
 
-    raw []byte
-    k <- [0..archive.data.len): {
-        raw[k] = archive.data[k]
-    }
-
     gzip -> {
-        compressed = gzip.gzip-compress(raw)
+        compressed = gzip.gzip-compress(archive.data)
         fs.write-file(filename, compressed)
     }
     !gzip -> {
-        fs.write-file(filename, raw)
+        fs.write-file(filename, archive.data)
     }
 }
 
@@ -97,21 +98,18 @@ tar-add-dir = (builder tar-builder, dir str) {
         }
         fs.is-file(full) -> {
             content = fs.read-file(full)
-            bytes []byte
-            j <- [0..content.len): {
-                bytes[j] = content[j]
-            }
-            builder.add-file(full, bytes)
+            builder.add-file(full, content.to-bytes())
         }
     }
 }
 
 tar-extract = (filename str, gzip bool) {
-    raw = fs.read-file(filename)
-    data []byte
-    i <- [0..raw.len): {
-        data[i] = raw[i]
+    ! fs.is-file(filename) -> {
+        print('tar: ' - filename - ': No such file or directory')
+        os.exit(1)
     }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
 
     gzip -> {
         data = gzip.gzip-decompress(data)
@@ -136,11 +134,12 @@ tar-extract = (filename str, gzip bool) {
 }
 
 tar-list = (filename str, gzip bool) {
-    raw = fs.read-file(filename)
-    data []byte
-    i <- [0..raw.len): {
-        data[i] = raw[i]
+    ! fs.is-file(filename) -> {
+        print('tar: ' - filename - ': No such file or directory')
+        os.exit(1)
     }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
 
     gzip -> {
         data = gzip.gzip-decompress(data)
@@ -155,6 +154,6 @@ tar-list = (filename str, gzip bool) {
         name = archive.name(i)
         typ = archive.type(i)
         sz = archive.size(i)
-        print(name)
+        print(name - '  ' - typ - '  ' - sz.to-str())
     }
 }

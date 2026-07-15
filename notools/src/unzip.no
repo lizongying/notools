@@ -15,9 +15,10 @@ unzip-run = () {
     i <- [2..argc): {
         a = arg(i)
         a == '-l' -> list-only = true
-        !a.starts-with('-') -> {
-            filename.len == 0 -> filename = a
-            -> files.push(a)
+        ! a.starts-with('-') -> {
+            is-filename = filename.len == 0
+            is-filename -> filename = a
+            ! is-filename -> files.push(a)
         }
     }
 
@@ -26,20 +27,17 @@ unzip-run = () {
         os.exit(1)
     }
 
-    list-only -> {
-        unzip-list(filename)
-    }
-    -> {
-        unzip-extract(filename, files)
-    }
+    list-only -> unzip-list(filename)
+    unzip-extract(filename, files)
 }
 
 unzip-list = (filename str) {
-    raw = fs.read-file(filename)
-    data []byte
-    i <- [0..raw.len): {
-        data[i] = raw[i]
+    ! fs.is-file(filename) -> {
+        print('unzip: ' - filename - ': No such file or directory')
+        os.exit(1)
     }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
 
     archive = zip{
         data: data
@@ -50,16 +48,17 @@ unzip-list = (filename str) {
         name = archive.name(i)
         sz = archive.size(i)
         method = archive.method(i)
-        print(name)
+        print(name - '  ' - sz.to-str() - '  ' - method.to-str())
     }
 }
 
 unzip-extract = (filename str, wanted []str) {
-    raw = fs.read-file(filename)
-    data []byte
-    i <- [0..raw.len): {
-        data[i] = raw[i]
+    ! fs.is-file(filename) -> {
+        print('unzip: ' - filename - ': No such file or directory')
+        os.exit(1)
     }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
 
     archive = zip{
         data: data
@@ -68,20 +67,18 @@ unzip-extract = (filename str, wanted []str) {
     n = archive.count()
     i <- [0..n): {
         name = archive.name(i)
-        typ = archive.type(i)
-
         wanted.len > 0 -> {
             found = false
             j <- [0..wanted.len): {
                 wanted[j] == name -> found = true
             }
-            !found -> continue
+            ! found -> {
+                continue
+            }
         }
-
-        name.ends-with('/') -> {
-            os.mkdir(name, 493)
-        }
-        -> {
+        is-dir = name.ends-with('/')
+        is-dir -> os.mkdir(name, 493)
+        ! is-dir -> {
             content = archive.extract(i)
             fs.write-file(name, content)
         }

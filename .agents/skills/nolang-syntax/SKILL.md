@@ -1120,7 +1120,7 @@ s.push(42)
 val = s.pop()
 ```
 
-The same pattern applies to `heap`, `deque`, `path`, `regexp`, `file`, `io-reader`, `io-writer`, `sse-client`. See [Standard Library Overview](#standard-library-overview) for the full API.
+The same pattern applies to `heap`, `deque`, `path`, `regexp`, `file`, `io.reader`, `io.writer`, `sse-client`. See [Standard Library Overview](#standard-library-overview) for the full API.
 
 ### Networking Modules
 
@@ -2176,7 +2176,7 @@ reader.close()                  // Close
 
 #### io — I/O Abstraction
 
-Provides `io-reader` and `io-writer` structs to unify read/write operations across files, standard I/O, and other streams:
+Provides `io.reader` and `io.writer` structs to unify read/write operations across files, standard I/O, and other streams:
 
 ```nolang
 // Standard file descriptors
@@ -2184,35 +2184,35 @@ STDIN-FD = 0
 STDOUT-FD = 1
 STDERR-FD = 2
 
-// io-reader struct
-io-reader {
+// io.reader struct
+io.reader {
     fd i64
 }
-r = io-reader.from-fd(fd)      // Create from fd
-r = io-reader.from-stdin()     // Create from standard input
+r = io.reader.from-fd(fd)      // Create from fd
+r = io.reader.from-stdin()     // Create from standard input
 read-n = r.read(buf, n)        // Read n bytes
 b = r.read-byte()              // Read one byte (?byte, nil=EOF)
 line = r.read-line()           // Read one line (?str, nil=EOF)
 total = r.read-all(buf, size)  // Read all
 
-// io-writer struct
-io-writer {
+// io.writer struct
+io.writer {
     fd i64
 }
-w = io-writer.from-fd(fd)      // Create from fd
-w = io-writer.from-stdout()    // Create from standard output
-w = io-writer.from-stderr()    // Create from standard error
+w = io.writer.from-fd(fd)      // Create from fd
+w = io.writer.from-stdout()    // Create from standard output
+w = io.writer.from-stderr()    // Create from standard error
 written = w.write(data, n)     // Write n bytes
 written = w.write-str(s)       // Write entire string
 written = w.write-byte(b)      // Write one byte
 written = w.write-line(s)      // Write string + newline
 
 // Convenience functions
-n = io.io-print(s)                // Write to stdout (no newline)
-n = io.io-println(s)              // Write to stdout (with newline)
-n = io.io-err(s)                  // Write to stderr (no newline)
-n = io.io-errln(s)                // Write to stderr (with newline)
-line = io.io-read-line()          // Read one line from stdin (?str, nil=EOF)
+n = io.out(s)                // Write to stdout (no newline)
+n = io.outln(s)              // Write to stdout (with newline)
+n = io.err(s)                  // Write to stderr (no newline)
+n = io.errln(s)                // Write to stderr (with newline)
+line = io.read-line()          // Read one line from stdin (?str, nil=EOF)
 ```
 
 #### regexp — Regular Expression

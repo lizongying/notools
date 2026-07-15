@@ -11,7 +11,7 @@ sed-run = () {
     i <- [2..argc): {
         a = arg(i)
         a.starts-with('s/') -> command = a
-        !a.starts-with('-') -> files.push(a)
+        ! a.starts-with('s/') && ! a.starts-with('-') -> files.push(a)
     }
 
     command.len == 0 -> {
@@ -19,14 +19,14 @@ sed-run = () {
         os.exit(1)
     }
 
-    slash1 = command.index('/', 2)
+    slash1 = command.index-from('/', 2)
     slash1 < 0 -> {
         print('sed: invalid command')
         os.exit(1)
     }
     pattern = command.slice(2, slash1)
 
-    slash2 = command.index('/', slash1 + 1)
+    slash2 = command.index-from('/', slash1 + 1)
     slash2 < 0 -> {
         print('sed: invalid command')
         os.exit(1)
@@ -35,28 +35,29 @@ sed-run = () {
 
     global = false
     slash2 + 1 < command.len -> global = command[slash2 + 1] == 'g'
-
     files.len == 0 -> {
         content = fs.read-file('/dev/stdin')
-        lines = content.split('\n')
-        j <- [0..lines.len): {
-            result = lines[j]
-            global -> result = replace-all(lines[j], pattern, replacement)
-            !global -> result = replace-first(lines[j], pattern, replacement)
-            print(result)
-        }
+        sed-process(content, pattern, replacement, global)
     }
     files.len > 0 -> {
         i <- [0..files.len): {
-            content = fs.read-file(files[i])
-            lines = content.split('\n')
-            j <- [0..lines.len): {
-                result = lines[j]
-                global -> result = replace-all(lines[j], pattern, replacement)
-                !global -> result = replace-first(lines[j], pattern, replacement)
-                print(result)
+            ! fs.is-file(files[i]) -> {
+                print('sed: ' - files[i] - ': No such file or directory')
+                os.exit(1)
             }
+            content = fs.read-file(files[i])
+            sed-process(content, pattern, replacement, global)
         }
+    }
+}
+
+sed-process = (content str, pattern str, replacement str, global bool) {
+    lines = content.split('\n')
+    j <- [0..lines.len): {
+        result = lines[j]
+        global -> result = replace-all(lines[j], pattern, replacement)
+        ! global -> result = replace-first(lines[j], pattern, replacement)
+        print(result)
     }
 }
 
@@ -80,7 +81,7 @@ replace-all = (line str, pattern str, replacement str) (result str) {
 
     temp str = line
     result = ''
-    i <- [0..1000): {
+    i <- [0..line.len + 1): {
         idx = temp.index(pattern)
         idx < 0 -> {
             result = result - temp

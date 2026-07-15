@@ -1,0 +1,67 @@
+// find.no — find utility
+// Recursively search for files by name
+// Usage: find [path] [-name pattern] [-type f|d]
+//   path: starting directory (default: '.')
+//   -name pattern: filter by filename containing pattern
+//   -type f: only files
+//   -type d: only directories
+
+find-run = () {
+    argc = args()
+
+    path = '.'
+    name-pattern = ''
+    type-filter = ''
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-name' -> {
+            i + 1 < argc -> name-pattern = arg(i + 1)
+            skip-next = true
+        }
+        a == '-type' -> {
+            i + 1 < argc -> type-filter = arg(i + 1)
+            skip-next = true
+        }
+        ! a.starts-with('-') -> path = a
+    }
+
+    find-path(path, name-pattern, type-filter)
+}
+
+find-path = (dir str, pattern str, type str) {
+    entries = fs.list-dir(dir)
+    i <- [0..entries.len): {
+        name = entries[i]
+        name == '.' -> {
+            continue
+        }
+        name == '..' -> {
+            continue
+        }
+        full = dir
+        ! dir.ends-with('/') -> full = dir - '/'
+        full = full - name
+        is-dir = fs.is-dir(full)
+        match-type = true
+        type == 'f' -> match-type = ! is-dir
+        type == 'd' -> match-type = is-dir
+        match-name = true
+        pattern.len > 0 -> {
+            pat = pattern
+            pat-starts = pat.starts-with('*')
+            pat-ends = pat.ends-with('*')
+            pat-starts && pat-ends -> match-name = name.contains(pat.slice(1, pat.len - 1))
+            pat-starts && ! pat-ends -> match-name = name.ends-with(pat.slice(1, pat.len))
+            ! pat-starts && pat-ends -> match-name = name.starts-with(pat.slice(0, pat.len - 1))
+            ! pat-starts && ! pat-ends -> match-name = name.contains(pat)
+        }
+        match-type && match-name -> print(full)
+        is-dir -> find-path(full, pattern, type)
+    }
+}
