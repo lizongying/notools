@@ -1,0 +1,106 @@
+// mkdir.no — mkdir utility
+// Create directories
+// Usage: mkdir [-p] [-m mode] dir...
+//   -p: create parent directories as needed (no error if directory exists)
+//   -m mode: specify permission mode (octal, e.g. 755, 700)
+//   dir: directory to create
+
+// mkdir-p creates a directory and all parent directories as needed.
+// Iterates the path char-by-char; at each '/' it creates the accumulated
+// prefix if it does not yet exist. Avoids && with array access by using
+// nested conditional blocks.
+mkdir-p = (path str, mode i64) {
+    n = path.len
+    cur = ''
+    i <- [0..n): {
+        c = path[i]
+        c == '/' -> {
+            cur.len > 0 -> {
+                fs.is-dir(cur) == false -> {
+                    ok = os.mkdir(cur, mode)
+                    ok == false -> {
+                        print('mkdir: cannot create directory ' - cur)
+                        os.exit(1)
+                    }
+                }
+            }
+        }
+        cur = cur - c
+    }
+    // Create the final directory
+    cur.len > 0 -> {
+        fs.is-dir(cur) == false -> {
+            ok = os.mkdir(cur, mode)
+            ok == false -> {
+                print('mkdir: cannot create directory ' - cur)
+                os.exit(1)
+            }
+        }
+    }
+}
+
+// mkdir-one creates a single directory without creating parents.
+mkdir-one = (path str, mode i64) {
+    fs.is-dir(path) -> {
+        print('mkdir: cannot create directory ' - path - ': File exists')
+        os.exit(1)
+    }
+    ok = os.mkdir(path, mode)
+    ok == false -> {
+        print('mkdir: cannot create directory ' - path)
+        os.exit(1)
+    }
+}
+
+// mkdir-run is the main entry point for the mkdir utility.
+// Uses two passes: first to parse flags/mode, second to create directories.
+// This avoids []str push (which causes memory corruption).
+mkdir-run = () {
+    argc = args()
+    parents = false
+    mode = 511
+    has-mode = false
+    has-dir = false
+
+    // First pass: parse flags and mode
+    i <- [2..argc): {
+        a = arg(i)
+        has-mode -> {
+            mode = 0
+            j <- [0..a.len): {
+                c = a[j]
+                c >= '0' && c <= '7' -> mode = mode * 8 + (c - '0')
+            }
+            has-mode = false
+        }
+        a.starts-with('-') -> {
+            parents = parents || a.contains('p')
+            a.contains('m') -> has-mode = true
+        }
+    }
+
+    // Second pass: create directories
+    has-mode = false
+    i <- [2..argc): {
+        a = arg(i)
+        is-dir-arg = true
+        has-mode -> {
+            has-mode = false
+            is-dir-arg = false
+        }
+        a.starts-with('-') -> {
+            is-dir-arg = false
+            a.contains('m') -> has-mode = true
+        }
+        is-dir-arg -> {
+            has-dir = true
+            parents -> mkdir-p(a, mode)
+            parents == false -> mkdir-one(a, mode)
+        }
+    }
+
+    has-dir == false -> {
+        print('Usage: mkdir [-p] [-m mode] dir...')
+        os.exit(1)
+    }
+}

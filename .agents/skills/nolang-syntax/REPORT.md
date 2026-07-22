@@ -98,70 +98,6 @@ The standard library had no function to update file timestamps. `touch` could no
 
 ---
 
-## 4. `!` (NOT) Operator Was Unimplemented (FIXED)
-
-**Affected utilities:** `ls` (uses `!hidden`, `!long-format`, `!a.starts-with('-')`)
-
-**Description**
-
-The `!` (logical NOT) operator was completely unimplemented in the compiler. The `PrefixExpression` handler in `expr.go` only handled `-` (negation); `!` just returned the operand unchanged, meaning `!true` returned `true` and `!false` returned `false`.
-
-**Resolution: Fixed in compiler**
-
-Implemented `!` operator in `/Users/lizongying/IdeaProjects/no/src/build/llvm/expr.go`:
-
-```go
-case "!":
-    operand := g.generateExprWithSB(sb, e.Right)
-    // icmp eq i64 %operand, 0  →  i1 (true if operand was 0/false)
-    // zext i1 → i64  (Nolang stores bools as i64)
-```
-
-Also updated `intExprLLVMType` to return `"i64"` for `!` expressions, preventing double-zext errors.
-
----
-
-## 5. `mkdir` / `remove` / `rename` Inverted Boolean Semantics (FIXED)
-
-**Affected utilities:** `mv` (rename), `rm` (remove), `touch` (implicit)
-
-**Description**
-
-C functions `mkdir`, `unlink`/`remove`, `rename` return **0 on success**. Nolang treats 0 as `false`. The builtins used `RetExt: &i64Type` which just zero-extends the i32 return to i64 — so success (0) became `false` and failure (nonzero) became `true`. This was inverted: `mv` reported errors on success.
-
-**Resolution: Fixed in compiler**
-
-Changed `mkdir`, `remove`, `rename` from `RetExt: &i64Type` to `CmpRet: true` in the builtin definitions. `CmpRet` does `icmp eq i32 %ret, 0` → `zext i1 to i64`, correctly mapping 0 (success) → `true`.
-
----
-
-## 6. Systemic `i1` vs `i64` Type Mismatch for Booleans (FIXED)
-
-**Affected utilities:** All utilities using boolean return values from functions
-
-**Description**
-
-Nolang uses `i1` for booleans in function signatures (output parameters use `i1*`) but `i64` for boolean variables. This caused LLVM type errors at every boundary:
-
-- `'%call.zext.N defined with type i64 but expected i1'` — when storing a function call result (already zext'd to i64) into a variable typed as `i1`
-- `'%call.zext.N defined with type i1 but expected i64'` — double-zext when both the call handler and the variable type conversion tried to zext
-
-The root cause: `varLLVMType` and `intExprLLVMType` returned `i1` (from `funcResultLLVMType`) without converting to `i64` for variables/expressions that store boolean results.
-
-**Resolution: Fixed in compiler**
-
-- **`stmt.go`** — 4 locations in `varLLVMType` now convert `i1` → `i64`:
-  ```go
-  retType := ts[0]
-  if retType == "i1" {
-      retType = "i64"
-  }
-  return retType
-  ```
-- **`expr.go`** — 3 locations in `intExprLLVMType` apply the same `i1` → `i64` conversion.
-
----
-
 ## 7. `resolveModuleConstants` Replaced Local Variables (FIXED)
 
 **Affected utilities:** `ls` (via `str.contains`)
@@ -200,20 +136,6 @@ func resolveModuleConstantsInExpr(expr, constants, locals) {
 ```
 
 **Note:** The underlying parser bug (function-body statements leaking to module level) is NOT fixed. The `resolveModuleConstants` fix works around it by checking scope.
-
----
-
-## 8. `vec.push` Was a Stub (FIXED)
-
-**Affected utilities:** `ls`, `rm`, `tree` (all use `entries.push(name)`)
-
-**Description**
-
-The `[]t.push` method in `vec.no` was incomplete — it didn't store values or update the length.
-
-**Resolution: Fixed in standard library**
-
-Updated `vec.no` to use `.len = n + 1` then `.[n] = val`. The bounds check (`nolang.bounds_check(idx, len)`) requires `.len` to be updated BEFORE writing to `.[n]`.
 
 ---
 
