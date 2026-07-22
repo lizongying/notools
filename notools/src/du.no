@@ -1,0 +1,69 @@
+// du.no — du utility
+// Estimate file space usage
+// Usage: du [-a] [-s] [-h] [path...]
+//   -a:      write counts for all files, not just directories
+//   -s:      display only a total for each argument
+//   -h:      print sizes in human readable format (B/K/M/G)
+
+du-print = (size i64, p str, human bool) {
+    human -> {
+        s = ''
+        size >= 1073741824 -> s = sprintf('%d', size / 1073741824) - 'G'
+        size >= 1048576 -> s = sprintf('%d', size / 1048576) - 'M'
+        size >= 1024 -> s = sprintf('%d', size / 1024) - 'K'
+        size < 1024 -> s = sprintf('%d', size) - 'B'
+        print(s - '  ' - p)
+    }
+    -> {
+        print(sprintf('%d', (size + 1023) / 1024) - '  ' - p)
+    }
+}
+
+du-walk = (p str, top bool, all bool, summarize bool, human bool) (total i64) {
+    is-f = fs.is-file(p)
+    is-f -> {
+        size, ok = os.stat-size(p)
+        ok == false -> size = 0
+        all -> du-print(size, p, human)
+        total = size
+        return
+    }
+    total = 0
+    names = fs.list-dir(p)
+    i <- [0..names.len): {
+        name = names[i]
+        skip = name == '.' || name == '..'
+        skip == false -> {
+            full = p - '/' - name
+            total = total + du-walk(full, false, all, summarize, human)
+        }
+    }
+    summarize -> { top -> du-print(total, p, human) }
+    summarize == false -> du-print(total, p, human)
+}
+
+du-run = () {
+    argc = args()
+    all = false
+    summarize = false
+    human = false
+    paths []str
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-a' -> all = true
+        a == '-s' -> summarize = true
+        a == '-h' -> human = true
+        ! a.starts-with('-') -> paths.push(a)
+    }
+    paths.len == 0 -> paths.push('.')
+    i <- [0..paths.len): {
+        p = paths[i]
+        is-d = fs.is-dir(p)
+        is-f = fs.is-file(p)
+        is-d == false && is-f == false -> {
+            io.errln('du: ' - p - ': No such file or directory')
+            continue
+        }
+        du-walk(p, true, all, summarize, human)
+    }
+}
