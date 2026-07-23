@@ -1,0 +1,105 @@
+// curl.no — transfer a URL (pure Nolang HTTP client over the net TCP layer)
+// Usage: curl [-s] [-o file] <url>
+//
+// Implemented entirely in Nolang using the standard-library `net` module
+// (net-dial / net-send / net-recv): we parse the URL, open a TCP connection,
+// send a minimal HTTP/1.1 request and read the response, then strip the
+// headers and write the body to stdout or to a file. No system `curl` binary
+// and no libc shell-out is involved.
+//
+// CURRENT COMPILER BLOCKERS (see NOLANG_STDLIB_ISSUES.md):
+//   * net-recv crashes at runtime (str-long GEP codegen bug) -> response read
+//     never completes.
+//   * dns-resolve crashes on any input -> only IP-literal hosts work until
+//     the DNS bug is fixed (net-dial expects an IP, not a hostname).
+//   * https:// is not supported yet (no TLS in the pure-Nolang path).
+// Once net-recv + dns-resolve are fixed this file works as-is.
+
+curl-run = () {
+    argc = args()
+    argc < 3 -> {
+        print('Usage: curl [-s] [-o file] <url>')
+        os.exit(1)
+    }
+    silent = false
+    outfile = ''
+    url = ''
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-s' -> silent = true
+        a == '-o' -> { i + 1 < argc -> outfile = arg(i + 1) }
+        a.starts-with('-o') -> a.len > 2 -> outfile = a.slice(2, a.len)
+        ! a.starts-with('-') -> url = a
+    }
+    url == '' -> {
+        print('Usage: curl [-s] [-o file] <url>')
+        os.exit(1)
+    }
+    ; --- scheme check ---
+    is-http = url.starts-with('http://')
+    is-https = url.starts-with('https://')
+    is-http == false -> is-https == false -> {
+        io.errln('curl: only http:// URLs are supported')
+        os.exit(1)
+    }
+    is-https -> {
+        io.errln('curl: https:// is not supported in the pure-Nolang path yet (no TLS)')
+        os.exit(1)
+    }
+    ; --- strip 'http://' (7 chars) and split hostport / path at first '/' ---
+    slash = url.len
+    k <- [7..url.len): {
+        slash == url.len -> url[k] == 47 -> slash = k
+    }
+    hostport = url.slice(7, slash)
+    path = '/'
+    slash > 7 -> path = url.slice(slash, url.len)
+    ; --- split host / port at ':' ---
+    colon = hostport.len
+    m <- [0..hostport.len): {
+        colon == hostport.len -> hostport[m] == 58 -> colon = m
+    }
+    host = hostport
+    port = 80
+    colon < hostport.len -> {
+        host = hostport.slice(0, colon)
+        port = atoi(hostport.slice(colon + 1, hostport.len))
+    }
+    ; --- connect (net-dial expects an IP; DNS is currently broken) ---
+    fd = net.net-dial(host, port)
+    fd < 0 -> {
+        io.errln('curl: could not connect to ' - host - ':' - port.to-str() - ' (DNS resolution is broken in the compiler; use an IP literal)')
+        os.exit(1)
+    }
+    ; --- send request ---
+    req = 'GET ' - path - ' HTTP/1.1\r\nHost: ' - host - '\r\nConnection: close\r\n\r\n'
+    net.net-send(fd, req, req.len)
+    ; --- read response ---
+    content str = ' '.repeat(8388608)
+    got = 0
+    buf str = ' '.repeat(8192)
+    r <- [0..64): {
+        rn = net.net-recv(fd, buf, 8192)
+        rn <= 0 -> *
+        j <- [0..rn): { got < 8388608 -> content[got + j] = buf[j] }
+        got = got + rn
+    }
+    close(fd)
+    ; --- strip headers (find \r\n\r\n) ---
+    sep = 0
+    s <- [0..got): {
+        sep == 0 -> s + 4 <= got -> {
+            content[s] == 13 -> content[s + 1] == 10 -> content[s + 2] == 13 -> content[s + 3] == 10 -> sep = s + 4
+        }
+    }
+    body = content.slice(sep, got)
+    ; --- output ---
+    outfile != '' -> {
+        wfd = fs.open-write(outfile)
+        fs.write(wfd, body, body.len)
+        fs.close(wfd)
+    }
+    outfile == '' -> {
+        silent == false -> print(body)
+    }
+}

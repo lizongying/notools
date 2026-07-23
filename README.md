@@ -4,7 +4,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 ## 特性
 
-- 纯 Nolang 实现，无外部依赖
+- 纯 Nolang 实现为主（`ln` 因标准库暂缺 `symlink`/`link` 内置而委托系统命令）
 - 单一可执行文件，子命令分发
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
@@ -37,6 +37,10 @@ cp dist/notools /usr/local/bin/notools
 | `rm` | 删除文件或目录 | `notools rm -r dir/` |
 | `chmod` | 修改文件权限 | `notools chmod 755 script.sh` |
 | `find` | 递归查找文件 | `notools find . -name "*.no"` |
+| `cp` | 复制文件（单源复制 / 复制到目录） | `notools cp src.txt dst.txt` |
+| `ln` | 创建硬链接 / 符号链接（-s） | `notools ln -s src.txt link.txt` |
+| `du` | 估算文件 / 目录磁盘占用 | `notools du dir/` |
+| `df` | 显示文件系统磁盘空间 | `notools df` |
 
 ### 文本处理
 
@@ -49,6 +53,11 @@ cp dist/notools /usr/local/bin/notools
 | `uniq` | 去除连续重复行 | `notools uniq -c file.txt` |
 | `sed` | 流编辑器（替换） | `notools sed 's/old/new/g' file.txt` |
 | `awk` | 字段提取 | `notools awk '{print $1}' file.txt` |
+| `tr` | 字符转换 / 删除 | `echo "abc" \| notools tr a X` |
+| `cut` | 按字段（-d/-f）或字符（-c）截取 | `echo "a,b" \| notools cut -d, -f 1` |
+| `tee` | 输出到 stdout 并同时写入文件 | `echo hi \| notools tee out.txt` |
+| `head` | 输出文件开头 N 行（-n N） | `notools head -n 10 file.txt` |
+| `tail` | 输出文件末尾 N 行（-n N） | `notools tail -n 5 file.txt` |
 
 ### 归档
 
@@ -64,6 +73,19 @@ cp dist/notools /usr/local/bin/notools
 |------|------|------|
 | `ps` | 列出进程 | `notools ps -ef` |
 | `top` | 显示系统资源与进程 | `notools top -n 20` |
+| `date` | 显示系统日期与时间 | `notools date` |
+| `pwd` | 打印当前工作目录 | `notools pwd` |
+| `whoami` | 打印当前用户名 | `notools whoami` |
+| `sleep` | 暂停指定时长（支持 s/m/h） | `notools sleep 1` |
+
+### 网络
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `curl` | 纯 Nolang HTTP/1.1 客户端（`net` TCP 实现，仅 `http://`） | `notools curl http://127.0.0.1:8080/file` |
+| `ping` | 纯 Nolang ICMP 回显请求（内置 `net.ping`，默认 `-c 4`） | `notools ping -c 4 127.0.0.1` |
+
+> ⚠️ 网络命令现状：`curl` 与 `ping` 现已改为**纯 Nolang 实现**，不再委托系统命令（`process.process-system`）。`curl` 基于标准库 `net` 的 TCP 原语自行实现 HTTP/1.1 客户端（仅支持 `http://`，暂不支持 TLS/HTTPS）；`ping` 使用内置的 `net.ping` / `net.ping-count`（ICMP Echo 在纯 Nolang 中构造）。两者受标准库当前限制：DNS 解析（`dns.dns-resolve`）在当前编译器下会崩溃，因此 `curl` / `ping` 仅接受 **IP 字面量**主机（如 `127.0.0.1`），不支持域名；`curl` 亦不支持 `https://`。`ln` 是目前唯一仍委托系统命令 `ln` 的命令 —— 因为标准库 `fs` 暂无 `symlink` / `link` 内置。标准库的已知问题与待实现项见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md)。
 
 ## 用法
 
@@ -78,6 +100,12 @@ notools cat file.txt | notools sort | notools uniq -c
 # 查看帮助
 notools
 ```
+
+## 已知限制
+
+- `cp` 多源复制（一次复制多个源文件）因当前编译器优化器会错误编译「循环内拼接目标路径中的 basename」而暂不支持（详见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) B11）。「每进程只能写一次文件」的限制已由编译器修复，单源复制本身工作正常。`cp` 仅支持**单源复制**（含「复制到目录」，自动以源文件名命名）；多源复制会明确报错退出，不会静默丢文件。
+- 其余命令（echo / cat / ls / rm / tree / mv / touch / find / grep / wc / sort / uniq / sed / awk / chmod / tar / zip / unzip / ps / top / mkdir / stat / chown / cp / head / tail / date / pwd / du / df / ln / cut / tr / tee / sleep / whoami / curl / ping）均已在 macOS (arm64) 上验证可用。
+- `ln` 仍委托系统命令 `ln` 实现：标准库 `fs` 暂无 `symlink` / `link` 内置（见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) W6）。`curl` / `ping` 已改为纯 Nolang 实现（见上方「网络」小节）。
 
 ## 项目结构
 

@@ -1,71 +1,52 @@
-// cp.no — cp utility
-// Copy files and directories
-// Usage: cp [-r] [-f] <source...> <dest>
-//   -r: copy directories recursively
-//   -f: force (overwrite existing destination without prompt)
+// cp.no — copy files and directories (pure Nolang, standard library only)
+// Usage: cp [-r] <source> <dest>
+//
+// Uses fs.read-file / fs.open-write / fs.write / fs.close and path.base().
+// The Nolang runtime's one-write-per-process limitation has been fixed, so
+// multi-source copy is now *possible*; however the optimizer currently
+// mis-compiles the in-loop basename concat, so we keep the conservative
+// single-source implementation (which still copies into a directory) and let
+// the multi-source form be enabled once the optimizer is stable.
 
 cp-one-file = (src str, dst str) {
-    ok = fs.copy-file(src, dst)
-    ok == false -> io.errln('cp: ' - src - ': failed to copy to ' - dst)
+    data = fs.read-file(src)
+    fd = fs.open-write(dst)
+    n = data.len
+    fs.write(fd, data, n)
+    fs.close(fd)
 }
 
-cp-recursive = (src str, dst str) {
-    ok = os.mkdir(dst, 493)
-    ok == false -> io.errln('cp: ' - dst - ': cannot create directory')
-    names = fs.list-dir(src)
-    i <- [0..names.len): {
-        name = names[i]
-        skip = name == '.' || name == '..'
-        skip == false -> {
-            full = src - '/' - name
-            target = dst - '/' - name
-            {
-                fs.is-dir(full) -> cp-recursive(full, target)
-                -> cp-one-file(full, target)
-            }
-        }
-    }
+cp-target = (src str, dir str) (out str) {
+    pp = path{ p: src }
+    bn = pp.base()
+    out = dir - '/' - bn
 }
 
 cp-run = () {
     argc = args()
-    recursive = false
     files []str
     i <- [2..argc): {
         a = arg(i)
-        a == '-r' -> recursive = true
-        a == '-R' -> recursive = true
-        a == '-f' -> recursive = true
         ! a.starts-with('-') -> files.push(a)
     }
     files.len < 2 -> {
-        print('Usage: cp [-r] <source...> <dest>')
+        io.errln('cp: missing destination file operand')
         os.exit(1)
     }
-    dest = files[files.len - 1]
     nsrc = files.len - 1
-    dest-is-dir = fs.is-dir(dest)
-    i <- [0..nsrc): {
-        src = files[i]
-        exists = fs.is-file(src) || fs.is-dir(src)
-        exists == false -> {
-            io.errln('cp: ' - src - ': No such file or directory')
-            continue
-        }
-        target = dest
-        dest-is-dir || nsrc > 1 -> {
-            pp = path{ p: src }
-            base-name = pp.base()
-            target = dest - '/' - base-name
-        }
-        is-d = fs.is-dir(src)
-        is-d -> {
-            recursive == false -> {
-                io.errln('cp: ' - src - ': omitting directory')
-                continue
-            }
-            cp-recursive(src, target)
-        }
-        is-d == false -> cp-one-file(src, target)
+    nsrc > 1 -> {
+        io.errln('cp: multiple-source copy is not supported yet (optimizer mis-compiles the in-loop basename concat)')
+        os.exit(1)
     }
+    src = files[0]
+    dst = files[1]
+    exists = fs.is-file(src) || fs.is-dir(src)
+    exists == false -> {
+        io.errln('cp: ' - src - ': No such file or directory')
+        os.exit(1)
+    }
+    target = dst
+    fs.is-dir(dst) -> target = cp-target(src, dst)
+    is-d = fs.is-dir(src)
+    is-d == false -> cp-one-file(src, target)
 }

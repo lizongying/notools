@@ -1,9 +1,6 @@
 // cut.no — cut utility
 // Remove sections from each line of files
 // Usage: cut -d DELIM -f LIST | cut -c LIST [file...]
-//   -d DELIM: field delimiter (default TAB)
-//   -f LIST : fields to select (ranges like 1-3,5 supported)
-//   -c LIST : character positions to select
 
 atoi = (s str) (v i64) {
     v = 0
@@ -24,15 +21,32 @@ split-comma = (list str) (out []str) {
     out.push(list.slice(start, llen))
 }
 
+split-fields = (line str, delim str) (out []str) {
+    dbyte = delim[0]
+    start = 0
+    n <- [0..line.len): {
+        b = line[n]
+        b == dbyte -> out.push(line.slice(start, n))
+        b == dbyte -> start = n + 1
+    }
+    llen = line.len
+    out.push(line.slice(start, llen))
+}
+
 build-selected = (list str) (out []i64) {
     parts = split-comma(list)
+    lo = 0
+    hi = 0
+    dash = 0
+    left = ''
+    right = ''
+    llen = 0
+    hend = 0
     p <- [0..parts.len): {
         w = parts[p]
         w.len == 0 -> continue
         dash = -1
-        j <- [0..w.len): {
-            w[j] == 45 -> dash = j
-        }
+        j <- [0..w.len): { w[j] == 45 -> dash = j }
         dash < 0 -> lo = atoi(w)
         dash < 0 -> hi = atoi(w)
         dash >= 0 -> left = w.slice(0, dash)
@@ -46,18 +60,6 @@ build-selected = (list str) (out []i64) {
         hend = hi + 1
         k <- [lo..hend): { out.push(k) }
     }
-}
-
-split-fields = (line str, delim str) (out []str) {
-    dbyte = delim[0]
-    start = 0
-    n <- [0..line.len): {
-        b = line[n]
-        b == dbyte -> out.push(line.slice(start, n))
-        b == dbyte -> start = n + 1
-    }
-    llen = line.len
-    out.push(line.slice(start, llen))
 }
 
 emit-fields = (line str, sel []i64, d str) {
@@ -98,18 +100,32 @@ cut-run = () {
     lists.push('')
     delims.push(char-to-str(9))
     inputs []str
+    skip-next = 0
     i <- [2..argc): {
+        skip-next == 1 -> { skip-next = 0; continue }
         a = arg(i)
-        prev = arg(i - 1)
-        prev == '-c' -> { continue }
-        prev == '-f' -> { continue }
-        prev == '-d' -> { continue }
-        a == '-c' -> mode = 2
-        a == '-f' -> mode = 1
-        a == '-c' -> { i + 1 < argc -> lists.push(arg(i + 1)) }
-        a == '-f' -> { i + 1 < argc -> lists.push(arg(i + 1)) }
-        a == '-d' -> { i + 1 < argc -> delims.push(arg(i + 1)) }
-        ! a.starts-with('-') -> inputs.push(a)
+        isflag = 0
+        a.starts-with('-') -> a.len > 1 -> isflag = 1
+        isflag == 1 -> {
+            key = a[1]
+            attached = 0
+            a.len > 2 -> attached = 1
+            key == 100 -> {
+                attached == 1 -> delims.push(char-to-str(a[2]))
+                attached == 0 -> { i + 1 <= argc -> { delims.push(arg(i + 1)); skip-next = 1 } }
+            }
+            key == 102 -> {
+                mode = 1
+                attached == 1 -> lists.push(a.slice(2, a.len))
+                attached == 0 -> { i + 1 <= argc -> { lists.push(arg(i + 1)); skip-next = 1 } }
+            }
+            key == 99 -> {
+                mode = 2
+                attached == 1 -> lists.push(a.slice(2, a.len))
+                attached == 0 -> { i + 1 <= argc -> { lists.push(arg(i + 1)); skip-next = 1 } }
+            }
+        }
+        isflag == 0 -> inputs.push(a)
     }
     lidx = lists.len
     lidx = lidx - 1
