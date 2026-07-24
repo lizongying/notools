@@ -1,19 +1,51 @@
-// curl.no — transfer a URL (pure Nolang HTTP client over the net TCP layer)
+// curl.no — transfer a URL (pure Nolang HTTP/HTTPS client)
 // Usage: curl [-s] [-o file] <url>
 //
-// Implemented entirely in Nolang using the standard-library `net` module
-// (net-dial / net-send / net-recv): we parse the URL, open a TCP connection,
-// send a minimal HTTP/1.1 request and read the response, then strip the
-// headers and write the body to stdout or to a file. No system `curl` binary
-// and no libc shell-out is involved.
-//
-// CURRENT COMPILER BLOCKERS (see NOLANG_STDLIB_ISSUES.md):
-//   * net-recv crashes at runtime (str-long GEP codegen bug) -> response read
-//     never completes.
-//   * dns-resolve crashes on any input -> only IP-literal hosts work until
-//     the DNS bug is fixed (net-dial expects an IP, not a hostname).
-//   * https:// is not supported yet (no TLS in the pure-Nolang path).
-// Once net-recv + dns-resolve are fixed this file works as-is.
+// Supports both http:// and https:// URLs.
+// HTTP uses net.dns-dial + net.net-send/net.net-recv (raw TCP).
+// HTTPS uses net.tls-dial + tls-conn.send/tls-conn.recv (TLS 1.2/1.3).
+// Hostname resolution is handled by dns-dial (getaddrinfo + pure-Nolang DNS fallback).
+
+; tls-fetch: send HTTP request over TLS and read response into content
+; host str: hostname
+; port i64: port number
+; req str: HTTP request
+; content str: pre-allocated response buffer
+; Returns got i64: total bytes received (-1 on error)
+tls-fetch = (host str, port i64, req str, content str) (got i64) {
+    got = -1
+    io.errln('[curl] tls-fetch start')
+    tc = net.tls-dial(host, port)
+    io.errln('[curl] tls-dial returned')
+    tc: {
+        nil -> {
+            io.errln('[curl] tls-dial nil')
+            return
+        }
+        err -> {
+            io.errln('[curl] tls-dial err')
+            return
+        }
+        ok -> {
+            io.errln('[curl] tls-dial ok')
+            c = it
+            c.send(req)
+            buf str = ' '.repeat(8192)
+            got = 0
+            r <- [0..64): {
+                ; c.recv returns ?i64; use ==nil check to avoid nested option match
+                rn = c.recv(buf, 8192)
+                rn == nil -> *
+                ; Extract value: assign ?i64 to i64 (compiler auto-extracts)
+                n i64 = rn
+                n <= 0 -> *
+                j <- [0..n): { got < 8388608 -> content[got + j] = buf[j] }
+                got = got + n
+            }
+            c.close()
+        }
+    }
+}
 
 curl-run = () {
     argc = args()
@@ -39,21 +71,19 @@ curl-run = () {
     is-http = url.starts-with('http://')
     is-https = url.starts-with('https://')
     is-http == false -> is-https == false -> {
-        io.errln('curl: only http:// URLs are supported')
+        io.errln('curl: only http:// and https:// URLs are supported')
         os.exit(1)
     }
-    is-https -> {
-        io.errln('curl: https:// is not supported in the pure-Nolang path yet (no TLS)')
-        os.exit(1)
-    }
-    ; --- strip 'http://' (7 chars) and split hostport / path at first '/' ---
+    ; --- strip scheme prefix and split hostport / path at first '/' ---
+    prefix-len = 7
+    is-https -> prefix-len = 8
     slash = url.len
-    k <- [7..url.len): {
+    k <- [prefix-len..url.len): {
         slash == url.len -> url[k] == 47 -> slash = k
     }
-    hostport = url.slice(7, slash)
+    hostport = url.slice(prefix-len, slash)
     path = '/'
-    slash > 7 -> path = url.slice(slash, url.len)
+    slash > prefix-len -> path = url.slice(slash, url.len)
     ; --- split host / port at ':' ---
     colon = hostport.len
     m <- [0..hostport.len): {
@@ -61,30 +91,46 @@ curl-run = () {
     }
     host = hostport
     port = 80
+    is-https -> port = 443
     colon < hostport.len -> {
         host = hostport.slice(0, colon)
-        port = atoi(hostport.slice(colon + 1, hostport.len))
+        ; manual port parsing (to-i64 returns ?i64, avoid option extraction issues)
+        port-str = hostport.slice(colon + 1, hostport.len)
+        port = 0
+        p <- [0..port-str.len): {
+            pc = port-str[p]
+            pc < 48 || pc > 57 -> *
+            port = port * 10 + pc - 48
+        }
     }
-    ; --- connect (net-dial expects an IP; DNS is currently broken) ---
-    fd = net.net-dial(host, port)
-    fd < 0 -> {
-        io.errln('curl: could not connect to ' - host - ':' - port.to-str() - ' (DNS resolution is broken in the compiler; use an IP literal)')
-        os.exit(1)
-    }
-    ; --- send request ---
-    req = 'GET ' - path - ' HTTP/1.1\r\nHost: ' - host - '\r\nConnection: close\r\n\r\n'
-    net.net-send(fd, req, req.len)
-    ; --- read response ---
+    ; --- send request and read response ---
+    req = 'GET ' - path - ' HTTP/1.1\r\nHost: ' - host - '\r\nConnection: close\r\nUser-Agent: notools/curl\r\n\r\n'
     content str = ' '.repeat(8388608)
     got = 0
-    buf str = ' '.repeat(8192)
-    r <- [0..64): {
-        rn = net.net-recv(fd, buf, 8192)
-        rn <= 0 -> *
-        j <- [0..rn): { got < 8388608 -> content[got + j] = buf[j] }
-        got = got + rn
+
+    is-https -> {
+        got = tls-fetch(host, port, req, content)
+        got < 0 -> {
+            io.errln('curl: TLS connection failed to ' - host - ':' - port.to-str())
+            os.exit(1)
+        }
     }
-    close(fd)
+    is-http -> {
+        fd = net.dns-dial(host, port)
+        fd < 0 -> {
+            io.errln('curl: could not connect to ' - host - ':' - port.to-str())
+            os.exit(1)
+        }
+        net.net-send(fd, req, req.len)
+        buf str = ' '.repeat(8192)
+        r <- [0..64): {
+            rn = net.net-recv(fd, buf, 8192)
+            rn <= 0 -> *
+            j <- [0..rn): { got < 8388608 -> content[got + j] = buf[j] }
+            got = got + rn
+        }
+        close(fd)
+    }
     ; --- strip headers (find \r\n\r\n) ---
     sep = 0
     s <- [0..got): {

@@ -85,7 +85,7 @@ cp dist/notools /usr/local/bin/notools
 | `curl` | 纯 Nolang HTTP/1.1 客户端（`net` TCP 实现，仅 `http://`） | `notools curl http://127.0.0.1:8080/file` |
 | `ping` | 纯 Nolang ICMP 回显请求（内置 `net.ping`，默认 `-c 4`） | `notools ping -c 4 127.0.0.1` |
 
-> ⚠️ 网络命令现状：`curl` 与 `ping` 现已改为**纯 Nolang 实现**，不再委托系统命令（`process.process-system`）。`curl` 基于标准库 `net` 的 TCP 原语自行实现 HTTP/1.1 客户端（仅支持 `http://`，暂不支持 TLS/HTTPS）；`ping` 使用内置的 `net.ping` / `net.ping-count`（ICMP Echo 在纯 Nolang 中构造）。两者受标准库当前限制：DNS 解析（`dns.dns-resolve`）在当前编译器下会崩溃，因此 `curl` / `ping` 仅接受 **IP 字面量**主机（如 `127.0.0.1`），不支持域名；`curl` 亦不支持 `https://`。`ln` 是目前唯一仍委托系统命令 `ln` 的命令 —— 因为标准库 `fs` 暂无 `symlink` / `link` 内置。标准库的已知问题与待实现项见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md)。
+> ⚠️ 网络命令现状：`curl` 与 `ping` 现已改为**纯 Nolang 实现**，不再委托系统命令（`process.process-system`）。`curl` 基于标准库 `net` 的 TCP 原语自行实现 HTTP/1.1 客户端（仅支持 `http://`，暂不支持 TLS/HTTPS）；`ping` 使用内置的 `net.ping` / `net.ping-count`（ICMP Echo 在纯 Nolang 中构造）。两者受标准库当前限制：**DNS 解析（`dns.dns-resolve`）在当前编译器（v5b4f734）下会令程序编译失败**（GEP 空指针，`opt` 阶段报错），因此 `curl` / `ping` 仅接受 **IP 字面量**主机（如 `127.0.0.1`），不支持域名；`curl` 亦不支持 `https://`（标准库已有纯 Nolang `tls.no`，但 `tls-conn.connect` 同样依赖 `net-dial` 无法解析域名，且 `tls` 接收路径的 `it` 绑定存在 codegen 崩溃 B12，尚不可用）。`ln` 是目前唯一仍委托系统命令 `ln` 的命令 —— 因为标准库 `fs` 暂无 `symlink` / `link` 内置。标准库的已知问题与待实现项见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md)。
 
 ## 用法
 
