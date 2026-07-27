@@ -174,6 +174,24 @@ Error: build error: LLVM optimization failed: exit status 1
 注意：纯 `ok -> print('x' - it.to-str())` 之类把 `it` 直接用于表达式（不赋给新变量）是否也触发，尚未单独验证；但本路径「`it` 赋给新变量」必崩。
 影响：N8（HTTPS/TLS 纯 Nolang 路径）。即使 B10（DNS）修好，`c.recv` 的 `it` 绑定不过关，https 客户端仍无法落地。优先级：高（与 B8/B1 同级，直接阻塞 `curl` 主机名/https）。
 
+### B13. 返回 `str` 的函数若含循环/函数调用/字节移位，返回值被静默丢弃（07-27，哈希命令）
+函数签名 `f = (d []byte) (out str) { ... }`：只要函数体内含**循环、任何函数调用、或对字节/数组元素的移位运算**，返回的 str 到调用方一律为空（无编译错误、无运行时错误，纯静默）。只有完全展开、无调用、无循环的函数（如 `md5x` 的全内联实现）能正常返回 str。
+影响：所有「计算后返回十六进制字符串」的哈希函数、base64 解码函数。
+规避：见 W7 —— 改为 **void 函数**，在函数内部构造好 str 后直接 `print(hex)` 或 `fs.write` 输出。
+
+### B14. 旋转表达式被识别为 `@llvm.fshl` 后、作为子表达式时发射损坏 IR（07-27）
+编译器把 `(x << n) | (x >> (W-n))`（或反向）整体识别为旋转并发射 `@llvm.fshl` 内在函数。当该旋转是**更大表达式的子表达式**（如 `rotl(a,5) + f + e` 或 `rotl(w,63) ^ rotl(w,56)`）时，发射的 `fshl.i64` 操作数缺失（`%number` 未定义），LLVM `opt` 报 `use of undefined value '%number'` 拒编；i32 情况有时能编但**结果静默错误**（sha1 调度扩展实测算错）。
+规避：见 W8 —— 把旋转拆成三条独立赋值语句（`hi`/`lo`/`or`），编译器不再识别为 fshl，u32/u64 均正确。
+
+### B15. 传递导入不解析：A 导 B、B 导 C 时，入口必须显式导入 C（07-27）
+`hashutil.no` 内 `# /src/md5x.md5x`，入口只导 `# /src/hashutil.hash-cmd` 时报 `@md5x` 未定义；入口再加一行 `# /src/md5x.md5x` 即可。同理 `sha224.no → sha224x.no` 等所有二级依赖都要提升到入口文件。`main.no` 因此显式导入了 `md5x/sha224x/sha384x/hashutil` 等底层实现。
+
+### B16. 【回归·07-27 晚】内建 `printf` 编译失败：`use of undefined value '@printf'`
+2026-07-27 21:47 重建的编译器（no 仓库 HEAD d5092ba + 未提交的 `generator.go`/`stmt.go` 改动）下，最小 3 行程序 `{ printf('%s', 'hi') }` 即报 `opt: use of undefined value '@printf'`。所有使用 `printf` 的命令（echo/cat/ls/grep/wc/uniq/stat/tail/du/cut/tr/tee/ping/tree）单独或经 `main.no` 均无法编译；`print` 不受影响（哈希 8 命令全部正常）。此前（同日 21:45 之前的二进制）这些命令均可编译。**属编译器开发中的临时回归，等重新构建修复即可，与 notools 代码无关。**
+
+### B17. 目录内残留 `.no` 文件会污染构建（07-27）
+`no build entry.no` 会把 `src/` 中**未被导入**的 `.no` 文件也纳入编译（或至少符号冲突检查）：残留的 `_sha256ref.no`（与 `sha256x.no` 同名函数）曾导致 NOBUILD；大量临时调试文件（`dbg.no` 等）也会干扰。规范：调试用完立即删除，`src/` 只保留正式模块。
+
 ### G1. option-match 语法陷阱（非 bug，但极易踩）
 - 自定义 optional（如 `?tls-conn`）：匹配分支**必须**写全 `nil -> *` / `err -> *` / `ok -> { ... }`；默认分支 `->` 不覆盖 `err`/`ok`，且 `err -> {块}`/`nil -> {块}` 会被判「missing err, ok」而编译失败。即：`nil`/`err` 分支体只能是 `*`（跳过），`ok` 分支才是真正的 `{块}`。
 - 内建 optional（如 `?i64`）：可用 `ok ->` + `-> {块}`（默认式，默认覆盖 nil/err），或 `nil -> *` / `err -> *` / `ok -> n = it`（三分支式，见 B12 注意）。
@@ -230,6 +248,30 @@ rn = net.net-recv(fd, buf, 8192)      # 完整二进制中可用（B9）
 ```
 实测 `curl http://127.0.0.1:8099/file` 返回正文、`-o` 写文件、`http://host/` 优雅报错。
 
+### W7. void + print 模式（规避 B13 str 返回丢失，哈希命令采用）
+需要「计算并返回字符串」的函数改成 void，在函数内组装完直接输出：
+```nolang
+sha256x = (d []byte) {            # 无返回值
+    ...64 轮压缩...
+    sp = ' '
+    hex = sp.repeat(64)
+    ...逐字节 hex[i] = hex-chars[...]...
+    print(hex)                     # 直接打印，不返回
+}
+```
+二进制输出（base64 -d）同理：函数内 `fs.open-write('/dev/stdout') + fs.write`。void 函数内循环、调用、字节移位全部正常。
+
+### W8. 拆分旋转（规避 B14 fshl bug，SHA-1/384/512 采用）
+```nolang
+# 错误（被识别为 fshl，子表达式时坏）：t = ((a << 5) | (a >> 27)) + f + e
+# 正确（三条独立赋值）：
+r1_hi = a >> 27
+r1_lo = a << 5
+r1 = r1_hi | r1_lo
+t = r1 + f + e
+```
+ROTR 用等价 ROTL 表达：`ROTR(x,n) = ROTL(x,64-n)`（如 SHA-512 的 `ROTR(e,14)` 写成左移 50/右移 14 的拆分组合）。u64 的 `>>` 已验证为逻辑移位，SHA-512/384 无需掩码。
+
 ### W6. 仍需系统命令委托时（仅 `ln` 暂未纯 Nolang 化）
 `fs` 标准库**没有** `symlink`/`hardlink` 内置（`grep` 仅见 `unlink`），无法纯 Nolang 实现 `ln`。当前 `ln.no` 仍 `process.process-system('ln ...')` 委托系统命令——这是**已知唯一仍依赖 libc 的命令**，待标准库补充 `fs.symlink`/`fs.link`（需编译器转发 `symlink`/`link` C 函数）后改为纯 Nolang。
 
@@ -243,5 +285,7 @@ rn = net.net-recv(fd, buf, 8192)      # 完整二进制中可用（B9）
 4. **低但基础**：N8（等 B10+B12 后接 `tls.no` 实现 https）、B2/B3/B4/B6 重新验证、G1 option-match 语法文档化。
 
 ---
+
+*2026-07-27 追加：实现 md5/sha1/sha224/sha256/sha384/sha512/base64/hmac 八个哈希/编码命令（全部纯 Nolang，输出与 Python hashlib 逐字节一致）。过程中确认 B13（str 返回静默丢失）、B14（fshl 旋转子表达式损坏）、B15（传递导入不解析）、B17（目录残留文件污染构建），规避写法见 W7/W8。当晚编译器重建后出现 B16（printf 回归），阻塞完整 main.no 构建，待编译器修复。*
 
 *记录自 `notools` 项目：curl/ping 改为纯 Nolang 实现（2026-07-23，用户修复 `no` 后）。`ping` 已纯 Nolang 可用；`curl` 已纯 Nolang（net TCP），受 B8/B1 阻塞于主机名/https。`2026-07-24 复测：用户再次修复 `no`（v5b4f734，新增 `tls.no`），但主机名(B8/B10)与 https(N8/B12) 仍不可用——B8 由运行时崩溃恶化为编译期 GEP 错误，https 新增 B12（`it` 绑定 codegen 崩溃）。*

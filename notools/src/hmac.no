@@ -1,0 +1,177 @@
+// hmac.no — HMAC 消息认证码（RFC 2104）
+// 用法：hmac [-a md5|sha1|sha256|sha512] -k KEY [message...]
+//   无 message 参数时从 stdin 读取；有参数时以空格拼接为消息
+// 输出：所选算法的 HMAC 十六进制字符串
+// 注意：编译器会丢弃 `;` 分隔的第二条语句，本文件全部使用多行块
+hmac-run = () {
+    argc = args()
+    algo = 'sha256'
+    key = ''
+    skip-next = false
+    has-msg = false
+    total = 0
+    // 单遍：解析 -a / -k，同时统计消息总长度、标记是否存在 message 参数
+    i <- [2..argc): {
+        handled = false
+        {
+            skip-next == true -> {
+                skip-next = false
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                isopt = false
+                { a == '-a' -> isopt = true }
+                { a == '-k' -> isopt = true }
+                {
+                    isopt == true -> {
+                        i + 1 < argc -> {
+                            val = arg(i + 1)
+                            { a == '-a' -> algo = val }
+                            { a == '-k' -> key = val }
+                            skip-next = true
+                        }
+                    }
+                    isopt == false -> {
+                        has-msg = true
+                        total = total + a.len
+                        total = total + 1
+                    }
+                }
+            }
+        }
+    }
+    mb []byte
+    {
+        has-msg == false -> {
+            mdata = fs.read-file('/dev/stdin')
+            mb = mdata.to-bytes()
+        }
+    }
+    {
+        has-msg == true -> {
+            { total > 0 -> total = total - 1 }
+            mbuf []byte = with-len(total)
+            p = 0
+            skip2 = false
+            i <- [2..argc): {
+                handled = false
+                {
+                    skip2 == true -> {
+                        skip2 = false
+                        handled = true
+                    }
+                }
+                {
+                    handled == false -> {
+                        a = arg(i)
+                        isopt = false
+                        { a == '-a' -> isopt = true }
+                        { a == '-k' -> isopt = true }
+                        {
+                            isopt == true -> { i + 1 < argc -> skip2 = true }
+                            isopt == false -> {
+                                b = a.to-bytes()
+                                k <- [0..b.len): {
+                                    mbuf[p] = b[k]
+                                    p = p + 1
+                                }
+                                {
+                                    p < total -> {
+                                        mbuf[p] = 32
+                                        p = p + 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            mb = mbuf
+        }
+    }
+    kb = key.to-bytes()
+    hex-chars = '0123456789abcdef'
+    space = ' '
+    matched = false
+    {
+        algo == 'md5' -> {
+            matched = true
+            // 手工 HMAC-MD5：stdlib hmac-md5 返回 [16]byte 跨包损坏，改用 md5x（hex str 返回）组合
+            k0 []byte = with-len(64)
+            i <- [0..64): { k0[i] = 0 }
+            {
+                kb.len > 64 -> {
+                    kh = md5x(kb)
+                    i <- [0..16): {
+                        hi-c = kh[i * 2]
+                        lo-c = kh[i * 2 + 1]
+                        hi-v = hi-c - 48
+                        { hi-c >= 97 -> hi-v = hi-c - 87 }
+                        lo-v = lo-c - 48
+                        { lo-c >= 97 -> lo-v = lo-c - 87 }
+                        k0[i] = (hi-v << 4) | lo-v
+                    }
+                }
+                -> {
+                    i <- [0..kb.len): { k0[i] = kb[i] }
+                }
+            }
+            inner []byte = with-len(64 + mb.len)
+            i <- [0..64): { inner[i] = k0[i] ^ 54 }
+            i <- [0..mb.len): { inner[64 + i] = mb[i] }
+            ih = md5x(inner)
+            outer []byte = with-len(80)
+            i <- [0..64): { outer[i] = k0[i] ^ 92 }
+            i <- [0..16): {
+                hi-c = ih[i * 2]
+                lo-c = ih[i * 2 + 1]
+                hi-v = hi-c - 48
+                { hi-c >= 97 -> hi-v = hi-c - 87 }
+                lo-v = lo-c - 48
+                { lo-c >= 97 -> lo-v = lo-c - 87 }
+                outer[64 + i] = (hi-v << 4) | lo-v
+            }
+            oh = md5x(outer)
+            print(oh)
+        }
+        algo == 'sha1' -> {
+            matched = true
+            h = hmac.hmac-sha1(kb, mb)
+            hx = space.repeat(40)
+            i <- [0..20): {
+                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
+                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            }
+            print(hx)
+        }
+        algo == 'sha256' -> {
+            matched = true
+            h = hmac.hmac-sha256(kb, mb)
+            hx = space.repeat(64)
+            i <- [0..32): {
+                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
+                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            }
+            print(hx)
+        }
+        algo == 'sha512' -> {
+            matched = true
+            h = hmac.hmac-sha512(kb, mb)
+            hx = space.repeat(128)
+            i <- [0..64): {
+                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
+                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            }
+            print(hx)
+        }
+    }
+    {
+        matched == false -> {
+            io.errln('hmac: unsupported algorithm (use md5|sha1|sha256|sha512)')
+            os.exit(1)
+        }
+    }
+}

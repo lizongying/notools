@@ -1,0 +1,173 @@
+// base64.no — Base64 编解码（RFC 4648）
+// 用法：
+//   base64 [file...]         编码（默认），无参数时读取 stdin，输出带换行
+//   base64 -d [file...]      解码，原始字节写入 stdout（不额外加换行）
+
+base64-run = () {
+    argc = args()
+    decode = false
+    i <- [2..argc): {
+        a = arg(i)
+        {
+            a == '-d' -> decode = true
+            a == '-D' -> decode = true
+        }
+    }
+    {
+        decode == false -> base64-encode(argc)
+        -> base64-decode-files(argc)
+    }
+}
+
+base64-encode = (argc i64) {
+    {
+        argc <= 2 -> {
+            inp = fs.read-file('/dev/stdin')
+            data = inp.to-bytes()
+            enc = base64.encode-std(data)
+            print(enc)
+        }
+        -> {
+            i <- [2..argc): {
+                a = arg(i)
+                isopt = false
+                { a == '-d' -> isopt = true }
+                { a == '-D' -> isopt = true }
+                {
+                    isopt == false -> {
+                        {
+                            fs.is-file(a) == false -> {
+                                msg = 'base64: ' - a - ': No such file or directory'
+                                io.errln(msg)
+                                os.exit(1)
+                            }
+                        }
+                        inp = fs.read-file(a)
+                        data = inp.to-bytes()
+                        enc = base64.encode-std(data)
+                        print(enc)
+                    }
+                }
+            }
+        }
+    }
+}
+
+base64-decode-files = (argc i64) {
+    nfiles = 0
+    i <- [2..argc): {
+        a = arg(i)
+        isopt = false
+        { a == '-d' -> isopt = true }
+        { a == '-D' -> isopt = true }
+        { isopt == false -> nfiles = nfiles + 1 }
+    }
+    {
+        nfiles == 0 -> {
+            s = fs.read-file('/dev/stdin')
+            base64-decode-write(s)
+        }
+        -> {
+            i <- [2..argc): {
+                a = arg(i)
+                isopt = false
+                { a == '-d' -> isopt = true }
+                { a == '-D' -> isopt = true }
+                {
+                    isopt == false -> {
+                        {
+                            fs.is-file(a) == false -> {
+                                msg = 'base64: ' - a - ': No such file or directory'
+                                io.errln(msg)
+                                os.exit(1)
+                            }
+                        }
+                        s = fs.read-file(a)
+                        base64-decode-write(s)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// base64-decode-write: 手动解码并直接写 stdout（void 模式）
+// 注意：不能拆成「返回 str 的解码函数」——编译器对含循环的 str 返回函数会静默丢弃返回值
+base64-decode-write = (s str) {
+    alpha = base64.BASE64-STD
+    rev []i64 = with-len(256)
+    i <- [0..256): { rev[i] = -1 }
+    i <- [0..64): { rev[alpha[i] & 255] = i }
+    // 统计有效字符数（忽略空白与 '='）
+    n = 0
+    i <- [0..s.len): {
+        c = s[i] & 255
+        skip = false
+        { c == 10 -> skip = true }
+        { c == 13 -> skip = true }
+        { c == 32 -> skip = true }
+        { c == 9 -> skip = true }
+        { c == 61 -> skip = true }
+        {
+            skip == false -> {
+                { rev[c] >= 0 -> n = n + 1 }
+            }
+        }
+    }
+    // 末尾 '=' 个数
+    pad = 0
+    e = s.len - 1
+    {
+        e >= 0 && (s[e] & 255) == 61 -> {
+            pad = pad + 1
+            e = e - 1
+        }
+    } (e >= 0 && (s[e] & 255) == 61)
+    out-len = (3 * n - pad) / 4
+    out = ' '.repeat(out-len)
+    acc = 0
+    cnt = 0
+    p = 0
+    i <- [0..s.len): {
+        c = s[i] & 255
+        skip = false
+        { c == 10 -> skip = true }
+        { c == 13 -> skip = true }
+        { c == 32 -> skip = true }
+        { c == 9 -> skip = true }
+        { c == 61 -> skip = true }
+        {
+            skip == false -> {
+                v = rev[c]
+                { v >= 0 -> {
+                    acc = (acc << 6) | v
+                    cnt = cnt + 1
+                    { cnt == 4 -> {
+                        out[p] = (acc >> 16) & 255
+                        p = p + 1
+                        out[p] = (acc >> 8) & 255
+                        p = p + 1
+                        out[p] = acc & 255
+                        p = p + 1
+                        cnt = 0
+                        acc = 0
+                    } }
+                } }
+            }
+        }
+    }
+    // 处理末尾不足 4 字符的分组
+    { cnt == 3 -> {
+        out[p] = (acc >> 10) & 255
+        p = p + 1
+        out[p] = (acc >> 2) & 255
+        p = p + 1
+    } }
+    { cnt == 2 -> {
+        out[p] = (acc >> 4) & 255
+        p = p + 1
+    } }
+    fd = fs.open-write('/dev/stdout')
+    fs.write(fd, out, out.len)
+    fs.close(fd)
+}
