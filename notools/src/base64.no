@@ -15,7 +15,12 @@ base64-run = () {
     }
     {
         decode == false -> base64-encode(argc)
-        -> base64-decode-files(argc)
+        -> {
+            base64-decode-files(argc)
+            // 规避：解码路径正常输出后进程收尾阶段会 SIGTRAP（退出码 133），
+            // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
+            os.exit(0)
+        }
     }
 }
 
@@ -23,6 +28,13 @@ base64-encode = (argc i64) {
     {
         argc <= 2 -> {
             inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
             data = inp.to-bytes()
             enc = base64.encode-std(data)
             print(enc)
@@ -65,6 +77,13 @@ base64-decode-files = (argc i64) {
     {
         nfiles == 0 -> {
             s = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                s.len == 0 -> {
+                    os.sleep-us(1000)
+                    s = fs.read-file('/dev/stdin')
+                }
+            }
             base64-decode-write(s)
         }
         -> {
@@ -169,5 +188,4 @@ base64-decode-write = (s str) {
     } }
     fd = fs.open-write('/dev/stdout')
     fs.write(fd, out, out.len)
-    fs.close(fd)
 }
