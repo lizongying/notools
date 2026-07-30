@@ -2,50 +2,7 @@
 // Usage: curl [-s] [-o file] <url>
 //
 // Supports both http:// and https:// URLs.
-// HTTP uses net.dns-dial + net.net-send/net.net-recv (raw TCP).
-// HTTPS uses net.tls-dial + tls-conn.send/tls-conn.recv (TLS 1.2/1.3).
-// Hostname resolution is handled by dns-dial (getaddrinfo + pure-Nolang DNS fallback).
-
-; tls-fetch: send HTTP request over TLS and read response into content
-; host str: hostname
-; port i64: port number
-; req str: HTTP request
-; content str: pre-allocated response buffer
-; Returns got i64: total bytes received (-1 on error)
-tls-fetch = (host str, port i64, req str, content str) (got i64) {
-    got = -1
-    io.errln('[curl] tls-fetch start')
-    tc = net.tls-dial(host, port)
-    io.errln('[curl] tls-dial returned')
-    tc: {
-        nil -> {
-            io.errln('[curl] tls-dial nil')
-            return
-        }
-        err -> {
-            io.errln('[curl] tls-dial err')
-            return
-        }
-        ok -> {
-            io.errln('[curl] tls-dial ok')
-            c = it
-            c.send(req)
-            buf str = ' '.repeat(8192)
-            got = 0
-            r <- [0..64): {
-                ; c.recv returns ?i64; use ==nil check to avoid nested option match
-                rn = c.recv(buf, 8192)
-                rn == nil -> *
-                ; Extract value: assign ?i64 to i64 (compiler auto-extracts)
-                n i64 = rn
-                n <= 0 -> *
-                j <- [0..n): { got < 8388608 -> content[got + j] = buf[j] }
-                got = got + n
-            }
-            c.close()
-        }
-    }
-}
+// Uses std http module (http.get) which handles both HTTP and HTTPS internally.
 
 curl-run = () {
     argc = args()
@@ -67,85 +24,23 @@ curl-run = () {
         print('Usage: curl [-s] [-o file] <url>')
         os.exit(1)
     }
-    ; --- scheme check ---
-    is-http = url.starts-with('http://')
-    is-https = url.starts-with('https://')
-    is-http == false -> is-https == false -> {
-        io.errln('curl: only http:// and https:// URLs are supported')
-        os.exit(1)
-    }
-    ; --- strip scheme prefix and split hostport / path at first '/' ---
-    prefix-len = 7
-    is-https -> prefix-len = 8
-    slash = url.len
-    k <- [prefix-len..url.len): {
-        slash == url.len -> url[k] == 47 -> slash = k
-    }
-    hostport = url.slice(prefix-len, slash)
-    path = '/'
-    slash > prefix-len -> path = url.slice(slash, url.len)
-    ; --- split host / port at ':' ---
-    colon = hostport.len
-    m <- [0..hostport.len): {
-        colon == hostport.len -> hostport[m] == 58 -> colon = m
-    }
-    host = hostport
-    port = 80
-    is-https -> port = 443
-    colon < hostport.len -> {
-        host = hostport.slice(0, colon)
-        ; manual port parsing (to-i64 returns ?i64, avoid option extraction issues)
-        port-str = hostport.slice(colon + 1, hostport.len)
-        port = 0
-        p <- [0..port-str.len): {
-            pc = port-str[p]
-            pc < 48 || pc > 57 -> *
-            port = port * 10 + pc - 48
-        }
-    }
-    ; --- send request and read response ---
-    req = 'GET ' - path - ' HTTP/1.1\r\nHost: ' - host - '\r\nConnection: close\r\nUser-Agent: notools/curl\r\n\r\n'
-    content str = ' '.repeat(8388608)
-    got = 0
-
-    is-https -> {
-        got = tls-fetch(host, port, req, content)
-        got < 0 -> {
-            io.errln('curl: TLS connection failed to ' - host - ':' - port.to-str())
+    ; --- perform HTTP/HTTPS request via std http module ---
+    resp = http.get(url)
+    resp: {
+        nil -> {
+            silent == false -> io.errln('curl: request failed for ' - url)
             os.exit(1)
         }
-    }
-    is-http -> {
-        fd = net.dns-dial(host, port)
-        fd < 0 -> {
-            io.errln('curl: could not connect to ' - host - ':' - port.to-str())
-            os.exit(1)
+        -> {
+            body = it.body
+            outfile != '' -> {
+                wfd = fs.open-write(outfile)
+                fs.write(wfd, body, body.len)
+                fs.close(wfd)
+            }
+            outfile == '' -> {
+                silent == false -> print(body)
+            }
         }
-        net.net-send(fd, req, req.len)
-        buf str = ' '.repeat(8192)
-        r <- [0..64): {
-            rn = net.net-recv(fd, buf, 8192)
-            rn <= 0 -> *
-            j <- [0..rn): { got < 8388608 -> content[got + j] = buf[j] }
-            got = got + rn
-        }
-        close(fd)
-    }
-    ; --- strip headers (find \r\n\r\n) ---
-    sep = 0
-    s <- [0..got): {
-        sep == 0 -> s + 4 <= got -> {
-            content[s] == 13 -> content[s + 1] == 10 -> content[s + 2] == 13 -> content[s + 3] == 10 -> sep = s + 4
-        }
-    }
-    body = content.slice(sep, got)
-    ; --- output ---
-    outfile != '' -> {
-        wfd = fs.open-write(outfile)
-        fs.write(wfd, body, body.len)
-        fs.close(wfd)
-    }
-    outfile == '' -> {
-        silent == false -> print(body)
     }
 }
