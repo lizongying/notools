@@ -1,76 +1,91 @@
-// rm.no — rm utility
-// Removes files or directories
-// Usage: rm [-r] [-f] <path...>
-//   -r: recursively remove directories and their contents
-//   -f: force (ignore non-existent files, don't print errors)
-//   -rf: combined flags (recursive + force)
-//   path: file or directory to remove
+; rm.no — rm utility
+; Removes files or directories
+; Usage: rm [-r] [-f] <path...>
+;   -r: recursively remove directories and their contents
+;   -f: force (ignore non-existent files, don't print errors)
+;   -rf: combined flags (recursive + force)
+;   path: file or directory to remove
 
-// recursive removes a directory and all its contents.
-// path str: directory path to remove recursively
+; remove-recursive removes a directory and all its contents.
+; Uses open-dir/read-dir directly to avoid slice memory corruption.
+; Uses fs.rmdir for directories (fs.remove/unlink cannot remove dirs).
+; path str: directory path to remove recursively
 remove-recursive = (path str) {
-    names = fs.list-dir(path)
-    i <- [0..names.len): {
-        name = names[i]
-        skip = name == '.' || name == '..'
-        skip == false -> {
-            full = path - '/' - name
-            {
-                fs.is-dir(full) -> remove-recursive(full)
-                -> fs.remove(full)
+    dirp = fs.open-dir(path)
+    dirp == 0 -> return
+
+    ok = true
+    for ok == true {
+        name, ok = fs.read-dir(dirp)
+        ok -> {
+            skip = name == '.' || name == '..'
+            skip == false -> {
+                full = path - '/' - name
+                {
+                    fs.is-dir(full) -> remove-recursive(full)
+                    -> fs.remove(full)
+                }
             }
         }
     }
-    fs.remove(path)
+    fs.close-dir(dirp)
+    fs.rmdir(path)
 }
 
-// run is the main entry point for the rm utility.
-// Parses arguments and dispatches to the appropriate helper.
+; run is the main entry point for the rm utility.
+; Uses two passes: first to parse flags, second to process file args.
+; This avoids []str push (which causes memory corruption).
+; Note: All conditional branches with string concatenation use { } blocks
+; to prevent the compiler from eagerly evaluating argument expressions.
 rm-run = () {
     argc = args()
 
     recursive = false
     force = false
+    has-file = false
+    had-error = false
 
-    // Collect file arguments (non-flag args starting at index 2)
-    // arg(0)=program, arg(1)='rm', arg(2)+=arguments
-    files []str
+    ; First pass: parse flags
     i <- [2..argc): {
         a = arg(i)
-        {
-            a.starts-with('-') -> {
-                recursive = recursive || a.contains('r')
-                force = force || a.contains('f')
-            }
-            -> files.push(a)
+        a.starts-with('-') -> {
+            recursive = recursive || a.contains('r')
+            force = force || a.contains('f')
         }
     }
 
-    // No file arguments: print usage error
-    files.len == 0 -> {
-        print('Usage: rm [-r] [-f] <path...>')
-        os.exit(1)
-    }
-
-    // Process each file argument
-    i <- [0..files.len): {
-        path = files[i]
-        exists = fs.is-file(path) || fs.is-dir(path)
-        {
+    ; Second pass: process file arguments
+    i <- [2..argc): {
+        a = arg(i)
+        a.starts-with('-') == false -> {
+            has-file = true
+            is-f = fs.is-file(a)
+            is-d = fs.is-dir(a)
+            exists = is-f || is-d
             exists == false -> {
                 force == false -> {
-                    msg = 'rm: ' - path - ': No such file or directory'
+                    msg = 'rm: ' - a - ': No such file or directory'
                     io.errln(msg)
+                    had-error = true
                 }
             }
-            fs.is-dir(path) -> {
-                recursive -> remove-recursive(path)
-                -> {
-                    msg = 'rm: ' - path - ': is a directory'
-                    io.errln(msg)
+            exists -> {
+                is-d -> {
+                    recursive -> remove-recursive(a)
+                    recursive == false -> {
+                        msg = 'rm: ' - a - ': is a directory'
+                        io.errln(msg)
+                        had-error = true
+                    }
                 }
+                is-d == false -> fs.remove(a)
             }
-            -> fs.remove(path)
         }
     }
+
+    has-file == false -> {
+        io.errln('Usage: rm [-r] [-f] <path...>')
+        os.exit(1)
+    }
+    had-error -> os.exit(1)
 }

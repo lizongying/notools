@@ -12,43 +12,47 @@ ls-run = () {
     long-format = false
     dir = '.'
 
-    // Parse arguments after the 'ls' subcommand
-    // arg(0)=program, arg(1)='ls', arg(2)+=arguments
     i <- [2..argc): {
         a = arg(i)
         a.starts-with('-') -> {
             show-hidden = show-hidden || a.contains('a')
             long-format = long-format || a.contains('l')
         }
-        ! a.starts-with('-') -> dir = a
+        a.starts-with('-') == false -> dir = a
     }
 
-    // Get directory entries (includes '.' and '..')
-    names = fs.list-dir(dir)
+    dirp = fs.open-dir(dir)
+    dirp == 0 -> {
+        io.errln('ls: cannot access ' - dir)
+        os.exit(1)
+    }
 
-    i <- [0..names.len): {
-        name = names[i]
-        // Skip hidden entries (starting with '.') unless -a flag is set
-        hidden = name.starts-with('.')
-        show-hidden || ! hidden -> {
-            long-format -> {
-                // Long format: type size name
-                full = dir - '/' - name
-                type = '-'
-                fs.is-dir(full) -> type = 'd'
-                size = fs.stat-size(full)
-                raw = size.to-str()
-                pad-count = 8 - raw.len
-                pad-count > 0 -> {
-                    spaces = '        '
-                    size-str = spaces.slice(0, pad-count) - raw
+    ok = true
+    for ok == true {
+        name, ok = fs.read-dir(dirp)
+        ok -> {
+            hidden = name.starts-with('.')
+            show-hidden || hidden == false -> {
+                long-format -> {
+                    full = dir - '/' - name
+                    type = '-'
+                    fs.is-dir(full) -> type = 'd'
+                    size = fs.stat-size(full)
+                    raw = size.to-str()
+                    pad-count = 8 - raw.len
+                    pad-count > 0 -> {
+                        spaces = '        '
+                        size-str = spaces.slice(0, pad-count) - raw
+                    }
+                    pad-count <= 0 -> {
+                        size-str = raw
+                    }
+                    line = type - ' ' - size-str - ' ' - name
+                    print(line)
                 }
-                pad-count <= 0 -> {
-                    size-str = raw
-                }
-                print(type - ' ' - size-str - ' ' - name)
+                long-format == false -> print(name)
             }
-            ! long-format -> print(name)
         }
     }
+    fs.close-dir(dirp)
 }

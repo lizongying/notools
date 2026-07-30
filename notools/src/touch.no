@@ -1,116 +1,40 @@
 // touch.no — touch utility
 // Creates empty files or updates file timestamps
-// Usage: touch [-d TIMESTAMP] [-r REF_FILE] <file...>
-//   - If file does not exist: creates an empty file
-//   - If file exists: updates access and modification times
-//   -d TIMESTAMP: set timestamps to specified Unix seconds (numeric only)
-//   -r REF_FILE:  use reference file's timestamps
-//   Default (no -d/-r): update timestamps to current time
+// Usage: touch <file...>
 
 touch-run = () {
     argc = args()
 
-    has-timestamp = false
-    timestamp = 0
-    has-ref = false
-    ref-file = ''
-    files []str
-    next-is-d = false
-    next-is-r = false
+    has-file = false
 
-    ; 第一遍：解析旗標與檔案
     i <- [2..argc): {
         a = arg(i)
-        next-is-d -> {
-            ; 解析 Unix 秒時間戳（純數字）
-            timestamp = 0
-            j <- [0..a.len): {
-                c = a[j]
-                c >= '0' && c <= '9' -> timestamp = timestamp * 10 + (c - '0')
-            }
-            has-timestamp = true
-            next-is-d = false
-        }
-        next-is-r -> {
-            ref-file = a
-            has-ref = true
-            next-is-r = false
-        }
-        a == '-d' -> next-is-d = true
-        a == '-r' -> next-is-r = true
-        a.starts-with('-d') && a.len > 2 -> {
-            ts-str = a.slice(2, a.len)
-            timestamp = 0
-            j <- [0..ts-str.len): {
-                c = ts-str[j]
-                c >= '0' && c <= '9' -> timestamp = timestamp * 10 + (c - '0')
-            }
-            has-timestamp = true
-        }
-        a.starts-with('-r') && a.len > 2 -> {
-            ref-file = a.slice(2, a.len)
-            has-ref = true
-        }
-        ! a.starts-with('-') -> files.push(a)
-    }
+        a.starts-with('-') == false -> {
+            has-file = true
+            path = a
 
-    files.len == 0 -> {
-        eprint('Usage: touch [-d TIMESTAMP] [-r REF_FILE] <file...>')
-        os.exit(1)
-    }
-
-    ; 若使用 -r，取得參考檔案的 mtime
-    ref-mtime = 0
-    has-ref -> {
-        ref-mtime, ok = os.stat-mtime(ref-file)
-        ok == false -> {
-            eprint('touch: ' - ref-file - ': No such file or directory')
-            os.exit(1)
-        }
-        has-timestamp = true
-        timestamp = ref-mtime
-    }
-
-    i <- [0..files.len): {
-        path = files[i]
-
-        {
             fs.is-file(path) -> {
-                ; 檔案存在：更新時間戳
-                has-timestamp -> {
-                    ; 使用 -d 或 -r 指定的時間戳
-                    ok = fs.utime(path, timestamp, timestamp)
-                    ok == false -> {
-                        eprint('touch: ' - path - ': failed to set timestamp')
-                    }
-                }
-                -> {
-                    ; 預設：更新為當前時間
-                    ok = fs.touch-file(path)
-                    ok == false -> {
-                        eprint('touch: ' - path - ': failed to update timestamp')
-                    }
+                ok = fs.touch-file(path)
+                ok == false -> {
+                    msg = 'touch: ' - path - ': failed to update timestamp'
+                    io.errln(msg)
                 }
             }
             -> {
-                ; 檔案不存在：建立空檔案
                 fd = fs.open-write(path)
-                {
-                    fd < 0 -> {
-                        eprint('touch: ' - path - ': cannot create file')
-                    }
-                    -> {
-                        fs.close(fd)
-                        ; 若指定了時間戳，建立後設定
-                        has-timestamp -> {
-                            ok = fs.utime(path, timestamp, timestamp)
-                            ok == false -> {
-                                eprint('touch: ' - path - ': failed to set timestamp')
-                            }
-                        }
-                    }
+                fd < 0 -> {
+                    msg = 'touch: ' - path - ': cannot create file'
+                    io.errln(msg)
+                }
+                fd >= 0 -> {
+                    fs.close(fd)
                 }
             }
         }
+    }
+
+    has-file == false -> {
+        io.errln('Usage: touch <file...>')
+        os.exit(1)
     }
 }

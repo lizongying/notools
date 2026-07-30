@@ -1,12 +1,19 @@
 // cp.no — copy files and directories (pure Nolang, standard library only)
 // Usage: cp [-r] <source> <dest>
-//
-// Uses fs.read-file / fs.open-write / fs.write / fs.close and path.base().
-// The Nolang runtime's one-write-per-process limitation has been fixed, so
-// multi-source copy is now *possible*; however the optimizer currently
-// mis-compiles the in-loop basename concat, so we keep the conservative
-// single-source implementation (which still copies into a directory) and let
-// the multi-source form be enabled once the optimizer is stable.
+
+; base-name: extract filename from path (last segment after /)
+base-name = (p str) (out str) {
+    out = p
+    i = p.len - 1
+    {
+        i < 0 -> break
+        p[i] == 47 -> {
+            out = p.slice(i + 1, p.len)
+            break
+        }
+        i = i - 1
+    } (true)
+}
 
 one-file = (src str, dst str) {
     data = fs.read-file(src)
@@ -16,37 +23,69 @@ one-file = (src str, dst str) {
     fs.close(fd)
 }
 
-resolve = (src str, dir str) (out str) {
-    pp = path{ p: src }
-    bn = pp.base()
-    out = dir - '/' - bn
-}
-
 cp-run = () {
     argc = args()
-    files []str
-    i <- [2..argc): {
+
+    src = ''
+    dst = ''
+    has-src = false
+    has-dst = false
+    recursive = false
+
+    i = 2
+    for i < argc {
         a = arg(i)
-        ! a.starts-with('-') -> files.push(a)
+        a.starts-with('-') -> {
+            a.contains('r') -> recursive = true
+            i = i + 1
+            continue
+        }
+        has-src == false -> {
+            src = a
+            has-src = true
+            i = i + 1
+            continue
+        }
+        has-dst == false -> {
+            dst = a
+            has-dst = true
+            i = i + 1
+            continue
+        }
+        i = i + 1
     }
-    files.len < 2 -> {
+
+    has-src == false -> {
+        io.errln('cp: missing file operand')
+        os.exit(1)
+    }
+    has-dst == false -> {
         io.errln('cp: missing destination file operand')
         os.exit(1)
     }
-    nsrc = files.len - 1
-    nsrc > 1 -> {
-        io.errln('cp: multiple-source copy is not supported yet (optimizer mis-compiles the in-loop basename concat)')
-        os.exit(1)
-    }
-    src = files[0]
-    dst = files[1]
+
     exists = fs.is-file(src) || fs.is-dir(src)
     exists == false -> {
         io.errln('cp: ' - src - ': No such file or directory')
         os.exit(1)
     }
+
     target = dst
-    fs.is-dir(dst) -> target = resolve(src, dst)
+    fs.is-dir(dst) -> {
+        ; Inline base-name: find last '/' in src
+        bn = src
+        si = src.len - 1
+        {
+            si < 0 -> break
+            src[si] == 47 -> {
+                bn = src.slice(si + 1, src.len)
+                break
+            }
+            si = si - 1
+        } (true)
+        target = dst - '/' - bn
+    }
+
     is-d = fs.is-dir(src)
     is-d == false -> one-file(src, target)
 }
