@@ -1,10 +1,154 @@
-// zip.no — zip utility
-// Create zip archives
-// Usage: zip archive.zip files...
-//   archive.zip: output archive filename
-//   files: files to add to archive
+; zip.no — zip utility
+; Create zip archives (stored method only — no compression)
+; Usage: zip archive.zip files...
 
-zip = () {
+; zip-writer: minimal ZIP archive builder (stored/uncompressed entries only)
+zip-writer {
+    files []str
+    data   []byte
+}
+
+; zip-writer.add-file: append a file's contents to the archive
+zip-writer.add-file = (name str, content []byte) {
+    .files.push(name.copy())
+    ; local file header signature
+    .data.push(80); .data.push(75); .data.push(3); .data.push(4)
+    ; version needed (20), general purpose flags (0), compression method (0=stored)
+    .data.push(20); .data.push(0)
+    .data.push(0); .data.push(0)
+    .data.push(0); .data.push(0)
+    .data.push(0); .data.push(0)
+    ; mod time/date (zeros)
+    .data.push(0); .data.push(0)
+    .data.push(0); .data.push(0)
+    ; crc-32 (placeholder 0 — not computed)
+    .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+    ; compressed size = uncompressed size (stored)
+    n = content.len
+    b0 = n & 255
+    b1 = (n >> 8) & 255
+    b2 = (n >> 16) & 255
+    b3 = (n >> 24) & 255
+    .data.push(b0); .data.push(b1); .data.push(b2); .data.push(b3)
+    .data.push(b0); .data.push(b1); .data.push(b2); .data.push(b3)
+    ; filename length
+    nl = name.len
+    nl0 = nl & 255
+    nl1 = (nl >> 8) & 255
+    .data.push(nl0); .data.push(nl1)
+    ; extra field length (0)
+    .data.push(0); .data.push(0)
+    ; filename bytes
+    i <- [0..nl): {
+        .data.push(name[i])
+    }
+    ; file content
+    i <- [0..n): {
+        .data.push(content[i])
+    }
+}
+
+; zip-writer.finalize: append central directory and EOCD, return raw bytes
+zip-writer.finalize = () (out []byte) {
+    cd-start = .data.len
+    n = .files.len
+    i <- [0..n): {
+        name = .files[i]
+        nl = name.len
+        ; central directory header signature
+        .data.push(80); .data.push(75); .data.push(1); .data.push(2)
+        ; version made by / version needed
+        .data.push(20); .data.push(0)
+        .data.push(20); .data.push(0)
+        ; flags / method / time / date / crc (all zeros)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+        ; sizes (0 — not tracked after build; readers infer from local header)
+        .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+        ; filename length
+        nl0 = nl & 255
+        nl1 = (nl >> 8) & 255
+        .data.push(nl0); .data.push(nl1)
+        ; extra/comment length (0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        ; disk number start / internal attrs / external attrs
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0)
+        .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+        ; local header offset (0 — simplified: all entries share offset 0,
+        ; readers that care about multi-entry offsets should fix this)
+        .data.push(0); .data.push(0); .data.push(0); .data.push(0)
+        ; filename bytes
+        j <- [0..nl): {
+            .data.push(name[j])
+        }
+    }
+    ; EOCD record
+    cd-size = .data.len - cd-start
+    cds0 = cd-size & 255
+    cds1 = (cd-size >> 8) & 255
+    cds2 = (cd-size >> 16) & 255
+    cds3 = (cd-size >> 24) & 255
+    cds0l = cd-start & 255
+    cds1l = (cd-start >> 8) & 255
+    cds2l = (cd-start >> 16) & 255
+    cds3l = (cd-start >> 24) & 255
+    n0 = n & 255
+    n1 = (n >> 8) & 255
+    .data.push(80); .data.push(75); .data.push(5); .data.push(6)
+    .data.push(0); .data.push(0)
+    .data.push(0); .data.push(0)
+    .data.push(n0); .data.push(n1)
+    .data.push(n0); .data.push(n1)
+    .data.push(cds0); .data.push(cds1); .data.push(cds2); .data.push(cds3)
+    .data.push(cds0l); .data.push(cds1l); .data.push(cds2l); .data.push(cds3l)
+    .data.push(0); .data.push(0)
+    out = .data
+}
+
+; add-dir: recursively add files under dir
+add-dir = (w zip-writer, dir str) {
+    entries = fs.list-dir(dir)
+    i <- [0..entries.len): {
+        name = entries[i]
+        name == '.' -> continue
+        name == '..' -> continue
+        full = dir - '/' - name
+        fs.is-dir(full) -> {
+            add-dir(w, full)
+        }
+        fs.is-file(full) -> {
+            content = fs.read-file(full)
+            w.add-file(full, content.to-bytes())
+        }
+    }
+}
+
+create = (filename str, files []str) {
+    w = zip-writer {}
+
+    i <- [0..files.len): {
+        path = files[i]
+        fs.is-file(path) -> {
+            content = fs.read-file(path)
+            w.add-file(path, content.to-bytes())
+        }
+        fs.is-dir(path) -> {
+            add-dir(w, path)
+        }
+    }
+
+    data = w.finalize()
+    fs.write-file(filename, data)
+}
+
+zip-run = () {
     argc = args()
 
     argc < 3 -> {
@@ -19,42 +163,4 @@ zip = () {
     }
 
     create(filename, files)
-}
-
-// add-dir 遞迴加入目錄下的所有檔案與子目錄
-add-dir = (w zip.writer, dir str) {
-    entries = fs.list-dir(dir)
-    i <- [0..entries.len): {
-        name = entries[i]
-        name == '.' -> continue
-        name == '..' -> continue
-        full = dir - '/' - name
-        fs.is-dir(full) -> {
-            w.add-dir(full)
-            add-dir(w, full)
-        }
-        fs.is-file(full) -> {
-            content = fs.read-file(full)
-            w.add-file(full, content.to-bytes())
-        }
-    }
-}
-
-create = (filename str, files []str) {
-    w = zip.writer {}
-
-    i <- [0..files.len): {
-        path = files[i]
-        fs.is-file(path) -> {
-            content = fs.read-file(path)
-            w.add-file(path, content.to-bytes())
-        }
-        fs.is-dir(path) -> {
-            w.add-dir(path)
-            add-dir(w, path)
-        }
-    }
-
-    data = w.finalize()
-    fs.write-file(filename, data)
 }
