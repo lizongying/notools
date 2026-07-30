@@ -1,91 +1,206 @@
-// unzip.no — unzip utility
-// List and extract zip archives
-// Usage: unzip [-l] archive.zip [files...]
-//   -l: list contents only
-//   archive.zip: zip archive to extract
-//   files: optional files to extract
+; unzip.no — unzip utility
+; List and extract zip archives
+; Usage: unzip [-l] archive.zip [files...]
+;   -l: list contents only
+;
+; NOTE: 不使用 zip 标准库结构体方法，也不使用模块级函数传递 []byte 参数。
+;       Nolang 的 slice 所有权 bug 会导致传递 []byte 给函数时数据损坏。
+;       使用自定义结构体方法，直接通过 .data 访问字节，避免传递 slice。
+
+unzip-arch {
+    data []byte
+}
+
+; read-u32le: 读取 .data[off..off+4] 的小端序 u32
+unzip-arch.read-u32le = (off i64) (v i64) {
+    off1 = off + 1
+    off2 = off + 2
+    off3 = off + 3
+    b0 = .data[off] & 255
+    b1 = .data[off1] & 255
+    b2 = .data[off2] & 255
+    b3 = .data[off3] & 255
+    v = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+; read-u16le: 读取 .data[off..off+2] 的小端序 u16
+unzip-arch.read-u16le = (off i64) (v i64) {
+    off1 = off + 1
+    b0 = .data[off] & 255
+    b1 = .data[off1] & 255
+    v = b0 | (b1 << 8)
+}
+
+; find-eocd: 从尾部搜索 EOCD 签名 (0x06054b50)
+unzip-arch.find-eocd = () (off i64) {
+    off = -1
+    n = len(.data)
+    n < 22 -> return
+    i = n - 22
+    for i >= 0 {
+        b0 = .data[i] & 255
+        b1 = .data[i + 1] & 255
+        b2 = .data[i + 2] & 255
+        b3 = .data[i + 3] & 255
+        sig = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        sig == 101010256 -> {
+            off = i
+            return
+        }
+        i = i - 1
+    }
+}
+
+; entry-offset: 计算第 idx 个 CD 条目的偏移
+unzip-arch.entry-offset = (idx i64) (off i64) {
+    off = 0
+    eocd = .find-eocd()
+    eocd < 0 -> return
+    off = .read-u32le(eocd + 16)
+    j <- [0..idx): {
+        name-len = .read-u16le(off + 28)
+        extra-len = .read-u16le(off + 30)
+        comment-len = .read-u16le(off + 32)
+        off = off + 46 + name-len + extra-len + comment-len
+    }
+}
+
+; read-name: 读取第 idx 个条目的档名
+unzip-arch.read-name = (idx i64) (name str) {
+    off = .entry-offset(idx)
+    name-len = .read-u16le(off + 28)
+    name = ''
+    j <- [0..name-len): {
+        name = name - number.char-to-str(.data[off + 46 + j] & 255)
+    }
+}
+
+; read-size: 读取第 idx 个条目的原始大小
+unzip-arch.read-size = (idx i64) (sz i64) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+}
+
+; read-method: 读取第 idx 个条目的压缩方式
+unzip-arch.read-method = (idx i64) (method i64) {
+    off = .entry-offset(idx)
+    method = .read-u16le(off + 10)
+}
+
+; total: 读取条目总数
+unzip-arch.total = () (total i64) {
+    total = 0
+    eocd = .find-eocd()
+    eocd < 0 -> return
+    total = .read-u16le(eocd + 8)
+}
+
+; extract-stored: 提取 method 0 (stored) 条目，直接写文件
+unzip-arch.extract-stored = (idx i64, out-name str) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+    local-off = .read-u32le(off + 42)
+    name-len2 = .read-u16le(local-off + 26)
+    extra-len2 = .read-u16le(local-off + 28)
+    data-off = local-off + 30 + name-len2 + extra-len2
+
+    out []byte = with-len(sz)
+    i <- [0..sz): {
+        out[i] = .data[data-off + i]
+    }
+    fs.write-file(out-name, out)
+}
+
+; extract-deflate: 提取 method 8 (deflate) 条目，解压后写文件
+unzip-arch.extract-deflate = (idx i64, out-name str) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+    csz = .read-u32le(off + 20)
+    local-off = .read-u32le(off + 42)
+    name-len2 = .read-u16le(local-off + 26)
+    extra-len2 = .read-u16le(local-off + 28)
+    data-off = local-off + 30 + name-len2 + extra-len2
+
+    compressed []byte = with-len(csz)
+    i <- [0..csz): {
+        compressed[i] = .data[data-off + i]
+    }
+    decompressed = gzip.inflate-decompress(compressed, sz)
+    fs.write-file(out-name, decompressed)
+}
+
+; make-parent-dirs: 创建父目录
+make-parent-dirs = (name str) {
+    n = name.len
+    i <- [1..n): {
+        name[i] == '/' -> {
+            dir = name.slice(0, i)
+            dir.len > 0 -> {
+                fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+            }
+        }
+    }
+}
 
 unzip-run = () {
     argc = args()
 
     list-only = false
     filename = ''
-    files []str
 
     i <- [2..argc): {
         a = arg(i)
         a == '-l' -> list-only = true
         ! a.starts-with('-') -> {
-            is-filename = filename.len == 0
-            is-filename -> filename = a
-            ! is-filename -> files.push(a)
+            filename.len == 0 -> filename = a
         }
     }
 
     filename.len == 0 -> {
-        print('unzip: no archive specified')
+        io.errln('unzip: no archive specified')
+        os.exit(1)
+    }
+
+    ! fs.is-file(filename) -> {
+        io.errln('unzip: ' - filename - ': No such file or directory')
+        os.exit(1)
+    }
+
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
+
+    archive = unzip-arch{
+        data: data
+    }
+
+    n = archive.total()
+    n == 0 -> {
+        io.errln('unzip: ' - filename - ': not a valid zip archive')
         os.exit(1)
     }
 
     list-only -> {
-        list(filename)
-    }
-    -> {
-        extract(filename, files)
-    }
-}
-
-list = (filename str) {
-    ! fs.is-file(filename) -> {
-        print('unzip: ' - filename - ': No such file or directory')
-        os.exit(1)
-    }
-    raw = fs.read-file(filename)
-    data = raw.to-bytes()
-
-    archive = zip{
-        data: data
-    }
-
-    n = archive.count()
-    i <- [0..n): {
-        name = archive.name(i)
-        sz = archive.size(i)
-        method = archive.method(i)
-        line = name - '  ' - sz.to-str() - '  ' - method.to-str()
-        print(line)
-    }
-}
-
-extract = (filename str, wanted []str) {
-    ! fs.is-file(filename) -> {
-        print('unzip: ' - filename - ': No such file or directory')
-        os.exit(1)
-    }
-    raw = fs.read-file(filename)
-    data = raw.to-bytes()
-
-    archive = zip{
-        data: data
-    }
-
-    n = archive.count()
-    i <- [0..n): {
-        name = archive.name(i)
-        wanted.len > 0 -> {
-            found = false
-            j <- [0..wanted.len): {
-                wanted[j] == name -> found = true
-            }
-            ! found -> {
-                continue
-            }
+        i <- [0..n): {
+            name = archive.read-name(i)
+            sz = archive.read-size(i)
+            method = archive.read-method(i)
+            io.outln(name - '  ' - sz.to-str() - '  ' - method.to-str())
         }
+        os.exit(0)
+    }
+
+    ; Extract mode
+    i <- [0..n): {
+        name = archive.read-name(i)
+        method = archive.read-method(i)
         is-dir = name.ends-with('/')
         is-dir -> os.mkdir(name, 493)
         ! is-dir -> {
-            content = archive.extract(i)
-            fs.write-file(name, content)
+            make-parent-dirs(name)
+            method == 0 -> archive.extract-stored(i, name)
+            method == 8 -> archive.extract-deflate(i, name)
         }
     }
+    ; 规避：[]byte 局部变量析构阶段 SIGTRAP
+    os.exit(0)
 }

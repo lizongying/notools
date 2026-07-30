@@ -6,106 +6,78 @@
 base64-run = () {
     argc = args()
     decode = false
+    files []str
     i <- [2..argc): {
         a = arg(i)
         {
             a == '-d' -> decode = true
             a == '-D' -> decode = true
+            ! a.starts-with('-') -> files.push(a)
         }
     }
-    {
-        decode == false -> encode(argc)
-        -> {
-            decode-files(argc)
-            // 规避：解码路径正常输出后进程收尾阶段会 SIGTRAP（退出码 133），
-            // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
-            os.exit(0)
-        }
+    decode == false -> encode-cmd(files)
+    decode == true -> {
+        decode-cmd(files)
+        // 规避：解码路径正常输出后进程收尾阶段会 SIGTRAP（退出码 133），
+        // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
+        os.exit(0)
     }
 }
 
-encode = (argc i64) {
-    {
-        argc <= 2 -> {
-            inp = fs.read-file('/dev/stdin')
-            // stdin 管道 stat 競態讀空（B18）重試
-            t <- [0..40): {
-                inp.len == 0 -> {
-                    os.sleep-us(1000)
-                    inp = fs.read-file('/dev/stdin')
-                }
+// encode-cmd: 编码模式
+encode-cmd = (files []str) {
+    files.len == 0 -> {
+        inp = fs.read-file('/dev/stdin')
+        // stdin 管道 stat 競態讀空（B18）重試
+        t <- [0..40): {
+            inp.len == 0 -> {
+                os.sleep-us(1000)
+                inp = fs.read-file('/dev/stdin')
             }
+        }
+        inp.len == 0 -> os.exit(0)
+        data = inp.to-bytes()
+        enc = base64.encode-std(data)
+        print(enc)
+        os.exit(0)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            f = files[fi]
+            fs.is-file(f) == false -> {
+                io.errln('base64: ' - f - ': No such file or directory')
+                os.exit(1)
+            }
+            inp = fs.read-file(f)
             data = inp.to-bytes()
             enc = base64.encode-std(data)
             print(enc)
         }
-        -> {
-            i <- [2..argc): {
-                a = arg(i)
-                isopt = false
-                { a == '-d' -> isopt = true }
-                { a == '-D' -> isopt = true }
-                {
-                    isopt == false -> {
-                        {
-                            fs.is-file(a) == false -> {
-                                msg = 'base64: ' - a - ': No such file or directory'
-                                io.errln(msg)
-                                os.exit(1)
-                            }
-                        }
-                        inp = fs.read-file(a)
-                        data = inp.to-bytes()
-                        enc = base64.encode-std(data)
-                        print(enc)
-                    }
-                }
-            }
-        }
     }
 }
 
-decode-files = (argc i64) {
-    nfiles = 0
-    i <- [2..argc): {
-        a = arg(i)
-        isopt = false
-        { a == '-d' -> isopt = true }
-        { a == '-D' -> isopt = true }
-        { isopt == false -> nfiles = nfiles + 1 }
-    }
-    {
-        nfiles == 0 -> {
-            s = fs.read-file('/dev/stdin')
-            // stdin 管道 stat 競態讀空（B18）重試
-            t <- [0..40): {
-                s.len == 0 -> {
-                    os.sleep-us(1000)
-                    s = fs.read-file('/dev/stdin')
-                }
+// decode-cmd: 解码模式
+decode-cmd = (files []str) {
+    files.len == 0 -> {
+        s = fs.read-file('/dev/stdin')
+        // stdin 管道 stat 競態讀空（B18）重試
+        t <- [0..40): {
+            s.len == 0 -> {
+                os.sleep-us(1000)
+                s = fs.read-file('/dev/stdin')
             }
-            decode-write(s)
         }
-        -> {
-            i <- [2..argc): {
-                a = arg(i)
-                isopt = false
-                { a == '-d' -> isopt = true }
-                { a == '-D' -> isopt = true }
-                {
-                    isopt == false -> {
-                        {
-                            fs.is-file(a) == false -> {
-                                msg = 'base64: ' - a - ': No such file or directory'
-                                io.errln(msg)
-                                os.exit(1)
-                            }
-                        }
-                        s = fs.read-file(a)
-                        decode-write(s)
-                    }
-                }
+        decode-write(s)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            f = files[fi]
+            fs.is-file(f) == false -> {
+                io.errln('base64: ' - f - ': No such file or directory')
+                os.exit(1)
             }
+            s = fs.read-file(f)
+            decode-write(s)
         }
     }
 }

@@ -7,6 +7,230 @@
 //   -f: archive filename
 //   -z: use gzip compression
 
+TAR-BLOCK = 512
+
+; tar-write-octal: write octal number into data at offset
+tar-write-octal = (data []byte, off i64, width i64, val i64) {
+    ; fill with spaces
+    i <- [0..width): {
+        data[off + i] = 32
+    }
+    ; fill digits from right to left
+    v = val
+    pos = width - 1
+    {
+        data[off + pos] = 48 + (v % 8)
+        v = v / 8
+        pos = pos - 1
+    } (v > 0)
+    data[off + width] = 0
+}
+
+; tar-write-header: write a 512-byte tar header into data
+tar-write-header = (data []byte, name str, typ i64, sz i64) {
+    start = data.len
+    ; push 512 zeros for the header
+    i <- [0..TAR-BLOCK): {
+        data.push(0)
+    }
+    ; name (offset 0, up to 100 bytes)
+    nl = name.len
+    nl > 100 -> nl = 100
+    i <- [0..nl): {
+        data[start + i] = name[i]
+    }
+    ; mode (offset 100, "0000644\0")
+    tar-write-octal(data, start + 100, 7, 420)
+    ; uid (offset 108)
+    tar-write-octal(data, start + 108, 7, 0)
+    ; gid (offset 116)
+    tar-write-octal(data, start + 116, 7, 0)
+    ; size (offset 124, 11 octal digits)
+    tar-write-octal(data, start + 124, 11, sz)
+    ; mtime (offset 136)
+    tar-write-octal(data, start + 136, 11, 0)
+    ; type (offset 156)
+    data[start + 156] = typ
+    ; ustar magic (offset 257)
+    data[start + 257] = 117
+    data[start + 258] = 115
+    data[start + 259] = 116
+    data[start + 260] = 97
+    data[start + 261] = 114
+    data[start + 262] = 0
+    ; checksum: fill with spaces first
+    i <- [0..8): {
+        data[start + 148 + i] = 32
+    }
+    ; compute checksum
+    checksum = 0
+    i <- [0..TAR-BLOCK): {
+        checksum = checksum + (data[start + i] & 255)
+    }
+    ; write checksum (6 octal digits + null + space)
+    tar-write-octal(data, start + 148, 6, checksum)
+    data[start + 154] = 0
+    data[start + 155] = 32
+}
+
+; tar-add-file: write header + content + padding into data
+tar-add-file = (data []byte, name str, content str) {
+    sz = content.len
+    tar-write-header(data, name, 48, sz)
+    ; write content
+    i <- [0..sz): {
+        data.push(content[i])
+    }
+    ; pad to 512 boundary
+    rem = sz % TAR-BLOCK
+    rem > 0 -> {
+        pad = TAR-BLOCK - rem
+        j <- [0..pad): {
+            data.push(0)
+        }
+    }
+}
+
+; tar-add-dir: write directory header into data
+tar-add-dir = (data []byte, name str) {
+    dname = name
+    ! dname.ends-with('/') -> dname = dname - '/'
+    tar-write-header(data, dname, 53, 0)
+}
+
+// collect: recursively collect all files and dirs under path
+collect = (path str, out []str) {
+    entries = fs.list-dir(path)
+    i <- [0..entries.len): {
+        name = entries[i]
+        name == '.' -> continue
+        name == '..' -> continue
+        full = path - '/' - name
+        fs.is-dir(full) -> {
+            out.push(full)
+            collect(full, out)
+        }
+        fs.is-file(full) -> out.push(full)
+    }
+}
+
+do-create = (filename str, files []str, use-gzip bool) {
+    // collect all files and dirs
+    all []str
+    i <- [0..files.len): {
+        path = files[i]
+        fs.is-dir(path) -> {
+            all.push(path)
+            collect(path, all)
+        }
+        fs.is-file(path) -> all.push(path)
+    }
+
+    // build tar archive as local []byte
+    data []byte
+    i <- [0..all.len): {
+        path = all[i]
+        fs.is-file(path) -> {
+            content = fs.read-file(path)
+            tar-add-file(data, path, content)
+        }
+        fs.is-dir(path) -> tar-add-dir(data, path)
+    }
+
+    // end markers: two 512-byte zero blocks
+    i <- [0..TAR-BLOCK * 2): {
+        data.push(0)
+    }
+
+    use-gzip -> {
+        compressed = gzip.gzip-compress(data)
+        fs.write-file(filename, compressed)
+    }
+    ! use-gzip -> fs.write-file(filename, data)
+    ; 规避：[]byte 局部变量析构阶段 SIGTRAP（退出码 133）
+    os.exit(0)
+}
+
+; is-skip-entry: 判断是否跳过此条目（PAX header / AppleDouble）
+is-skip-entry = (name str, typ str) (skip bool) {
+    skip = false
+    typ == 'unknown' -> skip = true
+    skip -> return
+    ; AppleDouble files (._ prefix)
+    name.starts-with('._') -> skip = true
+    name.contains('/._') -> skip = true
+}
+
+; make-parent-dirs: 为文件路径创建父目录
+tar-make-parent-dirs = (name str) {
+    n = name.len
+    i <- [1..n): {
+        name[i] == '/' -> {
+            dir = name.slice(0, i)
+            dir.len > 0 -> {
+                fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+            }
+        }
+    }
+}
+
+do-extract = (filename str, use-gzip bool) {
+    ! fs.is-file(filename) -> {
+        print('tar: ' - filename - ': No such file or directory')
+        os.exit(1)
+    }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
+
+    use-gzip -> data = gzip.gzip-decompress(data)
+    archive = tar{
+        data: data
+    }
+
+    n = archive.count()
+    i <- [0..n): {
+        name = archive.name(i)
+        typ = archive.type(i)
+        skip = is-skip-entry(name, typ)
+        skip -> continue
+        typ == 'dir' -> os.mkdir(name, 493)
+        typ == 'file' -> {
+            tar-make-parent-dirs(name)
+            ; read content directly from data (avoid archive.read which returns []byte)
+            sz = archive.size(i)
+            off = archive.offset(i)
+            content []byte = with-len(sz)
+            j <- [0..sz): {
+                content[j] = data[off + TAR-BLOCK + j]
+            }
+            fs.write-file(name, content)
+        }
+    }
+}
+
+do-list = (filename str, use-gzip bool) {
+    ! fs.is-file(filename) -> {
+        print('tar: ' - filename - ': No such file or directory')
+        os.exit(1)
+    }
+    raw = fs.read-file(filename)
+    data = raw.to-bytes()
+
+    use-gzip -> data = gzip.gzip-decompress(data)
+    archive = tar{
+        data: data
+    }
+
+    n = archive.count()
+    i <- [0..n): {
+        name = archive.name(i)
+        typ = archive.type(i)
+        skip = is-skip-entry(name, typ)
+        skip -> continue
+        print(name)
+    }
+}
+
 tar-run = () {
     argc = args()
 
@@ -37,7 +261,7 @@ tar-run = () {
                 }
             }
         }
-        files.push(a)
+        ! a.starts-with('-') -> files.push(a)
     }
 
     filename.len == 0 -> {
@@ -52,113 +276,7 @@ tar-run = () {
         print('tar: must specify one of -c, -x, -t')
         os.exit(1)
     }
-}
 
-// collect 遞迴收集目錄下的所有檔案與子目錄路徑
-collect = (path str, out []str) {
-    entries = fs.list-dir(path)
-    i <- [0..entries.len): {
-        name = entries[i]
-        name == '.' -> continue
-        name == '..' -> continue
-        full = path - '/' - name
-        fs.is-dir(full) -> {
-            out.push(full)
-            collect(full, out)
-        }
-        fs.is-file(full) -> out.push(full)
-    }
-}
-
-do-create = (filename str, files []str, use-gzip bool) {
-    // 收集所有檔案與目錄路徑
-    all []str
-    i <- [0..files.len): {
-        path = files[i]
-        fs.is-dir(path) -> {
-            all.push(path)
-            collect(path, all)
-        }
-        fs.is-file(path) -> all.push(path)
-    }
-
-    // 計算總大小以預分配緩衝區
-    total = 1024
-    i <- [0..all.len): {
-        path = all[i]
-        fs.is-file(path) -> {
-            sz = fs.stat-size(path)
-            blocks = (sz + 511) / 512
-            total = total + 512 + blocks * 512
-        }
-        fs.is-dir(path) -> total = total + 512
-    }
-
-    // 構建歸檔
-    builder = tar-builder{}
-    builder.pre-alloc(total)
-    i <- [0..all.len): {
-        path = all[i]
-        fs.is-file(path) -> {
-            content = fs.read-file(path)
-            builder.add-file(path, content.to-bytes())
-        }
-        fs.is-dir(path) -> builder.add-dir(path)
-    }
-
-    archive = builder.finish()
-
-    use-gzip -> {
-        compressed = gzip.gzip-compress(archive.data)
-        fs.write-file(filename, compressed)
-    }
-    ! use-gzip -> fs.write-file(filename, archive.data)
-}
-
-do-extract = (filename str, use-gzip bool) {
-    ! fs.is-file(filename) -> {
-        print('tar: ' - filename - ': No such file or directory')
-        os.exit(1)
-    }
-    raw = fs.read-file(filename)
-    data = raw.to-bytes()
-
-    use-gzip -> data = gzip.gzip-decompress(data)
-    archive = tar{
-        data: data
-    }
-
-    n = archive.count()
-    i <- [0..n): {
-        name = archive.name(i)
-        typ = archive.type(i)
-        typ == 'dir' -> os.mkdir(name, 493)
-        typ == 'file' -> {
-            content = archive.read(i)
-            fs.write-file(name, content)
-        }
-    }
-}
-
-do-list = (filename str, use-gzip bool) {
-    ! fs.is-file(filename) -> {
-        print('tar: ' - filename - ': No such file or directory')
-        os.exit(1)
-    }
-    raw = fs.read-file(filename)
-    data = raw.to-bytes()
-
-    use-gzip -> data = gzip.gzip-decompress(data)
-    archive = tar{
-        data: data
-    }
-
-    n = archive.count()
-    i <- [0..n): {
-        name = archive.name(i)
-        typ = archive.type(i)
-        sz = archive.size(i)
-        line = name - '  ' - typ - '  ' - sz.to-str()
-        print(line)
-    }
+    ; 规避：[]byte 析构阶段 SIGTRAP（退出码 133）
+    os.exit(0)
 }

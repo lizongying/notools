@@ -7,24 +7,34 @@
 ; to the undefined []byte.push builtin and mutates a copy rather than the
 ; original field). Local-variable push works correctly.
 
-zw-files []str
-zw-data   []i64
+zw-files   []str
+zw-data    []byte
+zw-sizes   []i64
+zw-offsets []i64
+zw-crcs    []i64
 
 ; add-file: append a file's contents to the archive
 add-file = (name str, content str) {
     zw-files.push(name.copy())
+    zw-offsets.push(zw-data.len)
+    n = content.len
+    zw-sizes.push(n)
+    ; compute CRC-32
+    content-bytes = content.to-bytes()
+    crc = crc-32.crc-32(content-bytes, n)
+    zw-crcs.push(crc)
     ; local file header signature
     zw-data.push(80)
     zw-data.push(75)
     zw-data.push(3)
     zw-data.push(4)
-    ; version needed (20), general purpose flags (0), compression method (0=stored)
+    ; version needed (20)
     zw-data.push(20)
     zw-data.push(0)
+    ; general purpose flags (0)
     zw-data.push(0)
     zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
+    ; compression method (0=stored)
     zw-data.push(0)
     zw-data.push(0)
     ; mod time/date (zeros)
@@ -32,13 +42,12 @@ add-file = (name str, content str) {
     zw-data.push(0)
     zw-data.push(0)
     zw-data.push(0)
-    ; crc-32 (placeholder 0 — not computed)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
+    ; crc-32
+    zw-data.push(crc & 255)
+    zw-data.push((crc >> 8) & 255)
+    zw-data.push((crc >> 16) & 255)
+    zw-data.push((crc >> 24) & 255)
     ; compressed size = uncompressed size (stored)
-    n = content.len
     b0 = n & 255
     b1 = (n >> 8) & 255
     b2 = (n >> 16) & 255
@@ -70,13 +79,16 @@ add-file = (name str, content str) {
     }
 }
 
-; finalize: append central directory and EOCD, return raw bytes
-finalize = () (out []i64) {
+; finalize: append central directory and EOCD to zw-data
+finalize = () {
     cd-start = zw-data.len
     n = zw-files.len
     i <- [0..n): {
         name = zw-files[i]
         nl = name.len
+        sz = zw-sizes[i]
+        off = zw-offsets[i]
+        crc = zw-crcs[i]
         ; central directory header signature
         zw-data.push(80)
         zw-data.push(75)
@@ -87,32 +99,31 @@ finalize = () (out []i64) {
         zw-data.push(0)
         zw-data.push(20)
         zw-data.push(0)
-        ; flags / method / time / date / crc (all zeros)
+        ; flags (0) / method (0=stored)
         zw-data.push(0)
         zw-data.push(0)
         zw-data.push(0)
         zw-data.push(0)
+        ; mod time/date (zeros)
         zw-data.push(0)
         zw-data.push(0)
         zw-data.push(0)
         zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        ; sizes (0 — not tracked after build; readers infer from local header)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ; crc-32
+        zw-data.push(crc & 255)
+        zw-data.push((crc >> 8) & 255)
+        zw-data.push((crc >> 16) & 255)
+        zw-data.push((crc >> 24) & 255)
+        ; compressed size
+        zw-data.push(sz & 255)
+        zw-data.push((sz >> 8) & 255)
+        zw-data.push((sz >> 16) & 255)
+        zw-data.push((sz >> 24) & 255)
+        ; uncompressed size
+        zw-data.push(sz & 255)
+        zw-data.push((sz >> 8) & 255)
+        zw-data.push((sz >> 16) & 255)
+        zw-data.push((sz >> 24) & 255)
         ; filename length
         nl0 = nl & 255
         nl1 = (nl >> 8) & 255
@@ -132,12 +143,11 @@ finalize = () (out []i64) {
         zw-data.push(0)
         zw-data.push(0)
         zw-data.push(0)
-        ; local header offset (0 — simplified: all entries share offset 0,
-        ; readers that care about multi-entry offsets should fix this)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ; local header offset
+        zw-data.push(off & 255)
+        zw-data.push((off >> 8) & 255)
+        zw-data.push((off >> 16) & 255)
+        zw-data.push((off >> 24) & 255)
         ; filename bytes
         j <- [0..nl): {
             zw-data.push(name[j])
@@ -177,7 +187,6 @@ finalize = () (out []i64) {
     zw-data.push(cds3l)
     zw-data.push(0)
     zw-data.push(0)
-    out = zw-data
 }
 
 ; add-dir: recursively add files under dir
@@ -210,17 +219,8 @@ create = (filename str, files []str) {
         }
     }
 
-    data = finalize()
-    fd = fs.open-write(filename)
-    n = data.len
-    ; write bytes one at a time by building a string buffer
-    ; (fs.write expects a str, not []i64; we convert in chunks)
-    buf = ''
-    j <- [0..n): {
-        buf = buf - number.char-to-str(data[j])
-    }
-    fs.write(fd, buf, buf.len)
-    fs.close(fd)
+    finalize()
+    fs.write-file(filename, zw-data)
 }
 
 zip-run = () {
@@ -238,4 +238,7 @@ zip-run = () {
     }
 
     create(filename, files)
+    ; 规避：[]byte 模块级变量析构阶段 SIGTRAP（退出码 133），
+    ; 疑似含二进制内容的 vec 析构 codegen 问题，显式正常退出绕过
+    os.exit(0)
 }
