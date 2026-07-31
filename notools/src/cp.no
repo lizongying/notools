@@ -1,20 +1,73 @@
-// cp.no — copy files and directories (pure Nolang, standard library only)
-// Usage: cp [-r] <source> <dest>
+; cp.no — copy files and directories (pure Nolang, standard library only)
+; Usage: cp [-r|-R] SOURCE... DEST
+;   -r, -R: recursive copy (directories)
+;   Multiple sources require DEST to be a directory
+;
+; NOTE (B11 workaround): the optimizer mis-compiles `dir - '/' - name` string
+; concatenation when it occurs inside a loop in the full notools binary
+; (Heisenbug: works in tiny isolated binaries, SIGABRT in the full binary).
+; To stay safe we NEVER use the '-' concat operator to build paths inside any
+; loop. Instead `base-name` returns a freshly-allocated copy (with-len + byte
+; copy, never a slice view) and `join-path` builds `dir/name` the same way.
 
-; base-name: extract filename from path (last segment after /)
+; base-name: extract filename from path (last segment after '/')
+; returns a FRESH copy (not a slice view) so it is safe to free per iteration.
+; handles trailing slashes (e.g. "foo/" → "foo")
 base-name = (p str) (out str) {
-    out = p
-    i = p.len - 1
+    end = p.len
+    ; skip trailing slashes
     {
-        i < 0 -> break
-        p[i] == 47 -> {
-            out = p.slice(i + 1, p.len)
-            break
-        }
-        i = i - 1
+        end <= 0 -> break
+        p[end - 1] != 47 -> break
+        end = end - 1
     } (true)
+    ; find last '/' in [0..end)
+    last = -1
+    i <- [0..end): {
+        p[i] == 47 -> last = i
+    }
+    start = last + 1
+    n = end - start
+    out = with-len(n)
+    j <- [0..n): {
+        out[j] = p[start + j]
+    }
 }
 
+; join-path: join dir + name with a single '/', pure byte copy (no '-' concat).
+; - if dir is empty → just name
+; - if dir ends with '/' or name starts with '/' → no extra separator
+join-path = (dir str, name str) (out str) {
+    need-sep = true
+    dir.len == 0 -> need-sep = false
+    dir.len > 0 -> {
+        dir[dir.len - 1] == 47 -> need-sep = false
+    }
+    name.len > 0 -> {
+        name[0] == 47 -> need-sep = false
+    }
+
+    total = dir.len
+    need-sep -> total = total + 1
+    total = total + name.len
+
+    out = with-len(total)
+    n = 0
+    i <- [0..dir.len): {
+        out[n] = dir[i]
+        n = n + 1
+    }
+    need-sep -> {
+        out[n] = 47
+        n = n + 1
+    }
+    j <- [0..name.len): {
+        out[n] = name[j]
+        n = n + 1
+    }
+}
+
+; one-file: copy a single file from src to dst
 one-file = (src str, dst str) {
     data = fs.read-file(src)
     fd = fs.open-write(dst)
@@ -23,69 +76,112 @@ one-file = (src str, dst str) {
     fs.close(fd)
 }
 
+; copy-tree: recursively copy a directory tree from src to dst
+copy-tree = (src str, dst str) {
+    ; create target directory (ignore error if it already exists)
+    os.mkdir(dst, 511)
+
+    dirp = fs.open-dir(src)
+    dirp == 0 -> return
+
+    ok = true
+    for ok == true {
+        name, ok = fs.read-dir(dirp)
+        ok -> {
+            ; skip . and ..
+            skip = name == '.' || name == '..'
+            skip == false -> {
+                ; build child paths with byte-copy join (B11-safe)
+                src-full = join-path(src, name)
+                dst-full = join-path(dst, name)
+
+                is-d = fs.is-dir(src-full)
+                is-d -> copy-tree(src-full, dst-full)
+                is-d == false -> {
+                    is-f = fs.is-file(src-full)
+                    is-f -> one-file(src-full, dst-full)
+                }
+            }
+        }
+    }
+    fs.close-dir(dirp)
+}
+
 cp-run = () {
     argc = args()
 
-    src = ''
-    dst = ''
-    has-src = false
-    has-dst = false
     recursive = false
+    n-files = 0
+    dst-idx = -1
 
-    i = 2
-    for i < argc {
+    ; first pass: parse flags, count non-flag args, find destination index
+    i <- [2..argc): {
         a = arg(i)
+        a == '-r' || a == '-R' -> recursive = true
         a.starts-with('-') -> {
-            a.contains('r') -> recursive = true
-            i = i + 1
-            continue
+            a.contains('r') || a.contains('R') -> recursive = true
         }
-        has-src == false -> {
-            src = a
-            has-src = true
-            i = i + 1
-            continue
+        a.starts-with('-') == false -> {
+            n-files = n-files + 1
+            dst-idx = i
         }
-        has-dst == false -> {
-            dst = a
-            has-dst = true
-            i = i + 1
-            continue
-        }
-        i = i + 1
     }
 
-    has-src == false -> {
-        io.errln('cp: missing file operand')
-        os.exit(1)
-    }
-    has-dst == false -> {
-        io.errln('cp: missing destination file operand')
+    n-files < 2 -> {
+        eprint('cp: missing file operand')
         os.exit(1)
     }
 
-    exists = fs.is-file(src) || fs.is-dir(src)
-    exists == false -> {
-        io.errln('cp: ' - src - ': No such file or directory')
-        os.exit(1)
+    dst = arg(dst-idx)
+    src-count = n-files - 1
+
+    ; multi-source: destination must be a directory
+    src-count > 1 -> {
+        fs.is-dir(dst) == false -> {
+            eprint('cp: target ' - dst - ' is not a directory')
+            os.exit(1)
+        }
     }
 
-    target = dst
-    fs.is-dir(dst) -> {
-        ; Inline base-name: find last '/' in src
-        bn = src
-        si = src.len - 1
-        {
-            si < 0 -> break
-            src[si] == 47 -> {
-                bn = src.slice(si + 1, src.len)
-                break
+    had-err = false
+
+    ; second pass: copy each source (skip flags and destination arg)
+    i <- [2..argc): {
+        i == dst-idx -> continue
+        a = arg(i)
+        a.starts-with('-') -> continue
+
+        src = a
+
+        ; check source exists
+        exists = fs.is-file(src) || fs.is-dir(src)
+        exists == false -> {
+            eprint('cp: ' - src - ': No such file or directory')
+            had-err = true
+            continue
+        }
+
+        ; determine target path (byte-copy join, B11-safe)
+        target = dst
+        fs.is-dir(dst) -> {
+            bn = base-name(src)
+            target = join-path(dst, bn)
+        }
+
+        ; copy
+        is-d = fs.is-dir(src)
+        is-d -> {
+            recursive -> copy-tree(src, target)
+            recursive == false -> {
+                eprint('cp: ' - src - ': is a directory (use -r)')
+                had-err = true
             }
-            si = si - 1
-        } (true)
-        target = dst - '/' - bn
+        }
+        is-d == false -> one-file(src, target)
     }
 
-    is-d = fs.is-dir(src)
-    is-d == false -> one-file(src, target)
+    ; os.exit skips scope cleanup (avoids double-free on string locals);
+    ; B6: only literal i64 is reliable for os.exit.
+    had-err -> os.exit(1)
+    os.exit(0)
 }

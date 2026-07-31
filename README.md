@@ -37,7 +37,7 @@ cp dist/notools /usr/local/bin/notools
 | `rm` | 删除文件或目录 | `notools rm -r dir/` |
 | `chmod` | 修改文件权限 | `notools chmod 755 script.sh` |
 | `find` | 递归查找文件 | `notools find . -name "*.no"` |
-| `cp` | 复制文件（单源复制 / 复制到目录） | `notools cp src.txt dst.txt` |
+| `cp` | 复制文件 / 目录（支持多源、`-r` 递归） | `notools cp a.txt b.txt dir/` |
 | `ln` | 创建硬链接 / 符号链接（-s） | `notools ln -s src.txt link.txt` |
 | `du` | 估算文件 / 目录磁盘占用 | `notools du dir/` |
 | `df` | 显示文件系统磁盘空间 | `notools df` |
@@ -116,7 +116,7 @@ notools
 
 ## 已知限制
 
-- `cp` 多源复制（一次复制多个源文件）因当前编译器优化器会错误编译「循环内拼接目标路径中的 basename」而暂不支持（详见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) B11）。「每进程只能写一次文件」的限制已由编译器修复，单源复制本身工作正常。`cp` 仅支持**单源复制**（含「复制到目录」，自动以源文件名命名）；多源复制会明确报错退出，不会静默丢文件。
+- `cp` 现已支持**多源复制**（`cp SRC... DEST`，DEST 须为目录）与 `-r`/`-R` 递归复制目录。此前阻塞多源的编译器优化器缺陷（B11：循环内 `dir - '/' - basename` 拼接在完整二进制中触发 SIGABRT）已通过规避写法解决：路径拼接改用 `with-len` + 字节级索引赋值的 `join-path`，`base-name` 返回独立副本（非 slice 视图），循环内不再使用 `-` 字符串拼接运算符构建路径。详见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) B11。
 - 其余命令（echo / cat / ls / rm / tree / mv / touch / find / grep / wc / sort / uniq / sed / awk / chmod / tar / zip / unzip / ps / top / mkdir / stat / chown / cp / head / tail / date / pwd / du / df / ln / cut / tr / tee / sleep / whoami / curl / ping）均已在 macOS (arm64) 上验证可用。
 
 ## 项目结构
