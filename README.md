@@ -4,7 +4,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 ## 特性
 
-- 纯 Nolang 实现为主（`ln` 因标准库暂缺 `symlink`/`link` 内置而委托系统命令）
+- 纯 Nolang 实现
 - 单一可执行文件，子命令分发
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
@@ -120,7 +120,6 @@ notools
 
 - `cp` 多源复制（一次复制多个源文件）因当前编译器优化器会错误编译「循环内拼接目标路径中的 basename」而暂不支持（详见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) B11）。「每进程只能写一次文件」的限制已由编译器修复，单源复制本身工作正常。`cp` 仅支持**单源复制**（含「复制到目录」，自动以源文件名命名）；多源复制会明确报错退出，不会静默丢文件。
 - 其余命令（echo / cat / ls / rm / tree / mv / touch / find / grep / wc / sort / uniq / sed / awk / chmod / tar / zip / unzip / ps / top / mkdir / stat / chown / cp / head / tail / date / pwd / du / df / ln / cut / tr / tee / sleep / whoami / curl / ping）均已在 macOS (arm64) 上验证可用。
-- `ln` 仍委托系统命令 `ln` 实现：标准库 `fs` 暂无 `symlink` / `link` 内置（见 [NOLANG_STDLIB_ISSUES.md](./NOLANG_STDLIB_ISSUES.md) W6）。`curl` / `ping` 已改为纯 Nolang 实现（见上方「网络」小节）。
 - 哈希/编码命令（md5 / sha1 / sha224 / sha256 / sha384 / sha512 / base64 / hmac）已逐一验证正确，且 `main.no` 已接入分发；但**当前开发中的编译器 HEAD（2026-07-27 晚间构建）对内建 `printf` 存在回归**（最小 3 行 `printf('%s', 'hi')` 程序即报 `use of undefined value '@printf'`），导致所有使用 `printf` 的旧命令（echo 等）乃至完整 `main.no` 暂时无法编译——这与哈希代码无关（哈希命令不用 `printf`，单独入口可正常编译运行）。待编译器修复后 `no build notools/main.no` 即可直接产出完整二进制。
 
 ## 项目结构
