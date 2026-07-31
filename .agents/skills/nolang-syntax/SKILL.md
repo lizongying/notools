@@ -1323,14 +1323,16 @@ math.PI
 
 The following cases do not require a prefix:
 
-**1. `printf` / `sprintf` / `print`**
+**1. `print` / `eprint` / `format`**
 
-These three functions are exempt from the prefix rule by convention. **This is a special case for these three functions only**, not because they are builtins — other builtin functions (such as `open`, `close`, `read`, `write`, etc.) still require the module prefix.
+These three functions are exempt from the prefix rule by convention. **This is a special case for these three functions only**, not because they are builtins — other builtin functions (such as `open`, `close`, `read`, `write`, etc.) still require the module prefix. They use **named format strings** `{name[:spec]}` referencing in-scope variables; positional arguments are not supported. `printf`/`eprintf`/`sprintf` are deprecated.
 
 ```nolang
-printf('hello %d', n)        // ✅ no prefix
-s = sprintf('x=%d', x)       // ✅ no prefix
-print('hello')               // ✅ no prefix
+print('hello {n}')           // ✅ no prefix, named format, auto newline (stdout)
+eprint('err {x}')            // ✅ no prefix, named format, auto newline (stderr)
+s = format('x={x}')          // ✅ no prefix, returns formatted string
+io.out('no-newline')         // io.out / io.err require module prefix
+io.err('err-no-newline')     // io.err does not conflict with Option constructor err()
 
 fs.open(path, opts)          // ✅ with prefix (builtins need it too)
 ```
@@ -1402,9 +1404,9 @@ f = fs.open(path, opts)
 f.read(buf, n)
 f.close()
 
-// printf/sprintf/print
-printf('hello %d', n)
-s = sprintf('x=%d', x)
+// print/eprint/format (named format strings)
+print('hello {n}')
+s = format('x={x}')
 
 // ─── Prefix required ───
 
@@ -1807,8 +1809,12 @@ x: {
 #### fmt — Formatted Output
 
 ```nolang
-printf(fmt str, ...)    // Formatted output, no trailing newline
-print(...)              // Print with newline
+print(s str)            // Named format output to stdout, auto newline ({name[:spec]})
+eprint(s str)           // Named format output to stderr, auto newline
+s = format(fmt str) str // Return formatted string (replaces sprintf)
+io.out(s str)           // Write to stdout, no newline (requires module prefix)
+io.err(s str)           // Write to stderr, no newline (requires module prefix)
+// printf/eprintf/sprintf are deprecated
 ```
 
 #### math — Math Functions

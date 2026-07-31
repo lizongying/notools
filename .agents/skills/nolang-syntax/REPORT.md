@@ -52,7 +52,7 @@ The standard library only exposed `fs.stat-size(path) (size i64)`. There was no 
 type = '-'
 fs.is-dir(full) -> type = 'd'
 size = fs.stat-size(full)
-size-str = sprintf('%8d', size)
+size-str = format('{size:8}')
 print(type - ' ' - size-str - ' ' - name)
 ```
 
