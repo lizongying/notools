@@ -2,16 +2,8 @@
 ; Usage: cp [-r|-R] SOURCE... DEST
 ;   -r, -R: recursive copy (directories)
 ;   Multiple sources require DEST to be a directory
-;
-; NOTE (B11 workaround): the optimizer mis-compiles `dir - '/' - name` string
-; concatenation when it occurs inside a loop in the full notools binary
-; (Heisenbug: works in tiny isolated binaries, SIGABRT in the full binary).
-; To stay safe we NEVER use the '-' concat operator to build paths inside any
-; loop. Instead `base-name` returns a freshly-allocated copy (with-len + byte
-; copy, never a slice view) and `join-path` builds `dir/name` the same way.
 
 ; base-name: extract filename from path (last segment after '/')
-; returns a FRESH copy (not a slice view) so it is safe to free per iteration.
 ; handles trailing slashes (e.g. "foo/" → "foo")
 base-name = (p str) (out str) {
     end = p.len
@@ -31,39 +23,6 @@ base-name = (p str) (out str) {
     out = with-len(n)
     j <- [0..n): {
         out[j] = p[start + j]
-    }
-}
-
-; join-path: join dir + name with a single '/', pure byte copy (no '-' concat).
-; - if dir is empty → just name
-; - if dir ends with '/' or name starts with '/' → no extra separator
-join-path = (dir str, name str) (out str) {
-    need-sep = true
-    dir.len == 0 -> need-sep = false
-    dir.len > 0 -> {
-        dir[dir.len - 1] == 47 -> need-sep = false
-    }
-    name.len > 0 -> {
-        name[0] == 47 -> need-sep = false
-    }
-
-    total = dir.len
-    need-sep -> total = total + 1
-    total = total + name.len
-
-    out = with-len(total)
-    n = 0
-    i <- [0..dir.len): {
-        out[n] = dir[i]
-        n = n + 1
-    }
-    need-sep -> {
-        out[n] = 47
-        n = n + 1
-    }
-    j <- [0..name.len): {
-        out[n] = name[j]
-        n = n + 1
     }
 }
 
@@ -91,9 +50,8 @@ copy-tree = (src str, dst str) {
             ; skip . and ..
             skip = name == '.' || name == '..'
             skip == false -> {
-                ; build child paths with byte-copy join (B11-safe)
-                src-full = join-path(src, name)
-                dst-full = join-path(dst, name)
+                src-full = src - '/' - name
+                dst-full = dst - '/' - name
 
                 is-d = fs.is-dir(src-full)
                 is-d -> copy-tree(src-full, dst-full)
@@ -161,11 +119,11 @@ cp-run = () {
             continue
         }
 
-        ; determine target path (byte-copy join, B11-safe)
+        ; determine target path
         target = dst
         fs.is-dir(dst) -> {
             bn = base-name(src)
-            target = join-path(dst, bn)
+            target = dst - '/' - bn
         }
 
         ; copy
