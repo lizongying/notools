@@ -1,10 +1,71 @@
-// zstd.no — zstd compression utility (delegates to system zstd)
-// Usage: zstd [OPTIONS] FILE...
+; zstd.no — zstd compression utility (native Nolang)
+; Uses archive/zstd.no for compression/decompression.
+; Usage: zstd [-c] [-d] [-k] [-f] <file...>
+;   預設：壓縮檔案，生成 .zst 並刪除原檔
+;   -c  寫到標準輸出，不改動原檔
+;   -d  解壓（等同 unzstd）
+;   -k  保留原檔
+;   -f  強制覆寫
+
 zstd-cmd = () {
     argc = args()
-    cmd = 'zstd'
-    i <- [2..argc): {
-        cmd = cmd - ' ' - arg(i)
+
+    to-stdout = false
+    decompress = false
+    keep = false
+    has-file = false
+
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-c' -> to-stdout = true
+        a == '-d' -> decompress = true
+        a == '-k' -> keep = true
+        a == '-f' -> {}
+        a.starts-with('-') == false -> {
+            has-file = true
+            f = a
+
+            fs.is-file(f) == false -> {
+                eprint('zstd: ' - f - ': No such file')
+                i = i + 1
+                continue
+            }
+            content = fs.read-file(f)
+            data = content.to-bytes()
+
+            decompress -> {
+                out []byte = zstd.zstd-decompress(data)
+                to-stdout -> {
+                    s = out.to-str()
+                    io.out(s)
+                }
+                -> {
+                    out-name = f
+                    f.ends-with('.zst') -> out-name = f.slice(0, f.len - 4)
+                    fs.write-file(out-name, out)
+                    keep == false -> fs.remove(f)
+                }
+            }
+            -> {
+                out []byte = zstd.zstd-compress(data)
+                to-stdout -> {
+                    s = out.to-str()
+                    io.out(s)
+                }
+                -> {
+                    out-name = f - '.zst'
+                    fs.write-file(out-name, out)
+                    keep == false -> fs.remove(f)
+                }
+            }
+        }
+
+        i = i + 1
     }
-    process.process-system(cmd)
+
+    has-file == false -> {
+        eprint('zstd: no input files')
+        os.exit(1)
+    }
 }

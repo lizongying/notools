@@ -1,10 +1,52 @@
-// unzstd.no — unzstd decompression utility (delegates to system unzstd)
-// Usage: unzstd [OPTIONS] FILE...
+; unzstd.no — unzstd decompression utility (native Nolang)
+; Decompresses .zst files using archive/zstd.no.
+; Usage: unzstd [-c] [-k] <file.zst...>
+;   -c  寫到標準輸出
+;   -k  保留原檔
+
 unzstd-cmd = () {
     argc = args()
-    cmd = 'unzstd'
-    i <- [2..argc): {
-        cmd = cmd - ' ' - arg(i)
+
+    to-stdout = false
+    keep = false
+    has-file = false
+
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-c' -> to-stdout = true
+        a == '-k' -> keep = true
+        a == '-f' -> {}
+        a.starts-with('-') == false -> {
+            has-file = true
+            f = a
+
+            fs.is-file(f) == false -> {
+                eprint('unzstd: ' - f - ': No such file')
+                i = i + 1
+                continue
+            }
+            content = fs.read-file(f)
+            data = content.to-bytes()
+            out []byte = zstd.zstd-decompress(data)
+
+            to-stdout -> {
+                s = out.to-str()
+                io.out(s)
+            }
+            -> {
+                out-name = f
+                f.ends-with('.zst') -> out-name = f.slice(0, f.len - 4)
+                fs.write-file(out-name, out)
+                keep == false -> fs.remove(f)
+            }
+        }
+
+        i = i + 1
     }
-    process.process-system(cmd)
+
+    has-file == false -> {
+        eprint('unzstd: no input files')
+        os.exit(1)
+    }
 }

@@ -1,10 +1,60 @@
-// chroot.no — chroot utility (delegates to system chroot)
-// Usage: chroot NEWROOT [COMMAND [ARGS]...]
+; chroot.no — chroot utility (native Nolang implementation)
+; Usage: chroot NEWROOT [COMMAND [ARGS]...]
+;   切換根目錄到 NEWROOT，然後執行 COMMAND（預設 /bin/sh）
+;   需要 root 權限。呼叫後自動 ch-dir('/') 設定工作目錄。
 chroot-cmd = () {
     argc = args()
-    cmd = 'chroot'
-    i <- [2..argc): {
-        cmd = cmd - ' ' - arg(i)
+
+    ; 至少需要 NEWROOT 參數
+    argc < 2 -> {
+        eprint('chroot: missing operand')
+        eprint('Try ''chroot --help'' for more information.')
+        os.exit(1)
     }
-    process.process-system(cmd)
+
+    newroot = arg(1)
+
+    ; 檢查新根目錄是否存在
+    fs.is-dir(newroot) == false -> {
+        eprint('chroot: cannot change root directory to ''' - newroot - ''': No such directory')
+        os.exit(1)
+    }
+
+    ; 呼叫 chroot 系統調用
+    ok = os.chroot(newroot)
+    ok == false -> {
+        eprint('chroot: cannot change root directory to ''' - newroot - ''': Operation not permitted')
+        os.exit(1)
+    }
+
+    ; 切換工作目錄到新根目錄
+    ok = os.ch-dir('/')
+    ok == false -> {
+        eprint('chroot: warning: cannot chdir to root directory')
+    }
+
+    ; 如果指定了 COMMAND，執行它；否則預設 /bin/sh
+    argc == 2 -> {
+        ; 預設執行 /bin/sh
+        process-exec('/bin/sh', '-i')
+        ; exec 失敗
+        eprint('chroot: failed to run command ''/bin/sh''')
+        os.exit(127)
+    }
+
+    ; 構建命令字符串
+    ; arg(2) 是命令，arg(3..) 是參數
+    cmd = arg(2)
+    i = 3
+    for i < argc {
+        cmd = cmd - ' ' - arg(i)
+        i = i + 1
+    }
+
+    ; 用 sh -c 執行命令
+    process-exec-shell(cmd)
+
+    ; exec 失敗
+    eprint('chroot: failed to run command')
+    os.exit(127)
 }

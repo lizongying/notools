@@ -1,10 +1,265 @@
-// stdbuf.no — stdbuf utility (delegates to system stdbuf)
-// Usage: stdbuf OPTION... COMMAND
+; stdbuf.no — stdbuf utility (pure Nolang pipe proxy implementation)
+; Usage: stdbuf OPTION... COMMAND [ARGS]...
+;   -o0   unbuffered stdout (write immediately)
+;   -oL   line buffered stdout (flush on newline)
+;   -oB   block buffered stdout (default, flush at 4096 bytes)
+;   -oB<sz> block buffered stdout with size <sz>
+;   -e0   unbuffered stderr (parsed, stderr piped)
+;   -eL   line buffered stderr
+;   -eB   block buffered stderr
+;
+; 管道代理模式：父進程創建管道 → fork → 子進程 exec 命令
+; （stdout 重定向到管道）→ 父進程按指定緩衝模式從管道讀取並寫入自己的 stdout
+;
+; 注意：setvbuf 在 exec 後無效（C 庫緩衝狀態會被替換），
+;   GNU stdbuf 使用 LD_PRELOAD 方式，無法在 Nolang 中簡單實現。
+;   本實現使用管道代理模式，完全以純 Nolang 實現。
+
 stdbuf-cmd = () {
     argc = args()
-    cmd = 'stdbuf'
-    i <- [2..argc): {
-        cmd = cmd - ' ' - arg(i)
+
+    ; 解析選項
+    ; out-mode: 0=unbuffered, 1=line, 2=block (default 2)
+    out-mode = 2
+    out-size = 4096
+    ; err-mode: -1=no change, 0=unbuffered, 1=line, 2=block
+    err-mode = -1
+    err-size = 4096
+    cmd-start = -1
+
+    i = 2
+    {
+        i >= argc -> *
+        a = arg(i)
+        a == '--' -> {
+            cmd-start = i + 1
+            *
+        }
+        a.starts-with('-o') -> {
+            rest = a.slice(2, a.len)
+            rest.len > 0 -> {
+                c = rest[0]
+                c == 48 -> out-mode = 0  ; '0' unbuffered
+                c == 76 -> out-mode = 1  ; 'L' line buffered
+                c == 66 -> {              ; 'B' block buffered
+                    out-mode = 2
+                    rest.len > 1 -> {
+                        sz-str = rest.slice(1, rest.len)
+                        parsed ?i64 = sz-str.to-i64()
+                        parsed: {
+                            ok -> it > 0 -> out-size = it
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        a.starts-with('-e') -> {
+            rest = a.slice(2, a.len)
+            rest.len > 0 -> {
+                c = rest[0]
+                c == 48 -> err-mode = 0
+                c == 76 -> err-mode = 1
+                c == 66 -> {
+                    err-mode = 2
+                    rest.len > 1 -> {
+                        sz-str = rest.slice(1, rest.len)
+                        parsed ?i64 = sz-str.to-i64()
+                        parsed: {
+                            ok -> it > 0 -> err-size = it
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        a.starts-with('-i') -> {
+            ; stdin 選項：暫不支援管道代理
+            i = i + 1
+        }
+        ! a.starts-with('-') -> {
+            cmd-start = i
+            *
+        }
+        -> i = i + 1
+    } (i < argc)
+
+    ; 檢查命令
+    cmd-start < 0 -> {
+        eprint('stdbuf: missing command')
+        eprint('Try ''stdbuf --help'' for more information.')
+        os.exit(1)
     }
-    process.process-system(cmd)
+    cmd-start >= argc -> {
+        eprint('stdbuf: missing command')
+        os.exit(1)
+    }
+
+    ; 構建命令字符串
+    cmd = arg(cmd-start)
+    i = cmd-start + 1
+    for i < argc {
+        cmd = cmd - ' ' - arg(i)
+        i = i + 1
+    }
+
+    ; 創建 stdout 管道
+    out-fds = process-pipe()
+    out-read = out-fds >> 32
+    out-write = out-fds & 0xFFFFFFFF
+
+    ; 創建 stderr 管道（如果需要）
+    need-err-pipe = err-mode >= 0
+    err-read = -1
+    err-write = -1
+    need-err-pipe -> {
+        err-fds = process-pipe()
+        err-read = err-fds >> 32
+        err-write = err-fds & 0xFFFFFFFF
+    }
+
+    ; fork
+    pid = process-fork()
+
+    pid == 0 -> {
+        ; 子進程：重定向 stdout 到管道寫端
+        process-dup2(out-write, 1)
+        fs.close(out-read)
+        fs.close(out-write)
+
+        ; 重定向 stderr（如果需要）
+        need-err-pipe -> {
+            process-dup2(err-write, 2)
+            fs.close(err-read)
+            fs.close(err-write)
+        }
+
+        ; 執行命令
+        process-exec-shell(cmd)
+        ; exec 失敗
+        os.exit(127)
+    }
+
+    pid < 0 -> {
+        ; fork 失敗
+        fs.close(out-read)
+        fs.close(out-write)
+        need-err-pipe -> {
+            fs.close(err-read)
+            fs.close(err-write)
+        }
+        eprint('stdbuf: fork failed')
+        os.exit(1)
+    }
+
+    ; 父進程：關閉寫端
+    fs.close(out-write)
+    need-err-pipe -> fs.close(err-write)
+
+    ; 按緩衝模式處理 stdout
+    buf str = with-len(1024)
+
+    out-mode == 0 -> {
+        ; 無緩衝：讀取後立即寫入
+        {
+            n = fs.read(out-read, buf, 1024)
+            n <= 0 -> *
+            fs.write(1, buf, n)
+        } (true)
+    }
+
+    out-mode == 1 -> {
+        ; 行緩衝：累積直到換行符
+        acc = ''
+        {
+            n = fs.read(out-read, buf, 1024)
+            n <= 0 -> *
+            j <- [0..n): {
+                c = buf[j] & 255
+                acc = acc - number.char-to-str(c)
+                c == 10 -> {
+                    ; 換行符，立即寫出
+                    fs.write(1, acc, acc.len)
+                    acc = ''
+                }
+            }
+        } (true)
+        ; 寫出剩餘數據
+        acc.len > 0 -> fs.write(1, acc, acc.len)
+    }
+
+    out-mode == 2 -> {
+        ; 塊緩衝：累積直到塊大小
+        acc = ''
+        {
+            n = fs.read(out-read, buf, 1024)
+            n <= 0 -> *
+            j <- [0..n): {
+                acc = acc - number.char-to-str(buf[j] & 255)
+            }
+            acc.len >= out-size -> {
+                fs.write(1, acc, acc.len)
+                acc = ''
+            }
+        } (true)
+        ; 寫出剩餘數據
+        acc.len > 0 -> fs.write(1, acc, acc.len)
+    }
+
+    fs.close(out-read)
+
+    ; 處理 stderr（如果需要）
+    need-err-pipe -> {
+        err-buf str = with-len(1024)
+
+        err-mode == 0 -> {
+            ; 無緩衝
+            {
+                n = fs.read(err-read, err-buf, 1024)
+                n <= 0 -> *
+                fs.write(2, err-buf, n)
+            } (true)
+        }
+
+        err-mode == 1 -> {
+            ; 行緩衝
+            acc = ''
+            {
+                n = fs.read(err-read, err-buf, 1024)
+                n <= 0 -> *
+                j <- [0..n): {
+                    c = err-buf[j] & 255
+                    acc = acc - number.char-to-str(c)
+                    c == 10 -> {
+                        fs.write(2, acc, acc.len)
+                        acc = ''
+                    }
+                }
+            } (true)
+            acc.len > 0 -> fs.write(2, acc, acc.len)
+        }
+
+        err-mode == 2 -> {
+            ; 塊緩衝
+            acc = ''
+            {
+                n = fs.read(err-read, err-buf, 1024)
+                n <= 0 -> *
+                j <- [0..n): {
+                    acc = acc - number.char-to-str(err-buf[j] & 255)
+                }
+                acc.len >= err-size -> {
+                    fs.write(2, acc, acc.len)
+                    acc = ''
+                }
+            } (true)
+            acc.len > 0 -> fs.write(2, acc, acc.len)
+        }
+
+        fs.close(err-read)
+    }
+
+    ; 等待子進程
+    code = process-waitpid(pid, 0)
+    os.exit(code)
 }

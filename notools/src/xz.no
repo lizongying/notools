@@ -1,10 +1,82 @@
-// xz.no — xz compression utility (delegates to system xz)
-// Usage: xz [OPTIONS] FILE...
+; xz.no — xz compression utility (native Nolang)
+; Uses archive/xz.no for compression/decompression.
+; Usage: xz [-c] [-d] [-k] [-F <fmt>] <file...>
+;   預設：壓縮檔案，生成 .xz 並刪除原檔
+;   -c  寫到標準輸出，不改動原檔
+;   -d  解壓（等同 unxz）
+;   -k  保留原檔
+;   -F xz|lzma  指定格式（預設 xz）
+
 xz-cmd = () {
     argc = args()
-    cmd = 'xz'
-    i <- [2..argc): {
-        cmd = cmd - ' ' - arg(i)
+
+    to-stdout = false
+    decompress = false
+    keep = false
+    fmt = 'xz'
+    has-file = false
+
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-c' -> to-stdout = true
+        a == '-d' -> decompress = true
+        a == '-k' -> keep = true
+        a == '-f' -> {}
+        a == '-F' -> {
+            i = i + 1
+            i < argc -> fmt = arg(i)
+        }
+        a.starts-with('-') == false -> {
+            has-file = true
+            f = a
+
+            fs.is-file(f) == false -> {
+                eprint('xz: ' - f - ': No such file')
+                i = i + 1
+                continue
+            }
+            content = fs.read-file(f)
+            data = content.to-bytes()
+
+            decompress -> {
+                ; 根據格式選擇解壓函數
+                out []byte = xz.xz-decompress(data)
+                fmt == 'lzma' -> out = xz.lzma-decompress(data)
+
+                to-stdout -> {
+                    s = out.to-str()
+                    io.out(s)
+                }
+                -> {
+                    out-name = f
+                    f.ends-with('.xz') -> out-name = f.slice(0, f.len - 3)
+                    f.ends-with('.lzma') -> out-name = f.slice(0, f.len - 5)
+                    fs.write-file(out-name, out)
+                    keep == false -> fs.remove(f)
+                }
+            }
+            -> {
+                out []byte = xz.xz-compress(data)
+                to-stdout -> {
+                    s = out.to-str()
+                    io.out(s)
+                }
+                -> {
+                    ext = '.xz'
+                    fmt == 'lzma' -> ext = '.lzma'
+                    out-name = f - ext
+                    fs.write-file(out-name, out)
+                    keep == false -> fs.remove(f)
+                }
+            }
+        }
+
+        i = i + 1
     }
-    process.process-system(cmd)
+
+    has-file == false -> {
+        eprint('xz: no input files')
+        os.exit(1)
+    }
 }

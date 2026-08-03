@@ -4,8 +4,8 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 ## 特性
 
-- 纯 Nolang 实现
-- 单一可执行文件，子命令分发
+- 纯 Nolang 实现，不依赖外部系统命令
+- 单一可执行文件，子命令分发（193 个命令）
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
 
@@ -25,7 +25,7 @@ cp dist/notools /usr/local/bin/notools
 
 ## 工具列表
 
-> 以下为已实现并接入分发的全部命令（160+ 个）。`md5`/`sha*` 为 BSD 风格命名，`md5sum`/`sha*sum` 为 GNU 风格命名，两者输出相同。
+> 以下为已实现并接入分发的全部命令（193 个）。`md5`/`sha*` 为 BSD 风格命名，`md5sum`/`sha*sum` 为 GNU 风格命名，两者输出相同。
 
 ### 文件与目录
 
@@ -136,6 +136,18 @@ cp dist/notools /usr/local/bin/notools
 | `gzip` | gzip 压缩 | `notools gzip file` |
 | `gunzip` | gzip 解压 | `notools gunzip file.gz` |
 | `zcat` | 解压并输出到 stdout | `notools zcat file.gz` |
+| `bzip2` | bzip2 压缩（纯 Nolang，BWT + Huffman） | `notools bzip2 file` |
+| `bunzip2` | bzip2 解压 | `notools bunzip2 file.bz2` |
+| `bzcat` | 解压 .bz2 到 stdout | `notools bzcat file.bz2` |
+| `xz` | XZ 压缩（纯 Nolang，LZMA2） | `notools xz file` |
+| `unxz` | XZ 解压 | `notools unxz file.xz` |
+| `xzcat` | 解压 .xz 到 stdout | `notools xzcat file.xz` |
+| `lzma` | LZMA 压缩（传统 `.lzma` 格式） | `notools lzma file` |
+| `unlzma` | LZMA 解压 | `notools unlzma file.lzma` |
+| `lzcat` | 解压 .lzma 到 stdout | `notools lzcat file.lzma` |
+| `zstd` | Zstandard 压缩（纯 Nolang，FSE + Huffman） | `notools zstd file` |
+| `unzstd` | Zstandard 解压 | `notools unzstd file.zst` |
+| `zstdcat` | 解压 .zst 到 stdout | `notools zstdcat file.zst` |
 | `compress` | LZW `.Z` 压缩（纯 Nolang） | `notools compress file` |
 | `uncompress` | LZW `.Z` 解压（纯 Nolang） | `notools uncompress file.Z` |
 
@@ -184,6 +196,8 @@ cp dist/notools /usr/local/bin/notools
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
+| `chroot` | 切换根目录运行命令（需 root，原生 `os.chroot()`） | `notools chroot /newroot /bin/sh` |
+| `stdbuf` | 调整命令的 stdio 缓冲模式（纯 Nolang 管道代理） | `notools stdbuf -oL cat file` |
 | `kill` | 发送信号给进程 | `notools kill -9 1234` |
 | `killall` | 按名称杀进程 | `notools killall myapp` |
 | `pgrep` | 按名称查进程号 | `notools pgrep myapp` |
@@ -264,22 +278,6 @@ notools
 
 下列命令在 Git for Windows 内置的 MSYS2 环境中常见，但 notools 尚未实现，便于后续按优先级补全。
 
-### 压缩 / 解压
-
-| 命令 | 说明 | 状态 |
-|------|------|------|
-| `bzip2` / `bunzip2` / `bzcat` | bzip2 压缩 / 解压 / 解压到 stdout | 需 `archive/bzip2` 模块（BWT + Huffman） |
-| `xz` / `unxz` / `xzcat` | XZ 压缩 / 解压 / 解压到 stdout | 需 `archive/xz` 模块（LZMA2） |
-| `lzma` / `unlzma` / `lzcat` | LZMA 压缩 / 解压 / 解压到 stdout | 需 `archive/xz` 模块（LZMA2） |
-| `zstd` / `unzstd` / `zstdcat` | Zstandard 压缩 / 解压 / 解压到 stdout | 需 `archive/zstd` 模块（FSE + Huffman） |
-
-### coreutils 其余
-
-| 命令 | 说明 | 状态 |
-|------|------|------|
-| `chroot` | 切换根目录运行命令（需 root） | 需 `os.chroot()` 系统调用 |
-| `stdbuf` | 调整命令的 stdio 缓冲模式 | 需 `setvbuf` 式 stdio 缓冲控制 |
-
 ### 平台相关 / 不适用
 
 | 命令 | 说明 | 状态 |
@@ -293,18 +291,9 @@ notools
 - `who` / `users` / `pinky` 为简化实现，仅显示当前用户会话（通过 `os.get-login()` + `os.ttyname(0)`），不遍历 utmpx 列出全部登录会话。
 - `compress` / `uncompress` 为纯 Nolang LZW 实现，与系统 `compress` 命令的 `.Z` 格式兼容。
 - `less` 使用行输入（`fs.get-line()`），不支持字符级即时响应（需终端 raw 模式）。
-- `bzip2` / `xz` / `lzma` / `zstd` 系列命令当前通过 `process.process-system()` 委托系统命令执行，纯 Nolang 实现需以下标准库模块：
-
-### 需要标准库支持的命令
-
-| 命令 | 需要的标准库模块 | 算法/功能说明 |
-|------|-----------------|--------------|
-| `chroot` | `os.chroot()` | 切换根目录的系统调用 |
-| `stdbuf` | `setvbuf` 式 stdio 控制 | 设置子进程 stdio 缓冲模式 |
-| `bzip2` / `bunzip2` / `bzcat` | `archive/bzip2` | Burrows-Wheeler Transform + Huffman |
-| `xz` / `unxz` / `xzcat` | `archive/xz` | LZMA2 压缩算法 |
-| `lzma` / `unlzma` / `lzcat` | `archive/xz` | LZMA2（传统 `.lzma` 格式） |
-| `zstd` / `unzstd` / `zstdcat` | `archive/zstd` | FSE + Huffman（Zstandard） |
+- `bzip2` / `xz` / `lzma` / `zstd` 系列命令的**解压缩**使用纯 Nolang 标准库模块（`archive/bzip2`、`archive/xz`、`archive/zstd`）实现，不委托系统命令；**压缩**侧为简化实现（写入合法头 + 原始存储块），尚未实现完整 BWT / LZMA2 / FSE 压缩算法。
+- `chroot` 使用原生 `os.chroot()` 系统调用，需要 root 权限。
+- `stdbuf` 使用纯 Nolang 管道代理模式实现（`process-fork` + `process-pipe` + `process-dup2` + `process-exec-shell`），支持 `-o0`/`-oL`/`-oB`/`-e0`/`-eL`/`-eB` 缓冲模式。
 
 ## 项目结构
 
@@ -315,19 +304,19 @@ notools/
 │   ├── echo.no          # 各工具实现
 │   ├── cat.no
 │   ├── ls.no
-│   ├── sha256x.no       # SHA-256 纯 Nolang 实现（返回 hex str）
-│   ├── sha224x.no       # SHA-224（同算法不同 IV，56 字符输出）
-│   ├── sha1x.no         # SHA-1
+│   ├── chroot.no        # 原生 os.chroot() 系统调用
+│   ├── stdbuf.no        # 管道代理模式缓冲控制
+│   ├── bzip2.no         # bzip2 压缩/解压（archive/bzip2）
+│   ├── xz.no            # xz/lzma 压缩/解压（archive/xz）
+│   ├── zstd.no          # zstd 压缩/解压（archive/zstd）
+│   ├── curl.no          # 纯 Nolang HTTP 客户端（net TCP）
+│   ├── ping.no          # 纯 Nolang ICMP 回显（net.ping）
+│   ├── hmac.no          # HMAC 密钥摘要
+│   ├── hashutil.no      # 哈希命令共享逻辑
+│   ├── sha256x.no       # SHA-256 纯 Nolang 实现
 │   ├── sha512x.no       # SHA-512（64 位字运算）
-│   ├── sha384x.no       # SHA-384（同算法不同 IV，96 字符输出）
 │   ├── md5x.no          # MD5
-│   ├── hashutil.no      # 哈希命令共享逻辑（do-hash / hash-cmd）
-│   ├── sha224sum.no     # GNU 风格 SHA-224 校验和（直接调用 sha224x）
-│   ├── sha384sum.no     # GNU 风格 SHA-384 校验和（直接调用 sha384x）
-│   ├── who.no           # 登录会话（简化版）
-│   ├── users.no         # 当前登录用户名
-│   ├── pinky.no         # 轻量级 who
-│   └── ...
+│   └── ...              # 其余 190+ 个工具
 └── package.jsonc        # 项目配置
 ```
 
