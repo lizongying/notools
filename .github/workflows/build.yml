@@ -1,0 +1,143 @@
+name: Build
+
+# 构建 notools 多平台二进制文件并在 tag 推送时发布 Release
+#
+# 依赖 lizongying/nolang 仓库中的 reusable actions:
+#   - setup-nolang  : 下载 no 编译器 + 标准库源码
+#   - build-nolang  : 安装工具链 (LLVM + Zig) 并交叉编译所有目标平台
+#
+# 触发条件：
+#   - push 到 main 分支
+#   - 推送 v* 标签（触发 Release）
+#   - Pull Request
+#   - 手动触发
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build notools for multiple platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@main
+        with:
+          # nolang 编译器版本；latest 自动解析最新 release，也可固定如 "0.2.3"
+          version: latest
+          # 项目入口文件
+          entry: notools/main.no
+          # 输出二进制基础名 -> notools-linux-amd64, notools-darwin-arm64 ...
+          name: notools
+          # 交叉编译目标平台（6 个原生平台，不含 wasm/js）
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          # 使用 zig 作为交叉编译器
+          cc: zig
+          # 单个目标构建失败不终止整个 job（如 windows/* 可能因上游限制失败）
+          fail-on-error: "false"
+
+      - name: Smoke test (linux/amd64)
+        run: |
+          set -e
+          BIN="dist/notools-linux-amd64"
+          if [ ! -f "$BIN" ]; then
+            echo "linux/amd64 binary not found, skipping smoke test"
+            exit 0
+          fi
+          chmod +x "$BIN"
+
+          echo "=== echo ==="
+          echo "hello notools" | "$BIN" echo
+
+          echo "=== md5 ==="
+          result=$(echo -n abc | "$BIN" md5)
+          expected="900150983cd24fb0d6963f7d28e17f72"
+          if [ "$result" != "$expected" ]; then
+            echo "ERROR: md5 mismatch — got '$result', expected '$expected'"
+            exit 1
+          fi
+          echo "md5 OK"
+
+          echo "=== sha256 ==="
+          result=$(echo -n abc | "$BIN" sha256)
+          expected="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+          if [ "$result" != "$expected" ]; then
+            echo "ERROR: sha256 mismatch — got '$result', expected '$expected'"
+            exit 1
+          fi
+          echo "sha256 OK"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: notools-binaries
+          path: dist/*
+          if-no-files-found: warn
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: notools-binaries
+          path: artifacts
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          sha256sum * > checksums-sha256.txt
+          echo "## Artifacts"
+          ls -lh
+          echo ""
+          echo "### SHA-256"
+          cat checksums-sha256.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/notools-linux-amd64
+            artifacts/notools-linux-arm64
+            artifacts/notools-darwin-amd64
+            artifacts/notools-darwin-arm64
+            artifacts/notools-windows-amd64.exe
+            artifacts/notools-windows-arm64.exe
+            artifacts/checksums-sha256.txt
+          body: |
+            ## notools ${{ github.ref_name }}
+
+            Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+
+            ### 下载与安装
+
+            ```bash
+            # Linux amd64 示例
+            curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/notools-linux-amd64
+            chmod +x notools
+            sudo mv notools /usr/local/bin/
+            ```
+
+            ### 校验
+
+            下载同目录下的 `checksums-sha256.txt` 进行 SHA-256 校验。
+          generate_release_notes: true
+          draft: false
+          prerelease: false
