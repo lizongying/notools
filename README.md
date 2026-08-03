@@ -81,6 +81,7 @@ cp dist/notools /usr/local/bin/notools
 | `head` | 输出文件开头 N 行（-n N） | `notools head -n 10 file.txt` |
 | `tail` | 输出文件末尾 N 行（-n N） | `notools tail -n 5 file.txt` |
 | `more` | 分页查看文件 | `notools more file.txt` |
+| `less` | 增强版分页器（前后翻页、搜索） | `notools less file.txt` |
 | `tac` | 逆序输出行 | `notools tac file.txt` |
 | `nl` | 添加行号 | `notools nl file.txt` |
 | `pr` | 分页排版打印 | `notools pr file.txt` |
@@ -135,6 +136,8 @@ cp dist/notools /usr/local/bin/notools
 | `gzip` | gzip 压缩 | `notools gzip file` |
 | `gunzip` | gzip 解压 | `notools gunzip file.gz` |
 | `zcat` | 解压并输出到 stdout | `notools zcat file.gz` |
+| `compress` | LZW `.Z` 压缩（纯 Nolang） | `notools compress file` |
+| `uncompress` | LZW `.Z` 解压（纯 Nolang） | `notools uncompress file.Z` |
 
 ### 系统信息与管理
 
@@ -173,6 +176,9 @@ cp dist/notools /usr/local/bin/notools
 | `sleep` | 暂停指定时长（支持 s/m/h） | `notools sleep 1` |
 | `which` | 定位可执行文件路径 | `notools which ls` |
 | `whereis` | 定位二进制 / 源码 / 手册 | `notools whereis ls` |
+| `locate` | 基于预建数据库的快速文件查找 | `notools locate pattern` |
+| `updatedb` | 更新 `locate` 数据库 | `notools updatedb -U /` |
+| `ptx` | 生成置换索引 | `notools ptx file.txt` |
 
 ### 进程与作业控制
 
@@ -224,6 +230,7 @@ cp dist/notools /usr/local/bin/notools
 | `uuidgen` | 生成 UUID | `notools uuidgen` |
 | `uuidparse` | 解析 UUID | `notools uuidparse <uuid>` |
 | `mcookie` | 生成随机 cookie | `notools mcookie` |
+| `b2sum` | BLAKE2b 摘要（GNU coreutils，`-c` 校验模式） | `notools b2sum file.txt` |
 
 ### 数学与杂项
 
@@ -257,37 +264,21 @@ notools
 
 下列命令在 Git for Windows 内置的 MSYS2 环境中常见，但 notools 尚未实现，便于后续按优先级补全。
 
-### 校验和
-
-| 命令 | 说明 | 状态 |
-|------|------|------|
-| `b2sum` | BLAKE2 摘要（GNU coreutils 新增算法） | 未实现 |
-
 ### 压缩 / 解压
 
 | 命令 | 说明 | 状态 |
 |------|------|------|
-| `bzip2` / `bunzip2` / `bzcat` | bzip2 压缩 / 解压 / 解压到 stdout | 未实现 |
-| `xz` / `unxz` / `xzcat` | XZ 压缩 / 解压 / 解压到 stdout | 未实现 |
-| `lzma` / `unlzma` / `lzcat` | LZMA 压缩 / 解压 / 解压到 stdout | 未实现 |
-| `zstd` / `unzstd` / `zstdcat` | Zstandard 压缩 / 解压 / 解压到 stdout | 未实现 |
-| `compress` / `uncompress` | 传统 LZW `.Z` 压缩 / 解压 | 未实现（可用 `gunzip` 替代部分） |
-
-### 文件查找与分页
-
-| 命令 | 说明 | 状态 |
-|------|------|------|
-| `locate` | 基于预建数据库的快速文件查找 | 未实现 |
-| `updatedb` | 更新 `locate` 数据库 | 未实现 |
-| `less` | 交互式分页器（已有 `more`，缺交互能力） | 未实现 |
+| `bzip2` / `bunzip2` / `bzcat` | bzip2 压缩 / 解压 / 解压到 stdout | 需 `archive/bzip2` 模块（BWT + Huffman） |
+| `xz` / `unxz` / `xzcat` | XZ 压缩 / 解压 / 解压到 stdout | 需 `archive/xz` 模块（LZMA2） |
+| `lzma` / `unlzma` / `lzcat` | LZMA 压缩 / 解压 / 解压到 stdout | 需 `archive/xz` 模块（LZMA2） |
+| `zstd` / `unzstd` / `zstdcat` | Zstandard 压缩 / 解压 / 解压到 stdout | 需 `archive/zstd` 模块（FSE + Huffman） |
 
 ### coreutils 其余
 
 | 命令 | 说明 | 状态 |
 |------|------|------|
-| `chroot` | 切换根目录运行命令（需 root） | 未实现 |
-| `ptx` | 生成置换索引（permutation index） | 未实现 |
-| `stdbuf` | 调整命令的 stdio 缓冲模式 | 未实现 |
+| `chroot` | 切换根目录运行命令（需 root） | 需 `os.chroot()` 系统调用 |
+| `stdbuf` | 调整命令的 stdio 缓冲模式 | 需 `setvbuf` 式 stdio 缓冲控制 |
 
 ### 平台相关 / 不适用
 
@@ -300,44 +291,20 @@ notools
 
 - 全部已实现命令均已在 macOS (arm64) 上构建并验证可用。
 - `who` / `users` / `pinky` 为简化实现，仅显示当前用户会话（通过 `os.get-login()` + `os.ttyname(0)`），不遍历 utmpx 列出全部登录会话。
+- `compress` / `uncompress` 为纯 Nolang LZW 实现，与系统 `compress` 命令的 `.Z` 格式兼容。
+- `less` 使用行输入（`fs.get-line()`），不支持字符级即时响应（需终端 raw 模式）。
+- `bzip2` / `xz` / `lzma` / `zstd` 系列命令当前通过 `process.process-system()` 委托系统命令执行，纯 Nolang 实现需以下标准库模块：
 
-### 编译器版本与已知问题
+### 需要标准库支持的命令
 
-项目依赖 [Nolang 编译器](https://github.com/lizongying/nolang)（`/Users/lizongying/IdeaProjects/no/`）。
-
-**当前最新 commit（`04a3dd5`）存在 `and i8` codegen 回归**，导致 LLVM 优化阶段报错：
-
-```
-opt: notools.ll:20461:28: error: '%vec.idx.zext.11602' defined with type 'i64' but expected 'i8'
-                        %and.tmp.11603 = and i8 %vec.idx.zext.11602, 255
-                                                ^
-Error: build error: LLVM optimization failed: exit status 1
-```
-
-该 bug 的根因：编译器在为 `[]byte` 数组元素生成 `& 255` 掩码操作时，使用了 `i8` 类型而非 `i64`，而 `generateIndexExpression` 已将 `i8` 元素 `zext` 到 `i64`，导致类型不匹配。
-
-**临时解决方案**：使用回归前的编译器二进制构建：
-
-```bash
-# 使用旧版编译器（位于 no/bin/no.orig）
-/Users/lizongying/IdeaProjects/no/bin/no.orig build ./notools/main.no
-# 产物位于 dist/main
-```
-
-**rotate-left 对 u32 数组元素的类型推断缺陷**：
-
-`rotate-left` 的 codegen（`call.go`）通过 `intExprLLVMType` 推断操作数位宽。但 `intExprLLVMType` 不处理 `IndexExpression`（数组元素访问），对 `[]u32` 数组元素默认返回 `i64`，导致 `rotate-left(w[i-15], 25)` 使用 `llvm.fshl.i64` 而非 `llvm.fshl.i32`，在 64 位空间旋转 32 位值，产生错误结果。
-
-已在 `call.go` 的 `rotate-left`/`rotate-right` 分支中添加 `IndexExpression` 回退：当 `intExprLLVMType` 返回空时，查 `arrayElemTypes` 获取元素类型。但此修复尚需 `and i8` 回归修复后才能验证。
-
-**当前哈希实现的规避策略**：
-
-| 算法 | 旋转实现 | 说明 |
-|------|----------|------|
-| SHA-512 / SHA-384（u64） | `rotate-left` 直接调用 | u64 上 `@llvm.fshl` 正常工作 |
-| SHA-256 / SHA-224 / SHA-1（u32） | 内联移位 `(x >> r) \| (x << (32-r))` | `rotate-left` 在 u32 数组元素上不正确，改用内联表达式（非拆分局部变量） |
-
-所有 `sha*x` 函数均已改为返回 `str`（不再使用 void + print 规避）。
+| 命令 | 需要的标准库模块 | 算法/功能说明 |
+|------|-----------------|--------------|
+| `chroot` | `os.chroot()` | 切换根目录的系统调用 |
+| `stdbuf` | `setvbuf` 式 stdio 控制 | 设置子进程 stdio 缓冲模式 |
+| `bzip2` / `bunzip2` / `bzcat` | `archive/bzip2` | Burrows-Wheeler Transform + Huffman |
+| `xz` / `unxz` / `xzcat` | `archive/xz` | LZMA2 压缩算法 |
+| `lzma` / `unlzma` / `lzcat` | `archive/xz` | LZMA2（传统 `.lzma` 格式） |
+| `zstd` / `unzstd` / `zstdcat` | `archive/zstd` | FSE + Huffman（Zstandard） |
 
 ## 项目结构
 
@@ -353,7 +320,7 @@ notools/
 │   ├── sha1x.no         # SHA-1
 │   ├── sha512x.no       # SHA-512（64 位字运算）
 │   ├── sha384x.no       # SHA-384（同算法不同 IV，96 字符输出）
-│   ├── md5x.no          # MD5（已使用 rotate-left，u32 变量正常）
+│   ├── md5x.no          # MD5
 │   ├── hashutil.no      # 哈希命令共享逻辑（do-hash / hash-cmd）
 │   ├── sha224sum.no     # GNU 风格 SHA-224 校验和（直接调用 sha224x）
 │   ├── sha384sum.no     # GNU 风格 SHA-384 校验和（直接调用 sha384x）
@@ -369,11 +336,7 @@ notools/
 ### 构建
 
 ```bash
-# 使用最新编译器（若 and i8 回归已修复）
 no build ./notools/main.no
-
-# 使用旧版编译器（当前推荐，规避 and i8 回归）
-/Users/lizongying/IdeaProjects/no/bin/no.orig build ./notools/main.no
 # 产物位于 dist/main
 ```
 
@@ -409,12 +372,6 @@ python3 -c "print('a'*1000, end='')" > /tmp/large.txt
 ./dist/main who       # 当前用户 + 终端
 ./dist/main pinky     # 轻量级用户信息
 ```
-
-### 编译器修复（待完成）
-
-1. **`and i8` 回归**（`expr.go`）：`arithLLVMType` 对 `[]byte` 元素的 `&` 操作误用 `i8` 类型，应使用 `i64` 后截断
-2. **`rotate-left` IndexExpression 类型推断**（`call.go`）：已添加修复代码，待 `and i8` 修复后验证
-3. 修复后，u32 哈希实现可从内联移位升级为 `rotate-left` 直接调用
 
 ## 许可证
 
