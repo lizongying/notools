@@ -1,0 +1,65 @@
+// unix2mac.no — unix2mac utility
+// Convert LF line endings to CR
+// Usage: unix2mac [FILE...]
+//   No FILE: read stdin, write stdout
+//   With FILE: modify in place
+
+unix2mac-convert = (content str) (out str) {
+    n = content.len
+    out = with-cap(n)
+    j = 0
+    i <- [0..n): {
+        c = content[i]
+        c == 10 -> {
+            ; LF: check if prev was CR (avoid double-converting CRLF)
+            prev-is-cr = false
+            i > 0 -> {
+                content[i - 1] == 13 -> prev-is-cr = true
+            }
+            prev-is-cr == false -> {
+                ; standalone LF -> convert to CR
+                out[j] = 13
+                j = j + 1
+            }
+            prev-is-cr == true -> {
+                ; CRLF: keep LF (CR already emitted)
+                out[j] = 10
+                j = j + 1
+            }
+        }
+        -> {
+            out[j] = c
+            j = j + 1
+        }
+    }
+}
+
+unix2mac-run = () {
+    argc = args()
+    {
+        argc <= 2 -> {
+            inp = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            out = unix2mac-convert(inp)
+            print(out)
+        }
+        -> {
+            i <- [2..argc): {
+                path = arg(i)
+                fs.is-file(path) == false -> {
+                    eprint('unix2mac: ' - path - ': No such file')
+                    os.exit(1)
+                }
+                inp = fs.read-file(path)
+                out = unix2mac-convert(inp)
+                data = out.to-bytes()
+                fs.write-file(path, data)
+            }
+        }
+    }
+}

@@ -1,0 +1,132 @@
+// rename.no — rename utility
+// Rename files using a sed-style substitution expression
+// Usage: rename [-v] [-n] [-f] EXPRESSION FILES...
+//   EXPRESSION: sed-style substitution (s/old/new/[g])
+//   -v: verbose output
+//   -n: dry run (show what would be done, but don't rename)
+//   -f: overwrite existing files
+//   FILES: files to rename
+
+; parse-subst: 解析 s/old/new/[flags] 格式的替換表達式
+; expr: 表達式字串
+; 返回 old, new, global, ok
+parse-subst = (expr str) (old str, new str, global bool, ok bool) {
+    ; 至少需要 s/x/y/ (4 字元)
+    expr.len < 4 -> return
+
+    ; 第一個字元必須是 's'
+    expr[0] != 's' -> return
+
+    ; 第二個字元是分隔符
+    sep = expr[1]
+
+    ; 找第二個分隔符（old 的結束）
+    second-sep = -1
+    i <- [2..expr.len): {
+        second-sep < 0 -> {
+            expr[i] == sep -> second-sep = i
+        }
+    }
+    second-sep < 0 -> return
+
+    ; 找第三個分隔符（new 的結束）
+    third-sep = -1
+    j <- [second-sep + 1..expr.len): {
+        third-sep < 0 -> {
+            expr[j] == sep -> third-sep = j
+        }
+    }
+    third-sep < 0 -> return
+
+    old = expr.slice(2, second-sep)
+    new = expr.slice(second-sep + 1, third-sep)
+
+    ; 檢查 flags（第三個分隔符之後的字元）
+    k <- [third-sep + 1..expr.len): {
+        expr[k] == 'g' -> global = true
+    }
+
+    ok = true
+}
+
+rename-run = () {
+    argc = args()
+
+    verbose = false
+    dry-run = false
+    force = false
+    files []str
+    expr = ''
+    got-expr = false
+
+    ; 第一個非 flag 參數是表達式，其餘是檔案
+    i <- [2..argc): {
+        a = arg(i)
+        a.starts-with('-') -> {
+            a.contains('v') -> verbose = true
+            a.contains('n') -> dry-run = true
+            a.contains('f') -> force = true
+        }
+        -> {
+            got-expr == false -> {
+                expr = a
+                got-expr = true
+            }
+            -> files.push(a)
+        }
+    }
+
+    got-expr == false -> {
+        eprint('Usage: rename [-v] [-n] [-f] EXPRESSION FILES...')
+        os.exit(1)
+    }
+
+    files.len == 0 -> {
+        eprint('rename: no files to rename')
+        os.exit(1)
+    }
+
+    old, new, global, ok = parse-subst(expr)
+    ok == false -> {
+        eprint('rename: invalid expression ' - expr)
+        os.exit(1)
+    }
+
+    i <- [0..files.len): {
+        src = files[i]
+
+        ; 應用替換
+        global -> dst = src.replace-str(old, new)
+        -> dst = src.replace-n(old, new, 1)
+
+        src == dst -> {
+            ; 名稱未變化，跳過
+            verbose -> {
+                msg = 'rename: ' - src - ' not renamed'
+                eprint(msg)
+            }
+        }
+        -> {
+            ; 檢查目標是否存在
+            dst-exists = fs.is-file(dst) || fs.is-dir(dst)
+            dst-exists && force == false -> {
+                eprint('rename: ' - dst - ' already exists')
+            }
+            -> {
+                dry-run -> {
+                    print(src - ' -> ' - dst)
+                }
+                -> {
+                    rename-ok = fs.rename(src, dst)
+                    rename-ok == false -> {
+                        eprint('rename: cannot rename ' - src - ' to ' - dst)
+                    }
+                    verbose -> {
+                        msg = src - ' -> ' - dst
+                        print(msg)
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,181 @@
+// test-cmd.no — test utility
+// Evaluate file/string/integer conditions
+// Usage: test EXPRESSION
+//   File tests:    -f FILE, -d FILE, -e FILE, -r FILE, -w FILE, -s FILE
+//   String tests:  -z STR, -n STR, STR1 = STR2, STR1 != STR2
+//   Integer tests: N1 -eq N2, -ne, -gt, -lt, -ge, -le
+//   Combining:     ! EXPR  (negation, may be nested)
+//   Exit 0 if true, 1 if false, 2 on syntax error.
+// (Function named test-run to avoid conflict with the test keyword/perm file.)
+
+test-atoi = (s str) (v i64) {
+    v = 0
+    neg = false
+    start = 0
+    s.len > 0 -> {
+        s[0] == 45 -> {
+            neg = true
+            start = 1
+        }
+    }
+    i <- [start..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+    neg == true -> v = 0 - v
+}
+
+// Evaluate the test expression whose args occupy indices [start..end).
+// Returns result=true if the expression is true.
+test-eval-range = (start i64, end i64) (result bool) {
+    result = false
+    n = end - start
+    n <= 0 -> return
+
+    first = arg(start)
+
+    // Leading negation: ! EXPR
+    first == '!' -> {
+        sub = test-eval-range(start + 1, end)
+        sub == false -> result = true
+        return
+    }
+
+    n == 1 -> {
+        // Single arg: true if non-empty
+        result = first.len > 0
+        return
+    }
+
+    // n == 2: unary operator + operand
+    {
+        first == '-f' -> {
+            n != 2 -> return
+            p = arg(start + 1)
+            result = fs.is-file(p)
+            return
+        }
+        first == '-d' -> {
+            n != 2 -> return
+            p = arg(start + 1)
+            result = fs.is-dir(p)
+            return
+        }
+        first == '-e' -> {
+            n != 2 -> return
+            p = arg(start + 1)
+            result = fs.is-file(p)
+            result == false -> result = fs.is-dir(p)
+            return
+        }
+        first == '-r' -> {
+            // readable: simplified — file exists (assume readable)
+            n != 2 -> return
+            p = arg(start + 1)
+            result = fs.is-file(p)
+            result == false -> result = fs.is-dir(p)
+            return
+        }
+        first == '-w' -> {
+            // writable: simplified — file exists (assume writable)
+            n != 2 -> return
+            p = arg(start + 1)
+            result = fs.is-file(p)
+            result == false -> result = fs.is-dir(p)
+            return
+        }
+        first == '-s' -> {
+            // non-empty file
+            n != 2 -> return
+            p = arg(start + 1)
+            result = false
+            fs.is-file(p) -> {
+                size, ok = os.stat-size(p)
+                ok == true && size > 0 -> result = true
+            }
+            return
+        }
+        first == '-z' -> {
+            n != 2 -> return
+            p = arg(start + 1)
+            result = p.len == 0
+            return
+        }
+        first == '-n' -> {
+            n != 2 -> return
+            p = arg(start + 1)
+            result = p.len > 0
+            return
+        }
+    }
+
+    // n == 3: binary operator (left op right)
+    n == 3 -> {
+        left  = arg(start)
+        op    = arg(start + 1)
+        right = arg(start + 2)
+        {
+            op == '=' -> {
+                result = left == right
+                return
+            }
+            op == '!=' -> {
+                result = left != right
+                return
+            }
+            op == '-eq' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l == r
+                return
+            }
+            op == '-ne' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l != r
+                return
+            }
+            op == '-gt' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l > r
+                return
+            }
+            op == '-lt' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l < r
+                return
+            }
+            op == '-ge' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l >= r
+                return
+            }
+            op == '-le' -> {
+                l = test-atoi(left)
+                r = test-atoi(right)
+                result = l <= r
+                return
+            }
+        }
+        // Unknown binary operator: treat as false.
+        result = false
+        return
+    }
+
+    // Unsupported arity: false.
+    result = false
+}
+
+test-run = () {
+    argc = args()
+    n = argc - 2
+
+    n == 0 -> os.exit(1)   // no expression — false
+
+    result = test-eval-range(2, argc)
+    result == true -> os.exit(0)
+    os.exit(1)
+}

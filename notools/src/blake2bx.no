@@ -1,0 +1,141 @@
+; blake2bx: BLAKE2b 雜湊，直接返回 128 字元 hex 字串
+; 使用 []u64 數組 + blake2b-gx 函數 + 內聯 sigma 值
+; 避免 2D 固定數組的運行時問題
+
+blake2b-gx = (v []u64, a i64, b i64, c i64, d i64, x u64, y u64) {
+    m u64 = 18446744073709551615
+    v[a] = (v[a] + v[b] + x) & m
+    ; ROTR(v[d]^v[a], 32) via W8 (3 independent assignments, avoid B14)
+    t1 u64 = v[d] ^ v[a]
+    t1-hi u64 = t1 >> 32
+    t1-lo u64 = t1 << 32
+    v[d] = (t1-hi | t1-lo) & m
+    v[c] = (v[c] + v[d]) & m
+    ; ROTR(v[b]^v[c], 24) = ROTL(..., 40)
+    t2 u64 = v[b] ^ v[c]
+    t2-hi u64 = t2 >> 24
+    t2-lo u64 = t2 << 40
+    v[b] = (t2-hi | t2-lo) & m
+    v[a] = (v[a] + v[b] + y) & m
+    ; ROTR(v[d]^v[a], 16) = ROTL(..., 48)
+    t3 u64 = v[d] ^ v[a]
+    t3-hi u64 = t3 >> 16
+    t3-lo u64 = t3 << 48
+    v[d] = (t3-hi | t3-lo) & m
+    v[c] = (v[c] + v[d]) & m
+    ; ROTR(v[b]^v[c], 63) = ROTL(..., 1)
+    t4 u64 = v[b] ^ v[c]
+    t4-hi u64 = t4 >> 63
+    t4-lo u64 = t4 << 1
+    v[b] = (t4-hi | t4-lo) & m
+}
+
+; do-round: one BLAKE2b round with given 16 message indices
+do-round = (v []u64, msg []u64, s0 i64, s1 i64, s2 i64, s3 i64, s4 i64, s5 i64, s6 i64, s7 i64, s8 i64, s9 i64, s10 i64, s11 i64, s12 i64, s13 i64, s14 i64, s15 i64) {
+    blake2b-gx(v, 0, 4, 8, 12, msg[s0], msg[s1])
+    blake2b-gx(v, 1, 5, 9, 13, msg[s2], msg[s3])
+    blake2b-gx(v, 2, 6, 10, 14, msg[s4], msg[s5])
+    blake2b-gx(v, 3, 7, 11, 15, msg[s6], msg[s7])
+    blake2b-gx(v, 0, 5, 10, 15, msg[s8], msg[s9])
+    blake2b-gx(v, 1, 6, 11, 12, msg[s10], msg[s11])
+    blake2b-gx(v, 2, 7, 8, 13, msg[s12], msg[s13])
+    blake2b-gx(v, 3, 4, 9, 14, msg[s14], msg[s15])
+}
+
+; blake2b-compress-x: compress one block, modifies h in-place
+blake2b-compress-x = (h []u64, msg []u64, t u64, last i64) {
+    m u64 = 18446744073709551615
+    v []u64 = with-len(16)
+    v[0] = h[0]
+    v[1] = h[1]
+    v[2] = h[2]
+    v[3] = h[3]
+    v[4] = h[4]
+    v[5] = h[5]
+    v[6] = h[6]
+    v[7] = h[7]
+    v[8] = 7640891576956012808
+    v[9] = 13503953896175478587
+    v[10] = 4354685564936845355
+    v[11] = 11912009170470909681
+    v[12] = 5840696475078001361 ^ t
+    v[13] = 11170449401992604703
+    v[14] = 2270897969802886507
+    last != 0 -> v[14] = v[14] ^ m
+    v[15] = 6620516959819538809
+
+    ; 12 rounds with inline sigma values
+    do-round(v, msg, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+    do-round(v, msg, 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3)
+    do-round(v, msg, 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4)
+    do-round(v, msg, 7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8)
+    do-round(v, msg, 9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13)
+    do-round(v, msg, 2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9)
+    do-round(v, msg, 12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11)
+    do-round(v, msg, 13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10)
+    do-round(v, msg, 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5)
+    do-round(v, msg, 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0)
+    do-round(v, msg, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+    do-round(v, msg, 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3)
+
+    h[0] = (h[0] ^ v[0] ^ v[8]) & m
+    h[1] = (h[1] ^ v[1] ^ v[9]) & m
+    h[2] = (h[2] ^ v[2] ^ v[10]) & m
+    h[3] = (h[3] ^ v[3] ^ v[11]) & m
+    h[4] = (h[4] ^ v[4] ^ v[12]) & m
+    h[5] = (h[5] ^ v[5] ^ v[13]) & m
+    h[6] = (h[6] ^ v[6] ^ v[14]) & m
+    h[7] = (h[7] ^ v[7] ^ v[15]) & m
+}
+
+blake2bx = (data []byte) (hex str) {
+    m u64 = 18446744073709551615
+    h []u64 = with-len(8)
+    h[0] = 7640891576956012808 ^ 16843072
+    h[1] = 13503953896175478587
+    h[2] = 4354685564936845355
+    h[3] = 11912009170470909681
+    h[4] = 5840696475078001361
+    h[5] = 11170449401992604703
+    h[6] = 2270897969802886507
+    h[7] = 6620516959819538809
+
+    dlen = data.len
+    t u64 = 0
+    offset = 0
+
+    for offset + 128 < dlen {
+        t = (t + 128) & m
+        msg []u64 = with-len(16)
+        mi <- [0..16): {
+            off = offset + mi * 8
+            msg[mi] = (data[off] & 255) | ((data[off + 1] & 255) << 8) | ((data[off + 2] & 255) << 16) | ((data[off + 3] & 255) << 24) | ((data[off + 4] & 255) << 32) | ((data[off + 5] & 255) << 40) | ((data[off + 6] & 255) << 48) | ((data[off + 7] & 255) << 56)
+        }
+        blake2b-compress-x(h, msg, t, 0)
+        offset = offset + 128
+    }
+
+    last-block = with-len(128)
+    i <- [0..128): { last-block[i] = 0 }
+    remaining = dlen - offset
+    i <- [0..remaining): { last-block[i] = data[offset + i] }
+
+    t = (t + remaining) & m
+    msg []u64 = with-len(16)
+    mi <- [0..16): {
+        off = mi * 8
+        msg[mi] = (last-block[off] & 255) | ((last-block[off + 1] & 255) << 8) | ((last-block[off + 2] & 255) << 16) | ((last-block[off + 3] & 255) << 24) | ((last-block[off + 4] & 255) << 32) | ((last-block[off + 5] & 255) << 40) | ((last-block[off + 6] & 255) << 48) | ((last-block[off + 7] & 255) << 56)
+    }
+    blake2b-compress-x(h, msg, t, 1)
+
+    hex-chars = '0123456789abcdef'
+    hex = with-len(128)
+    i <- [0..8): {
+        off = i * 16
+        j <- [0..8): {
+            b = (h[i] >> (j * 8)) & 255
+            hex[off + j * 2] = hex-chars[(b >> 4) & 15]
+            hex[off + j * 2 + 1] = hex-chars[b & 15]
+        }
+    }
+}

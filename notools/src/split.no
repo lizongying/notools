@@ -1,0 +1,169 @@
+// split.no — split utility
+// Split a file into pieces
+// Usage: split [-l LINES] [-b SIZE] [-a SUFFIX_LEN] [FILE [PREFIX]]
+//   -l N      put N lines per output file (default 1000)
+//   -b N[K|M] put N bytes per output file (K=1024, M=1048576)
+//   -a N      use suffix length N (default 2, producing aa, ab, ...)
+//   FILE      input file (default: stdin)
+//   PREFIX    output filename prefix (default: x)
+
+// atoi: parse a non-negative integer from a string
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+// parse-size: parse a size with optional K/M suffix
+parse-size = (s str) (n i64) {
+    n = 0
+    last = s.len - 1
+    last < 0 -> return
+    mult = 1
+    c = s[last]
+    {
+        c == 107 -> mult = 1024          // k
+        c == 75 -> mult = 1024           // K
+        c == 109 -> mult = 1048576       // m
+        c == 77 -> mult = 1048576        // M
+    }
+    end = last + 1
+    mult > 1 -> end = last
+    i <- [0..end): {
+        ch = s[i]
+        ch >= 48 && ch <= 57 -> n = n * 10 + (ch - 48)
+    }
+    n = n * mult
+}
+
+// gen-suffix: generate suffix string for file index (aa, ab, ..., ba, ...)
+gen-suffix = (idx i64, width i64) (suf str) {
+    chars = 'abcdefghijklmnopqrstuvwxyz'
+    buf = ' '.repeat(width)
+    i <- [0..width): {
+        buf[width - 1 - i] = chars[idx % 26]
+        idx = idx / 26
+    }
+    suf = buf
+}
+
+// write-chunk: write a chunk to a numbered output file
+write-chunk = (prefix str, file-idx i64, suffix-len i64, chunk str) {
+    suf = gen-suffix(file-idx, suffix-len)
+    fname = prefix - suf
+    fd = fs.open-write(fname)
+    fs.write(fd, chunk, chunk.len)
+    fs.close(fd)
+}
+
+split = () {
+    argc = args()
+    lines-per = 1000
+    bytes-per = 0
+    suffix-len = 2
+    infile = ''
+    prefix = 'x'
+    skip-next = false
+    i <- [2..argc): {
+        {
+            skip-next == true -> {
+                skip-next = false
+            }
+            -> {
+                a = arg(i)
+                {
+                    a == '-l' -> {
+                        i + 1 < argc -> {
+                            lines-per = atoi(arg(i + 1))
+                            skip-next = true
+                        }
+                    }
+                    a == '-b' -> {
+                        i + 1 < argc -> {
+                            bytes-per = parse-size(arg(i + 1))
+                            skip-next = true
+                        }
+                    }
+                    a == '-a' -> {
+                        i + 1 < argc -> {
+                            suffix-len = atoi(arg(i + 1))
+                            skip-next = true
+                        }
+                    }
+                    a.starts-with('-') && a.len > 1 -> {
+                    }
+                    ! a.starts-with('-') -> {
+                        infile == '' -> infile = a
+                        -> prefix = a
+                    }
+                }
+            }
+        }
+    }
+
+    // Read input (file or stdin)
+    content = ''
+    {
+        infile == '' -> {
+            content = fs.read-file('/dev/stdin')
+            // stdin pipe stat race (B18) retry
+            t <- [0..40): {
+                content.len == 0 -> {
+                    os.sleep-us(1000)
+                    content = fs.read-file('/dev/stdin')
+                }
+            }
+        }
+        -> {
+            fs.is-file(infile) == false -> {
+                eprint('split: ' - infile - ': No such file or directory')
+                os.exit(1)
+            }
+            content = fs.read-file(infile)
+        }
+    }
+
+    file-idx = 0
+    {
+        bytes-per > 0 -> {
+            // Split by bytes
+            total = content.len
+            pos = 0
+            {
+                pos < total -> {
+                    end = pos + bytes-per
+                    end > total -> end = total
+                    chunk = content.slice(pos, end)
+                    write-chunk(prefix, file-idx, suffix-len, chunk)
+                    file-idx = file-idx + 1
+                    pos = end
+                }
+            } (pos < total)
+        }
+        -> {
+            // Split by lines
+            start = 0
+            line-count = 0
+            j <- [0..content.len): {
+                content[j] == 10 -> {
+                    line-count = line-count + 1
+                    line-count >= lines-per -> {
+                        end = j + 1
+                        chunk = content.slice(start, end)
+                        write-chunk(prefix, file-idx, suffix-len, chunk)
+                        file-idx = file-idx + 1
+                        start = end
+                        line-count = 0
+                    }
+                }
+            }
+            start < content.len -> {
+                chunk = content.slice(start, content.len)
+                write-chunk(prefix, file-idx, suffix-len, chunk)
+                file-idx = file-idx + 1
+            }
+        }
+    }
+}

@@ -1,0 +1,89 @@
+// watch.no — watch utility
+// Execute a command periodically, displaying output fullscreen
+// Usage: watch [-n SECONDS] COMMAND
+//   -n N: interval in seconds (default 2)
+//   Runs forever; stop with Ctrl+C (SIGINT).
+//   Clears the screen and re-runs the command every interval.
+
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+watch = () {
+    argc = args()
+
+    interval = 2
+    next-is-n = false
+    cmd-start = 2
+
+    i <- [2..argc): {
+        handled = false
+        {
+            next-is-n -> {
+                a = arg(i)
+                interval = atoi(a)
+                next-is-n = false
+                cmd-start = i + 1
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-n' -> {
+                        next-is-n = true
+                        handled = true
+                    }
+                    a.starts-with('-n') && a.len > 2 -> {
+                        cand = a.slice(2, a.len)
+                        interval = atoi(cand)
+                        cmd-start = i + 1
+                        handled = true
+                    }
+                }
+                {
+                    handled == false -> {
+                        cmd-start = i
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    cmd-start >= argc -> {
+        eprint('Usage: watch [-n SECONDS] COMMAND')
+        os.exit(1)
+    }
+
+    // Build command string from remaining args
+    cmd = ''
+    i <- [cmd-start..argc): {
+        i > cmd-start -> cmd = cmd - ' '
+        cmd = cmd - arg(i)
+    }
+
+    interval <= 0 -> interval = 1
+
+    // Loop forever until killed by SIGINT
+    {
+        // Clear screen and move cursor home
+        io.out('\033[2J')
+        io.out('\033[H')
+        // Header line with the command and current time
+        now = os.now()
+        now-str = now.to-str()
+        ivl-str = interval.to-str()
+        print('Every ' - ivl-str - 's: ' - cmd - '  (epoch ' - now-str - ')')
+        // Run the command (ignore exit status)
+        pid = process-spawn(cmd)
+        pid > 0 -> process-wait(pid)
+        // Sleep for the interval
+        os.sleep(interval)
+    } (true)
+}

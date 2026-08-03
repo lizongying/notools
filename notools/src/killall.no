@@ -1,0 +1,221 @@
+// killall.no — killall utility
+// Kill processes by name (exact match)
+// Usage: killall [-SIGNAL|-s SIGNAL] [-l] [-q] NAME...
+//   -SIGNAL:   signal by name (e.g. -TERM) or number (e.g. -9)
+//   -s SIGNAL: signal by name or number
+//   -l:        list known signal names
+//   -q:        quiet mode (no error messages)
+//   Default signal: TERM (15)
+// Note: Process matching uses process.list-all() which only works on Linux.
+
+; sig-name: parse signal name or number to signal number
+; Accepts: '9', 'TERM', 'SIGTERM', 'SIG-TERM' (case-insensitive)
+; Returns -1 on unknown signal name
+sig-name = (s str) (sig i64) {
+    sig = -1
+    s.len == 0 -> return
+    first = s[0]
+    first >= 48 && first <= 57 -> {
+        v = 0
+        i <- [0..s.len): {
+            c = s[i]
+            c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+        }
+        sig = v
+        return
+    }
+    upper = s.to-upper()
+    upper.starts-with('SIG-') -> upper = upper.slice(4, upper.len)
+    upper.starts-with('SIG') -> upper = upper.slice(3, upper.len)
+    {
+        upper == 'HUP'    -> sig = 1
+        upper == 'INT'    -> sig = 2
+        upper == 'QUIT'   -> sig = 3
+        upper == 'ILL'    -> sig = 4
+        upper == 'TRAP'   -> sig = 5
+        upper == 'ABRT'   -> sig = 6
+        upper == 'BUS'    -> sig = 7
+        upper == 'FPE'    -> sig = 8
+        upper == 'KILL'   -> sig = 9
+        upper == 'USR1'   -> sig = 10
+        upper == 'SEGV'   -> sig = 11
+        upper == 'USR2'   -> sig = 12
+        upper == 'PIPE'   -> sig = 13
+        upper == 'ALRM'   -> sig = 14
+        upper == 'TERM'   -> sig = 15
+        upper == 'STKFLT' -> sig = 16
+        upper == 'CHLD'   -> sig = 17
+        upper == 'CONT'   -> sig = 18
+        upper == 'STOP'   -> sig = 19
+        upper == 'TSTP'   -> sig = 20
+        upper == 'TTIN'   -> sig = 21
+        upper == 'TTOU'   -> sig = 22
+        upper == 'URG'    -> sig = 23
+        upper == 'XCPU'   -> sig = 24
+        upper == 'XFSZ'   -> sig = 25
+        upper == 'VTALRM' -> sig = 26
+        upper == 'PROF'   -> sig = 27
+        upper == 'WINCH'  -> sig = 28
+        upper == 'IO'     -> sig = 29
+        upper == 'PWR'    -> sig = 30
+        upper == 'SYS'    -> sig = 31
+    }
+}
+
+; sig-num: convert signal number to name (without SIG prefix)
+sig-num = (sig i64) (name str) {
+    name = ''
+    {
+        sig == 1  -> name = 'HUP'
+        sig == 2  -> name = 'INT'
+        sig == 3  -> name = 'QUIT'
+        sig == 4  -> name = 'ILL'
+        sig == 5  -> name = 'TRAP'
+        sig == 6  -> name = 'ABRT'
+        sig == 7  -> name = 'BUS'
+        sig == 8  -> name = 'FPE'
+        sig == 9  -> name = 'KILL'
+        sig == 10 -> name = 'USR1'
+        sig == 11 -> name = 'SEGV'
+        sig == 12 -> name = 'USR2'
+        sig == 13 -> name = 'PIPE'
+        sig == 14 -> name = 'ALRM'
+        sig == 15 -> name = 'TERM'
+        sig == 16 -> name = 'STKFLT'
+        sig == 17 -> name = 'CHLD'
+        sig == 18 -> name = 'CONT'
+        sig == 19 -> name = 'STOP'
+        sig == 20 -> name = 'TSTP'
+        sig == 21 -> name = 'TTIN'
+        sig == 22 -> name = 'TTOU'
+        sig == 23 -> name = 'URG'
+        sig == 24 -> name = 'XCPU'
+        sig == 25 -> name = 'XFSZ'
+        sig == 26 -> name = 'VTALRM'
+        sig == 27 -> name = 'PROF'
+        sig == 28 -> name = 'WINCH'
+        sig == 29 -> name = 'IO'
+        sig == 30 -> name = 'PWR'
+        sig == 31 -> name = 'SYS'
+    }
+}
+
+; list-all: list all signal names with numbers
+list-all = () {
+    i <- [1..32): {
+        n = sig-num(i)
+        n.len > 0 -> print(i.to-str() - ') SIG' - n)
+    }
+}
+
+killall-run = () {
+    argc = args()
+
+    list-mode = false
+    quiet = false
+    sig = 15  ; SIG-TERM default
+    next-is-signal = false
+    names []str
+
+    i <- [2..argc): {
+        handled = false
+        {
+            next-is-signal -> {
+                a = arg(i)
+                parsed = sig-name(a)
+                parsed < 0 -> {
+                    quiet == false -> {
+                        msg = 'killall: unknown signal ' - a
+                        eprint(msg)
+                    }
+                    os.exit(1)
+                }
+                sig = parsed
+                next-is-signal = false
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-l' -> {
+                        list-mode = true
+                        handled = true
+                    }
+                    a == '-q' -> {
+                        quiet = true
+                        handled = true
+                    }
+                    a == '-s' -> {
+                        next-is-signal = true
+                        handled = true
+                    }
+                    a.starts-with('-s') && a.len > 2 -> {
+                        cand = a.slice(2, a.len)
+                        parsed = sig-name(cand)
+                        parsed < 0 -> {
+                            quiet == false -> {
+                                msg2 = 'killall: unknown signal ' - cand
+                                eprint(msg2)
+                            }
+                            os.exit(1)
+                        }
+                        sig = parsed
+                        handled = true
+                    }
+                    a.starts-with('-') && a.len > 1 -> {
+                        cand = a.slice(1, a.len)
+                        parsed = sig-name(cand)
+                        parsed >= 0 -> {
+                            sig = parsed
+                            handled = true
+                        }
+                    }
+                }
+                {
+                    handled == false -> {
+                        ! a.starts-with('-') -> names.push(a)
+                    }
+                }
+            }
+        }
+    }
+
+    list-mode -> {
+        list-all()
+        return
+    }
+
+    names.len == 0 -> {
+        quiet == false -> {
+            eprint('Usage: killall [-SIGNAL|-s SIGNAL] [-l] [-q] NAME...')
+        }
+        os.exit(1)
+    }
+
+    had-error = false
+    i <- [0..names.len): {
+        name = names[i]
+        pids = process.find-by-name(name)
+        pids.len == 0 -> {
+            quiet == false -> {
+                msg = 'killall: ' - name - ': no process found'
+                eprint(msg)
+            }
+            had-error = true
+        }
+        j <- [0..pids.len): {
+            ok = process.process-kill(pids[j], sig)
+            ok == false -> {
+                quiet == false -> {
+                    msg3 = 'killall: (' - pids[j].to-str() - '): Operation not permitted'
+                    eprint(msg3)
+                }
+                had-error = true
+            }
+        }
+    }
+
+    had-error -> os.exit(1)
+}

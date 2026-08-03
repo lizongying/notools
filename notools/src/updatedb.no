@@ -1,0 +1,140 @@
+; updatedb.no — updatedb utility (pure Nolang)
+; Build a file path database for locate.
+; Usage: updatedb [OPTIONS]
+;   -U PATH     scan PATH instead of /
+;   -o FILE     write to FILE instead of ~/.notools/locatedb
+;   --prunepaths DIRS  skip directories (comma-separated)
+
+; walk: recursively walk a directory and collect paths
+walk-dir = (dir str, paths []str, prunes []str) {
+    ; check if this dir is pruned
+    j <- [0..prunes.len): {
+        prunes[j] == dir -> return
+    }
+
+    paths.push(dir)
+
+    dirp = fs.open-dir(dir)
+    dirp == 0 -> return
+
+    ok = true
+    for ok == true {
+        name, ok = fs.read-dir(dirp)
+        ok -> {
+            skip = name == '.' || name == '..'
+            skip == false -> {
+                ; build child path with byte-copy join (B11-safe)
+                child = join-path(dir, name)
+                is-d = fs.is-dir(child)
+                is-d -> walk-dir(child, paths, prunes)
+                is-d == false -> {
+                    is-f = fs.is-file(child)
+                    is-f -> paths.push(child)
+                }
+            }
+        }
+    }
+    fs.close-dir(dirp)
+}
+
+; join-path: dir + '/' + name, pure byte copy (B11-safe, no '-' concat in loop)
+join-path = (dir str, name str) (out str) {
+    need-sep = true
+    dir.len == 0 -> need-sep = false
+    dir.len > 0 -> {
+        dir[dir.len - 1] == 47 -> need-sep = false
+    }
+    name.len > 0 -> {
+        name[0] == 47 -> need-sep = false
+    }
+
+    total = dir.len
+    need-sep -> total = total + 1
+    total = total + name.len
+
+    out = with-len(total)
+    n = 0
+    i <- [0..dir.len): {
+        out[n] = dir[i]
+        n = n + 1
+    }
+    need-sep -> {
+        out[n] = 47
+        n = n + 1
+    }
+    j <- [0..name.len): {
+        out[n] = name[j]
+        n = n + 1
+    }
+}
+
+updatedb-run = () {
+    argc = args()
+
+    root = '/'
+    outfile = ''
+    prunes []str
+    ; default prune paths
+    prunes.push('/dev')
+    prunes.push('/proc')
+    prunes.push('/sys')
+    prunes.push('/run')
+    prunes.push('/tmp')
+
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-U' -> {
+            i + 1 < argc -> root = arg(i + 1)
+        }
+        a == '-o' -> {
+            i + 1 < argc -> outfile = arg(i + 1)
+        }
+        a == '--prunepaths' -> {
+            i + 1 < argc -> {
+                pp = arg(i + 1)
+                ; split by comma
+                s = 0
+                j <- [0..pp.len): {
+                    pp[j] == 44 -> {
+                        prunes.push(pp.slice(s, j))
+                        s = j + 1
+                    }
+                }
+                s < pp.len -> prunes.push(pp.slice(s, pp.len))
+            }
+        }
+    }
+
+    outfile.len == 0 -> {
+        home = os.get-env('HOME')
+        outfile = home - '/.notools/locatedb'
+    }
+
+    ; ensure parent directory exists
+    ; find last '/' in outfile
+    last-slash = -1
+    j <- [0..outfile.len): {
+        outfile[j] == 47 -> last-slash = j
+    }
+    last-slash > 0 -> {
+        parent = outfile.slice(0, last-slash)
+        os.mkdir(parent, 511)
+    }
+
+    ; walk filesystem
+    paths []str
+    walk-dir(root, paths, prunes)
+
+    ; write database
+    fd = fs.open-write(outfile)
+    j <- [0..paths.len): {
+        line = paths[j]
+        fs.write(fd, line, line.len)
+        nl []byte = [10]
+        fs.write(fd, nl, 1)
+    }
+    fs.close(fd)
+
+    eprint('updatedb: ' - paths.len.to-str() - ' paths written to ' - outfile)
+    os.exit(0)
+}

@@ -1,0 +1,168 @@
+// hexdump.no — hexdump utility
+// Display file contents in hexadecimal
+// Usage: hexdump [-C] [-n LENGTH] [-s OFFSET] [file]
+
+# /notools/src/hexdump.hexdump
+
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+hexdump-run = () {
+    argc = args()
+    length = -1
+    skip = 0
+    files []str
+    skip-next = false
+    i <- [2..argc): {
+        handled = false
+        {
+            skip-next == true -> {
+                skip-next = false
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-C' -> handled = true
+                    a == '-n' -> {
+                        i + 1 < argc -> {
+                            length = atoi(arg(i + 1))
+                            skip-next = true
+                        }
+                        handled = true
+                    }
+                    a == '-s' -> {
+                        i + 1 < argc -> {
+                            skip = atoi(arg(i + 1))
+                            skip-next = true
+                        }
+                        handled = true
+                    }
+                    a.starts-with('-n') -> {
+                        a.len > 2 -> {
+                            length = atoi(a.slice(2, a.len))
+                            handled = true
+                        }
+                    }
+                    a.starts-with('-s') -> {
+                        a.len > 2 -> {
+                            skip = atoi(a.slice(2, a.len))
+                            handled = true
+                        }
+                    }
+                }
+                {
+                    handled == false -> {
+                        ! a.starts-with('-') -> files.push(a)
+                    }
+                }
+            }
+        }
+    }
+
+    data []byte
+    {
+        files.len == 0 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 竞态读空（B18）重试
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+        }
+        -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('hexdump: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(f)
+                b = inp.to-bytes()
+                k <- [0..b.len): { data.push(b[k]) }
+            }
+        }
+    }
+
+    // 应用 -s OFFSET 和 -n LENGTH
+    n = data.len
+    start-off = skip
+    {
+        start-off > n -> start-off = n
+    }
+    end-off = n
+    {
+        length >= 0 -> {
+            end-off = start-off + length
+            end-off > n -> end-off = n
+        }
+    }
+
+    canonical(data, start-off, end-off)
+}
+
+// canonical: hexdump -C 格式输出
+// 00000000:  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|
+canonical = (data []byte, start-off i64, end-off i64) {
+    hex-digits = '0123456789abcdef'
+    space = ' '
+    offset = start-off
+    {
+        offset < end-off -> {
+            line-n = end-off - offset
+            line-n > 16 -> line-n = 16
+            // 总长度 79：8(offset) + 1(:) + 2(spaces) + 23(group1) + 2(spaces) + 23(group2) + 2(spaces) + 1(|) + 16(ascii) + 1(|)
+            line = space.repeat(79)
+            // 8 位地址（小写十六进制，零填充）
+            a = offset
+            k <- [0..8): {
+                line[7 - k] = hex-digits[a & 15]
+                a = a >> 4
+            }
+            line[8] = ':'
+            // line[9] 和 line[10] 已是空格（repeat 预填充）
+            // 十六进制区段，第一组从位置 11 开始
+            hi = 11
+            j <- [0..line-n): {
+                b = data[offset + j] & 255
+                line[hi] = hex-digits[(b >> 4) & 15]
+                hi = hi + 1
+                line[hi] = hex-digits[b & 15]
+                hi = hi + 1
+                // 字节间空格（除每组最后一个字节外）
+                j != 7 && j != 15 -> {
+                    line[hi] = ' '
+                    hi = hi + 1
+                }
+                // 第一组后额外空格（组间分隔）
+                j == 7 -> {
+                    line[hi] = ' '
+                    hi = hi + 1
+                }
+            }
+            // ASCII 区段：位置 61 是 |，62-77 是 ASCII，78 是 |
+            ascii-start = 62
+            line[ascii-start - 1] = '|'
+            j <- [0..line-n): {
+                b = data[offset + j] & 255
+                {
+                    b >= 32 && b < 127 -> line[ascii-start + j] = b
+                    -> line[ascii-start + j] = '.'
+                }
+            }
+            line[ascii-start + 16] = '|'
+            print(line)
+            offset = offset + 16
+        }
+    } (offset < end-off)
+}

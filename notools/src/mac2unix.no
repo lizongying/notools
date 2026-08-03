@@ -1,0 +1,65 @@
+// mac2unix.no — mac2unix utility
+// Convert CR line endings to LF
+// Usage: mac2unix [FILE...]
+//   No FILE: read stdin, write stdout
+//   With FILE: modify in place
+
+mac2unix-convert = (content str) (out str) {
+    n = content.len
+    out = with-cap(n)
+    j = 0
+    i <- [0..n): {
+        c = content[i]
+        c == 13 -> {
+            ; CR: check if next is LF
+            next-is-lf = false
+            i + 1 < n -> {
+                content[i + 1] == 10 -> next-is-lf = true
+            }
+            next-is-lf == false -> {
+                ; standalone CR -> convert to LF
+                out[j] = 10
+                j = j + 1
+            }
+            next-is-lf == true -> {
+                ; CRLF: keep CR (LF handled next iteration)
+                out[j] = 13
+                j = j + 1
+            }
+        }
+        -> {
+            out[j] = c
+            j = j + 1
+        }
+    }
+}
+
+mac2unix-run = () {
+    argc = args()
+    {
+        argc <= 2 -> {
+            inp = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            out = mac2unix-convert(inp)
+            print(out)
+        }
+        -> {
+            i <- [2..argc): {
+                path = arg(i)
+                fs.is-file(path) == false -> {
+                    eprint('mac2unix: ' - path - ': No such file')
+                    os.exit(1)
+                }
+                inp = fs.read-file(path)
+                out = mac2unix-convert(inp)
+                data = out.to-bytes()
+                fs.write-file(path, data)
+            }
+        }
+    }
+}

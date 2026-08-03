@@ -1,0 +1,158 @@
+// dd.no — dd utility
+// Byte-level copy with block-level control
+// Usage: dd [if=FILE] [of=FILE] [bs=N] [count=N] [skip=N] [seek=N] [status=LEVEL]
+//   if=FILE     read from FILE (default: stdin)
+//   of=FILE     write to FILE (default: stdout)
+//   bs=N        block size (default 512); supports K/M/G suffix
+//   count=N     copy only N input blocks
+//   skip=N      skip N input blocks before copying
+//   seek=N      skip N output blocks before writing
+//   status=LEVEL  none | noxfer | xfer (default xfer)
+
+// atoi: parse a non-negative integer
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+// parse-size: parse a size with optional K/M/G suffix
+parse-size = (s str) (n i64) {
+    n = 0
+    last = s.len - 1
+    last < 0 -> return
+    mult = 1
+    c = s[last]
+    {
+        c == 107 || c == 75 -> mult = 1024          // k or K
+        c == 109 || c == 77 -> mult = 1048576       // m or M
+        c == 103 || c == 71 -> mult = 1073741824    // g or G
+    }
+    end = last + 1
+    mult > 1 -> end = last
+    i <- [0..end): {
+        ch = s[i]
+        ch >= 48 && ch <= 57 -> n = n * 10 + (ch - 48)
+    }
+    n = n * mult
+}
+
+dd = () {
+    argc = args()
+    infile = ''
+    outfile = ''
+    bs = 512
+    count = -1
+    skip = 0
+    seek = 0
+    status = 'xfer'
+
+    i <- [2..argc): {
+        a = arg(i)
+        a.starts-with('if=') -> infile = a.slice(3, a.len)
+        a.starts-with('of=') -> outfile = a.slice(3, a.len)
+        a.starts-with('bs=') -> bs = parse-size(a.slice(3, a.len))
+        a.starts-with('count=') -> count = atoi(a.slice(6, a.len))
+        a.starts-with('skip=') -> skip = atoi(a.slice(5, a.len))
+        a.starts-with('seek=') -> seek = atoi(a.slice(5, a.len))
+        a.starts-with('status=') -> status = a.slice(7, a.len)
+    }
+
+    bs <= 0 -> bs = 512
+
+    // Read input (file or stdin)
+    input = ''
+    {
+        infile == '' -> {
+            input = fs.read-file('/dev/stdin')
+            // stdin pipe stat race (B18) retry
+            t <- [0..40): {
+                input.len == 0 -> {
+                    os.sleep-us(1000)
+                    input = fs.read-file('/dev/stdin')
+                }
+            }
+        }
+        -> {
+            fs.is-file(infile) == false -> {
+                eprint('dd: ' - infile - ': No such file or directory')
+                os.exit(1)
+            }
+            input = fs.read-file(infile)
+        }
+    }
+
+    // Apply skip: skip N input blocks
+    in-start = skip * bs
+    in-start > input.len -> in-start = input.len
+
+    // Apply count: copy at most N blocks
+    copy-len = input.len - in-start
+    count >= 0 -> {
+        count-len = count * bs
+        count-len < copy-len -> copy-len = count-len
+    }
+    copy-len < 0 -> copy-len = 0
+
+    // Extract the data to copy
+    in-end = in-start + copy-len
+    data = input.slice(in-start, in-end)
+
+    // Write output
+    {
+        outfile == '' -> {
+            // Write to stdout
+            io.out(data)
+        }
+        -> {
+            seek == 0 -> {
+                // Simple write (truncate)
+                fd = fs.open-write(outfile)
+                fs.write(fd, data, data.len)
+                fs.close(fd)
+            }
+            -> {
+                // Seek into output file: preserve existing content
+                existing = ''
+                fs.is-file(outfile) -> existing = fs.read-file(outfile)
+                seek-bytes = seek * bs
+                out = ''
+                {
+                    existing.len >= seek-bytes -> {
+                        out = existing.slice(0, seek-bytes) - data
+                        after = seek-bytes + data.len
+                        after < existing.len -> {
+                            out = out - existing.slice(after, existing.len)
+                        }
+                    }
+                    -> {
+                        // Pad with zeros up to seek-bytes, then append data
+                        pad-len = seek-bytes - existing.len
+                        pad = '\0'.repeat(pad-len)
+                        out = existing - pad - data
+                    }
+                }
+                fd = fs.open-write(outfile)
+                fs.write(fd, out, out.len)
+                fs.close(fd)
+            }
+        }
+    }
+
+    // Print transfer stats to stderr
+    {
+        status != 'none' -> {
+            full = copy-len / bs
+            rem = copy-len % bs
+            partial = 0
+            rem > 0 -> partial = 1
+            eprint(full.to-str() - '+' - partial.to-str() - ' records in')
+            eprint(full.to-str() - '+' - partial.to-str() - ' records out')
+            status != 'noxfer' -> {
+                eprint(copy-len.to-str() - ' bytes copied')
+            }
+        }
+    }
+}

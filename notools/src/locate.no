@@ -1,0 +1,105 @@
+; locate.no — locate utility (pure Nolang)
+; Search a pre-built file path database for matches.
+; Usage: locate [OPTIONS] PATTERN
+;   -i          case-insensitive match
+;   -c          count matches only
+;   -l N        limit to N results
+;   -d FILE     use FILE as database (default: ~/.notools/locatedb)
+;   -r          treat PATTERN as regex (basic substring match fallback)
+
+locate-run = () {
+    argc = args()
+
+    case-insensitive = false
+    count-only = false
+    limit = -1
+    dbfile = ''
+    pattern = ''
+    use-regex = false
+
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-i' -> case-insensitive = true
+        a == '-c' -> count-only = true
+        a == '-r' -> use-regex = true
+        a == '-l' -> {
+            i + 1 < argc -> {
+                nstr = arg(i + 1)
+                limit = 0
+                j <- [0..nstr.len): {
+                    c = nstr[j]
+                    c >= 48 && c <= 57 -> limit = limit * 10 + (c - 48)
+                }
+            }
+        }
+        a == '-d' -> {
+            i + 1 < argc -> dbfile = arg(i + 1)
+        }
+        a.starts-with('-') == false -> pattern = a
+    }
+
+    pattern.len == 0 -> {
+        eprint('locate: no pattern specified')
+        os.exit(1)
+    }
+
+    ; resolve database path
+    db = dbfile
+    db.len == 0 -> {
+        home = os.get-env('HOME')
+        db = home - '/.notools/locatedb'
+    }
+
+    fs.is-file(db) == false -> {
+        eprint('locate: can not stat database, run updatedb first')
+        os.exit(1)
+    }
+
+    content = fs.read-file(db)
+    ; split into lines
+    lines []str
+    start = 0
+    j <- [0..content.len): {
+        content[j] == 10 -> {
+            lines.push(content.slice(start, j))
+            start = j + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+
+    ; prepare search pattern (case-insensitive: lowercase both)
+    needle = pattern
+    case-insensitive -> {
+        needle = pattern.to-lower()
+    }
+
+    found = 0
+    j <- [0..lines.len): {
+        line = lines[j]
+        line.len == 0 -> *
+
+        matched = false
+        case-insensitive -> {
+            lower-line = line.to-lower()
+            lower-line.contains(needle) -> matched = true
+        }
+        case-insensitive == false -> {
+            line.contains(needle) -> matched = true
+        }
+
+        matched -> {
+            found = found + 1
+            count-only == false -> {
+                limit < 0 -> print(line)
+                limit >= 0 -> {
+                    found <= limit -> print(line)
+                }
+            }
+        }
+    }
+
+    count-only -> print(found.to-str())
+
+    found == 0 -> os.exit(1)
+    os.exit(0)
+}

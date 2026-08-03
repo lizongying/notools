@@ -1,0 +1,128 @@
+// envsubst.no — envsubst utility
+// Substitute environment variables in stdin
+// Usage: envsubst [VARIABLES...]
+//   Reads stdin, replaces $VAR and ${VAR} with environment values.
+//   If VARIABLES specified, only substitute those; otherwise substitute all
+//   environment variables that are set.
+//   Exit 0 on success.
+
+// allowed: check whether NAME is in the allowed list.
+// An empty allowed list means "all variables allowed".
+check-allowed = (name str, allowed []str) (yes bool) {
+    yes = false
+    allowed.len == 0 -> {
+        yes = true
+        return
+    }
+    i <- [0..allowed.len): {
+        allowed[i] == name -> {
+            yes = true
+            return
+        }
+    }
+}
+
+// lookup: return env value for NAME if substitution is allowed.
+// Returns empty string with ok=false when not allowed or unset.
+lookup = (name str, allowed []str) (val str, ok bool) {
+    val = ''
+    ok = false
+    permitted = check-allowed(name, allowed)
+    permitted == false -> return
+    val = os.get-env(name)
+    val.len > 0 -> ok = true
+    val.len == 0 -> val = ''
+}
+
+envsubst = () {
+    argc = args()
+
+    // Collect optional allow-list of variable names.
+    allowed []str
+    i <- [2..argc): {
+        a = arg(i)
+        a == '--' -> continue
+        a.starts-with('-') && a.len > 1 -> continue
+        allowed.push(a)
+    }
+
+    content = fs.read-file('/dev/stdin')
+
+    out = ''
+    i = 0
+    {
+        i >= content.len -> *
+        c = content[i]
+
+        c != 36 -> {
+            // regular byte — append
+            out = out - number.char-to-str(c)
+            i = i + 1
+            continue
+        }
+
+        // c == 36 ('$')
+        dollar-start = i
+        i = i + 1
+        i >= content.len -> {
+            // trailing '$'
+            out = out - '$'
+            break
+        }
+        next = content[i]
+
+        // ${VAR} form
+        next == 123 -> {
+            i = i + 1
+            name-start = i
+            found-close = false
+            {
+                i >= content.len -> *
+                ch = content[i]
+                ch == 125 -> {
+                    found-close = true
+                    break
+                }
+                i = i + 1
+            } (true)
+            found-close == false -> {
+                // unterminated ${VAR — emit the remainder literally
+                out = out - content.slice(dollar-start, content.len)
+                i = content.len
+                continue
+            }
+            name = content.slice(name-start, i)
+            i = i + 1   // skip '}'
+            val = os.get-env(name)
+            val.len > 0 -> out = out - val
+            val.len == 0 -> out = out - content.slice(dollar-start, i)
+            continue
+        }
+
+        // $VAR form — first char must be _ or letter
+        is-var-start = (next == 95) || (next >= 65 && next <= 90) || (next >= 97 && next <= 122)
+        is-var-start -> {
+            name-start = i
+            {
+                i >= content.len -> *
+                ch = content[i]
+                (ch == 95) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || (ch >= 48 && ch <= 57) -> {
+                    i = i + 1
+                    continue
+                }
+                break
+            } (true)
+            name = content.slice(name-start, i)
+            val = os.get-env(name)
+            val.len > 0 -> out = out - val
+            val.len == 0 -> out = out - content.slice(dollar-start, i)
+            continue
+        }
+
+        // '$' not followed by a valid variable name start — emit '$' literally
+        out = out - '$'
+        // leave i pointing at the next char so it is reprocessed
+    } (true)
+
+    io.out(out)
+}

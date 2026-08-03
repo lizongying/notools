@@ -1,0 +1,232 @@
+; ptx.no — ptx utility (permutation index, pure Nolang)
+; Generate a permuted index (keyword-in-context) from text files.
+; Usage: ptx [OPTIONS] [FILE...]
+;   -A N        include N words of after-context (default 0)
+;   -B N        include N words of before-context (default 0)
+;   -r          ignore case when sorting
+; Default reads stdin if no FILE given.
+; NOTE: avoids struct arrays (compiler codegen bug with str fields in structs);
+; uses parallel []str arrays instead.
+
+; is-word-char: check if byte is part of a word (letter, digit, or underscore)
+is-word-char = (b byte) (yes bool) {
+    yes = false
+    b >= 65 && b <= 90 -> yes = true
+    b >= 97 && b <= 122 -> yes = true
+    b >= 48 && b <= 57 -> yes = true
+    b == 95 -> yes = true
+}
+
+; split-words: split a line into words, return []str of words
+split-words = (line str) (words []str) {
+    n = line.len
+    i = 0
+    for i < n {
+        ; skip non-word chars
+        done-skip = false
+        for done-skip == false {
+            i >= n -> {
+                done-skip = true
+                break
+            }
+            wc = false
+            is-word-char(line[i], wc)
+            wc == true -> {
+                done-skip = true
+                break
+            }
+            i = i + 1
+        }
+        i >= n -> break
+        ; collect word
+        start = i
+        done-word = false
+        for done-word == false {
+            i >= n -> {
+                done-word = true
+                break
+            }
+            wc3 = false
+            is-word-char(line[i], wc3)
+            wc3 == false -> {
+                done-word = true
+                break
+            }
+            i = i + 1
+        }
+        words.push(line.slice(start, i))
+    }
+}
+
+ptx-run = () {
+    argc = args()
+
+    before-ctx = 0
+    after-ctx = 0
+    ignore-case = false
+
+    ; parse options (manual loop to skip option arguments)
+    file-start = 2
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-A' -> {
+            i + 1 < argc -> {
+                ns = arg(i + 1)
+                after-ctx = 0
+                j <- [0..ns.len): {
+                    ns[j] >= 48 && ns[j] <= 57 -> after-ctx = after-ctx * 10 + (ns[j] - 48)
+                }
+            }
+            i = i + 2
+            file-start = i
+            continue
+        }
+        a == '-B' -> {
+            i + 1 < argc -> {
+                ns = arg(i + 1)
+                before-ctx = 0
+                j <- [0..ns.len): {
+                    ns[j] >= 48 && ns[j] <= 57 -> before-ctx = before-ctx * 10 + (ns[j] - 48)
+                }
+            }
+            i = i + 2
+            file-start = i
+            continue
+        }
+        a == '-r' -> {
+            ignore-case = true
+            i = i + 1
+            file-start = i
+            continue
+        }
+        a.starts-with('-') -> {
+            i = i + 1
+            file-start = i
+            continue
+        }
+        ; non-flag arg: first file
+        file-start = i
+        break
+    }
+
+    ; collect all text
+    all-text = ''
+    has-file = false
+    i <- [file-start..argc): {
+        a = arg(i)
+        a.starts-with('-') == false -> {
+            has-file = true
+            fs.is-file(a) == false -> {
+                eprint('ptx: ' - a - ': No such file')
+                os.exit(1)
+            }
+            content = fs.read-file(a)
+            all-text = all-text - content
+        }
+    }
+
+    has-file == false -> {
+        all-text = fs.read-file('/dev/stdin')
+        t <- [0..40): {
+            all-text.len == 0 -> {
+                os.sleep-us(1000)
+                all-text = fs.read-file('/dev/stdin')
+            }
+        }
+    }
+
+    ; split into lines
+    lines []str
+    start = 0
+    j <- [0..all-text.len): {
+        all-text[j] == 10 -> {
+            lines.push(all-text.slice(start, j))
+            start = j + 1
+        }
+    }
+    start < all-text.len -> lines.push(all-text.slice(start, all-text.len))
+
+    ; build index entries as formatted strings (avoid struct arrays)
+    ; format: "word|before-context|after-context" (pipe-separated, no escape seqs)
+    entries []str
+    sort-keys []str
+
+    j <- [0..lines.len): {
+        line = lines[j]
+        words = split-words(line)
+        nw = words.len
+        k <- [0..nw): {
+            w = words[k]
+            ; build before context
+            before-part = ''
+            bstart = k - before-ctx
+            bstart < 0 -> bstart = 0
+            b <- [bstart..k): {
+                before-part.len > 0 -> before-part = before-part - ' '
+                before-part = before-part - words[b]
+            }
+            ; build after context
+            after-part = ''
+            aend = k + after-ctx + 1
+            aend > nw -> aend = nw
+            b <- [k + 1..aend): {
+                after-part.len > 0 -> after-part = after-part - ' '
+                after-part = after-part - words[b]
+            }
+            ; format output line
+            out-line = w - '|' - before-part - '|' - after-part
+            entries.push(out-line)
+            ; sort key: word (lowercased if -r)
+            sk = w
+            ignore-case -> sk = w.to-lower()
+            sort-keys.push(sk)
+        }
+    }
+
+    ; simple sort by sort-keys (bubble sort on parallel arrays)
+    ne = entries.len
+    si <- [0..ne): {
+        sj <- [si + 1..ne): {
+            sort-keys[sj] < sort-keys[si] -> {
+                ; swap entries
+                tmp-entry = entries[si]
+                entries[si] = entries[sj]
+                entries[sj] = tmp-entry
+                ; swap sort keys
+                tmp-key = sort-keys[si]
+                sort-keys[si] = sort-keys[sj]
+                sort-keys[sj] = tmp-key
+            }
+        }
+    }
+
+    ; output: format as "before  word  after"
+    j <- [0..ne): {
+        ent = entries[j]
+        ; find first pipe (separates word from before)
+        t1 = ent.index('|')
+        t1 < 0 -> {
+            print(ent)
+            *
+        }
+        word = ent.slice(0, t1)
+        rest = ent.slice(t1 + 1, ent.len)
+        ; find second pipe (separates before from after)
+        t2 = rest.index('|')
+        before-part = rest
+        after-part = ''
+        t2 >= 0 -> {
+            before-part = rest.slice(0, t2)
+            after-part = rest.slice(t2 + 1, rest.len)
+        }
+        ; format output
+        out = before-part
+        out.len > 0 -> out = out - ' '
+        out = out - word
+        after-part.len > 0 -> out = out - ' ' - after-part
+        print(out)
+    }
+
+    os.exit(0)
+}

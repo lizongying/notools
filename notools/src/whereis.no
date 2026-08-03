@@ -1,0 +1,172 @@
+; whereis.no — whereis utility
+; Locate binary, source, and manual page for a command
+; Usage: whereis [-b|-m|-s] COMMAND...
+;   -b: search only for binaries
+;   -m: search only for manual pages
+;   -s: search only for sources
+;   Default: search all three
+
+; split-path: split PATH-style string by ':'
+split-path = (path-str str) (dirs []str) {
+    path-str.len == 0 -> return
+    start = 0
+    i <- [0..path-str.len): {
+        path-str[i] == 58 -> {
+            seg = path-str.slice(start, i)
+            seg.len > 0 -> dirs.push(seg)
+            start = i + 1
+        }
+    }
+    start < path-str.len -> {
+        seg = path-str.slice(start, path-str.len)
+        seg.len > 0 -> dirs.push(seg)
+    }
+}
+
+; search-binary: search for executable in given dirs
+; Returns up to 1 match (first found)
+search-binary = (cmd str, dirs []str) (out []str) {
+    n = dirs.len
+    i <- [0..n): {
+        d = dirs[i]
+        full = d - '/' - cmd
+        ok = fs.is-file(full)
+        ok == true -> {
+            out.push(full.copy())
+            return
+        }
+    }
+}
+
+; search-man: search for man page in standard man dirs
+; Looks for cmd.1, cmd.2, ... cmd.8 under each dir
+search-man = (cmd str, dirs []str) (out []str) {
+    n = dirs.len
+    i <- [0..n): {
+        d = dirs[i]
+        s <- [1..9): {
+            name = cmd - '.' - s.to-str()
+            full = d - '/' - name
+            ok = fs.is-file(full)
+            ok == true -> {
+                out.push(full.copy())
+                return
+            }
+        }
+    }
+}
+
+; search-source: search for source files matching cmd
+; Looks for cmd.c, cmd.cc, cmd.cpp, cmd.h, cmd.go, cmd.rs, cmd.no under each dir
+search-source = (cmd str, dirs []str) (out []str) {
+    exts []str
+    exts.push('.c')
+    exts.push('.cc')
+    exts.push('.cpp')
+    exts.push('.h')
+    exts.push('.go')
+    exts.push('.rs')
+    exts.push('.no')
+    n = dirs.len
+    i <- [0..n): {
+        d = dirs[i]
+        j <- [0..exts.len): {
+            full = d - '/' - cmd - exts[j]
+            ok = fs.is-file(full)
+            ok == true -> {
+                out.push(full.copy())
+                return
+            }
+        }
+    }
+}
+
+whereis-run = () {
+    argc = args()
+
+    want-b = false
+    want-m = false
+    want-s = false
+    cmds []str
+
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-b' -> want-b = true
+        a == '-m' -> want-m = true
+        a == '-s' -> want-s = true
+        ! a.starts-with('-') -> cmds.push(a)
+    }
+
+    ; If no -b/-m/-s specified, search all
+    any-flag = want-b || want-m || want-s
+    any-flag == false -> {
+        want-b = true
+        want-m = true
+        want-s = true
+    }
+
+    cmds.len == 0 -> {
+        eprint('Usage: whereis [-b|-m|-s] COMMAND...')
+        os.exit(1)
+    }
+
+    ; Build binary search dirs (PATH + common extras)
+    bin-dirs []str
+    path-str = os.get-env('PATH')
+    split-path(path-str, bin-dirs)
+    bin-dirs.push('/usr/local/bin')
+    bin-dirs.push('/usr/bin')
+    bin-dirs.push('/bin')
+    bin-dirs.push('/usr/sbin')
+    bin-dirs.push('/sbin')
+
+    ; Build man search dirs
+    man-dirs []str
+    man-dirs.push('/usr/local/share/man/man1')
+    man-dirs.push('/usr/local/man/man1')
+    man-dirs.push('/usr/share/man/man1')
+    man-dirs.push('/usr/man/man1')
+    man-dirs.push('/usr/local/share/man/man8')
+    man-dirs.push('/usr/share/man/man8')
+
+    ; Build source search dirs
+    src-dirs []str
+    src-dirs.push('/usr/src')
+    src-dirs.push('/usr/local/src')
+    src-dirs.push('.')
+
+    i <- [0..cmds.len): {
+        cmd = cmds[i]
+        line = cmd - ':'
+        need-space = false
+
+        want-b == true -> {
+            bins []str
+            search-binary(cmd, bin-dirs, bins)
+            j <- [0..bins.len): {
+                need-space == true -> line = line - ' '
+                line = line - bins[j]
+                need-space = true
+            }
+        }
+        want-m == true -> {
+            mans []str
+            search-man(cmd, man-dirs, mans)
+            j <- [0..mans.len): {
+                need-space == true -> line = line - ' '
+                line = line - mans[j]
+                need-space = true
+            }
+        }
+        want-s == true -> {
+            srcs []str
+            search-source(cmd, src-dirs, srcs)
+            j <- [0..srcs.len): {
+                need-space == true -> line = line - ' '
+                line = line - srcs[j]
+                need-space = true
+            }
+        }
+        print(line)
+    }
+}

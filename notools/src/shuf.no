@@ -1,0 +1,107 @@
+// shuf.no — shuf utility
+// Randomly permute input lines
+// Usage: shuf [-n N] [file...] | shuf -e arg...
+//   -e:     treat arguments as input lines (not files)
+//   -n N:   output at most N lines
+//   files:  files to read (read from stdin if none)
+
+// split: split content into lines
+split = (content str, lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}
+
+// atoi-shuf: parse a non-negative integer
+atoi-shuf = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+shuf-run = () {
+    argc = args()
+    n-limit = 0
+    echo-mode = false
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next == true -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-e' -> echo-mode = true
+        a == '-n' -> {
+            i + 1 < argc -> {
+                n-limit = atoi-shuf(arg(i + 1))
+                skip-next = true
+            }
+        }
+        a.starts-with('-n') -> {
+            a.len > 2 -> n-limit = atoi-shuf(a.slice(2, a.len))
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    // Collect input lines
+    lines []str
+    echo-mode == true -> {
+        j <- [0..files.len): {
+            lines.push(files[j])
+        }
+    }
+    echo-mode == false -> {
+        files.len == 0 -> {
+            content = fs.read-file('/dev/stdin')
+            split(content, lines)
+        }
+        files.len > 0 -> {
+            fi <- [0..files.len): {
+                fs.is-file(files[fi]) == false -> {
+                    msg = 'shuf: ' - files[fi] - ': No such file or directory'
+                    io.errln(msg)
+                    continue
+                }
+                content = fs.read-file(files[fi])
+                split(content, lines)
+            }
+        }
+    }
+
+    n = lines.len
+    n == 0 -> return
+
+    // Index array for indirect shuffle (avoids swapping heap-owned string elements)
+    idx []i64
+    x <- [0..n): idx.push(x)
+
+    // Fisher-Yates shuffle using crypto/rand
+    state = os.now-ns()
+    state = state | 1
+    i <- [0..n - 1): {
+        j-range = n - i
+        state, r = rand.rand(state)
+        j = i + (r % j-range)
+        t = idx[i]
+        idx[i] = idx[j]
+        idx[j] = t
+    }
+
+    // Output
+    out-count = n
+    n-limit > 0 -> {
+        n-limit < n -> out-count = n-limit
+    }
+    i <- [0..out-count): {
+        print(lines[idx[i]])
+    }
+}

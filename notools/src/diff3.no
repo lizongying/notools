@@ -1,0 +1,98 @@
+; diff3.no — diff3 utility
+; 三路檔案比較。比較 mine、older、yours 三個檔案，輸出差異。
+; Usage: diff3 MINE OLDER YOURS
+;   MINE   原始檔案的修改版
+;   OLDER  原始檔案
+;   YOURS  另一方的修改版
+
+diff3 = () {
+    argc = args()
+
+    argc < 4 -> {
+        eprint('Usage: diff3 MINE OLDER YOURS')
+        os.exit(1)
+    }
+
+    mine-file = arg(2)
+    older-file = arg(3)
+    yours-file = arg(4)
+
+    fs.is-file(mine-file) == false -> {
+        eprint('diff3: ' - mine-file - ': No such file')
+        os.exit(1)
+    }
+    fs.is-file(older-file) == false -> {
+        eprint('diff3: ' - older-file - ': No such file')
+        os.exit(1)
+    }
+    fs.is-file(yours-file) == false -> {
+        eprint('diff3: ' - yours-file - ': No such file')
+        os.exit(1)
+    }
+
+    ; split lines inline (avoid slice output parameter bug)
+    mine []str
+    older []str
+    yours []str
+    ; Read into locals first — passing fs.read-file() directly as an
+    ; argument triggers the %rf.str ptr/str-long codegen bug (the alloca
+    ; temporary is used as a value without being loaded).
+    mine-content = fs.read-file(mine-file)
+    older-content = fs.read-file(older-file)
+    yours-content = fs.read-file(yours-file)
+    diff3-split(mine-content, mine)
+    diff3-split(older-content, older)
+    diff3-split(yours-content, yours)
+
+    max-len = mine.len
+    older.len > max-len -> max-len = older.len
+    yours.len > max-len -> max-len = yours.len
+
+    i = 0
+    for i < max-len {
+        mine-line = ''
+        older-line = ''
+        yours-line = ''
+        i < mine.len -> mine-line = mine[i]
+        i < older.len -> older-line = older[i]
+        i < yours.len -> yours-line = yours[i]
+
+        ; all three same
+        mine-line == older-line && older-line == yours-line -> {
+            print(mine-line)
+            i = i + 1
+            continue
+        }
+
+        ; difference: output conflict
+        print('====')
+        mine-line != older-line -> {
+            print('1:' - mine-file)
+            print(mine-line)
+        }
+        yours-line != older-line -> {
+            print('2:' - yours-file)
+            print(yours-line)
+        }
+        i = i + 1
+    }
+
+    ; avoid cleanup double-free (exit 133) on []str locals
+    os.exit(0)
+}
+
+; diff3-split: split content into lines (uses regular param, not output)
+diff3-split = (content str, lines []str) {
+    start = 0
+    i = 0
+    for i < content.len {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    start < content.len -> {
+        lines.push(content.slice(start, content.len))
+    }
+}

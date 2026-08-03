@@ -1,0 +1,204 @@
+// fmt.no — fmt utility
+// Reformat paragraphs of text to a target width
+// Usage: fmt [-w WIDTH] [-s] [file...]
+//   -w WIDTH:  target line width (default: 75)
+//   -s:        split-only mode (don't join short lines, only wrap long ones)
+//   files:     input files (read from stdin if none)
+// Paragraphs are separated by blank lines. Words are separated by spaces.
+// Leading whitespace on the first line of a paragraph is preserved.
+
+// split-lines: split content into lines
+split-lines = (content str, lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}
+
+// split-words: split a line into words by whitespace
+split-words = (line str, words []str) {
+    start = 0
+    in-field = false
+    i <- [0..line.len): {
+        c = line[i]
+        is-space = c == 32 || c == 9
+        is-space && in-field -> {
+            words.push(line.slice(start, i))
+            in-field = false
+        }
+        is-space == false && in-field == false -> {
+            start = i
+            in-field = true
+        }
+    }
+    in-field -> words.push(line.slice(start, line.len))
+}
+
+// wrap: word-wrap words to width, output lines
+// indent: leading spaces for first line (and continuation if not crown-margin)
+wrap = (words []str, width i64, indent i64) {
+    n = words.len
+    n == 0 -> return
+
+    current = ''
+    // Build first line with indent
+    indent-str = ' '.repeat(indent)
+    current = indent-str
+    current-len = indent
+    first-word = true
+
+    i <- [0..n): {
+        word = words[i] - ''
+        wlen = word.len
+        // Check if word fits on current line
+        fits = false
+        first-word == true -> {
+            // First word always goes on the line (even if over width)
+            fits = true
+        }
+        first-word == false -> {
+            // Need space + word
+            current-len + 1 + wlen <= width -> fits = true
+        }
+        fits == true -> {
+            first-word == false -> {
+                current = current - ' ' - word
+                current-len = current-len + 1 + wlen
+            }
+            first-word == true -> {
+                current = current - word
+                current-len = indent + wlen
+                first-word = false
+            }
+        }
+        fits == false -> {
+            // Flush current line, start new one
+            print(current)
+            // Continuation lines get no indent (simplified; GNU fmt preserves indent)
+            current = word
+            current-len = wlen
+        }
+    }
+    // Flush last line
+    current.len > 0 -> print(current)
+}
+
+fmt-run = () {
+    argc = args()
+    width = 75
+    split-only = false
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next == true -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-s' -> split-only = true
+        a == '-w' -> {
+            i + 1 < argc -> {
+                w = 0
+                s = arg(i + 1)
+                j <- [0..s.len): {
+                    c = s[j]
+                    c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
+                }
+                w > 0 -> width = w
+                skip-next = true
+            }
+        }
+        a.starts-with('-w') -> {
+            a.len > 2 -> {
+                w = 0
+                s = a.slice(2, a.len)
+                j <- [0..s.len): {
+                    c = s[j]
+                    c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
+                }
+                w > 0 -> width = w
+            }
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    // Read input
+    lines []str
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+        split-lines(content, lines)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            fs.is-file(files[fi]) == false -> {
+                msg = 'fmt: ' - files[fi] - ': No such file or directory'
+            io.errln(msg)
+                continue
+            }
+            content = fs.read-file(files[fi])
+            split-lines(content, lines)
+        }
+    }
+
+    // Process: group into paragraphs and wrap
+    split-only == true -> {
+        // Split-only: wrap each line independently
+        i <- [0..lines.len): {
+            words []str
+            split-words(lines[i], words)
+            // Compute indent (leading spaces)
+            indent = 0
+            j <- [0..lines[i].len): {
+                lines[i][j] == 32 -> indent = indent + 1
+                lines[i][j] != 32 -> break
+            }
+            words.len == 0 -> print('')
+            words.len > 0 -> wrap(words, width, indent)
+        }
+    }
+    split-only == false -> {
+        // Join paragraphs and wrap
+        para-words []str
+        para-indent = 0
+        in-para = false
+
+        i <- [0..lines.len): {
+            line = lines[i] - ''
+            // Check if line is blank
+            is-blank = true
+            j <- [0..line.len): {
+                c = line[j]
+                c != 32 && c != 9 -> is-blank = false
+            }
+            is-blank == true -> {
+                // Flush current paragraph
+                in-para == true -> {
+                    wrap(para-words, width, para-indent)
+                    para-words []str
+                    in-para = false
+                }
+                print('')
+            }
+            is-blank == false -> {
+                in-para == false -> {
+                    // Start new paragraph; capture indent
+                    para-indent = 0
+                    j <- [0..line.len): {
+                        line[j] == 32 -> para-indent = para-indent + 1
+                        line[j] != 32 -> break
+                    }
+                    in-para = true
+                }
+                // Append words from this line to paragraph
+                split-words(line, para-words)
+            }
+        }
+        // Flush last paragraph
+        in-para == true -> wrap(para-words, width, para-indent)
+    }
+}

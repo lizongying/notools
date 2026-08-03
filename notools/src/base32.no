@@ -1,0 +1,124 @@
+// base32.no — Base32 编解码（RFC 4648）
+// 用法：
+//   base32 [file]         编码（默认），无参数时读取 stdin，输出带换行
+//   base32 -d [file]      解码，原始字节写入 stdout（不额外加换行）
+
+base32-run = () {
+    argc = args()
+    decode = false
+    files []str
+    i <- [2..argc): {
+        a = arg(i)
+        {
+            a == '-d' -> decode = true
+            a == '-D' -> decode = true
+            ! a.starts-with('-') -> files.push(a)
+        }
+    }
+    {
+        decode == false -> encode-cmd(files)
+        -> {
+            decode-cmd(files)
+            // 规避：解码路径正常输出后进程收尾阶段可能 SIGTRAP（退出码 133），
+            // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
+            os.exit(0)
+        }
+    }
+}
+
+// encode-cmd: 编码模式
+encode-cmd = (files []str) {
+    {
+        files.len == 0 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 竞态读空（B18）重试
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+            enc = base32.base32-encode(data)
+            print(enc)
+        }
+        -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('base32: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(f)
+                data = inp.to-bytes()
+                enc = base32.base32-encode(data)
+                print(enc)
+            }
+        }
+    }
+}
+
+// decode-cmd: 解码模式
+decode-cmd = (files []str) {
+    {
+        files.len == 0 -> {
+            s = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 竞态读空（B18）重试
+            t <- [0..40): {
+                s.len == 0 -> {
+                    os.sleep-us(1000)
+                    s = fs.read-file('/dev/stdin')
+                }
+            }
+            decode-write(s)
+        }
+        -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('base32: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                s = fs.read-file(f)
+                decode-write(s)
+            }
+        }
+    }
+}
+
+// decode-write: 清理输入空白后解码并直接写 stdout
+// 不能拆成「返回 str 的解码函数」——编译器对含循环的 str 返回函数会静默丢弃返回值
+decode-write = (s str) {
+    // 先统计有效字符数（去除空白字符：换行、回车、空格、制表符）
+    valid = 0
+    i <- [0..s.len): {
+        c = s[i] & 255
+        {
+            c == 10 -> { }
+            c == 13 -> { }
+            c == 32 -> { }
+            c == 9 -> { }
+            -> valid = valid + 1
+        }
+    }
+    ; 预分配精确长度的字符串
+    clean str = with-len(valid)
+    cp = 0
+    i <- [0..s.len): {
+        c = s[i] & 255
+        {
+            c == 10 -> { }
+            c == 13 -> { }
+            c == 32 -> { }
+            c == 9 -> { }
+            -> {
+                clean[cp] = c
+                cp = cp + 1
+            }
+        }
+    }
+
+    out = base32.base32-decode(clean)
+    fd = fs.open-write('/dev/stdout')
+    fs.write(fd, out, out.len)
+}

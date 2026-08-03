@@ -1,0 +1,128 @@
+// uuencode.no — uuencode utility
+// Encode a file in uuencoding format
+// Usage: uuencode [FILE] NAME   (reads stdin if no FILE)
+
+uuencode-emit-line = (data []byte, start i64, count i64) (out str) {
+    ; First char: 32 + count
+    chars = with-cap(1 + ((count + 2) / 3) * 4)
+    chars[0] = 32 + count
+    pos = 1
+    i <- [0..count): {
+        i = i + 3
+    }
+    ; Process in groups of 3
+    i = 0
+    {
+        i + 2 < count -> {
+            b0 = data[start + i]
+            b1 = data[start + i + 1]
+            b2 = data[start + i + 2]
+            c0 = 32 + ((b0 >> 2) & 63)
+            c1 = 32 + (((b0 << 4) | (b1 >> 4)) & 63)
+            c2 = 32 + (((b1 << 2) | (b2 >> 6)) & 63)
+            c3 = 32 + (b2 & 63)
+            chars[pos] = c0
+            chars[pos + 1] = c1
+            chars[pos + 2] = c2
+            chars[pos + 3] = c3
+            pos = pos + 4
+            i = i + 3
+        }
+        i + 1 < count -> {
+            ; 2 bytes remaining
+            b0 = data[start + i]
+            b1 = data[start + i + 1]
+            c0 = 32 + ((b0 >> 2) & 63)
+            c1 = 32 + (((b0 << 4) | (b1 >> 4)) & 63)
+            c2 = 32 + ((b1 << 2) & 63)
+            chars[pos] = c0
+            chars[pos + 1] = c1
+            chars[pos + 2] = c2
+            pos = pos + 3
+            i = i + 2
+        }
+        i < count -> {
+            ; 1 byte remaining
+            b0 = data[start + i]
+            c0 = 32 + ((b0 >> 2) & 63)
+            c1 = 32 + ((b0 << 4) & 63)
+            chars[pos] = c0
+            chars[pos + 1] = c1
+            pos = pos + 2
+            i = i + 1
+        }
+    } (i < count)
+    out = chars
+}
+
+uuencode-run = () {
+    argc = args()
+    {
+        argc < 3 -> {
+            eprint('Usage: uuencode [FILE] NAME')
+            os.exit(1)
+        }
+    }
+    {
+        argc == 3 -> {
+            ; Read stdin, NAME = arg(2)
+            name = arg(2)
+            inp = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+            print('begin 644 ' - name)
+            n = data.len
+            pos = 0
+            {
+                pos + 45 <= n -> {
+                    line = uuencode-emit-line(data, pos, 45)
+                    print(line)
+                    pos = pos + 45
+                }
+                pos < n -> {
+                    rem = n - pos
+                    line = uuencode-emit-line(data, pos, rem)
+                    print(line)
+                    pos = n
+                }
+            } (pos < n)
+            ; Empty last line (0 bytes)
+            print(number.char-to-str(96))
+            print('end')
+        }
+        -> {
+            ; FILE = arg(2), NAME = arg(3)
+            path = arg(2)
+            name = arg(3)
+            fs.is-file(path) == false -> {
+                eprint('uuencode: ' - path - ': No such file')
+                os.exit(1)
+            }
+            inp = fs.read-file(path)
+            data = inp.to-bytes()
+            print('begin 644 ' - name)
+            n = data.len
+            pos = 0
+            {
+                pos + 45 <= n -> {
+                    line = uuencode-emit-line(data, pos, 45)
+                    print(line)
+                    pos = pos + 45
+                }
+                pos < n -> {
+                    rem = n - pos
+                    line = uuencode-emit-line(data, pos, rem)
+                    print(line)
+                    pos = n
+                }
+            } (pos < n)
+            print(number.char-to-str(96))
+            print('end')
+        }
+    }
+}

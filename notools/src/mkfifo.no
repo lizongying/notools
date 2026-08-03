@@ -1,0 +1,52 @@
+// mkfifo.no — mkfifo utility
+// Create named pipes (FIFOs)
+// Usage: mkfifo [-m MODE] NAME...
+//   -m MODE: permission mode (octal, e.g. 644, 755)
+//   Default mode: 0644
+
+; parse-octal: 將八進位字串轉為數值
+; s: 八進位字串（如 "644"）
+; 返回對應的數值
+parse-octal = (s str) (mode i64) {
+    mode = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= '0' && c <= '7' -> mode = mode * 8 + (c - '0')
+    }
+}
+
+mkfifo-run = () {
+    argc = args()
+
+    mode = 420  ; 0644 = 6*64 + 4*8 + 4 = 420
+    names []str
+    next-is-mode = false
+
+    i <- [2..argc): {
+        a = arg(i)
+        next-is-mode -> {
+            mode = parse-octal(a)
+            next-is-mode = false
+        }
+        a == '-m' -> next-is-mode = true
+        a.starts-with('-m') && a.len > 2 -> mode = parse-octal(a.slice(2, a.len))
+        ! a.starts-with('-') -> names.push(a)
+    }
+
+    names.len == 0 -> {
+        eprint('Usage: mkfifo [-m MODE] NAME...')
+        os.exit(1)
+    }
+
+    had-error = false
+    i <- [0..names.len): {
+        name = names[i]
+        ok = os.mkfifo(name, mode)
+        ok == false -> {
+            eprint('mkfifo: cannot create fifo ' - name)
+            had-error = true
+        }
+    }
+
+    had-error -> os.exit(1)
+}

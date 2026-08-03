@@ -1,0 +1,164 @@
+// less.no — less pager utility (pure Nolang)
+// Enhanced pager: forward/backward navigation, search
+// Usage: less [OPTIONS] [FILE...]
+// Commands (enter after prompt):
+//   Enter/Space  forward one page
+//   b           backward one page
+//   q           quit
+//   /pattern    search forward
+//   n           next match
+//   g           go to beginning
+//   G           go to end
+
+LESS-PAGE-LINES = 24
+
+less-cmd = () {
+    argc = args()
+    files []str
+
+    i <- [2..argc): {
+        a = arg(i)
+        !a.starts-with('-') -> files.push(a)
+    }
+
+    // Collect all lines
+    all-lines []str
+    has-input = false
+
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+        t <- [0..40): {
+            content.len == 0 -> {
+                os.sleep-us(1000)
+                content = fs.read-file('/dev/stdin')
+            }
+        }
+        split-lines(content, all-lines)
+        all-lines.len > 0 -> has-input = true
+    }
+    -> {
+        fi <- [0..files.len): {
+            !fs.is-file(files[fi]) -> {
+                eprint('less: ' - files[fi] - ': No such file')
+                os.exit(1)
+            }
+            content = fs.read-file(files[fi])
+            split-lines(content, all-lines)
+            has-input = true
+        }
+    }
+
+    has-input == false -> return
+
+    // Pager loop
+    line-no = 0
+    total = all-lines.len
+    search-pat = ''
+    has-search = false
+
+    for line-no < total {
+        // Display a page
+        end = line-no + LESS-PAGE-LINES
+        end > total -> end = total
+        j <- [line-no..end): {
+            print(all-lines[j])
+        }
+
+        line-no = end
+        line-no >= total -> break
+
+        // Prompt
+        pct = (line-no * 100) / total
+        io.out(':' - pct.to-str() - '%')
+
+        // Read command
+        s = ''
+        ok = false
+        s, ok = fs.get-line()
+        ok == false -> break
+        s.len == 0 -> {
+            // Enter = forward one page (default)
+            *
+        }
+
+        cmd0 = s[0]
+
+        // q = quit
+        cmd0 == 'q' -> break
+
+        // b = backward one page
+        cmd0 == 'b' -> {
+            line-no = line-no - LESS-PAGE-LINES * 2
+            line-no < 0 -> line-no = 0
+        }
+
+        // /pattern = search forward
+        cmd0 == '/' -> {
+            search-pat = s.slice(1, s.len)
+            search-pat.len > 0 -> {
+                has-search = true
+                found = -1
+                k <- [line-no..total): {
+                    all-lines[k].contains(search-pat) -> {
+                        found = k
+                        break
+                    }
+                }
+                found >= 0 -> {
+                    line-no = found
+                }
+                -> {
+                    io.errln('less: pattern not found')
+                    line-no = line-no - LESS-PAGE-LINES
+                    line-no < 0 -> line-no = 0
+                }
+            }
+        }
+
+        // n = next match
+        cmd0 == 'n' -> {
+            has-search -> {
+                found = -1
+                k <- [line-no..total): {
+                    all-lines[k].contains(search-pat) -> {
+                        found = k
+                        break
+                    }
+                }
+                found >= 0 -> {
+                    line-no = found
+                }
+                -> {
+                    io.errln('less: no more matches')
+                    line-no = line-no - LESS-PAGE-LINES
+                    line-no < 0 -> line-no = 0
+                }
+            }
+        }
+
+        // g = go to beginning
+        cmd0 == 'g' -> {
+            line-no = 0
+        }
+
+        // G = go to end
+        cmd0 == 'G' -> {
+            line-no = total - LESS-PAGE-LINES
+            line-no < 0 -> line-no = 0
+        }
+
+        // f or space = forward one page (default)
+    }
+}
+
+// split-lines: split content by newlines into []str
+split-lines = (content str, lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}

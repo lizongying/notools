@@ -1,0 +1,119 @@
+// comm.no — comm utility
+// Compare two sorted files line by line
+// Usage: comm [-123] file1 file2
+//   -1: suppress column 1 (lines only in file1)
+//   -2: suppress column 2 (lines only in file2)
+//   -3: suppress column 3 (lines in both)
+// Output: three tab-separated columns by default
+
+// split: split content into lines
+split = (content str, lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}
+
+comm-run = () {
+    argc = args()
+    sup1 = false
+    sup2 = false
+    sup3 = false
+    files []str
+
+    i <- [2..argc): {
+        a = arg(i)
+        a.starts-with('-') -> {
+            a.len > 1 -> {
+                j <- [1..a.len): {
+                    a[j] == 49 -> sup1 = true
+                    a[j] == 50 -> sup2 = true
+                    a[j] == 51 -> sup3 = true
+                }
+            }
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    files.len < 2 -> {
+        eprint('Usage: comm [-123] file1 file2')
+        os.exit(1)
+    }
+
+    // Read both files
+    content1 = fs.read-file(files[0])
+    content2 = fs.read-file(files[1])
+    lines1 []str
+    lines2 []str
+    split(content1, lines1)
+    split(content2, lines2)
+
+    // Merge-like comparison (assumes both are sorted)
+    i1 = 0
+    i2 = 0
+    n1 = lines1.len
+    n2 = lines2.len
+
+    {
+        i1 < n1 -> {
+            i2 < n2 -> {
+                cmp = lines1[i1].compare(lines2[i2])
+                cmp < 0 -> {
+                    // Only in file1
+                    emit(sup1, sup2, sup3, lines1[i1], '', '')
+                    i1 = i1 + 1
+                }
+                cmp > 0 -> {
+                    // Only in file2
+                    emit(sup1, sup2, sup3, '', lines2[i2], '')
+                    i2 = i2 + 1
+                }
+                cmp == 0 -> {
+                    // In both
+                    emit(sup1, sup2, sup3, '', '', lines1[i1])
+                    i1 = i1 + 1
+                    i2 = i2 + 1
+                }
+            }
+            i2 >= n2 -> {
+                // Only file1 remaining
+                emit(sup1, sup2, sup3, lines1[i1], '', '')
+                i1 = i1 + 1
+            }
+        }
+        i1 >= n1 -> {
+            i2 < n2 -> {
+                // Only file2 remaining
+                emit(sup1, sup2, sup3, '', lines2[i2], '')
+                i2 = i2 + 1
+            }
+        }
+    } (i1 < n1 || i2 < n2)
+}
+
+// emit: output a row with up to 3 columns
+emit = (sup1 bool, sup2 bool, sup3 bool, col1 str, col2 str, col3 str) {
+    line = ''
+    has-output = false
+
+    sup1 == false -> {
+        has-output == true -> line = line - '\t'
+        line = line - col1
+        has-output = true
+    }
+    sup2 == false -> {
+        has-output == true -> line = line - '\t'
+        line = line - col2
+        has-output = true
+    }
+    sup3 == false -> {
+        has-output == true -> line = line - '\t'
+        line = line - col3
+        has-output = true
+    }
+    print(line)
+}

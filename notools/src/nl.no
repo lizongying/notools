@@ -1,0 +1,90 @@
+// nl.no — nl utility
+// Number lines of files
+// Usage: nl [-ba] [file...]
+//   -ba:  number all lines (default: only non-empty lines)
+//   files: files to number (read from stdin if none)
+// Format: 6-char right-aligned number + tab + line content
+
+// pad-left: right-align number in a width-char field
+pad-left = (n i64, width i64) (out str) {
+    s = n.to-str()
+    slen = s.len
+    out = s
+    slen < width -> {
+        pad = width - slen
+        prefix = ' '.repeat(pad)
+        out = prefix - s
+    }
+}
+
+nl-run = () {
+    argc = args()
+    all-lines = false
+    files []str
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-ba' -> all-lines = true
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+        process(content, all-lines)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            fs.is-file(files[fi]) == false -> {
+                msg = 'nl: ' - files[fi] - ': No such file or directory'
+                io.errln(msg)
+                continue
+            }
+            content = fs.read-file(files[fi])
+            process(content, all-lines)
+        }
+    }
+}
+
+// process: number lines in content
+process = (content str, all-lines bool) {
+    lineno = 0
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            line = content.slice(start, i)
+            // Decide whether to number this line
+            should-number = all-lines
+            all-lines == false -> {
+                line.len > 0 -> should-number = true
+            }
+            should-number == true -> {
+                num = lineno + 1
+                prefix = pad-left(num, 6)
+                numline = prefix - '\t' - line
+                print(numline)
+                lineno = lineno + 1
+            }
+            should-number == false -> {
+                emptyline = '      \t' - line
+                print(emptyline)
+            }
+            start = i + 1
+        }
+    }
+    start < content.len -> {
+        line = content.slice(start, content.len)
+        should-number = all-lines
+        all-lines == false -> {
+            line.len > 0 -> should-number = true
+        }
+        should-number == true -> {
+            num = lineno + 1
+            prefix = pad-left(num, 6)
+            numline2 = prefix - '\t' - line
+            print(numline2)
+        }
+        should-number == false -> {
+            emptyline2 = '      \t' - line
+            print(emptyline2)
+        }
+    }
+}

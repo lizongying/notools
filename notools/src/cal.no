@@ -1,0 +1,261 @@
+// cal.no — cal utility
+// Display a calendar
+// Usage: cal [-3] [-y] [-1] [-m MONTH] [[MONTH] YEAR]
+
+cal-run = () {
+    argc = args()
+
+    show-3 = false
+    show-year = false
+    month-opt = 0
+    has-month-opt = false
+    nums []i64
+    nums-str []str
+
+    ; 第一遍：收集所有参数到字符串数组
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-3' -> show-3 = true
+        a == '-y' -> show-year = true
+        a == '-1' -> show-3 = false
+        a == '-m' -> {
+            ; -m MONTH 由下一参数给出
+        }
+        a.starts-with('-m') && a.len > 2 -> {
+            m-str = a.slice(2, a.len)
+            month-opt = parse-int(m-str)
+            has-month-opt = month-opt >= 1 && month-opt <= 12
+        }
+        a.starts-with('-') -> {
+            ; 忽略未知选项
+        }
+        -> nums-str.push(a)
+    }
+
+    ; 处理 -m 的分离参数形式
+    next-is-m = false
+    nums-str2 []str
+    i <- [2..argc): {
+        a = arg(i)
+        next-is-m -> {
+            m-val = parse-int(a)
+            m-val >= 1 && m-val <= 12 -> {
+                month-opt = m-val
+                has-month-opt = true
+            }
+            next-is-m = false
+        }
+        a == '-m' -> {
+            next-is-m = true
+        }
+        a.starts-with('-m') && a.len > 2 -> {
+            ; 已在第一遍处理
+        }
+        a.starts-with('-') -> {
+            ; 忽略
+        }
+        -> nums-str2.push(a)
+    }
+
+    ; 转换数字参数
+    i <- [0..nums-str2.len): {
+        nums.push(parse-int(nums-str2[i]))
+    }
+
+    ; 取当前日期作为默认
+    now-d = time.now-date()
+    cur-year = now-d.year
+    cur-month = now-d.month
+
+    target-year = cur-year
+    target-month = cur-month
+
+    {
+        show-year -> {
+            nums.len >= 1 -> target-year = nums[0]
+        }
+        has-month-opt -> {
+            target-month = month-opt
+            nums.len >= 1 -> target-year = nums[0]
+        }
+        nums.len == 1 -> {
+            ; 单个 4 位数视为年份
+            n = nums[0]
+            n >= 1000 && n <= 9999 -> {
+                target-year = n
+                show-year = true
+            }
+            n >= 1 && n <= 12 -> {
+                target-month = n
+            }
+        }
+        nums.len >= 2 -> {
+            target-month = nums[0]
+            target-year = nums[1]
+        }
+    }
+
+    ; 月份范围校验
+    target-month < 1 -> target-month = 1
+    target-month > 12 -> target-month = 12
+
+    {
+        show-year -> print-year(target-year)
+        show-3 -> {
+            prev-y = target-year
+            prev-m = target-month - 1
+            prev-m < 1 -> {
+                prev-m = 12
+                prev-y = target-year - 1
+            }
+            next-y = target-year
+            next-m = target-month + 1
+            next-m > 12 -> {
+                next-m = 1
+                next-y = target-year + 1
+            }
+            print-month(prev-y, prev-m)
+            print('')
+            print-month(target-year, target-month)
+            print('')
+            print-month(next-y, next-m)
+        }
+        -> print-month(target-year, target-month)
+    }
+}
+
+; parse-int: 解析十进制整数
+parse-int = (s str) (v i64) {
+    v = 0
+    neg = false
+    start = 0
+    s.len > 0 -> {
+        s[0] == 45 -> {
+            neg = true
+            start = 1
+        }
+    }
+    i <- [start..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+    neg -> v = 0 - v
+}
+
+; is-leap: 闰年判断
+is-leap = (year i64) (yes bool) {
+    yes = false
+    year % 4 != 0 -> return
+    year % 100 == 0 -> {
+        year % 400 == 0 -> yes = true
+        return
+    }
+    yes = true
+}
+
+; days-in-month: 指定年月的天数
+days-in-month = (year i64, month i64) (d i64) {
+    d = 31
+    {
+        month == 4 -> d = 30
+        month == 6 -> d = 30
+        month == 9 -> d = 30
+        month == 11 -> d = 30
+        month == 2 -> {
+            leap = is-leap(year)
+            {
+                leap -> d = 29
+                -> d = 28
+            }
+        }
+    }
+}
+
+; day-of-week: 计算 year/month/day 是星期几
+; 返回 0=Sunday, 1=Monday, ..., 6=Saturday
+; 使用 Zeller 公式（变体：把 1/2 月视为上一年的 13/14 月）
+day-of-week = (year i64, month i64, day i64) (dow i64) {
+    y = year
+    m = month
+    m < 3 -> {
+        m = m + 12
+        y = y - 1
+    }
+    k = y % 100
+    j = y / 100
+    h = day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j
+    dow = h % 7
+    ; Zeller returns 0=Saturday, convert to 0=Sunday
+    ; Sat(0)->6, Sun(1)->0, Mon(2)->1, ..., Fri(6)->5
+    dow = (dow + 6) % 7
+}
+
+; month-name: 月份名（1-12）
+month-name = (month i64) (name str) {
+    {
+        month == 1 -> name = 'January'
+        month == 2 -> name = 'February'
+        month == 3 -> name = 'March'
+        month == 4 -> name = 'April'
+        month == 5 -> name = 'May'
+        month == 6 -> name = 'June'
+        month == 7 -> name = 'July'
+        month == 8 -> name = 'August'
+        month == 9 -> name = 'September'
+        month == 10 -> name = 'October'
+        month == 11 -> name = 'November'
+        month == 12 -> name = 'December'
+        -> name = ''
+    }
+}
+
+; print-month: 打印单月日历
+print-month = (year i64, month i64) {
+    name = month-name(month)
+    title = name - ' ' - year.to-str()
+
+    ; 居中打印标题（宽度 22，与 "Su Mo Tu We Th Fr Sa" 对齐）
+    pad = (22 - title.len) / 2
+    pad < 0 -> pad = 0
+    prefix = ' '.repeat(pad)
+    print(prefix - title)
+
+    print('Su Mo Tu We Th Fr Sa')
+
+    dim = days-in-month(year, month)
+    dow = day-of-week(year, month, 1)
+
+    ; 第一行前导空格（每个日期占 3 字符）
+    i <- [0..dow): {
+        io.out('   ')
+    }
+
+    day = 1
+    col = dow
+    {
+        day > dim -> break
+        day-str = day.to-str()
+        day-str.len == 1 -> io.out(' ')
+        io.out(day-str)
+        col = col + 1
+        col == 7 -> {
+            print('')
+            col = 0
+        }
+        -> io.out(' ')
+        day = day + 1
+    } (day <= dim)
+
+    ; 最后一行若未满，补换行
+    col != 0 -> print('')
+}
+
+; print-year: 打印整年日历（简化为 12 个月顺序打印）
+print-year = (year i64) {
+    print('                              ' - year.to-str())
+    print('')
+    i <- [1..13): {
+        print-month(year, i)
+        i < 12 -> print('')
+    }
+}

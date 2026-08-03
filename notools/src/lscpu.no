@@ -1,0 +1,73 @@
+; lscpu.no — lscpu utility
+; 顯示 CPU 架構資訊。讀取 /proc/cpuinfo（Linux）。
+; Usage: lscpu
+
+lscpu = () {
+    fs.is-file('/proc/cpuinfo') == false -> {
+        ; 非 Linux 環境：用 os.uname 輸出基本資訊
+        u = os.uname()
+        print('Architecture: ' - u.machine)
+        print('OS: ' - u.sysname)
+        n = os.num-cpu()
+        print('CPU(s): ' - n.to-str())
+        return
+    }
+
+    content = fs.read-file('/proc/cpuinfo')
+    lines []str
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+
+    arch = ''
+    vendor = ''
+    model-name = ''
+    cpu-freq = ''
+    cache = ''
+    cpu-count = 0
+    cores-per-socket = 0
+    sockets = 0
+    threads-per-core = 1
+
+    i <- [0..lines.len): {
+        line = lines[i]
+        pos = line.index(':')
+        pos < 0 -> *
+        key = line.slice(0, pos)
+        val = line.slice(pos + 1, line.len)
+        val = val.trim()
+        key == 'processor' -> cpu-count = cpu-count + 1
+        key == 'model name' -> model-name = val
+        key == 'vendor_id' -> vendor = val
+        key == 'cpu MHz' -> cpu-freq = val
+        key == 'cache size' -> cache = val
+        key == 'cpu cores' -> cores-per-socket = lscpu-parse-int(val)
+        key == 'physical id' -> sockets = sockets + 1
+    }
+
+    sockets > 0 -> sockets = sockets
+    sockets == 0 -> sockets = 1
+
+    print('Architecture: ' - arch)
+    print('CPU(s): ' - cpu-count.to-str())
+    print('Vendor ID: ' - vendor)
+    print('Model name: ' - model-name)
+    print('CPU MHz: ' - cpu-freq)
+    print('Cache: ' - cache)
+    print('Socket(s): ' - sockets.to-str())
+    print('Core(s) per socket: ' - cores-per-socket.to-str())
+    print('Thread(s) per core: ' - threads-per-core.to-str())
+}
+
+lscpu-parse-int = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}

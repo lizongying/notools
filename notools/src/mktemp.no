@@ -1,0 +1,84 @@
+// mktemp.no — mktemp utility
+// Create a temporary file or directory
+// Usage: mktemp [-d] [-u] [-t TEMPLATE]
+//   -d: create a directory instead of a file
+//   -u: dry run (generate name without creating)
+//   -t TEMPLATE: specify template (must end with XXXXXX)
+//   Default template: /tmp/tmp.XXXXXXXXXX
+
+; dry-name: 構造 dry-run 模式的臨時名稱（不建立檔案）
+; tmpl: 模板字串，末尾含 X
+; 返回替換 X 後的名稱
+dry-name = (tmpl str) (out str) {
+    pid = os.get-pid()
+    ts = os.now()
+    unique = pid.to-str() - ts.to-str()
+
+    ; 找到末尾連續 X 的起始位置
+    n = tmpl.len
+    x-start = n
+    i = n - 1
+    {
+        tmpl[i] == 'X' -> {
+            x-start = i
+            i = i - 1
+        }
+        -> break
+    } (i >= 0)
+
+    prefix = tmpl.slice(0, x-start)
+    x-count = n - x-start
+
+    ; 用 unique 的字元填充 X 位置，不足補 '0'
+    out = prefix
+    j <- [0..x-count): {
+        j < unique.len -> out = out - unique.slice(j, j + 1)
+        -> out = out - '0'
+    }
+}
+
+mktemp-run = () {
+    argc = args()
+
+    make-dir = false
+    dry-run = false
+    template = '/tmp/tmp.XXXXXXXXXX'
+    next-is-template = false
+
+    i <- [2..argc): {
+        a = arg(i)
+        next-is-template -> {
+            template = a
+            next-is-template = false
+        }
+        a == '-d' -> make-dir = true
+        a == '-u' -> dry-run = true
+        a == '-t' -> next-is-template = true
+        a.starts-with('-t') && a.len > 2 -> template = a.slice(2, a.len)
+        ! a.starts-with('-') -> template = a
+    }
+
+    dry-run -> {
+        result = dry-name(template)
+        print(result)
+        return
+    }
+
+    make-dir -> {
+        name, ok = fs.mkdtemp(template)
+        ok == false -> {
+            eprint('mktemp: failed to create directory')
+            os.exit(1)
+        }
+        print(name)
+    }
+    -> {
+        name, fd = fs.mkstemp(template)
+        fd < 0 -> {
+            eprint('mktemp: failed to create file')
+            os.exit(1)
+        }
+        fs.close(fd)
+        print(name)
+    }
+}

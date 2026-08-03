@@ -1,0 +1,73 @@
+// cksum.no — POSIX cksum
+// 计算文件的 CRC 校验和和字节数
+// 用法：cksum [file...]   无参数时读取 stdin
+// 输出格式：CRC SIZE FILENAME（stdin 时无 FILENAME）
+// 算法：POSIX CRC-32（多项式 0x04C11DB7，非反射），追加 size，最后取反
+
+cksum-run = () {
+    argc = args()
+    {
+        argc <= 2 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 竞态读空（B18）重试
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+            crc, size = posix-crc-32(data)
+            line = crc.to-str() - ' ' - size.to-str()
+            print(line)
+        }
+        -> {
+            i <- [2..argc): {
+                path = arg(i)
+                fs.is-file(path) == false -> {
+                    io.errln('cksum: ' - path - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(path)
+                data = inp.to-bytes()
+                crc, size = posix-crc-32(data)
+                line = crc.to-str() - ' ' - size.to-str() - ' ' - path
+                print(line)
+            }
+        }
+    }
+}
+
+// posix-crc-32: POSIX CRC-32 校验和（用于 cksum）
+// 多项式 0x04C11DB7（正向，非反射），初始值 0
+// 输入字节不反射，输出不反射
+// 最后追加 size 字节数（按 ASCII 数字字符串的每个字节参与计算）
+// 最后对结果取反 ~crc & 0xFFFFFFFF
+posix-crc-32 = (data []byte) (crc i64, size i64) {
+    crc = 0
+    n = data.len
+    // 处理数据字节
+    i <- [0..n): {
+        crc = crc ^ ((data[i] & 255) << 24)
+        j <- [0..8): {
+            {
+                crc & 0x80000000 != 0 -> crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+                -> crc = (crc << 1) & 0xFFFFFFFF
+            }
+        }
+    }
+    // 追加文件长度（按 ASCII 数字字符串的每个字节参与计算）
+    size = n
+    size-str = size.to-str()
+    i <- [0..size-str.len): {
+        crc = crc ^ ((size-str[i] & 255) << 24)
+        j <- [0..8): {
+            {
+                crc & 0x80000000 != 0 -> crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+                -> crc = (crc << 1) & 0xFFFFFFFF
+            }
+        }
+    }
+    // 最后取反
+    crc = (~crc) & 0xFFFFFFFF
+}

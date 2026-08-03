@@ -1,0 +1,228 @@
+// column.no — column utility
+// Columnate input for display
+// Usage: column [-t] [-s SEPARATORS] [-c WIDTH] [-x] [file...]
+//   -t:           create a table (align fields into columns)
+//   -s SEPS:      field delimiters for -t (default: whitespace)
+//   -c WIDTH:     output width (default: 80)
+//   -x:           fill rows before columns (default: fill columns before rows)
+//   files:        input files (read from stdin if none)
+
+// split: split content into lines
+split = (content str, lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}
+
+// split-fields: split a line into fields by whitespace or custom delimiters
+// If delim is empty, split on any whitespace (space/tab). Otherwise split on any
+// character found in delim.
+split-fields = (line str, delim str, fields []str) {
+    start = 0
+    in-field = false
+    i <- [0..line.len): {
+        c = line[i]
+        is-delim = false
+        delim.len == 0 -> {
+            c == 32 || c == 9 -> is-delim = true
+        }
+        delim.len > 0 -> {
+            j <- [0..delim.len): {
+                delim[j] == c -> is-delim = true
+            }
+        }
+        is-delim && in-field -> {
+            fields.push(line.slice(start, i))
+            in-field = false
+        }
+        is-delim == false && in-field == false -> {
+            start = i
+            in-field = true
+        }
+    }
+    in-field -> fields.push(line.slice(start, line.len))
+}
+
+// table: format lines as an aligned table
+table = (lines []str, delim str) {
+    n = lines.len
+    n == 0 -> return
+
+    // Split each line into fields
+    all-fields [][]str
+    max-cols = 0
+    i <- [0..n): {
+        fields []str
+        split-fields(lines[i], delim, fields)
+        all-fields.push(fields)
+        fields.len > max-cols -> max-cols = fields.len
+    }
+
+    // Compute max width per column
+    col-widths []i64 = with-len(max-cols)
+    j <- [0..max-cols): { col-widths[j] = 0 }
+    i <- [0..n): {
+        f = all-fields[i]
+        j <- [0..f.len): {
+            f[j].len > col-widths[j] -> col-widths[j] = f[j].len
+        }
+    }
+
+    // Output each line with padding (2 spaces between columns)
+    i <- [0..n): {
+        f = all-fields[i]
+        line = ''
+        j <- [0..f.len): {
+            j > 0 -> line = line - '  '
+            word = f[j] - ''
+            // Pad to column width (left-justified)
+            word-len = word.len
+            pad = col-widths[j] - word-len
+            line = line - word
+            k <- [0..pad): {
+                line = line - ' '
+            }
+        }
+        print(line)
+    }
+}
+
+// fill: arrange lines into columns (fill column-major by default, row-major with -x)
+fill = (lines []str, width i64, row-major bool) {
+    n = lines.len
+    n == 0 -> return
+
+    // Find max line length
+    max-len = 0
+    i <- [0..n): {
+        lines[i].len > max-len -> max-len = lines[i].len
+    }
+    max-len == 0 -> max-len = 1
+
+    // Determine number of columns: each column needs max-len + 2 (separator)
+    // cols = max(1, width / (max-len + 2))
+    cols = width / (max-len + 2)
+    cols < 1 -> cols = 1
+    cols > n -> cols = n
+
+    // Rows = ceil(n / cols)
+    rows = n / cols
+    rows * cols < n -> rows = rows + 1
+
+    row-major == true -> {
+        // Fill row by row
+        i <- [0..n): {
+            line = lines[i] - ''
+            // Pad to max-len
+            pad = max-len - line.len
+            out = line
+            j <- [0..pad): {
+                out = out - ' '
+            }
+            io.out(out)
+            // Add separator or newline
+            (i + 1) % cols == 0 -> io.out('\n')
+            (i + 1) % cols != 0 -> io.out('  ')
+        }
+        n % cols != 0 -> io.out('\n')
+    }
+    row-major == false -> {
+        // Fill column by column
+        r <- [0..rows): {
+            c <- [0..cols): {
+                idx = c * rows + r
+                idx < n -> {
+                    line = lines[idx] - ''
+                    pad = max-len - line.len
+                    out = line
+                    j <- [0..pad): {
+                        out = out - ' '
+                    }
+                    io.out(out)
+                    c < cols - 1 -> io.out('  ')
+                }
+            }
+            io.out('\n')
+        }
+    }
+}
+
+column-run = () {
+    argc = args()
+    table-mode = false
+    delim = ''
+    width = 80
+    row-major = false
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next == true -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-t' -> table-mode = true
+        a == '-x' -> row-major = true
+        a == '-s' -> {
+            i + 1 < argc -> {
+                delim = arg(i + 1)
+                skip-next = true
+            }
+        }
+        a.starts-with('-s') -> {
+            a.len > 2 -> delim = a.slice(2, a.len)
+        }
+        a == '-c' -> {
+            i + 1 < argc -> {
+                w = 0
+                s = arg(i + 1)
+                j <- [0..s.len): {
+                    c = s[j]
+                    c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
+                }
+                w > 0 -> width = w
+                skip-next = true
+            }
+        }
+        a.starts-with('-c') -> {
+            a.len > 2 -> {
+                w = 0
+                s = a.slice(2, a.len)
+                j <- [0..s.len): {
+                    c = s[j]
+                    c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
+                }
+                w > 0 -> width = w
+            }
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    // Read input
+    lines []str
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+        split(content, lines)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            fs.is-file(files[fi]) == false -> {
+                msg = 'column: ' - files[fi] - ': No such file or directory'
+            io.errln(msg)
+                continue
+            }
+            content = fs.read-file(files[fi])
+            split(content, lines)
+        }
+    }
+
+    // Process
+    table-mode == true -> table(lines, delim)
+    table-mode == false -> fill(lines, width, row-major)
+}

@@ -1,0 +1,101 @@
+; paste.no — paste utility
+; Merge lines of files
+; Usage: paste [-d DELIM] [-s] [file...]
+;   -d DELIM: delimiter between columns (default: tab)
+;   -s:       serial mode (one file at a time, lines joined by delim)
+;   files:    files to merge (read from stdin if none)
+;
+; All logic is inlined into paste-run using only locals, because module-level
+; globals cannot be reliably assigned from within functions (the assignment
+; creates a local shadow that does not persist after the function returns).
+
+paste-run = () {
+    argc = args()
+    delim = '\t'
+    serial = false
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next == true -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-s' -> serial = true
+        a == '-d' -> {
+            i + 1 < argc -> {
+                delim = arg(i + 1)
+                skip-next = true
+            }
+        }
+        a.starts-with('-d') -> {
+            a.len > 2 -> delim = a.slice(2, a.len)
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    ; No files: read stdin as the single input
+    file-count = 1
+    files.len > 0 -> file-count = files.len
+
+    ; Flat storage of all lines across all files, with per-file counts.
+    all-lines []str = with-cap(8192)
+    counts []i64
+    max-lines = 0
+
+    fi <- [0..file-count): {
+        read-path = '/dev/stdin'
+        files.len > 0 -> read-path = files[fi]
+        content = fs.read-file(read-path)
+
+        ; Inline split: push lines from content into all-lines.
+        prev = all-lines.len
+        content.len > 0 -> {
+            start = 0
+            j <- [0..content.len): {
+                content[j] == 10 -> {
+                    all-lines.push(content.slice(start, j))
+                    start = j + 1
+                }
+            }
+            start < content.len -> all-lines.push(content.slice(start, content.len))
+        }
+        added = all-lines.len - prev
+        counts.push(added)
+        added > max-lines -> max-lines = added
+    }
+
+    serial == true -> {
+        ; Serial: each file's lines joined by delim on one output line
+        offset = 0
+        fi <- [0..file-count): {
+            cnt = counts[fi]
+            j <- [0..cnt): {
+                j > 0 -> io.out(delim)
+                io.out(all-lines[offset + j])
+            }
+            io.out('\n')
+            offset = offset + cnt
+        }
+    }
+    serial == false -> {
+        ; Parallel: row N from each file joined by delim
+        offsets []i64
+        off = 0
+        fi <- [0..file-count): {
+            offsets.push(off)
+            off = off + counts[fi]
+        }
+        row <- [0..max-lines): {
+            fi <- [0..file-count): {
+                fi > 0 -> io.out(delim)
+                row < counts[fi] -> io.out(all-lines[offsets[fi] + row])
+            }
+            io.out('\n')
+        }
+    }
+
+    ; avoid cleanup double-free (exit 133) on []str locals
+    os.exit(0)
+}

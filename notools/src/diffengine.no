@@ -1,0 +1,631 @@
+; diffengine.no — shared diff engine (LCS-based line diff)
+; Provides diff-engine() for diff/sdiff commands
+; Algorithm: LCS DP with O(n*m) table, falls back to prefix/suffix trim for large inputs
+
+; diff-op: single diff operation
+;   kind: 0=equal, 1=delete (from a), 2=insert (from b)
+diff-op {
+    kind i64
+    line str
+    a-no i64
+    b-no i64
+}
+
+; diff-split-lines: split content into lines
+diff-split-lines = (content str) (lines []str) {
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+}
+
+; diff-engine-lcs: full LCS-based diff (for small inputs)
+diff-engine-lcs = (a []str, b []str) (ops []diff-op) {
+    na = a.len
+    nb = b.len
+    cols = nb + 1
+    total = (na + 1) * cols
+    dp []i64 = with-len(total)
+
+    ai <- [na - 1..0]: {
+        aj <- [nb - 1..0]: {
+            a[ai].compare(b[aj]) == 0 -> {
+                dp[ai * cols + aj] = dp[(ai + 1) * cols + (aj + 1)] + 1
+            }
+            dp[ai * cols + aj] < dp[(ai + 1) * cols + aj] -> {
+                dp[ai * cols + aj] = dp[(ai + 1) * cols + aj]
+            }
+            dp[ai * cols + aj] < dp[ai * cols + (aj + 1)] -> {
+                dp[ai * cols + aj] = dp[ai * cols + (aj + 1)]
+            }
+        }
+    }
+
+    i = 0
+    j = 0
+    {
+        i < na && j < nb -> {
+            a[i].compare(b[j]) == 0 -> {
+                op = diff-op {}
+                op.kind = 0
+                tmp-line = a[i]
+                op.line = tmp-line
+                op.a-no = i + 1
+                op.b-no = j + 1
+                ops.push(op)
+                i = i + 1
+                j = j + 1
+            }
+            dp[(i + 1) * cols + j] >= dp[i * cols + (j + 1)] -> {
+                op = diff-op {}
+                op.kind = 1
+                tmp-line = a[i]
+                op.line = tmp-line
+                op.a-no = i + 1
+                ops.push(op)
+                i = i + 1
+            }
+            dp[(i + 1) * cols + j] < dp[i * cols + (j + 1)] -> {
+                op = diff-op {}
+                op.kind = 2
+                tmp-line = b[j]
+                op.line = tmp-line
+                op.b-no = j + 1
+                ops.push(op)
+                j = j + 1
+            }
+        }
+        i < na -> {
+            op = diff-op {}
+            op.kind = 1
+            tmp-line = a[i]
+                op.line = tmp-line
+            op.a-no = i + 1
+            ops.push(op)
+            i = i + 1
+        }
+        j < nb -> {
+            op = diff-op {}
+            op.kind = 2
+            tmp-line = b[j]
+                op.line = tmp-line
+            op.b-no = j + 1
+            ops.push(op)
+            j = j + 1
+        }
+    } (i < na || j < nb)
+}
+
+; diff-engine-simple: fallback for large inputs
+diff-engine-simple = (a []str, b []str) (ops []diff-op) {
+    na = a.len
+    nb = b.len
+
+    pre = 0
+    {
+        pre < na && pre < nb -> {
+            a[pre] == b[pre] -> pre = pre + 1
+            -> break
+        }
+    } (pre < na && pre < nb)
+
+    suf = 0
+    {
+        suf < (na - pre) && suf < (nb - pre) -> {
+            a[na - 1 - suf] == b[nb - 1 - suf] -> suf = suf + 1
+            -> break
+        }
+    } (suf < (na - pre) && suf < (nb - pre))
+
+    k <- [0..pre): {
+        op = diff-op {}
+        op.kind = 0
+        tmp-line = a[k]
+                op.line = tmp-line
+        op.a-no = k + 1
+        op.b-no = k + 1
+        ops.push(op)
+    }
+
+    k <- [pre..na - suf): {
+        op = diff-op {}
+        op.kind = 1
+        tmp-line = a[k]
+                op.line = tmp-line
+        op.a-no = k + 1
+        ops.push(op)
+    }
+
+    k <- [pre..nb - suf): {
+        op = diff-op {}
+        op.kind = 2
+        tmp-line = b[k]
+                op.line = tmp-line
+        op.b-no = k + 1
+        ops.push(op)
+    }
+
+    k <- [na - suf..na): {
+        op = diff-op {}
+        op.kind = 0
+        tmp-line = a[k]
+                op.line = tmp-line
+        op.a-no = k + 1
+        op.b-no = k - na + nb + 1
+        ops.push(op)
+    }
+}
+
+; diff-engine: main entry
+diff-engine = (a []str, b []str) (ops []diff-op) {
+    na = a.len
+    nb = b.len
+
+    na == 0 -> {
+        j <- [0..nb): {
+            op = diff-op {}
+            op.kind = 2
+            tmp-line = b[j]
+                op.line = tmp-line
+            op.b-no = j + 1
+            ops.push(op)
+        }
+        return
+    }
+
+    nb == 0 -> {
+        i <- [0..na): {
+            op = diff-op {}
+            op.kind = 1
+            tmp-line = a[i]
+                op.line = tmp-line
+            op.a-no = i + 1
+            ops.push(op)
+        }
+        return
+    }
+
+    cost = na * nb
+    cost <= 1000000 -> {
+        ops = diff-engine-lcs(a, b)
+    }
+    cost > 1000000 -> {
+        ops = diff-engine-simple(a, b)
+    }
+}
+
+; format-range: format line range as "N" or "N,M"
+format-range = (start i64, count i64) (s str) {
+    count <= 1 -> {
+        s = start.to-str()
+    }
+    count > 1 -> {
+        s = start.to-str() - ',' - (start + count - 1).to-str()
+    }
+}
+
+; emit-normal: emit normal diff hunk
+emit-normal = (a-start i64, a-count i64, b-start i64, b-count i64, a-before i64, b-before i64, del-lines []str, ins-lines []str) {
+    has-del = a-count > 0
+    has-ins = b-count > 0
+
+    has-del && has-ins -> {
+        ra = format-range(a-start, a-count)
+        rb = format-range(b-start, b-count)
+        print(ra - 'c' - rb)
+        i <- [0..del-lines.len): {
+            print('< ' - del-lines[i])
+        }
+        print('---')
+        i <- [0..ins-lines.len): {
+            print('> ' - ins-lines[i])
+        }
+    }
+    has-del && !has-ins -> {
+        ra = format-range(a-start, a-count)
+        print(ra - 'd' - b-before.to-str())
+        i <- [0..del-lines.len): {
+            print('< ' - del-lines[i])
+        }
+    }
+    !has-del && has-ins -> {
+        rb = format-range(b-start, b-count)
+        print(a-before.to-str() - 'a' - rb)
+        i <- [0..ins-lines.len): {
+            print('> ' - ins-lines[i])
+        }
+    }
+}
+
+; emit-unified: emit unified diff hunk with context
+emit-unified = (file1 str, file2 str, ops []diff-op, context i64) {
+    print('--- ' - file1)
+    print('+++ ' - file2)
+
+    n = ops.len
+    n == 0 -> return
+
+    i = 0
+    {
+        i < n -> {
+            ops[i].kind == 0 -> {
+                i = i + 1
+            }
+            -> break
+        }
+    } (i < n && ops[i].kind == 0)
+
+    i >= n -> return
+
+    {
+        hunk-start = i
+        back = 0
+        {
+            hunk-start > 0 && back < context -> {
+                hunk-start = hunk-start - 1
+                ops[hunk-start].kind == 0 -> back = back + 1
+                ops[hunk-start].kind != 0 -> back = 0
+            }
+        } (hunk-start > 0 && back < context)
+
+        hunk-end = i
+        trailing-eq = 0
+        {
+            hunk-end < n - 1 -> {
+                next = hunk-end + 1
+                ops[next].kind == 0 -> {
+                    trailing-eq = trailing-eq + 1
+                    trailing-eq > context -> break
+                    hunk-end = next
+                }
+                ops[next].kind != 0 -> {
+                    hunk-end = next
+                    trailing-eq = 0
+                }
+            }
+        } (hunk-end < n - 1 && (ops[hunk-end + 1].kind == 0 && trailing-eq <= context || ops[hunk-end + 1].kind != 0))
+
+        {
+            hunk-end > hunk-start && ops[hunk-end].kind == 0 && trailing-eq > context -> {
+                hunk-end = hunk-end - 1
+            }
+        } (hunk-end > hunk-start && ops[hunk-end].kind == 0 && trailing-eq > context)
+
+        a-first = -1
+        a-last = -1
+        b-first = -1
+        b-last = -1
+        k <- [hunk-start..hunk-end + 1): {
+            k < n -> {
+                op = ops[k]
+                op.kind == 0 -> {
+                    a-first < 0 -> a-first = op.a-no
+                    a-last = op.a-no
+                    b-first < 0 -> b-first = op.b-no
+                    b-last = op.b-no
+                }
+                op.kind == 1 -> {
+                    a-first < 0 -> a-first = op.a-no
+                    a-last = op.a-no
+                }
+                op.kind == 2 -> {
+                    b-first < 0 -> b-first = op.b-no
+                    b-last = op.b-no
+                }
+            }
+        }
+
+        a-first < 0 -> a-first = 0
+        a-last < 0 -> a-last = 0
+        b-first < 0 -> b-first = 0
+        b-last < 0 -> b-last = 0
+
+        a-count = a-last - a-first + 1
+        b-count = b-last - b-first + 1
+
+        ra = format-range(a-first, a-count)
+        rb = format-range(b-first, b-count)
+        print('@@ -' - ra - ' +' - rb - ' @@')
+
+        k <- [hunk-start..hunk-end + 1): {
+            k < n -> {
+                op = ops[k]
+                op.kind == 0 -> print(' ' - op.line)
+                op.kind == 1 -> print('-' - op.line)
+                op.kind == 2 -> print('+' - op.line)
+            }
+        }
+
+        i = hunk-end + 1
+        {
+            i < n -> {
+                ops[i].kind == 0 -> i = i + 1
+            }
+        } (i < n && ops[i].kind == 0)
+    } (i < n)
+}
+
+; diff-run: diff command entry
+diff-run = () {
+    argc = args()
+
+    unified = false
+    context = false
+    brief = false
+    files []str
+
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-u' -> unified = true
+        a == '--unified' -> unified = true
+        a == '-c' -> context = true
+        a == '--context' -> context = true
+        a == '-q' -> brief = true
+        a == '--brief' -> brief = true
+        a.starts-with('-') == false -> files.push(a)
+        i = i + 1
+    }
+
+    files.len < 2 -> {
+        eprint('Usage: diff [-u|-c|-q] FILE1 FILE2')
+        os.exit(2)
+    }
+
+    c1 = fs.read-file(files[0])
+    c2 = fs.read-file(files[1])
+
+    c1.compare(c2) == 0 -> {
+        os.exit(0)
+    }
+
+    // split lines inline (avoid slice output parameter bug)
+    lines1 []str
+    lines2 []str
+    split-inline(c1, lines1)
+    split-inline(c2, lines2)
+    n1 = lines1.len
+    n2 = lines2.len
+
+    // detect if there is any difference
+    has-diff = false
+    n1 != n2 -> has-diff = true
+    has-diff == false -> {
+        i <- [0..n1): {
+            lines1[i].compare(lines2[i]) != 0 -> has-diff = true
+        }
+    }
+
+    has-diff == false -> {
+        os.exit(0)
+    }
+
+    brief == true -> {
+        print('Files ' - files[0] - ' and ' - files[1] - ' differ')
+        os.exit(1)
+    }
+
+    // simple diff: find common prefix and suffix
+    pre = 0
+    {
+        pre < n1 && pre < n2 -> {
+            lines1[pre].compare(lines2[pre]) == 0 -> pre = pre + 1
+            -> break
+        }
+    } (pre < n1 && pre < n2)
+
+    suf = 0
+    {
+        suf < (n1 - pre) && suf < (n2 - pre) -> {
+            lines1[n1 - 1 - suf].compare(lines2[n2 - 1 - suf]) == 0 -> suf = suf + 1
+            -> break
+        }
+    } (suf < (n1 - pre) && suf < (n2 - pre))
+
+    a-start = pre + 1
+    a-end = n1 - suf
+    b-start = pre + 1
+    b-end = n2 - suf
+    a-count = a-end - a-start + 1
+    b-count = b-end - b-start + 1
+
+    // emit normal diff hunk
+    has-del = a-count > 0
+    has-ins = b-count > 0
+
+    has-del && has-ins -> {
+        ra = format-range(a-start, a-count)
+        rb = format-range(b-start, b-count)
+        print(ra - 'c' - rb)
+        k <- [pre..n1 - suf): {
+            print('< ' - lines1[k])
+        }
+        print('---')
+        k <- [pre..n2 - suf): {
+            print('> ' - lines2[k])
+        }
+    }
+    has-del && has-ins == false -> {
+        ra = format-range(a-start, a-count)
+        print(ra - 'd' - b-start.to-str())
+        k <- [pre..n1 - suf): {
+            print('< ' - lines1[k])
+        }
+    }
+    has-del == false && has-ins -> {
+        rb = format-range(b-start, b-count)
+        print(a-start.to-str() - 'a' - rb)
+        k <- [pre..n2 - suf): {
+            print('> ' - lines2[k])
+        }
+    }
+
+    os.exit(1)
+}
+
+; split-inline: split content into lines (inline helper)
+split-inline = (content str, lines []str) {
+    start = 0
+    i = 0
+    for i < content.len {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    start < content.len -> {
+        lines.push(content.slice(start, content.len))
+    }
+}
+
+; sdiff-pad: pad string to width, truncating if longer
+sdiff-pad = (s str, width i64) (out str) {
+    s.len >= width -> {
+        out = s.slice(0, width)
+    }
+    s.len < width -> {
+        out = s
+        i <- [s.len..width): {
+            out = out - ' '
+        }
+    }
+}
+
+; sdiff-emit-line: emit one sdiff line
+sdiff-emit-line = (left str, right str, sep str, width i64) {
+    half = width / 2
+    padded = sdiff-pad(left, half)
+    print(padded - ' ' - sep - ' ' - right)
+}
+
+; sdiff-run: sdiff command entry
+sdiff-run = () {
+    argc = args()
+
+    width = 130
+    left-only = false
+    files []str
+
+    i = 2
+    for i < argc {
+        a = arg(i)
+        a == '-l' -> left-only = true
+        a == '-w' -> {
+            i = i + 1
+            i < argc -> {
+                w = arg(i).to-i64()
+                w: {
+                    ok -> width = it
+                    nil -> *
+                    err -> *
+                }
+            }
+        }
+        a.starts-with('-w') && a.len > 2 -> {
+            w = a.slice(2, a.len).to-i64()
+            w: {
+                    ok -> width = it
+                    nil -> *
+                    err -> *
+                }
+        }
+        a.starts-with('-') == false -> files.push(a)
+        i = i + 1
+    }
+
+    files.len < 2 -> {
+        eprint('Usage: sdiff [-w WIDTH] [-l] FILE1 FILE2')
+        os.exit(2)
+    }
+
+    c1 = fs.read-file(files[0])
+    c2 = fs.read-file(files[1])
+
+    lines1 []str
+    lines2 []str
+    split-inline(c1, lines1)
+    split-inline(c2, lines2)
+    n1 = lines1.len
+    n2 = lines2.len
+
+    // simple side-by-side diff using common prefix/suffix
+    pre = 0
+    {
+        pre < n1 && pre < n2 -> {
+            lines1[pre].compare(lines2[pre]) == 0 -> pre = pre + 1
+            -> break
+        }
+    } (pre < n1 && pre < n2)
+
+    suf = 0
+    {
+        suf < (n1 - pre) && suf < (n2 - pre) -> {
+            lines1[n1 - 1 - suf].compare(lines2[n2 - 1 - suf]) == 0 -> suf = suf + 1
+            -> break
+        }
+    } (suf < (n1 - pre) && suf < (n2 - pre))
+
+    // emit common prefix
+    k <- [0..pre): {
+        left-only == true -> {
+            sdiff-emit-line(lines1[k], '', ' ', width)
+        }
+        left-only == false -> {
+            sdiff-emit-line(lines1[k], lines1[k], ' ', width)
+        }
+    }
+
+    // emit differing middle
+    a-mid = n1 - pre - suf
+    b-mid = n2 - pre - suf
+    max-mid = a-mid
+    b-mid > max-mid -> max-mid = b-mid
+
+    k <- [0..max-mid): {
+        a-line = ''
+        b-line = ''
+        has-a = false
+        has-b = false
+        k < a-mid -> {
+            a-line = lines1[pre + k]
+            has-a = true
+        }
+        k < b-mid -> {
+            b-line = lines2[pre + k]
+            has-b = true
+        }
+        has-a && has-b -> {
+            sdiff-emit-line(a-line, b-line, '|', width)
+        }
+        has-a && has-b == false -> {
+            sdiff-emit-line(a-line, '', '<', width)
+        }
+        has-a == false && has-b -> {
+            sdiff-emit-line('', b-line, '>', width)
+        }
+    }
+
+    // emit common suffix
+    k <- [0..suf): {
+        l = lines1[n1 - suf + k]
+        left-only == true -> {
+            sdiff-emit-line(l, '', ' ', width)
+        }
+        left-only == false -> {
+            sdiff-emit-line(l, l, ' ', width)
+        }
+    }
+}
+
+; diff-dispatch: dispatch diff/sdiff commands
+; 注意：编译器在导入多个使用同一自定义 struct 的函数时存在 bug，
+; 会导致函数未生成。通过单一入口函数避免此问题。
+diff-dispatch = (cmd str) {
+    cmd == 'diff' -> diff-run()
+    cmd == 'sdiff' -> sdiff-run()
+}

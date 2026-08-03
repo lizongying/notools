@@ -1,0 +1,137 @@
+// uudecode.no — uudecode utility
+// Decode a uuencoded file
+// Usage: uudecode [FILE]   (reads stdin if no FILE)
+
+uudecode-run = () {
+    argc = args()
+    content = ''
+    {
+        argc < 3 -> {
+            content = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                content.len == 0 -> {
+                    os.sleep-us(1000)
+                    content = fs.read-file('/dev/stdin')
+                }
+            }
+        }
+        -> {
+            path = arg(2)
+            fs.is-file(path) == false -> {
+                eprint('uudecode: ' - path - ': No such file')
+                os.exit(1)
+            }
+            content = fs.read-file(path)
+        }
+    }
+    ; Find "begin MODE NAME" line
+    lines []str
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+    ; Find begin line
+    begin-idx = -1
+    out-name = ''
+    i <- [0..lines.len): {
+        line = lines[i]
+        line.starts-with('begin ') -> {
+            begin-idx = i
+            ; Extract name: skip "begin MODE "
+            rest = line.slice(7, line.len)
+            sp = rest.index(' ')
+            sp >= 0 -> {
+                out-name = rest.slice(sp + 1, rest.len)
+            }
+            break
+        }
+    }
+    begin-idx < 0 -> {
+        eprint('uudecode: no begin line')
+        os.exit(1)
+    }
+    ; Decode lines until 'end'
+    out []byte = with-cap(1024)
+    out-len = 0
+    i <- [begin-idx + 1..lines.len): {
+        line = lines[i]
+        line == 'end' -> break
+        line.len == 0 -> *
+        ; First char = length
+        first = line[0]
+        count = first - 32
+        count <= 0 -> *
+        ; Decode remaining chars (4 -> 3 bytes)
+        j = 1
+        remaining = count
+        {
+            remaining >= 3 && j + 3 < line.len -> {
+                c0 = line[j] - 32
+                c1 = line[j + 1] - 32
+                c2 = line[j + 2] - 32
+                c3 = line[j + 3] - 32
+                b0 = ((c0 << 2) | (c1 >> 4)) & 255
+                b1 = ((c1 << 4) | (c2 >> 2)) & 255
+                b2 = ((c2 << 6) | c3) & 255
+                out[out-len] = b0
+                out[out-len + 1] = b1
+                out[out-len + 2] = b2
+                out-len = out-len + 3
+                j = j + 4
+                remaining = remaining - 3
+            }
+            remaining == 2 && j + 2 < line.len -> {
+                c0 = line[j] - 32
+                c1 = line[j + 1] - 32
+                c2 = line[j + 2] - 32
+                b0 = ((c0 << 2) | (c1 >> 4)) & 255
+                b1 = ((c1 << 4) | (c2 >> 2)) & 255
+                out[out-len] = b0
+                out[out-len + 1] = b1
+                out-len = out-len + 2
+                j = j + 3
+                remaining = remaining - 2
+            }
+            remaining == 1 && j + 1 < line.len -> {
+                c0 = line[j] - 32
+                c1 = line[j + 1] - 32
+                b0 = ((c0 << 2) | (c1 >> 4)) & 255
+                out[out-len] = b0
+                out-len = out-len + 1
+                j = j + 2
+                remaining = remaining - 1
+            }
+        } (remaining > 0)
+    }
+    ; Write to file
+    {
+        out-name == '' -> {
+            ; No name: write to stdout
+            data []byte = with-len(out-len)
+            k <- [0..out-len): {
+                data[k] = out[k]
+            }
+            s = data.to-str()
+            print(s)
+        }
+        out-name == '/dev/stdout' -> {
+            data []byte = with-len(out-len)
+            k <- [0..out-len): {
+                data[k] = out[k]
+            }
+            s = data.to-str()
+            print(s)
+        }
+        -> {
+            data []byte = with-len(out-len)
+            k <- [0..out-len): {
+                data[k] = out[k]
+            }
+            fs.write-file(out-name, data)
+        }
+    }
+}

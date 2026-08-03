@@ -1,0 +1,77 @@
+// sha256sum.no — sha256sum utility (coreutils alias)
+// Compute SHA-256 checksums
+// Usage: sha256sum [FILE...]   (no FILE: read stdin)
+//        sha256sum -c CHECKFILE   (verify checksums)
+# /notools/src/hashutil.do-hash
+
+sha256sum-run = () {
+    argc = args()
+    argc >= 3 -> {
+        arg(2) == '-c' -> {
+            checkfile = arg(3)
+            content = fs.read-file(checkfile)
+            lines []str
+            start = 0
+            i <- [0..content.len): {
+                content[i] == 10 -> {
+                    lines.push(content.slice(start, i))
+                    start = i + 1
+                }
+            }
+            start < content.len -> lines.push(content.slice(start, content.len))
+            any-failed = false
+            i <- [0..lines.len): {
+                line = lines[i]
+                line.len == 0 -> *
+                sp = line.index('  ')
+                sp < 0 -> *
+                expected = line.slice(0, sp)
+                fname = line.slice(sp + 2, line.len)
+                fs.is-file(fname) == false -> {
+                    print(fname - ': FAILED (no such file)')
+                    any-failed = true
+                    *
+                }
+                inp = fs.read-file(fname)
+                data = inp.to-bytes()
+                actual = do-hash('sha256', data)
+                actual == expected -> {
+                    print(fname - ': OK')
+                }
+                -> {
+                    print(fname - ': FAILED')
+                    any-failed = true
+                }
+            }
+            any-failed -> os.exit(1)
+            return
+        }
+    }
+    {
+        argc <= 2 -> {
+            inp = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+            h = do-hash('sha256', data)
+            print(h - '  -')
+        }
+        -> {
+            i <- [2..argc): {
+                path = arg(i)
+                fs.is-file(path) == false -> {
+                    eprint('sha256sum: ' - path - ': No such file')
+                    os.exit(1)
+                }
+                inp = fs.read-file(path)
+                data = inp.to-bytes()
+                h = do-hash('sha256', data)
+                print(h - '  ' - path)
+            }
+        }
+    }
+}

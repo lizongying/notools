@@ -1,0 +1,99 @@
+// shred.no — shred utility
+// Securely overwrite and optionally delete a file
+// Usage: shred [-n N] [-u] [-z] FILE...
+//   -n N   overwrite N times with random data (default 3)
+//   -u     remove file after overwriting
+//   -z     add a final overwrite with zeros
+// Random data is generated with a simple LCG (not cryptographically secure).
+
+// atoi: parse a non-negative integer
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+shred = () {
+    argc = args()
+    n-passes = 3
+    remove = false
+    zero = false
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        {
+            skip-next == true -> {
+                skip-next = false
+            }
+            -> {
+                a = arg(i)
+                {
+                    a == '-n' -> {
+                        i + 1 < argc -> {
+                            n-passes = atoi(arg(i + 1))
+                            skip-next = true
+                        }
+                    }
+                    a == '-u' -> remove = true
+                    a == '-z' -> zero = true
+                    a.starts-with('-n') -> {
+                        a.len > 2 -> n-passes = atoi(a.slice(2, a.len))
+                    }
+                    ! a.starts-with('-') -> files.push(a)
+                }
+            }
+        }
+    }
+
+    files.len == 0 -> {
+        eprint('shred: missing file operand')
+        os.exit(1)
+    }
+
+    // Seed the LCG with pid XOR time (ensure non-zero)
+    state = os.get-pid() ^ os.now-ns()
+    state = state | 1
+
+    fi <- [0..files.len): {
+        f = files[fi]
+        fs.is-file(f) == false -> {
+            eprint('shred: ' - f - ': No such file or directory')
+            continue
+        }
+        size = fs.stat-size(f)
+        size == 0 -> {
+            remove == true -> fs.remove(f)
+            continue
+        }
+
+        // Overwrite n-passes times with random data
+        pi <- [0..n-passes): {
+            buf = ' '.repeat(size)
+            s = state
+            j <- [0..size): {
+                s = s * 1103515245 + 12345
+                buf[j] = (s >> 16) & 255
+            }
+            state = s
+            fd = fs.open-write(f)
+            fs.write(fd, buf, size)
+            fs.close(fd)
+        }
+
+        // Final zero pass (-z)
+        zero == true -> {
+            zbuf = '\0'.repeat(size)
+            fd = fs.open-write(f)
+            fs.write(fd, zbuf, size)
+            fs.close(fd)
+        }
+
+        // Remove file (-u)
+        remove == true -> {
+            fs.remove(f)
+        }
+    }
+}

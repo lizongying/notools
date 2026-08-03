@@ -1,0 +1,84 @@
+// truncate-cmd.no — truncate utility
+// Truncate or extend files to a specified size
+// Usage: truncate -s SIZE FILE...
+//   SIZE: plain = set, +SIZE = extend, -SIZE = shrink; K/M/G suffix supported.
+
+truncate-parse-size-spec = (s str) (op str, mag i64) {
+    op = 'set'
+    mag = 0
+    start = 0
+    s.len > 0 -> {
+        s[0] == 43 -> { op = 'extend'
+                        start = 1 }
+        s[0] == 45 -> { op = 'shrink'
+                        start = 1 }
+    }
+    digit-end = start
+    done-digits = false
+    i <- [start..s.len): {
+        done-digits == false -> {
+            c = s[i]
+            c >= 48 && c <= 57 -> {
+                mag = mag * 10 + (c - 48)
+                digit-end = i + 1
+            }
+            c < 48 || c > 57 -> done-digits = true
+        }
+    }
+    digit-end < s.len -> {
+        c = s[digit-end]
+        c == 75 -> mag = mag * 1024          // 'K'
+        c == 77 -> mag = mag * 1048576       // 'M'
+        c == 71 -> mag = mag * 1073741824    // 'G'
+    }
+}
+
+truncate-run = () {
+    argc = args()
+    size-spec = ''
+    files []str
+    next-is-s = false
+    i <- [2..argc): {
+        a = arg(i)
+        {
+            next-is-s -> { size-spec = a
+                           next-is-s = false }
+            a == '-s' -> next-is-s = true
+            -> { files.push(a) }
+        }
+    }
+    size-spec.len == 0 -> {
+        eprint('Usage: truncate -s SIZE FILE...')
+        os.exit(1)
+    }
+    files.len == 0 -> {
+        eprint('Usage: truncate -s SIZE FILE...')
+        os.exit(1)
+    }
+    op, mag = truncate-parse-size-spec(size-spec)
+    had-error = false
+    i <- [0..files.len): {
+        f = files[i]
+        length = mag
+        op == 'extend' -> {
+            fs.is-file(f) -> {
+                cur = fs.read-file(f)
+                length = cur.len + mag
+            }
+        }
+        op == 'shrink' -> {
+            fs.is-file(f) -> {
+                cur = fs.read-file(f)
+                length = cur.len - mag
+                length < 0 -> length = 0
+            }
+            fs.is-file(f) == false -> length = 0
+        }
+        ok = os.truncate(f, length)
+        ok == false -> {
+            eprint('truncate: failed to truncate ' - f)
+            had-error = true
+        }
+    }
+    had-error -> os.exit(1)
+}

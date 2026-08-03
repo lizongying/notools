@@ -1,0 +1,78 @@
+// expand.no — expand utility
+// Convert tabs to spaces
+// Usage: expand [-t N] [file...]
+//   -t N:  tab stop distance (default: 8)
+//   files: files to process (read from stdin if none)
+
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+expand-run = () {
+    argc = args()
+    tabstop = 8
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        skip-next == true -> {
+            skip-next = false
+            continue
+        }
+        a = arg(i)
+        a == '-t' -> {
+            i + 1 < argc -> {
+                tabstop = atoi(arg(i + 1))
+                skip-next = true
+            }
+        }
+        a.starts-with('-t') -> {
+            a.len > 2 -> tabstop = atoi(a.slice(2, a.len))
+        }
+        ! a.starts-with('-') -> files.push(a)
+    }
+    tabstop < 1 -> tabstop = 8
+
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+        process(content, tabstop)
+    }
+    files.len > 0 -> {
+        fi <- [0..files.len): {
+            fs.is-file(files[fi]) == false -> {
+                io.errln('expand: ' - files[fi] - ': No such file or directory')
+                continue
+            }
+            content = fs.read-file(files[fi])
+            process(content, tabstop)
+        }
+    }
+}
+
+// process: convert tabs to spaces in content
+process = (content str, tabstop i64) {
+    col = 0
+    i <- [0..content.len): {
+        c = content[i]
+        c == 9 -> {
+            // Tab: advance to next tab stop
+            spaces = tabstop - (col % tabstop)
+            sp = ' '.repeat(spaces)
+            io.out(sp)
+            col = col + spaces
+        }
+        c == 10 -> {
+            io.out('\n')
+            col = 0
+        }
+        -> {
+            // Output single character
+            io.out(content.slice(i, i + 1))
+            col = col + 1
+        }
+    }
+}

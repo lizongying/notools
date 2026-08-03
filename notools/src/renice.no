@@ -1,0 +1,122 @@
+// renice.no — renice utility
+// Alter priority of running processes
+// Usage: renice [-n PRIORITY] [-p PID]... [-g PGRP]... [-u USER]...
+//   -n PRIORITY: new priority value (default 0)
+//   -p PID:      apply to process ID (default)
+//   -g PGRP:     apply to process group
+//   -u USER:     apply to user (simplified: numeric UID only)
+//   PRIO_PROCESS=0, PRIO_PGRP=1, PRIO_USER=2
+//   Prints old and new priority for each target.
+
+atoi = (s str) (v i64) {
+    v = 0
+    neg = false
+    start = 0
+    s.len > 0 -> {
+        s[0] == 45 -> {
+            neg = true
+            start = 1
+        }
+    }
+    i <- [start..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+    neg == true -> v = 0 - v
+}
+
+renice = () {
+    argc = args()
+
+    priority = 0
+    next-is-n = false
+    next-is-p = false
+    next-is-g = false
+    next-is-u = false
+
+    // Combined target lists: which (0=p,1=g,2=u) and who
+    which-list []i64
+    who-list   []i64
+
+    i <- [2..argc): {
+        a = arg(i)
+        {
+            next-is-n -> {
+                priority = atoi(a)
+                next-is-n = false
+            }
+            next-is-p -> {
+                which-list.push(0)
+                who-list.push(atoi(a))
+                next-is-p = false
+            }
+            next-is-g -> {
+                which-list.push(1)
+                who-list.push(atoi(a))
+                next-is-g = false
+            }
+            next-is-u -> {
+                which-list.push(2)
+                who-list.push(atoi(a))
+                next-is-u = false
+            }
+            a == '-n' -> next-is-n = true
+            a.starts-with('-n') && a.len > 2 -> priority = atoi(a.slice(2, a.len))
+            a == '-p' -> next-is-p = true
+            a.starts-with('-p') && a.len > 2 -> {
+                which-list.push(0)
+                who-list.push(atoi(a.slice(2, a.len)))
+            }
+            a == '-g' -> next-is-g = true
+            a.starts-with('-g') && a.len > 2 -> {
+                which-list.push(1)
+                who-list.push(atoi(a.slice(2, a.len)))
+            }
+            a == '-u' -> next-is-u = true
+            a.starts-with('-u') && a.len > 2 -> {
+                which-list.push(2)
+                who-list.push(atoi(a.slice(2, a.len)))
+            }
+            -> {
+                // bare PID — default behavior
+                which-list.push(0)
+                who-list.push(atoi(a))
+            }
+        }
+    }
+
+    which-list.len == 0 -> {
+        eprint('Usage: renice [-n PRIORITY] [-p PID]... [-g PGRP]... [-u USER]...')
+        os.exit(1)
+    }
+
+    had-error = false
+    i <- [0..which-list.len): {
+        which = which-list[i]
+        who   = who-list[i]
+
+        old-prio, ok = os.get-priority(which, who)
+        ok == false -> {
+            eprint('renice: failed to read priority')
+            had-error = true
+        }
+        ok == true -> {
+            ok2 = os.set-priority(which, who, priority)
+            ok2 == false -> {
+                eprint('renice: failed to set priority')
+                had-error = true
+            }
+            ok2 == true -> {
+                tag = 'PID'
+                which == 1 -> tag = 'PGRP'
+                which == 2 -> tag = 'USER'
+                old-str = old-prio.to-str()
+                new-str = priority.to-str()
+                who-str = who.to-str()
+                print(tag - ' ' - who-str - ' old priority ' - old-str - ', new priority ' - new-str)
+            }
+        }
+    }
+
+    had-error -> os.exit(1)
+}

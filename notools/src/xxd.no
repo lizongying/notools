@@ -1,0 +1,319 @@
+// xxd.no — xxd 十六进制转储
+// 用法：xxd [-p] [-r] [-c COLS] [-g GROUP] [file]
+//   -p       纯十六进制模式（无地址、无 ASCII，按 -c 折行）
+//   -r       反转模式（从十六进制还原为二进制）
+//   -c COLS  每行字节数（默认 16；-p 模式默认 30）
+//   -g GROUP 每组字节数（默认 2；-p 模式默认 1）
+//   file     指定文件，否则读取 stdin
+
+# /notools/src/xxd.xxd
+
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+xxd-run = () {
+    argc = args()
+    cols = 16
+    group = 2
+    pure = false
+    rev = false
+    cols-set = false
+    group-set = false
+    files []str
+    skip-next = false
+    i <- [2..argc): {
+        handled = false
+        {
+            skip-next == true -> {
+                skip-next = false
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-p' -> {
+                        pure = true
+                        handled = true
+                    }
+                    a == '-r' -> {
+                        rev = true
+                        handled = true
+                    }
+                    a == '-c' -> {
+                        i + 1 < argc -> {
+                            cols = atoi(arg(i + 1))
+                            cols-set = true
+                            skip-next = true
+                        }
+                        handled = true
+                    }
+                    a == '-g' -> {
+                        i + 1 < argc -> {
+                            group = atoi(arg(i + 1))
+                            group-set = true
+                            skip-next = true
+                        }
+                        handled = true
+                    }
+                    a.starts-with('-c') -> {
+                        a.len > 2 -> {
+                            cols = atoi(a.slice(2, a.len))
+                            cols-set = true
+                            handled = true
+                        }
+                    }
+                    a.starts-with('-g') -> {
+                        a.len > 2 -> {
+                            group = atoi(a.slice(2, a.len))
+                            group-set = true
+                            handled = true
+                        }
+                    }
+                }
+                {
+                    handled == false -> {
+                        ! a.starts-with('-') -> files.push(a)
+                    }
+                }
+            }
+        }
+    }
+    cols < 1 -> cols = 16
+    group < 1 -> group = 1
+    {
+        pure == true && cols-set == false -> cols = 30
+    }
+    {
+        pure == true && group-set == false -> group = 1
+    }
+
+    data []byte
+    {
+        files.len == 0 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+        }
+        -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('xxd: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(f)
+                b = inp.to-bytes()
+                k <- [0..b.len): { data.push(b[k]) }
+            }
+        }
+    }
+
+    {
+        rev == true -> reverse(data, pure)
+        pure == true -> dump-pure(data, cols)
+        -> canonical(data, cols, group)
+    }
+}
+
+// pure: 纯十六进制模式输出
+dump-pure = (data []byte, cols i64) {
+    hex-digits = '0123456789abcdef'
+    space = ' '
+    offset = 0
+    n = data.len
+    {
+        offset < n -> {
+            line-n = n - offset
+            line-n > cols -> line-n = cols
+            line = space.repeat(line-n * 2)
+            j <- [0..line-n): {
+                b = data[offset + j] & 255
+                line[j * 2] = hex-digits[(b >> 4) & 15]
+                line[j * 2 + 1] = hex-digits[b & 15]
+            }
+            print(line)
+            offset = offset + cols
+        }
+    } (offset < n)
+}
+
+// canonical: 默认带地址与 ASCII 的十六进制转储
+canonical = (data []byte, cols i64, group i64) {
+    hex-digits = '0123456789abcdef'
+    space = ' '
+    ngroups = cols / group
+    rem = cols - (ngroups * group)
+    hex-width = 0
+    {
+        rem > 0 -> hex-width = ngroups * (group * 2 + 1) + rem * 2
+        rem == 0 -> hex-width = ngroups * (group * 2 + 1) - 1
+    }
+
+    offset = 0
+    n = data.len
+    {
+        offset < n -> {
+            line-n = n - offset
+            line-n > cols -> line-n = cols
+            line-len = 8 + 2 + hex-width + 2 + line-n
+            line = space.repeat(line-len)
+            // 8 位地址（小写十六进制，零填充）
+            a = offset
+            k <- [0..8): {
+                line[7 - k] = hex-digits[a & 15]
+                a = a >> 4
+            }
+            line[8] = ':'
+            line[9] = ' '
+            // 十六进制区段
+            hi = 10
+            j <- [0..line-n): {
+                {
+                    j > 0 && (j % group == 0) -> {
+                        line[hi] = ' '
+                        hi = hi + 1
+                    }
+                }
+                b = data[offset + j] & 255
+                line[hi] = hex-digits[(b >> 4) & 15]
+                hi = hi + 1
+                line[hi] = hex-digits[b & 15]
+                hi = hi + 1
+            }
+            // 剩余位置已是空格（来自 repeat 预填充）
+            // 跳过 2 个分隔空格（已预填充）
+            ascii-start = 10 + hex-width + 2
+            // ASCII 区段
+            j <- [0..line-n): {
+                b = data[offset + j] & 255
+                {
+                    b >= 32 && b < 127 -> line[ascii-start + j] = b
+                    -> line[ascii-start + j] = '.'
+                }
+            }
+            print(line)
+            offset = offset + cols
+        }
+    } (offset < n)
+}
+
+// reverse: 从十六进制还原为二进制
+reverse = (data []byte, pure-mode bool) {
+    out []byte
+    n = data.len
+    {
+        pure-mode == true -> {
+            // 纯十六进制：扫描所有十六进制字符，按对组合
+            cnt = 0
+            hi-c = 0
+            i <- [0..n): {
+                c = data[i] & 255
+                v = -1
+                {
+                    c >= 48 && c <= 57 -> v = c - 48
+                    c >= 65 && c <= 70 -> v = c - 55
+                    c >= 97 && c <= 102 -> v = c - 87
+                }
+                {
+                    v >= 0 -> {
+                        {
+                            cnt == 0 -> {
+                                hi-c = v
+                                cnt = 1
+                            }
+                            -> {
+                                out.push((hi-c << 4) | v)
+                                cnt = 0
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        -> {
+            // 格式模式：逐行处理，跳过地址，在 ':' 之后读取十六进制对
+            line-start = 0
+            i <- [0..n): {
+                c = data[i] & 255
+                c == 10 -> {
+                    parse-format-line(data, line-start, i, out)
+                    line-start = i + 1
+                }
+            }
+            line-start < n -> parse-format-line(data, line-start, n, out)
+        }
+    }
+
+    // 写入二进制到 stdout
+    fd = fs.open-write('/dev/stdout')
+    fs.write(fd, out, out.len)
+}
+
+// parse-format-line: 解析 xxd 格式行，提取十六进制字节
+// 在 [start, end) 范围内查找 ':'，然后解析后续十六进制对，遇到连续 2+ 空格停止
+parse-format-line = (data []byte, start i64, end i64, out []byte) {
+    colon = -1
+    j <- [start..end): {
+        (data[j] & 255) == 58 -> {
+            colon = j
+            break
+        }
+    }
+    {
+        colon < 0 -> return
+    }
+    pos = colon + 1
+    cnt = 0
+    hi-c = 0
+    spaces = 0
+    {
+        pos < end -> {
+            c = data[pos] & 255
+            {
+                c == 32 -> {
+                    spaces = spaces + 1
+                    spaces >= 2 -> pos = end
+                }
+                -> spaces = 0
+            }
+            {
+                pos < end -> {
+                    v = -1
+                    {
+                        c >= 48 && c <= 57 -> v = c - 48
+                        c >= 65 && c <= 70 -> v = c - 55
+                        c >= 97 && c <= 102 -> v = c - 87
+                    }
+                    {
+                        v >= 0 -> {
+                            {
+                                cnt == 0 -> {
+                                    hi-c = v
+                                    cnt = 1
+                                }
+                                -> {
+                                    out.push((hi-c << 4) | v)
+                                    cnt = 0
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            pos = pos + 1
+        }
+    } (pos < end)
+}

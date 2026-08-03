@@ -1,0 +1,87 @@
+// nice.no — nice utility
+// Run a command with modified scheduling priority
+// Usage: nice [-n ADJUSTMENT] COMMAND [ARGS...]
+//   -n N: priority adjustment (default 10)
+//   Calls os.set-priority(0, 0, adjustment) before exec'ing the command
+//   Exit status: the command's exit status.
+
+atoi = (s str) (v i64) {
+    v = 0
+    neg = false
+    start = 0
+    s.len > 0 -> {
+        s[0] == 45 -> {
+            neg = true
+            start = 1
+        }
+    }
+    i <- [start..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+    neg == true -> v = 0 - v
+}
+
+nice = () {
+    argc = args()
+
+    adjustment = 10
+    next-is-n = false
+    cmd-start = 2
+
+    i <- [2..argc): {
+        handled = false
+        {
+            next-is-n -> {
+                a = arg(i)
+                adjustment = atoi(a)
+                next-is-n = false
+                cmd-start = i + 1
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-n' -> {
+                        next-is-n = true
+                        handled = true
+                    }
+                    a.starts-with('-n') && a.len > 2 -> {
+                        cand = a.slice(2, a.len)
+                        adjustment = atoi(cand)
+                        cmd-start = i + 1
+                        handled = true
+                    }
+                }
+                {
+                    handled == false -> break
+                }
+            }
+        }
+    }
+
+    cmd-start >= argc -> {
+        eprint('Usage: nice [-n ADJUSTMENT] COMMAND [ARGS...]')
+        os.exit(1)
+    }
+
+    // Build command string from remaining args
+    cmd = ''
+    i <- [cmd-start..argc): {
+        i > cmd-start -> cmd = cmd - ' '
+        cmd = cmd - arg(i)
+    }
+
+    // Adjust our own priority (PRIO_PROCESS=0, who=0=current)
+    os.set-priority(0, 0, adjustment)
+
+    pid = process-spawn(cmd)
+    pid < 0 -> {
+        eprint('nice: failed to start command')
+        os.exit(1)
+    }
+    status = process-wait(pid)
+    os.exit(status)
+}

@@ -1,0 +1,264 @@
+// od.no — od 八进制/十六进制转储
+// 用法：od [-A FORMAT] [-t FORMAT] [-N N] [file]
+//   -A FORMAT  地址格式：d=十进制 o=八进制 x=十六进制 n=无（默认 o）
+//   -t FORMAT  数据类型：o2=八进制2字节 x2=十六进制2字节 u1=无符号1字节 c=字符（默认 o2）
+//   -N N       只处理前 N 字节
+//   file       指定文件，否则读取 stdin
+
+
+atoi = (s str) (v i64) {
+    v = 0
+    i <- [0..s.len): {
+        c = s[i]
+        c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+od-run = () {
+    argc = args()
+    addr-fmt = 'o'
+    data-fmt = 'o2'
+    nbytes = -1
+    files []str
+    skip-next = false
+    i <- [2..argc): {
+        handled = false
+        {
+            skip-next == true -> {
+                skip-next = false
+                handled = true
+            }
+        }
+        {
+            handled == false -> {
+                a = arg(i)
+                {
+                    a == '-A' -> {
+                        i + 1 < argc -> {
+                        addr-fmt = arg(i + 1)
+                        skip-next = true
+                    }
+                        handled = true
+                    }
+                    a == '-t' -> {
+                        i + 1 < argc -> {
+                        data-fmt = arg(i + 1)
+                        skip-next = true
+                    }
+                        handled = true
+                    }
+                    a == '-N' -> {
+                        i + 1 < argc -> {
+                        nbytes = atoi(arg(i + 1))
+                        skip-next = true
+                    }
+                        handled = true
+                    }
+                    a.starts-with('-A') -> { a.len > 2 -> {
+                        addr-fmt = a.slice(2, a.len)
+                        handled = true
+                    } }
+                    a.starts-with('-t') -> { a.len > 2 -> {
+                        data-fmt = a.slice(2, a.len)
+                        handled = true
+                    } }
+                    a.starts-with('-N') -> { a.len > 2 -> {
+                        nbytes = atoi(a.slice(2, a.len))
+                        handled = true
+                    } }
+                }
+                {
+                    handled == false -> {
+                        ! a.starts-with('-') -> files.push(a)
+                    }
+                }
+            }
+        }
+    }
+
+    data []byte
+    {
+        files.len == 0 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
+            }
+            data = inp.to-bytes()
+        }
+        -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('od: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(f)
+                b = inp.to-bytes()
+                k <- [0..b.len): { data.push(b[k]) }
+            }
+        }
+    }
+
+    n = data.len
+    {
+        nbytes >= 0 && nbytes < n -> n = nbytes
+    }
+
+    // 确定单元大小与每行单元数
+    unit = 2
+    {
+        data-fmt == 'u1' -> unit = 1
+        data-fmt == 'c' -> unit = 1
+        data-fmt == 'o1' -> unit = 1
+        data-fmt == 'x1' -> unit = 1
+    }
+    per-line = 16 / unit
+
+    offset = 0
+    offset < n: {
+        // 打印地址
+        {
+            addr-fmt != 'n' -> print-addr(offset, addr-fmt)
+        }
+        // 打印各单元
+        j <- [0..per-line): {
+            pos = offset + j * unit
+            {
+                pos < n -> {
+                    // 取单元值（小端）
+                    val = 0
+                    k <- [0..unit): {
+                        p = pos + k
+                        {
+                            p < n -> val = val | ((data[p] & 255) << (k * 8))
+                        }
+                    }
+                    {
+                        data-fmt == 'o2' -> print-octal(val, 6)
+                        data-fmt == 'x2' -> print-hex(val, 4)
+                        data-fmt == 'u1' -> print-decimal(val, 3)
+                        data-fmt == 'o1' -> print-octal(val, 3)
+                        data-fmt == 'x1' -> print-hex(val, 2)
+                        data-fmt == 'c' -> print-char-unit(data, pos)
+                    }
+                }
+            }
+        }
+        print('')
+        offset = offset + 16
+    }
+
+    // 末行地址
+    {
+        addr-fmt != 'n' -> {
+            print-addr(n, addr-fmt)
+            print('')
+        }
+    }
+}
+
+print-addr = (val i64, fmt str) {
+    space = ' '
+    {
+        fmt == 'o' -> {
+            s = space.repeat(7)
+            v = val
+            k <- [0..7): {
+                s[6 - k] = 48 + (v & 7)
+                v = v >> 3
+            }
+            io.out(s)
+        }
+        fmt == 'd' -> {
+            s = space.repeat(7)
+            v = val
+            k <- [0..7): {
+                s[6 - k] = 48 + (v % 10)
+                v = v / 10
+            }
+            io.out(s)
+        }
+        fmt == 'x' -> {
+            hex-digits = '0123456789abcdef'
+            s = space.repeat(7)
+            v = val
+            k <- [0..7): {
+                s[6 - k] = hex-digits[v & 15]
+                v = v >> 4
+            }
+            io.out(s)
+        }
+    }
+}
+
+print-octal = (val i64, width i64) {
+    octal-digits = '01234567'
+    space = ' '
+    s = space.repeat(width + 1)
+    v = val
+    k <- [0..width): {
+        s[width - k] = octal-digits[v & 7]
+        v = v >> 3
+    }
+    io.out(s)
+}
+
+print-hex = (val i64, width i64) {
+    hex-digits = '0123456789abcdef'
+    space = ' '
+    s = space.repeat(width + 1)
+    v = val
+    k <- [0..width): {
+        s[width - k] = hex-digits[v & 15]
+        v = v >> 4
+    }
+    io.out(s)
+}
+
+print-decimal = (val i64, width i64) {
+    space = ' '
+    s = space.repeat(width + 1)
+    v = val
+    k <- [0..width): {
+        s[width - k] = 48 + (v % 10)
+        v = v / 10
+    }
+    io.out(s)
+}
+
+print-char-unit = (data []byte, pos i64) {
+    space = ' '
+    b = data[pos] & 255
+    s = space.repeat(4)
+    {
+        b == 0 -> {
+            s[2] = '\\'
+            s[3] = '0'
+        }
+        b == 9 -> {
+            s[2] = '\\'
+            s[3] = 't'
+        }
+        b == 10 -> {
+            s[2] = '\\'
+            s[3] = 'n'
+        }
+        b == 13 -> {
+            s[2] = '\\'
+            s[3] = 'r'
+        }
+        b >= 32 && b < 127 -> { s[3] = b }
+        -> {
+            // 3 位八进制
+            octal-digits = '01234567'
+            s[1] = octal-digits[(b >> 6) & 3]
+            s[2] = octal-digits[(b >> 3) & 7]
+            s[3] = octal-digits[b & 7]
+        }
+    }
+    io.out(s)
+}

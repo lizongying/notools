@@ -1,0 +1,50 @@
+// flock-cmd.no — flock utility
+// Manage file locks from shell scripts
+// Usage: flock FILE COMMAND
+//   Open FILE for writing, acquire an exclusive lock (LOCK_EX=2),
+//   run COMMAND via sh -c, then release the lock (LOCK_UN=8) and close.
+//   Exit status: the command's exit status, or 1 on lock/open failure.
+
+flock-run = () {
+    argc = args()
+
+    argc < 4 -> {
+        eprint('Usage: flock FILE COMMAND')
+        os.exit(1)
+    }
+
+    file = arg(2)
+    // Build command string from args [3..argc)
+    cmd = ''
+    i <- [3..argc): {
+        i > 3 -> cmd = cmd - ' '
+        cmd = cmd - arg(i)
+    }
+
+    fd = fs.open-write(file)
+    fd < 0 -> {
+        eprint('flock: cannot open ' - file)
+        os.exit(1)
+    }
+
+    // LOCK_EX = 2 (exclusive, blocking)
+    ok = os.flock(fd, 2)
+    ok == false -> {
+        eprint('flock: failed to acquire lock on ' - file)
+        fs.close(fd)
+        os.exit(1)
+    }
+
+    status = 0
+    pid = process-spawn(cmd)
+    pid < 0 -> {
+        eprint('flock: failed to start command')
+        status = 1
+    }
+    pid > 0 -> status = process-wait(pid)
+
+    // LOCK_UN = 8 (unlock)
+    os.flock(fd, 8)
+    fs.close(fd)
+    os.exit(status)
+}

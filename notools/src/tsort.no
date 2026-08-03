@@ -1,0 +1,148 @@
+// tsort.no — tsort utility
+// Topological sort
+// Usage: tsort [file]
+//   Reads pairs "A B" meaning edge A→B, outputs topological order
+
+// split: split content into whitespace-separated tokens
+split = (content str, tokens []str) {
+    start = 0
+    in-field = false
+    i <- [0..content.len): {
+        c = content[i]
+        is-space = c == 32 || c == 9 || c == 10 || c == 13
+        is-space && in-field -> {
+            tokens.push(content.slice(start, i))
+            in-field = false
+        }
+        !is-space && !in-field -> {
+            start = i
+            in-field = true
+        }
+    }
+    in-field -> tokens.push(content.slice(start, content.len))
+}
+
+// find-or-add: find node index by name, or add it; returns index
+find-or-add = (nodes []str, name str) (idx i64) {
+    i <- [0..nodes.len): {
+        nodes[i] == name -> {
+            idx = i
+            return
+        }
+    }
+    idx = nodes.len
+    nodes.push(name)
+}
+
+tsort-run = () {
+    argc = args()
+    files []str
+    i <- [2..argc): {
+        a = arg(i)
+        ! a.starts-with('-') -> files.push(a)
+    }
+
+    content = ''
+    files.len == 0 -> {
+        content = fs.read-file('/dev/stdin')
+    }
+    files.len > 0 -> {
+        fs.is-file(files[0]) == false -> {
+            msg = 'tsort: ' - files[0] - ': No such file or directory'
+            eprint(msg)
+            os.exit(1)
+        }
+        content = fs.read-file(files[0])
+    }
+
+    // Parse tokens
+    tokens []str
+    split(content, tokens)
+
+    // Build node list and edge list (process in pairs)
+    nodes []str
+    edges-from []i64
+    edges-to []i64
+
+    pair-count = tokens.len / 2
+    p <- [0..pair-count): {
+        a = tokens[p * 2] - ''
+        b = tokens[p * 2 + 1] - ''
+
+        // Skip self-loops (A A)
+        a == b -> continue
+
+        idx-from = find-or-add(nodes, a)
+        idx-to = find-or-add(nodes, b)
+        edges-from.push(idx-from)
+        edges-to.push(idx-to)
+    }
+
+    n = nodes.len
+    n == 0 -> return
+
+    // Compute in-degrees
+    in-deg []i64 = with-len(n)
+    j <- [0..n): { in-deg[j] = 0 }
+    e <- [0..edges-to.len): {
+        to = edges-to[e]
+        in-deg[to] = in-deg[to] + 1
+    }
+
+    // Build adjacency list (flat: for each node, list of successors)
+    adj-count []i64 = with-len(n + 1)
+    j <- [0..n + 1): { adj-count[j] = 0 }
+    e <- [0..edges-from.len): {
+        from = edges-from[e]
+        adj-count[from + 1] = adj-count[from + 1] + 1
+    }
+    // Prefix sum to get offsets
+    j <- [1..n + 1): {
+        adj-count[j] = adj-count[j] + adj-count[j - 1]
+    }
+    adj []i64 = with-len(edges-from.len)
+    pos []i64 = with-len(n)
+    j <- [0..n): { pos[j] = 0 }
+    e <- [0..edges-from.len): {
+        from = edges-from[e]
+        slot = adj-count[from] + pos[from]
+        adj[slot] = edges-to[e]
+        pos[from] = pos[from] + 1
+    }
+
+    // Kahn's algorithm: queue of nodes with in-degree 0
+    queue []i64
+    j <- [0..n): {
+        in-deg[j] == 0 -> queue.push(j)
+    }
+
+    output-count = 0
+    {
+        queue.len > 0 -> {
+            // Pop front
+            node = queue[0]
+            // Shift queue
+            q <- [1..queue.len): {
+                queue[q - 1] = queue[q]
+            }
+            queue.len = queue.len - 1
+
+            print(nodes[node])
+            output-count = output-count + 1
+
+            // Decrease in-degree of successors
+            start-adj = adj-count[node]
+            end-adj = adj-count[node + 1]
+            k <- [start-adj..end-adj): {
+                succ = adj[k]
+                in-deg[succ] = in-deg[succ] - 1
+                in-deg[succ] == 0 -> queue.push(succ)
+            }
+        }
+    } (queue.len > 0)
+
+    output-count < n -> {
+        eprint('tsort: input contains a cycle')
+        os.exit(1)
+    }
+}

@@ -1,0 +1,94 @@
+; free.no — free utility
+; 顯示系統記憶體使用情況。讀取 /proc/meminfo（Linux）。
+; Usage: free [-b|-k|-m|-g]
+;   -b  以 bytes 為單位
+;   -k  以 KB 為單位（預設）
+;   -m  以 MB 為單位
+;   -g  以 GB 為單位
+
+free-cmd = () {
+    argc = args()
+
+    unit = 'k'
+    i <- [2..argc): {
+        a = arg(i)
+        a == '-b' -> unit = 'b'
+        a == '-k' -> unit = 'k'
+        a == '-m' -> unit = 'm'
+        a == '-g' -> unit = 'g'
+    }
+
+    ; /proc/meminfo 僅 Linux 可用
+    fs.is-file('/proc/meminfo') == false -> {
+        eprint('free: /proc/meminfo not available (Linux only)')
+        os.exit(1)
+    }
+
+    content = fs.read-file('/proc/meminfo')
+    lines []str
+    start = 0
+    i <- [0..content.len): {
+        content[i] == 10 -> {
+            lines.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    start < content.len -> lines.push(content.slice(start, content.len))
+
+    total = 0
+    free = 0
+    avail = 0
+    buffers = 0
+    cached = 0
+    swap-total = 0
+    swap-free = 0
+
+    i <- [0..lines.len): {
+        line = lines[i]
+        line.starts-with('MemTotal:') -> total = free-parse-kb(line)
+        line.starts-with('MemFree:') -> free = free-parse-kb(line)
+        line.starts-with('MemAvailable:') -> avail = free-parse-kb(line)
+        line.starts-with('Buffers:') -> buffers = free-parse-kb(line)
+        line.starts-with('Cached:') -> cached = free-parse-kb(line)
+        line.starts-with('SwapTotal:') -> swap-total = free-parse-kb(line)
+        line.starts-with('SwapFree:') -> swap-free = free-parse-kb(line)
+    }
+
+    ; 單位換算
+    divisor = 1
+    unit == 'b' -> divisor = 1024
+    unit == 'k' -> divisor = 1
+    unit == 'm' -> divisor = 1
+    unit == 'g' -> divisor = 1
+
+    t-str = free-fmt(total, unit)
+    f-str = free-fmt(free, unit)
+    a-str = free-fmt(avail, unit)
+    u-str = free-fmt(total - free - buffers - cached, unit)
+    st-str = free-fmt(swap-total, unit)
+    sf-str = free-fmt(swap-free, unit)
+    su-str = free-fmt(swap-total - swap-free, unit)
+
+    print('              total        used        free      shared  available')
+    print('Mem:    ' - t-str - '  ' - u-str - '  ' - f-str - '          0  ' - a-str)
+    print('Swap:   ' - st-str - '  ' - su-str - '  ' - sf-str)
+}
+
+; free-parse-kb: 從 meminfo 行解析 KB 數值
+; 如 "MemTotal:       16384000 kB" → 16384000
+free-parse-kb = (line str) (val i64) {
+    val = 0
+    i <- [0..line.len): {
+        c = line[i]
+        c >= 48 && c <= 57 -> val = val * 10 + (c - 48)
+    }
+}
+
+; free-fmt: 將 KB 值格式化為指定單位的字串
+free-fmt = (kb i64, unit str) (s str) {
+    v = kb
+    unit == 'b' -> v = kb * 1024
+    unit == 'm' -> v = kb / 1024
+    unit == 'g' -> v = kb / 1048576
+    s = v.to-str()
+}
