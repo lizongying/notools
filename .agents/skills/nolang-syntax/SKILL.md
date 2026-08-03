@@ -1271,6 +1271,9 @@ y = x as i64
 // Local modules (must start with /)
 # /utils/math.add
 
+// Workspace package modules (path relative to workspace root)
+# /notools/src/echo.echo-run
+
 // Aliases
 # std/math.add a
 
@@ -1280,6 +1283,37 @@ y = x as i64
 // use /utils/math.add
 // use std/math.add a
 ```
+
+#### Workspace Package Import Paths
+
+In a workspace project, import paths are resolved relative to the **workspace directory** (where `workspace.jsonc` resides). The path includes the package name subdirectory:
+
+```
+workspace/               ← workspace dir (workspace.jsonc lives here)
+├── workspace.jsonc      ← package name -> path mapping
+├── notools/             ← package "notools"
+│   ├── package.jsonc    ← package config
+│   ├── main.no          ← entry point
+│   └── src/             ← source modules
+│       ├── echo.no
+│       └── hashutil.no
+```
+
+For the `notools` project, imports use `# /notools/src/module.function` format:
+
+```nolang
+// In main.no — import from src/ subdirectory
+# /notools/src/echo.echo-run
+# /notools/src/hashutil.do-hash
+
+// In src/hashutil.no — import sibling modules
+# /notools/src/md5x.md5x
+
+// In src/sha224sum.no — import sibling modules
+# /notools/src/sha224x.sha224x
+```
+
+> **Important**: Do NOT create a `src` symlink at the workspace root. The import path includes the full package subdirectory (`/notools/src/`), so no symlink is needed.
 
 ### Module Prefix Rules
 

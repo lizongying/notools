@@ -158,6 +158,9 @@ cp dist/notools /usr/local/bin/notools
 | `id` | 打印用户 / 组 ID | `notools id` |
 | `groups` | 打印用户所属组 | `notools groups` |
 | `logname` | 打印登录用户名 | `notools logname` |
+| `who` | 列出登录会话（简化版） | `notools who` |
+| `users` | 列出当前登录用户名 | `notools users` |
+| `pinky` | 轻量级 who（用户信息） | `notools pinky` |
 | `tty` | 打印终端名 | `notools tty` |
 | `getconf` | 查询系统配置值 | `notools getconf PATH_MAX` |
 | `locale` | 打印区域设置 | `notools locale` |
@@ -195,8 +198,6 @@ cp dist/notools /usr/local/bin/notools
 | `curl` | 纯 Nolang HTTP/1.1 客户端（`net` TCP 实现，支持 `http://` 和 `https://`） | `notools curl https://127.0.0.1:8443/file` |
 | `ping` | 纯 Nolang ICMP 回显请求（内置 `net.ping`，默认 `-c 4`，支持 IP 和域名） | `notools ping -c 4 example.com` |
 
-> `curl` 基于标准库 `net` 的 TCP 原语自行实现 HTTP/1.1 客户端（支持 `http://` 和 `https://`）；`ping` 使用内置的 `net.ping` / `net.ping-count`（ICMP Echo 在纯 Nolang 中构造）。两者均支持 **IP 字面量**和**域名**主机（`net-dial` 内部通过 `getaddrinfo` 解析域名）。`curl` 的 `https://` 路径使用标准库纯 Nolang `tls.no`（TLS 1.2/1.3 客户端）。此前限制 DNS 解析与 HTTPS 的编译器 codegen 缺陷已修复：`it` 绑定的 primitive option 类型处理（stmt.go）、结构体字段赋值的深拷贝（expr.go）及结构体/字符串零初始化（stmt.go llvm.memset）。
-
 ### 哈希与编码
 
 | 命令 | 说明 | 示例 |
@@ -206,9 +207,11 @@ cp dist/notools /usr/local/bin/notools
 | `sha1` | SHA-1 摘要（160 位） | `notools sha1 file.txt` |
 | `sha1sum` | SHA-1 摘要（GNU 风格） | `notools sha1sum file.txt` |
 | `sha224` | SHA-224 摘要（224 位） | `notools sha224 file.txt` |
+| `sha224sum` | SHA-224 摘要（GNU 风格） | `notools sha224sum file.txt` |
 | `sha256` | SHA-256 摘要（256 位） | `notools sha256 file.txt` |
 | `sha256sum` | SHA-256 摘要（GNU 风格） | `notools sha256sum file.txt` |
 | `sha384` | SHA-384 摘要（384 位，64 位字运算） | `notools sha384 file.txt` |
+| `sha384sum` | SHA-384 摘要（GNU 风格） | `notools sha384sum file.txt` |
 | `sha512` | SHA-512 摘要（512 位，64 位字运算） | `notools sha512 file.txt` |
 | `sha512sum` | SHA-512 摘要（GNU 风格） | `notools sha512sum file.txt` |
 | `cksum` | CRC 校验和 | `notools cksum file` |
@@ -259,8 +262,6 @@ notools
 | 命令 | 说明 | 状态 |
 |------|------|------|
 | `b2sum` | BLAKE2 摘要（GNU coreutils 新增算法） | 未实现 |
-| `sha224sum` | SHA-224 摘要（GNU 风格） | 源码已就绪，待接入分发器 |
-| `sha384sum` | SHA-384 摘要（GNU 风格） | 源码已就绪，待接入分发器 |
 
 ### 压缩 / 解压
 
@@ -285,12 +286,8 @@ notools
 | 命令 | 说明 | 状态 |
 |------|------|------|
 | `chroot` | 切换根目录运行命令（需 root） | 未实现 |
-| `pinky` | 轻量级 `who`（用户登录信息） | 未实现 |
 | `ptx` | 生成置换索引（permutation index） | 未实现 |
 | `stdbuf` | 调整命令的 stdio 缓冲模式 | 未实现 |
-| `stty` | 修改 / 打印终端设置 | 未实现 |
-| `users` | 列出当前登录用户名 | 未实现 |
-| `who` | 列出登录会话 | 未实现 |
 
 ### 平台相关 / 不适用
 
@@ -302,30 +299,122 @@ notools
 ## 已知限制
 
 - 全部已实现命令均已在 macOS (arm64) 上构建并验证可用。
+- `who` / `users` / `pinky` 为简化实现，仅显示当前用户会话（通过 `os.get-login()` + `os.ttyname(0)`），不遍历 utmpx 列出全部登录会话。
+
+### 编译器版本与已知问题
+
+项目依赖 [Nolang 编译器](https://github.com/lizongying/nolang)（`/Users/lizongying/IdeaProjects/no/`）。
+
+**当前最新 commit（`04a3dd5`）存在 `and i8` codegen 回归**，导致 LLVM 优化阶段报错：
+
+```
+opt: notools.ll:20461:28: error: '%vec.idx.zext.11602' defined with type 'i64' but expected 'i8'
+                        %and.tmp.11603 = and i8 %vec.idx.zext.11602, 255
+                                                ^
+Error: build error: LLVM optimization failed: exit status 1
+```
+
+该 bug 的根因：编译器在为 `[]byte` 数组元素生成 `& 255` 掩码操作时，使用了 `i8` 类型而非 `i64`，而 `generateIndexExpression` 已将 `i8` 元素 `zext` 到 `i64`，导致类型不匹配。
+
+**临时解决方案**：使用回归前的编译器二进制构建：
+
+```bash
+# 使用旧版编译器（位于 no/bin/no.orig）
+/Users/lizongying/IdeaProjects/no/bin/no.orig build ./notools/main.no
+# 产物位于 dist/main
+```
+
+**rotate-left 对 u32 数组元素的类型推断缺陷**：
+
+`rotate-left` 的 codegen（`call.go`）通过 `intExprLLVMType` 推断操作数位宽。但 `intExprLLVMType` 不处理 `IndexExpression`（数组元素访问），对 `[]u32` 数组元素默认返回 `i64`，导致 `rotate-left(w[i-15], 25)` 使用 `llvm.fshl.i64` 而非 `llvm.fshl.i32`，在 64 位空间旋转 32 位值，产生错误结果。
+
+已在 `call.go` 的 `rotate-left`/`rotate-right` 分支中添加 `IndexExpression` 回退：当 `intExprLLVMType` 返回空时，查 `arrayElemTypes` 获取元素类型。但此修复尚需 `and i8` 回归修复后才能验证。
+
+**当前哈希实现的规避策略**：
+
+| 算法 | 旋转实现 | 说明 |
+|------|----------|------|
+| SHA-512 / SHA-384（u64） | `rotate-left` 直接调用 | u64 上 `@llvm.fshl` 正常工作 |
+| SHA-256 / SHA-224 / SHA-1（u32） | 内联移位 `(x >> r) \| (x << (32-r))` | `rotate-left` 在 u32 数组元素上不正确，改用内联表达式（非拆分局部变量） |
+
+所有 `sha*x` 函数均已改为返回 `str`（不再使用 void + print 规避）。
 
 ## 项目结构
 
 ```
 notools/
-├── main.no          # 入口，子命令分发
+├── main.no              # 入口，子命令分发
 ├── src/
-│   ├── echo.no      # 各工具实现
+│   ├── echo.no          # 各工具实现
 │   ├── cat.no
 │   ├── ls.no
-│   ├── ...
-│   └── top.no
-└── mod.jsonc        # 项目配置
+│   ├── sha256x.no       # SHA-256 纯 Nolang 实现（返回 hex str）
+│   ├── sha224x.no       # SHA-224（同算法不同 IV，56 字符输出）
+│   ├── sha1x.no         # SHA-1
+│   ├── sha512x.no       # SHA-512（64 位字运算）
+│   ├── sha384x.no       # SHA-384（同算法不同 IV，96 字符输出）
+│   ├── md5x.no          # MD5（已使用 rotate-left，u32 变量正常）
+│   ├── hashutil.no      # 哈希命令共享逻辑（do-hash / hash-cmd）
+│   ├── sha224sum.no     # GNU 风格 SHA-224 校验和（直接调用 sha224x）
+│   ├── sha384sum.no     # GNU 风格 SHA-384 校验和（直接调用 sha384x）
+│   ├── who.no           # 登录会话（简化版）
+│   ├── users.no         # 当前登录用户名
+│   ├── pinky.no         # 轻量级 who
+│   └── ...
+└── package.jsonc        # 项目配置
 ```
 
 ## 开发
 
+### 构建
+
 ```bash
-# 构建
+# 使用最新编译器（若 and i8 回归已修复）
 no build ./notools/main.no
 
-# 运行
-no run ./notools/main.no <command> [args]
+# 使用旧版编译器（当前推荐，规避 and i8 回归）
+/Users/lizongying/IdeaProjects/no/bin/no.orig build ./notools/main.no
+# 产物位于 dist/main
 ```
+
+### 测试
+
+```bash
+# 哈希算法验证（对照系统 shasum）
+echo -n abc | ./dist/main md5       # 900150983cd24fb0d6963f7d28e17f72
+echo -n abc | ./dist/main sha224    # 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7
+echo -n abc | ./dist/main sha256    # ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+echo -n abc | ./dist/main sha384    # cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed...
+echo -n abc | ./dist/main sha512    # ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a...
+echo -n abc | ./dist/main sha1      # a9993e364706816aba3e25717850c26c9cd0d89d
+
+# HMAC
+echo -n abc | ./dist/main hmac -a sha256 -k key
+# 9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab
+
+# GNU 风格校验和（含 -c 校验模式）
+echo -n abc > /tmp/test.txt
+./dist/main sha224sum /tmp/test.txt     # 23097d22...  /tmp/test.txt
+./dist/main sha384sum /tmp/test.txt     # cb00753f...  /tmp/test.txt
+./dist/main sha224sum /tmp/test.txt > /tmp/check.txt
+./dist/main sha224sum -c /tmp/check.txt  # /tmp/test.txt: OK
+
+# 大输入（多块处理）
+python3 -c "print('a'*1000, end='')" > /tmp/large.txt
+./dist/main sha256 /tmp/large.txt
+./dist/main sha384 /tmp/large.txt
+
+# 用户信息
+./dist/main users     # 当前登录用户名
+./dist/main who       # 当前用户 + 终端
+./dist/main pinky     # 轻量级用户信息
+```
+
+### 编译器修复（待完成）
+
+1. **`and i8` 回归**（`expr.go`）：`arithLLVMType` 对 `[]byte` 元素的 `&` 操作误用 `i8` 类型，应使用 `i64` 后截断
+2. **`rotate-left` IndexExpression 类型推断**（`call.go`）：已添加修复代码，待 `and i8` 修复后验证
+3. 修复后，u32 哈希实现可从内联移位升级为 `rotate-left` 直接调用
 
 ## 许可证
 
