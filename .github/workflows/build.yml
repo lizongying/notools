@@ -1,16 +1,14 @@
 name: Build
 
-# 构建 notools 多平台二进制文件并在 tag 推送时发布 Release
+# 使用 nolang 的 build-nolang action 构建多平台二进制文件。
+# 本工作流同时充当 nolang 构建系统的集成测试：
+#   1. 测试 setup-nolang 逻辑（下载编译器 + 标准库源码）
+#   2. 测试工具链安装（LLVM opt/llc + Zig 交叉编译器）
+#   3. 测试 no build 交叉编译 6 个目标平台
+#   4. 对产物运行 smoke test 验证正确性
+#   5. tag 推送时发布 GitHub Release
 #
-# 依赖 lizongying/nolang 仓库中的 reusable actions:
-#   - setup-nolang  : 下载 no 编译器 + 标准库源码
-#   - build-nolang  : 安装工具链 (LLVM + Zig) 并交叉编译所有目标平台
-#
-# 触发条件：
-#   - push 到 main 分支
-#   - 推送 v* 标签（触发 Release）
-#   - Pull Request
-#   - 手动触发
+# 依赖：lizongying/nolang 仓库的 .github/actions/build-nolang action
 
 on:
   push:
@@ -28,17 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── 1. 构建：调用 build-nolang action（自包含，支持跨仓库） ────────
       - name: Build notools for multiple platforms
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          # nolang 编译器版本；固定为 0.2.5 以保证可复现构建
           version: "0.2.5"
-          # 项目入口文件
           entry: notools/main.no
-          # 输出二进制基础名 -> notools-linux-amd64, notools-darwin-arm64 ...
           name: notools
-          # 交叉编译目标平台（6 个原生平台，不含 wasm/js）
           targets: >-
             linux/amd64,
             linux/arm64,
@@ -46,42 +41,111 @@ jobs:
             darwin/arm64,
             windows/amd64,
             windows/arm64
-          # 使用 zig 作为交叉编译器
           cc: zig
-          # 单个目标构建失败不终止整个 job（如 windows/* 可能因上游限制失败）
+          # 单个目标失败不终止整个 job，继续构建其他平台以获取完整测试结果
           fail-on-error: "false"
 
+      # ── 2. 构建结果报告 ───────────────────────────────────────────────
+      - name: Build report
+        if: always()
+        shell: bash
+        env:
+          BINARIES: ${{ steps.build.outputs.binaries }}
+          FAILED: ${{ steps.build.outputs.failed }}
+          NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+        run: |
+          echo "============================================"
+          echo "  Nolang Build Test Report"
+          echo "============================================"
+          echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo ""
+          echo "--- Built successfully ---"
+          if [ -n "$BINARIES" ]; then
+            printf '  %s\n' $BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- Failed targets ---"
+          if [ -n "$FAILED" ]; then
+            printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- dist/ contents ---"
+          ls -lh dist/ 2>/dev/null || echo "  dist/ not found"
+
+      # ── 3. Smoke test：验证 linux/amd64 产物功能正确 ──────────────────
       - name: Smoke test (linux/amd64)
         run: |
           set -e
           BIN="dist/notools-linux-amd64"
           if [ ! -f "$BIN" ]; then
-            echo "linux/amd64 binary not found, skipping smoke test"
-            exit 0
+            echo "::error::linux/amd64 binary not found — critical build failure"
+            exit 1
           fi
           chmod +x "$BIN"
 
+          PASS=0; FAIL=0
+
+          check() {
+            local desc="$1" actual="$2" expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "  PASS: $desc"
+              PASS=$((PASS+1))
+            else
+              echo "  FAIL: $desc"
+              echo "    expected: '$expected'"
+              echo "    actual:   '$actual'"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
           echo "=== echo ==="
-          echo "hello notools" | "$BIN" echo
+          out=$(echo "hello notools" | "$BIN" echo)
+          check "echo stdin" "$out" "hello notools"
 
           echo "=== md5 ==="
-          result=$(echo -n abc | "$BIN" md5)
-          expected="900150983cd24fb0d6963f7d28e17f72"
-          if [ "$result" != "$expected" ]; then
-            echo "ERROR: md5 mismatch — got '$result', expected '$expected'"
-            exit 1
-          fi
-          echo "md5 OK"
+          out=$(echo -n abc | "$BIN" md5)
+          check "md5(abc)" "$out" "900150983cd24fb0d6963f7d28e17f72"
+
+          echo "=== sha1 ==="
+          out=$(echo -n abc | "$BIN" sha1)
+          check "sha1(abc)" "$out" "a9993e364706816aba3e25717850c26c9cd0d89d"
 
           echo "=== sha256 ==="
-          result=$(echo -n abc | "$BIN" sha256)
-          expected="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-          if [ "$result" != "$expected" ]; then
-            echo "ERROR: sha256 mismatch — got '$result', expected '$expected'"
-            exit 1
-          fi
-          echo "sha256 OK"
+          out=$(echo -n abc | "$BIN" sha256)
+          check "sha256(abc)" "$out" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
+          echo "=== sha512 ==="
+          out=$(echo -n abc | "$BIN" sha512)
+          expected="ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+          check "sha512(abc)" "$out" "$expected"
+
+          echo "=== hmac ==="
+          out=$(echo -n abc | "$BIN" hmac -a sha256 -k key)
+          check "hmac-sha256(abc,key)" "$out" "9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab"
+
+          echo "=== basename ==="
+          out=$("$BIN" basename /tmp/foo/bar.txt)
+          check "basename" "$out" "bar.txt"
+
+          echo "=== dirname ==="
+          out=$("$BIN" dirname /tmp/foo/bar.txt)
+          check "dirname" "$out" "/tmp/foo"
+
+          echo "=== seq ==="
+          out=$("$BIN" seq 1 5 | tr '\n' ' ')
+          check "seq 1 5" "$out" "1 2 3 4 5 "
+
+          echo ""
+          echo "============================================"
+          echo "  Smoke test: $PASS passed, $FAIL failed"
+          echo "============================================"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      # ── 4. 上传产物 ─────────────────────────────────────────────────
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
