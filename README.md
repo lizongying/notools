@@ -11,6 +11,32 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 ## 安装
 
+### 方式一：从 Releases 下载预编译二进制（推荐）
+
+直接从 [GitHub Releases](https://github.com/lizongying/notools/releases) 下载对应平台的已编译好二进制文件，无需安装编译器。
+
+支持的平台：
+
+| 平台 | 文件 |
+|------|------|
+| Linux amd64 | `notools-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` |
+
+```bash
+# Linux amd64 示例
+curl -fsSL -o notools https://github.com/lizongying/notools/releases/latest/download/notools-linux-amd64
+chmod +x notools
+sudo mv notools /usr/local/bin/
+```
+
+下载后可使用同目录下的 `checksums-sha256.txt` 进行校验。
+
+### 方式二：从源码构建
+
 ```bash
 # 克隆项目
 git clone git@github.com:lizongying/notools.git notools
