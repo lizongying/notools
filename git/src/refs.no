@@ -114,7 +114,8 @@ hex-of = (o oid) (out str) {
 // git-dir str, name str (e.g. "refs/heads/main")
 // returns content str, ok bool
 read-loose-ref = (git-dir str, name str) (content str, ok bool) {
-    p = git-dir - '/' - name
+    sl str = '/'
+    p = git-dir - sl - name
     read-file-str(p)
 }
 
@@ -173,14 +174,14 @@ read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
 // git-dir str, name str (e.g. "refs/heads/main"), o oid
 write-ref = (git-dir str, name str, o oid) (ok bool) {
     ok = false
-    p = git-dir - '/' - name
-    ; ensure parent dir exists
+    sl str = '/'
+    p = git-dir - sl - name
+    ; ensure parent dir exists (recursive, like mkdir -p)
     idx = p.rindex('/')
     idx >= 0 -> {
         parent = str-copy(p, 0, idx)
         fs.is-dir(parent) -> {} -> {
-            d = path{ p: parent }
-            d.make-dir() -> {} -> return
+            util.mkdir-all(parent)
         }
     }
     hx = hex-of(o)
@@ -193,7 +194,8 @@ write-ref = (git-dir str, name str, o oid) (ok bool) {
 // git-dir str, name str (e.g. "HEAD"), target str (e.g. "refs/heads/main")
 write-symbolic-ref = (git-dir str, name str, target str) (ok bool) {
     ok = false
-    p = git-dir - '/' - name
+    sl str = '/'
+    p = git-dir - sl - name
     content = 'ref: ' - target - '\n'
     write-file-simple(p, content)
     ok = true
@@ -253,7 +255,8 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
 // returns ok bool (false if already exists)
 create-branch = (git-dir str, name str, o oid) (ok bool) {
     ref-name = 'refs/heads/' - name
-    p = git-dir - '/' - ref-name
+    sl str = '/'
+    p = git-dir - sl - ref-name
     ; check if already exists
     exists = fs.is-file(p)
     exists == true -> return
@@ -265,7 +268,8 @@ create-branch = (git-dir str, name str, o oid) (ok bool) {
 // returns ok bool
 delete-branch = (git-dir str, name str) (ok bool) {
     ref-name = 'refs/heads/' - name
-    p = git-dir - '/' - ref-name
+    sl str = '/'
+    p = git-dir - sl - ref-name
     ok = fs.remove(p)
 }
 
@@ -276,6 +280,9 @@ list-branches = (git-dir str) (names str, count i64) {
     names = ''
     count = 0
     heads-dir = git-dir - '/refs/heads'
+    ; check if directory exists
+    isd = fs.is-dir(heads-dir)
+    isd == false -> return
     ; read directory listing
     entries = fs.read-dir(heads-dir)
     ; entries is a newline-separated list of file/directory names
@@ -305,7 +312,8 @@ list-branches = (git-dir str) (names str, count i64) {
 // returns ok bool (false if already exists)
 create-tag = (git-dir str, name str, o oid) (ok bool) {
     ref-name = 'refs/tags/' - name
-    p = git-dir - '/' - ref-name
+    sl str = '/'
+    p = git-dir - sl - ref-name
     exists = fs.is-file(p)
     exists == true -> return
     ok = write-ref(git-dir, ref-name, o)
@@ -316,7 +324,8 @@ create-tag = (git-dir str, name str, o oid) (ok bool) {
 // returns ok bool
 delete-tag = (git-dir str, name str) (ok bool) {
     ref-name = 'refs/tags/' - name
-    p = git-dir - '/' - ref-name
+    sl str = '/'
+    p = git-dir - sl - ref-name
     ok = fs.remove(p)
 }
 
@@ -327,6 +336,9 @@ list-tags = (git-dir str) (names str, count i64) {
     names = ''
     count = 0
     tags-dir = git-dir - '/refs/tags'
+    ; check if directory exists
+    isd = fs.is-dir(tags-dir)
+    isd == false -> return
     entries = fs.read-dir(tags-dir)
     pos = 0
     {
@@ -428,20 +440,22 @@ write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid,
     name str, email str, time i64, tz str, message str) (ok bool) {
     ok = false
     log-path = git-dir - '/logs/' - refname
-    ; ensure parent dir exists
+    ; ensure parent dir exists (recursive)
     idx = log-path.rindex('/')
     idx >= 0 -> {
         parent = str-copy(log-path, 0, idx)
         fs.is-dir(parent) -> {} -> {
-            d = path{ p: parent }
-            d.make-dir() -> {} -> return
+            util.mkdir-all(parent)
         }
     }
     ; build entry: "<old-hex> <new-hex> <name> <<email>> <time> <tz>\t<message>\n"
     old-hex = hex-of(old-oid)
     new-hex = hex-of(new-oid)
     ts = util.i64-to-str(time)
-    entry = old-hex - ' ' - new-hex - ' ' - name - ' <' - email - '> ' - ts - ' ' - tz - '\t' - message - '\n'
+    sp str = ' '
+    tab str = '\t'
+    nl str = '\n'
+    entry = old-hex - sp - new-hex - sp - name - ' <' - email - '> ' - ts - sp - tz - tab - message - nl
     ; append to file (read existing, append, write back)
     existing str
     ignore-ok bool

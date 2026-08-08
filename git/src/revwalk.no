@@ -79,9 +79,9 @@ local-i64-to-str = (n i64) (out str) {
 // returns oid oid, ok bool
 resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ok = false
-    ; try as hex oid first
-    ref.len == 40 -> {
-        o, ok = oid.oid-from-hex(ref)
+    ; try HEAD first (most common short name)
+    ref == 'HEAD' -> {
+        o, ok = read-ref-from-module(git-dir, 'HEAD')
         ok == true -> return
     }
     ; try as full ref name (refs/heads/..., refs/tags/...)
@@ -93,9 +93,9 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ; try as refs/tags/<ref>
     o, ok = read-ref-from-module(git-dir, 'refs/tags/' - ref)
     ok == true -> return
-    ; try HEAD
-    ref == 'HEAD' -> {
-        o, ok = read-ref-from-module(git-dir, 'HEAD')
+    ; try as 40-char hex oid (must be exactly 40 chars)
+    ref.len == 40 -> {
+        o, ok = oid.oid-from-hex(ref)
     }
 }
 
@@ -104,7 +104,8 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
 read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
     ok = false
     ; build path: git-dir/name
-    p = git-dir - '/' - name
+    sl str = '/'
+    p = git-dir - sl - name
     isf = fs.is-file(p)
     isf == true -> {
         raw = fs.read-file(p)
@@ -198,12 +199,9 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
     _k str; _d str; read-ok bool
     _k, _d, read-ok = object.read-loose(git-dir, commit-oid)
     read-ok == false -> return
-    ; parse "tree <hex>\n"
-    sp = find-byte-local(_d, 32, 5)  ; space after "tree "
-    sp < 0 -> return
-    nl = find-byte-local(_d, 10, sp + 1)
-    nl < 0 -> return
-    hx = str-copy(_d, 5, sp)
+    ; parse "tree <hex>\n" — "tree " is 5 bytes, then 40-char hex
+    _d.len < 45 -> return
+    hx = str-copy(_d, 5, 45)
     tree-oid, ok = oid.oid-from-hex(hx)
 }
 
