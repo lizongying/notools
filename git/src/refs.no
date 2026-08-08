@@ -1,4 +1,480 @@
+// refs — Git reference management: HEAD, branches, tags, packed-refs
+//
+// Supports:
+//   * Loose refs: refs/heads/*, refs/tags/*, refs/remotes/*
+//   * Symbolic refs: HEAD -> "ref: refs/heads/main"
+//   * Packed-refs: .git/packed-refs (compact storage)
+//   * Reflog: .git/logs/HEAD, .git/logs/refs/heads/<name>
+//
+// Cross-module safety: all return values are individual scalars/strings/oids.
+// Return strings are built by concatenation.
+
 # /git/src/util
-refs-probe = (s str) (pos i64) {
-    pos = util.find-byte-str(s, 65, 0)
+# /git/src/oid
+
+// ═══════════════════════════════════════════════
+// local helpers (intra-module safe)
+// ═══════════════════════════════════════════════
+
+// str-copy: half-open char copy [a, b) from s into a fresh concat str.
+str-copy = (s str, a i64, b i64) (out str) {
+    out = ''
+    i <- [a..b): {
+        cb str = with-len(1)
+        cb[0] = s[i]
+        out = out - cb
+    }
+}
+
+// find-byte-local: locate first byte b at or after `from` in s. -1 if absent.
+find-byte-local = (s str, b byte, from i64) (pos i64) {
+    r i64 = -1
+    i = from
+    {
+        i >= s.len -> break
+        c i64 = s[i]
+        r = (c == b) ? i : r
+        c == b -> break
+        i = i + 1
+    } ()
+    pos = r
+}
+
+// read-file-str: read a file into a concat str (boundary-safe)
+read-file-str = (p str) (out str, ok bool) {
+    ok = false
+    isf = fs.is-file(p)
+    isf == false -> {
+        out = ''
+        return
+    }
+    raw = fs.read-file(p)
+    out = ''
+    i <- [0..raw.len): {
+        cb str = with-len(1)
+        cb[0] = raw[i]
+        out = out - cb
+    }
+    ok = true
+}
+
+// write-file-simple: write content to a file path, byte-by-byte (stride-safe)
+write-file-simple = (p str, content str) (ok bool) {
+    ok = false
+    fd = fs.open-write(p)
+    i <- [0..content.len): {
+        cs str = with-len(1)
+        cs[0] = content[i]
+        fs.write(fd, cs, 1)
+    }
+    fs.close(fd)
+    ok = true
+}
+
+// trim-newline-local: strip trailing LF/CR
+trim-newline-local = (s str) (out str) {
+    L = s.len
+    L > 0 -> {
+        last = s[L - 1]
+        last == 10 -> {
+            L = L - 1
+            out = str-copy(s, 0, L)
+            L > 0 -> {
+                s2 = out
+                last2 = s2[L - 1]
+                last2 == 13 -> {
+                    out = str-copy(s2, 0, L - 1)
+                }
+            }
+            return
+        }
+    }
+    out = s
+}
+
+// hex-of: render an oid as 40-char hex string (local, safe)
+hex-of = (o oid) (out str) {
+    out = ''
+    hc = '0123456789abcdef'
+    i <- [0..20): {
+        b = o.id[i]
+        c1 str = with-len(1)
+        c1[0] = hc[(b >> 4) & 15]
+        c2 str = with-len(1)
+        c2[0] = hc[b & 15]
+        out = out - c1 - c2
+    }
+}
+
+// ═══════════════════════════════════════════════
+// loose ref read / write
+// ═══════════════════════════════════════════════
+
+// read-loose-ref: read a loose ref file
+// git-dir str, name str (e.g. "refs/heads/main")
+// returns content str, ok bool
+read-loose-ref = (git-dir str, name str) (content str, ok bool) {
+    p = git-dir - '/' - name
+    read-file-str(p)
+}
+
+// read-ref: read a reference (symbolic, loose, or packed)
+// git-dir str, name str (e.g. "HEAD", "refs/heads/main")
+// returns oid oid, ok bool
+//
+// Resolution order:
+//   1. If the ref content starts with "ref:", follow the symbolic ref recursively
+//   2. Otherwise, parse as 40-char hex oid
+//   3. If the loose ref is absent, check packed-refs
+read-ref = (git-dir str, name str) (o oid, ok bool) {
+    ok = false
+    ; try loose ref first
+    content str
+    loose-ok bool
+    content, loose-ok = read-loose-ref(git-dir, name)
+    loose-ok == true -> {
+        content = trim-newline-local(content)
+        ; check if symbolic: "ref: <target>"
+        content.starts-with('ref: ') -> {
+            target = str-copy(content, 5, content.len)
+            target = trim-newline-local(target)
+            o, ok = read-ref(git-dir, target)
+            return
+        }
+        ; parse as hex oid
+        content.len >= 40 -> {
+            hx = str-copy(content, 0, 40)
+            o, ok = oid.oid-from-hex(hx)
+            return
+        }
+    }
+    ; try packed-refs
+    o, ok = read-packed-ref(git-dir, name)
+}
+
+// read-symbolic-ref: read a symbolic ref (e.g. HEAD) and return the target name
+// git-dir str, name str (e.g. "HEAD")
+// returns target str, ok bool (ok=false if not a symbolic ref)
+read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
+    ok = false
+    content str
+    loose-ok bool
+    content, loose-ok = read-loose-ref(git-dir, name)
+    loose-ok == false -> return
+    content = trim-newline-local(content)
+    content.starts-with('ref: ') -> {
+        target = str-copy(content, 5, content.len)
+        target = trim-newline-local(target)
+        ok = true
+    }
+}
+
+// write-ref: write a loose ref (oid value)
+// git-dir str, name str (e.g. "refs/heads/main"), o oid
+write-ref = (git-dir str, name str, o oid) (ok bool) {
+    ok = false
+    p = git-dir - '/' - name
+    ; ensure parent dir exists
+    idx = p.rindex('/')
+    idx >= 0 -> {
+        parent = str-copy(p, 0, idx)
+        fs.is-dir(parent) -> {} -> {
+            d = path{ p: parent }
+            d.make-dir() -> {} -> return
+        }
+    }
+    hx = hex-of(o)
+    content = hx - '\n'
+    write-file-simple(p, content)
+    ok = true
+}
+
+// write-symbolic-ref: write a symbolic ref (e.g. HEAD -> refs/heads/main)
+// git-dir str, name str (e.g. "HEAD"), target str (e.g. "refs/heads/main")
+write-symbolic-ref = (git-dir str, name str, target str) (ok bool) {
+    ok = false
+    p = git-dir - '/' - name
+    content = 'ref: ' - target - '\n'
+    write-file-simple(p, content)
+    ok = true
+}
+
+// update-head: set HEAD to point to a branch (symbolic)
+// git-dir str, branch str (e.g. "refs/heads/main")
+update-head = (git-dir str, branch str) (ok bool) {
+    ok = write-symbolic-ref(git-dir, 'HEAD', branch)
+}
+
+// set-head-detached: set HEAD to a specific oid (detached HEAD)
+// git-dir str, o oid
+set-head-detached = (git-dir str, o oid) (ok bool) {
+    p = git-dir - '/HEAD'
+    hx = hex-of(o)
+    content = hx - '\n'
+    write-file-simple(p, content)
+    ok = true
+}
+
+// current-branch: read HEAD and return the branch name it points to
+// git-dir str
+// returns branch str, detached bool, ok bool
+//   detached=true means HEAD is at a specific oid (not on a branch)
+//   detached=false means HEAD -> refs/heads/<branch>
+current-branch = (git-dir str) (branch str, detached bool, ok bool) {
+    ok = false
+    target str
+    sym-ok bool
+    target, sym-ok = read-symbolic-ref(git-dir, 'HEAD')
+    sym-ok == true -> {
+        target.starts-with('refs/heads/') -> {
+            branch = str-copy(target, 11, target.len)
+            detached = false
+            ok = true
+            return
+        }
+    }
+    ; detached HEAD
+    o oid
+    ref-ok bool
+    o, ref-ok = read-ref(git-dir, 'HEAD')
+    ref-ok == true -> {
+        branch = ''
+        detached = true
+        ok = true
+    }
+}
+
+// ═══════════════════════════════════════════════
+// branch management
+// ═══════════════════════════════════════════════
+
+// create-branch: create a new branch ref pointing to an oid
+// git-dir str, name str, o oid
+// returns ok bool (false if already exists)
+create-branch = (git-dir str, name str, o oid) (ok bool) {
+    ref-name = 'refs/heads/' - name
+    p = git-dir - '/' - ref-name
+    ; check if already exists
+    exists = fs.is-file(p)
+    exists == true -> return
+    ok = write-ref(git-dir, ref-name, o)
+}
+
+// delete-branch: delete a branch ref
+// git-dir str, name str
+// returns ok bool
+delete-branch = (git-dir str, name str) (ok bool) {
+    ref-name = 'refs/heads/' - name
+    p = git-dir - '/' - ref-name
+    ok = fs.remove(p)
+}
+
+// list-branches: list all branch names (loose refs only)
+// git-dir str
+// returns names str (newline-separated), count i64
+list-branches = (git-dir str) (names str, count i64) {
+    names = ''
+    count = 0
+    heads-dir = git-dir - '/refs/heads'
+    ; read directory listing
+    entries = fs.read-dir(heads-dir)
+    ; entries is a newline-separated list of file/directory names
+    ; for simplicity, we handle flat branch names (no nested dirs yet)
+    pos = 0
+    {
+        pos >= entries.len -> break
+        nl = find-byte-local(entries, 10, pos)
+        end = entries.len
+        nl >= 0 -> end = nl
+        name = str-copy(entries, pos, end)
+        name.len > 0 -> {
+            names = names - name - '\n'
+            count = count + 1
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+// ═══════════════════════════════════════════════
+// tag management
+// ═══════════════════════════════════════════════
+
+// create-tag: create a lightweight tag ref
+// git-dir str, name str, o oid
+// returns ok bool (false if already exists)
+create-tag = (git-dir str, name str, o oid) (ok bool) {
+    ref-name = 'refs/tags/' - name
+    p = git-dir - '/' - ref-name
+    exists = fs.is-file(p)
+    exists == true -> return
+    ok = write-ref(git-dir, ref-name, o)
+}
+
+// delete-tag: delete a tag ref
+// git-dir str, name str
+// returns ok bool
+delete-tag = (git-dir str, name str) (ok bool) {
+    ref-name = 'refs/tags/' - name
+    p = git-dir - '/' - ref-name
+    ok = fs.remove(p)
+}
+
+// list-tags: list all tag names (loose refs only)
+// git-dir str
+// returns names str (newline-separated), count i64
+list-tags = (git-dir str) (names str, count i64) {
+    names = ''
+    count = 0
+    tags-dir = git-dir - '/refs/tags'
+    entries = fs.read-dir(tags-dir)
+    pos = 0
+    {
+        pos >= entries.len -> break
+        nl = find-byte-local(entries, 10, pos)
+        end = entries.len
+        nl >= 0 -> end = nl
+        name = str-copy(entries, pos, end)
+        name.len > 0 -> {
+            names = names - name - '\n'
+            count = count + 1
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+// ═══════════════════════════════════════════════
+// packed-refs support
+// ═══════════════════════════════════════════════
+
+// read-packed-refs: read .git/packed-refs file
+// git-dir str
+// returns lines str (raw content), ok bool
+read-packed-refs-file = (git-dir str) (content str, ok bool) {
+    p = git-dir - '/packed-refs'
+    read-file-str(p)
+}
+
+// read-packed-ref: look up a specific ref in packed-refs
+// git-dir str, name str
+// returns oid oid, ok bool
+read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
+    ok = false
+    content str
+    packed-ok bool
+    content, packed-ok = read-packed-refs-file(git-dir)
+    packed-ok == false -> return
+    ; scan lines: "<40-hex> <refname>"
+    pos = 0
+    {
+        pos >= content.len -> break
+        nl = find-byte-local(content, 10, pos)
+        end = content.len
+        nl >= 0 -> end = nl
+        line = str-copy(content, pos, end)
+        ; skip comment lines (start with #)
+        line.starts-with('#') -> {} -> {
+            ; skip peeled lines (^...)
+            line.starts-with('^') -> {} -> {
+                ; line format: "<hex> <refname>"
+                sp = find-byte-local(line, 32, 0)
+                sp >= 0 -> {
+                    hx = str-copy(line, 0, sp)
+                    refname = str-copy(line, sp + 1, line.len)
+                    refname = trim-newline-local(refname)
+                    ; compare refname with name
+                    same = str-eq-local(refname, name)
+                    same == true -> {
+                        hx.len >= 40 -> {
+                            o, ok = oid.oid-from-hex(str-copy(hx, 0, 40))
+                            ok == true -> break
+                        }
+                    }
+                }
+            }
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+// str-eq-local: byte-wise equality (local, safe)
+str-eq-local = (a str, b str) (yes bool) {
+    yes = false
+    a.len != b.len -> return
+    yes = true
+    i = 0
+    {
+        i >= a.len -> break
+        a[i] != b[i] -> {
+            yes = false
+            return
+        }
+        i = i + 1
+    } ()
+}
+
+// ═══════════════════════════════════════════════
+// reflog support
+// ═══════════════════════════════════════════════
+
+// write-reflog: append a reflog entry to .git/logs/<refname>
+// git-dir str, refname str (e.g. "HEAD" or "refs/heads/main"),
+// old-oid oid, new-oid oid, committer-name str, committer-email str,
+// time i64, tz str, message str
+// returns ok bool
+write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid,
+    name str, email str, time i64, tz str, message str) (ok bool) {
+    ok = false
+    log-path = git-dir - '/logs/' - refname
+    ; ensure parent dir exists
+    idx = log-path.rindex('/')
+    idx >= 0 -> {
+        parent = str-copy(log-path, 0, idx)
+        fs.is-dir(parent) -> {} -> {
+            d = path{ p: parent }
+            d.make-dir() -> {} -> return
+        }
+    }
+    ; build entry: "<old-hex> <new-hex> <name> <<email>> <time> <tz>\t<message>\n"
+    old-hex = hex-of(old-oid)
+    new-hex = hex-of(new-oid)
+    ts = util.i64-to-str(time)
+    entry = old-hex - ' ' - new-hex - ' ' - name - ' <' - email - '> ' - ts - ' ' - tz - '\t' - message - '\n'
+    ; append to file (read existing, append, write back)
+    existing str
+    ignore-ok bool
+    existing, ignore-ok = read-file-str(log-path)
+    full = existing - entry
+    write-file-simple(log-path, full)
+    ok = true
+}
+
+// read-reflog: read reflog entries
+// git-dir str, refname str
+// returns content str, ok bool
+read-reflog = (git-dir str, refname str) (content str, ok bool) {
+    log-path = git-dir - '/logs/' - refname
+    read-file-str(log-path)
+}
+
+// ═══════════════════════════════════════════════
+// keepalive
+// ═══════════════════════════════════════════════
+
+refs-keepalive = () (alive bool) {
+    _o oid; _ok bool
+    _o, _ok = read-ref('/tmp/.refs-test', 'HEAD')
+    _t str
+    _t, _ok = read-symbolic-ref('/tmp/.refs-test', 'HEAD')
+    _b str; _d bool
+    _b, _d, _ok = current-branch('/tmp/.refs-test')
+    _n str; _c i64
+    _n, _c = list-branches('/tmp/.refs-test')
+    _n2 str; _c2 i64
+    _n2, _c2 = list-tags('/tmp/.refs-test')
+    _str str
+    _str, _ok = read-packed-refs-file('/tmp/.refs-test')
+    alive = true
 }

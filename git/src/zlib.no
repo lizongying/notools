@@ -20,6 +20,19 @@
 //   A3 A2 A1 A0          Adler-32 of data, big-endian
 // For L > 65535 we chain multiple stored blocks (all but the last BFINAL=0).
 
+// to-concat: copy n bytes of s into a fresh CONCAT (stride-1) string. s is
+// indexed LOCALLY here (stride-8-aware) so a with-len/strike-8 s yields correct
+// bytes; the result is safe to RETURN or PASS to another function (a with-len
+// return would be indexed stride-1 by the caller and corrupted / out-of-bounds).
+to-concat = (s str, n i64) (out str) {
+    out = ''
+    i <- [0..n): {
+        cb str = with-len(1)
+        cb[0] = s[i]
+        out = out - cb
+    }
+}
+
 // adler32: Adler-32 checksum (RFC 1950) of a byte-string
 // data str: input bytes (each codepoint 0-255)
 // returns sum i64: checksum (masked to 32 bits)
@@ -86,6 +99,10 @@ zlib-compress = (data str) (out str) {
     out[pos] = (s >> 8) & 0xff
     pos = pos + 1
     out[pos] = s & 0xff
+    ; Return a CONCAT copy so the caller indexes correct bytes (a with-len
+    ; return would be mis-indexed / out-of-bounds at the call site).
+    o2 str = to-concat(out, total)
+    out = o2
 }
 
 // zlib-decompress: decompress a zlib stream (stored blocks only)
@@ -127,6 +144,10 @@ zlib-decompress = (data str) (out str, ok bool) {
         p = p + len
         bfinal == 1 -> break
     } (true)
+    ; Return a CONCAT copy (stride-1) so the caller's s.len and indexing are
+    ; correct.
+    o2 str = to-concat(out, total)
+    out = o2
     ok = true
 }
 

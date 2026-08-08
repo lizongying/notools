@@ -1,0 +1,448 @@
+// revwalk — Git revision walking / commit graph traversal
+//
+// Provides commit history traversal for `git log`, ancestry queries, etc.
+// Supports:
+//   * Basic linear walk (follow first parent or all parents)
+//   * Commit lookup by oid
+//   * Ancestor checking
+//
+// Cross-module safety: returns individual scalars/strings/oids.
+
+# /git/src/util
+# /git/src/oid
+# /git/src/object
+
+// ═══════════════════════════════════════════════
+// local helpers
+// ═══════════════════════════════════════════════
+
+str-copy = (s str, a i64, b i64) (out str) {
+    out = ''
+    i <- [a..b): {
+        cb str = with-len(1)
+        cb[0] = s[i]
+        out = out - cb
+    }
+}
+
+find-byte-local = (s str, b byte, from i64) (pos i64) {
+    r i64 = -1
+    i = from
+    {
+        i >= s.len -> break
+        c i64 = s[i]
+        r = (c == b) ? i : r
+        c == b -> break
+        i = i + 1
+    } ()
+    pos = r
+}
+
+hex-of = (o oid) (out str) {
+    out = ''
+    hc = '0123456789abcdef'
+    i <- [0..20): {
+        b = o.id[i]
+        c1 str = with-len(1)
+        c1[0] = hc[(b >> 4) & 15]
+        c2 str = with-len(1)
+        c2[0] = hc[b & 15]
+        out = out - c1 - c2
+    }
+}
+
+local-i64-to-str = (n i64) (out str) {
+    n == 0 -> {
+        out = '0'
+        return
+    }
+    digs str = ''
+    x = n
+    {
+        rem = x % 10
+        ch byte = 48 + rem
+        cs str = with-len(1)
+        cs[0] = ch
+        digs = cs - digs
+        x = x / 10
+        x == 0 -> break
+    } ()
+    out = digs
+}
+
+// ═══════════════════════════════════════════════
+// commit lookup
+// ═══════════════════════════════════════════════
+
+// resolve-ref: resolve a ref name or hex oid to an oid
+// git-dir str, ref str (e.g. "HEAD", "main", "refs/heads/main", or 40-char hex)
+// returns oid oid, ok bool
+resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
+    ok = false
+    ; try as hex oid first
+    ref.len == 40 -> {
+        o, ok = oid.oid-from-hex(ref)
+        ok == true -> return
+    }
+    ; try as full ref name (refs/heads/..., refs/tags/...)
+    o, ok = read-ref-from-module(git-dir, ref)
+    ok == true -> return
+    ; try as refs/heads/<ref>
+    o, ok = read-ref-from-module(git-dir, 'refs/heads/' - ref)
+    ok == true -> return
+    ; try as refs/tags/<ref>
+    o, ok = read-ref-from-module(git-dir, 'refs/tags/' - ref)
+    ok == true -> return
+    ; try HEAD
+    ref == 'HEAD' -> {
+        o, ok = read-ref-from-module(git-dir, 'HEAD')
+    }
+}
+
+// read-ref-from-module: delegate to refs.read-ref
+// We inline a minimal ref reader here to avoid the dependency cycle.
+read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
+    ok = false
+    ; build path: git-dir/name
+    p = git-dir - '/' - name
+    isf = fs.is-file(p)
+    isf == true -> {
+        raw = fs.read-file(p)
+        ; build concat copy
+        content = ''
+        i <- [0..raw.len): {
+            cb str = with-len(1)
+            cb[0] = raw[i]
+            content = content - cb
+        }
+        ; trim newline
+        L = content.len
+        L > 0 -> {
+            content[L - 1] == 10 -> {
+                content = str-copy(content, 0, L - 1)
+            }
+        }
+        ; check symbolic ref
+        content.starts-with('ref: ') -> {
+            target = str-copy(content, 5, content.len)
+            o, ok = read-ref-from-module(git-dir, target)
+            return
+        }
+        ; parse as hex
+        content.len >= 40 -> {
+            o, ok = oid.oid-from-hex(str-copy(content, 0, 40))
+            return
+        }
+    }
+    ; try packed-refs
+    pr-path = git-dir - '/packed-refs'
+    isf2 = fs.is-file(pr-path)
+    isf2 == true -> {
+        raw2 = fs.read-file(pr-path)
+        content2 = ''
+        i <- [0..raw2.len): {
+            cb str = with-len(1)
+            cb[0] = raw2[i]
+            content2 = content2 - cb
+        }
+        ; scan lines: "<hex> <refname>"
+        pos = 0
+        {
+            pos >= content2.len -> break
+            nl = find-byte-local(content2, 10, pos)
+            end = content2.len
+            nl >= 0 -> end = nl
+            line = str-copy(content2, pos, end)
+            line.starts-with('#') -> {} -> {
+                line.starts-with('^') -> {} -> {
+                    sp = find-byte-local(line, 32, 0)
+                    sp >= 0 -> {
+                        hx = str-copy(line, 0, sp)
+                        refname = str-copy(line, sp + 1, line.len)
+                        ; compare refname with name
+                        ; str-eq local
+                        same = true
+                        refname.len != name.len -> same = false
+                        same == true -> {
+                            j <- [0..refname.len): {
+                                refname[j] != name[j] -> {
+                                    same = false
+                                    break
+                                }
+                            }
+                        }
+                        same == true -> {
+                            hx.len >= 40 -> {
+                                o, ok = oid.oid-from-hex(str-copy(hx, 0, 40))
+                                ok == true -> break
+                            }
+                        }
+                    }
+                }
+            }
+            pos = nl + 1
+            nl < 0 -> break
+        } (true)
+    }
+}
+
+// ═══════════════════════════════════════════════
+// commit info helpers
+// ═══════════════════════════════════════════════
+
+// commit-tree-oid: read a commit and return its tree oid
+// git-dir str, commit-oid oid
+// returns tree-oid oid, ok bool
+commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
+    ok = false
+    _k str; _d str; read-ok bool
+    _k, _d, read-ok = object.read-loose(git-dir, commit-oid)
+    read-ok == false -> return
+    ; parse "tree <hex>\n"
+    sp = find-byte-local(_d, 32, 5)  ; space after "tree "
+    sp < 0 -> return
+    nl = find-byte-local(_d, 10, sp + 1)
+    nl < 0 -> return
+    hx = str-copy(_d, 5, sp)
+    tree-oid, ok = oid.oid-from-hex(hx)
+}
+
+// commit-parents: read a commit and return its parent oids
+// git-dir str, commit-oid oid
+// returns parent-hex str (concatenated 40-char hex), nparents i64, ok bool
+commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok bool) {
+    ok = false
+    _k str; data str; read-ok bool
+    _k, data, read-ok = object.read-loose(git-dir, commit-oid)
+    read-ok == false -> return
+    parent-hex = ''
+    nparents = 0
+    pos = 0
+    {
+        pos >= data.len -> break
+        nl = find-byte-local(data, 10, pos)
+        end = data.len
+        nl >= 0 -> end = nl
+        line = str-copy(data, pos, end)
+        line.starts-with('parent ') -> {
+            hx = str-copy(line, 7, line.len)
+            parent-hex = parent-hex - hx
+            nparents = nparents + 1
+        }
+        ; stop at blank line (message starts)
+        line.len == 0 -> break
+        ; stop at author/committer lines
+        line.starts-with('author ') -> break
+        line.starts-with('committer ') -> break
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+    ok = true
+}
+
+// commit-info-full: read a commit and return all fields
+// git-dir str, commit-oid oid
+// returns tree-oid oid, parent-hex str, nparents i64,
+//   a-name str, a-email str, a-time i64, a-tz str,
+//   c-name str, c-email str, c-time i64, c-tz str, message str, ok bool
+commit-info-full = (git-dir str, commit-oid oid) (tree-oid oid, parent-hex str, nparents i64, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
+    tree-oid, parent-hex, nparents, a-name, a-email, a-time, a-tz, c-name, c-email, c-time, c-tz, message, ok = object.read-commit-full(git-dir, commit-oid)
+}
+
+// ═══════════════════════════════════════════════
+// revision walk
+// ═══════════════════════════════════════════════
+
+// revwalk-first-parent: walk commit history following first parent
+// git-dir str, start-oid oid, max-count i64 (0 = unlimited)
+// returns commit-hex str (newline-separated 40-char hex), count i64, ok bool
+revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count i64, ok bool) {
+    ok = false
+    commit-hex = ''
+    count = 0
+    cur = start-oid
+    {
+        ; check if we've reached the limit
+        max-count > 0 -> {
+            count >= max-count -> break
+        }
+        ; read commit
+        ph str; np i64; cok bool
+        _t oid; _an str; _ae str; _at i64; _az str
+        _cn str; _ce str; _ct i64; _cz str; _msg str
+        _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+        cok == false -> break
+        ; append this commit
+        ch = hex-of(cur)
+        commit-hex = commit-hex - ch - '\n'
+        count = count + 1
+        ; follow first parent
+        np == 0 -> break
+        ; parse first parent hex
+        first-parent-hex = str-copy(ph, 0, 40)
+        cur, cok = oid.oid-from-hex(first-parent-hex)
+        cok == false -> break
+    } (true)
+    ok = true
+}
+
+// revwalk-all: walk commit history following all parents (breadth-first)
+// This is a simplified version — it doesn't handle merge ordering correctly.
+// git-dir str, start-oid oid, max-count i64 (0 = unlimited)
+// returns commit-hex str (newline-separated), count i64, ok bool
+revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count i64, ok bool) {
+    ok = false
+    commit-hex = ''
+    count = 0
+    ; simple queue: we store visited oids as concatenated hex
+    visited-hex = ''
+    queue-hex = hex-of(start-oid)
+    queue-n i64 = 1
+    {
+        queue-n == 0 -> break
+        max-count > 0 -> {
+            count >= max-count -> break
+        }
+        ; dequeue first
+        cur-hex = str-copy(queue-hex, 0, 40)
+        queue-hex = str-copy(queue-hex, 40, queue-hex.len)
+        queue-n = queue-n - 1
+        ; parse oid
+        cur oid
+        cur-ok bool
+        cur, cur-ok = oid.oid-from-hex(cur-hex)
+        cur-ok == false -> break
+        ; check if already visited
+        is-visited = false
+        vpos = 0
+        {
+            vpos >= visited-hex.len -> break
+            vh = str-copy(visited-hex, vpos, vpos + 40)
+            ; compare
+            same = true
+            j <- [0..40): {
+                vh[j] != cur-hex[j] -> {
+                    same = false
+                    break
+                }
+            }
+            same == true -> {
+                is-visited = true
+                break
+            }
+            vpos = vpos + 40
+        } (true)
+        is-visited == true -> {} -> {
+            ; mark as visited
+            visited-hex = visited-hex - cur-hex
+            ; read commit
+            ph str; np i64; cok bool
+            _t oid; _an str; _ae str; _at i64; _az str
+            _cn str; _ce str; _ct i64; _cz str; _msg str
+            _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+            cok == true -> {
+                commit-hex = commit-hex - cur-hex - '\n'
+                count = count + 1
+                ; enqueue parents
+                i <- [0..np): {
+                    parent-hex = str-copy(ph, i * 40, i * 40 + 40)
+                    queue-hex = queue-hex - parent-hex
+                    queue-n = queue-n + 1
+                }
+            }
+        }
+    } (true)
+    ok = true
+}
+
+// ═══════════════════════════════════════════════
+// ancestry
+// ═══════════════════════════════════════════════
+
+// is-ancestor: check if ancestor-oid is an ancestor of descendant-oid
+// git-dir str, ancestor oid, descendant oid
+// returns yes bool
+is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
+    yes = false
+    ; walk all parents of descendant, check if ancestor is among them
+    visited-hex = ''
+    queue-hex = hex-of(descendant)
+    queue-n i64 = 1
+    ancestor-hex = hex-of(ancestor)
+    {
+        queue-n == 0 -> break
+        cur-hex = str-copy(queue-hex, 0, 40)
+        queue-hex = str-copy(queue-hex, 40, queue-hex.len)
+        queue-n = queue-n - 1
+        ; check if this is the ancestor
+        same = true
+        j <- [0..40): {
+            cur-hex[j] != ancestor-hex[j] -> {
+                same = false
+                break
+            }
+        }
+        same == true -> {
+            yes = true
+            break
+        }
+        ; check visited
+        is-visited = false
+        vpos = 0
+        {
+            vpos >= visited-hex.len -> break
+            vh = str-copy(visited-hex, vpos, vpos + 40)
+            vsame = true
+            j <- [0..40): {
+                vh[j] != cur-hex[j] -> {
+                    vsame = false
+                    break
+                }
+            }
+            vsame == true -> {
+                is-visited = true
+                break
+            }
+            vpos = vpos + 40
+        } (true)
+        is-visited == true -> {} -> {
+            visited-hex = visited-hex - cur-hex
+            cur oid
+            cur-ok bool
+            cur, cur-ok = oid.oid-from-hex(cur-hex)
+            cur-ok == true -> {
+                ph str; np i64; cok bool
+                _t oid; _an str; _ae str; _at i64; _az str
+                _cn str; _ce str; _ct i64; _cz str; _msg str
+                _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+                cok == true -> {
+                    i <- [0..np): {
+                        parent-hex = str-copy(ph, i * 40, i * 40 + 40)
+                        queue-hex = queue-hex - parent-hex
+                        queue-n = queue-n + 1
+                    }
+                }
+            }
+        }
+    } (true)
+}
+
+// ═══════════════════════════════════════════════
+// keepalive
+// ═══════════════════════════════════════════════
+
+revwalk-keepalive = () (alive bool) {
+    _o oid; _ok bool
+    _o, _ok = resolve-ref('/tmp/.revwalk-test', 'HEAD')
+    _t oid; _ok2 bool
+    _t, _ok2 = commit-tree-oid('/tmp/.revwalk-test', _o)
+    _ph str; _np i64; _ok3 bool
+    _ph, _np, _ok3 = commit-parents('/tmp/.revwalk-test', _o)
+    _ch str; _c i64; _ok4 bool
+    _ch, _c, _ok4 = revwalk-first-parent('/tmp/.revwalk-test', _o, 0)
+    _ch2 str; _c2 i64; _ok5 bool
+    _ch2, _c2, _ok5 = revwalk-all('/tmp/.revwalk-test', _o, 0)
+    _yes bool
+    _yes = is-ancestor('/tmp/.revwalk-test', _o, _o)
+    alive = true
+}

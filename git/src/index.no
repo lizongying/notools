@@ -1,0 +1,632 @@
+// index — Git staging area (index file format v2)
+//
+// The index is a binary file at .git/index that tracks staged files.
+// Format (index v2):
+//   Header: "DIRC" (4) + version(4, BE) + entry_count(4, BE)
+//   For each entry:
+//     ctime-s(4) ctime-n(4) mtime-s(4) mtime-n(4)
+//     dev(4) ino(4) mode(4) uid(4) gid(4) size(4)
+//     sha1(20) flags(2)
+//     name(nul-terminated, padded to 8-byte boundary)
+//   Extensions (optional)
+//   SHA-1 trailer (20 bytes, hash of entire file content)
+//
+// Cross-module safety: returns individual scalars/strings/oids.
+
+# /git/src/util
+# /git/src/oid
+
+// ═══════════════════════════════════════════════
+// index entry struct (intra-module only — never returned across boundary)
+// ═══════════════════════════════════════════════
+
+index-entry {
+    ctime-s i64
+    ctime-n i64
+    mtime-s i64
+    mtime-n i64
+    dev i64
+    ino i64
+    mode i64
+    uid i64
+    gid i64
+    size i64
+    oid oid
+    flags i64
+    name str
+}
+
+// ═══════════════════════════════════════════════
+// local helpers
+// ═══════════════════════════════════════════════
+
+str-copy = (s str, a i64, b i64) (out str) {
+    out = ''
+    i <- [a..b): {
+        cb str = with-len(1)
+        cb[0] = s[i]
+        out = out - cb
+    }
+}
+
+find-byte-local = (s str, b byte, from i64) (pos i64) {
+    r i64 = -1
+    i = from
+    {
+        i >= s.len -> break
+        c i64 = s[i]
+        r = (c == b) ? i : r
+        c == b -> break
+        i = i + 1
+    } ()
+    pos = r
+}
+
+read-file-str = (p str) (out str, ok bool) {
+    ok = false
+    isf = fs.is-file(p)
+    isf == false -> {
+        out = ''
+        return
+    }
+    raw = fs.read-file(p)
+    out = ''
+    i <- [0..raw.len): {
+        cb str = with-len(1)
+        cb[0] = raw[i]
+        out = out - cb
+    }
+    ok = true
+}
+
+write-file-simple = (p str, content str) (ok bool) {
+    ok = false
+    fd = fs.open-write(p)
+    i <- [0..content.len): {
+        cs str = with-len(1)
+        cs[0] = content[i]
+        fs.write(fd, cs, 1)
+    }
+    fs.close(fd)
+    ok = true
+}
+
+hex-of = (o oid) (out str) {
+    out = ''
+    hc = '0123456789abcdef'
+    i <- [0..20): {
+        b = o.id[i]
+        c1 str = with-len(1)
+        c1[0] = hc[(b >> 4) & 15]
+        c2 str = with-len(1)
+        c2[0] = hc[b & 15]
+        out = out - c1 - c2
+    }
+}
+
+// local i64 to str for building index content
+local-i64-to-str = (n i64) (out str) {
+    n == 0 -> {
+        out = '0'
+        return
+    }
+    digs str = ''
+    x = n
+    {
+        rem = x % 10
+        ch byte = 48 + rem
+        cs str = with-len(1)
+        cs[0] = ch
+        digs = cs - digs
+        x = x / 10
+        x == 0 -> break
+    } ()
+    out = digs
+}
+
+str-eq-local = (a str, b str) (yes bool) {
+    yes = false
+    a.len != b.len -> return
+    yes = true
+    i = 0
+    {
+        i >= a.len -> break
+        a[i] != b[i] -> {
+            yes = false
+            return
+        }
+        i = i + 1
+    } ()
+}
+
+// write-u32-be-str: write a big-endian 32-bit int as 4 bytes into a str at pos
+// (helper for building index content)
+i64-to-byte-at = (buf str, pos i64, v i64) {
+    buf[pos] = v & 0xff
+}
+
+i64-to-u32-be-at = (buf str, pos i64, v i64) {
+    buf[pos] = (v >> 24) & 0xff
+    buf[pos + 1] = (v >> 16) & 0xff
+    buf[pos + 2] = (v >> 8) & 0xff
+    buf[pos + 3] = v & 0xff
+}
+
+i64-to-u16-be-at = (buf str, pos i64, v i64) {
+    buf[pos] = (v >> 8) & 0xff
+    buf[pos + 1] = v & 0xff
+}
+
+// read-u32-be-local: read big-endian 32-bit from a str at offset
+read-u32-be-local = (s str, pos i64) (v i64) {
+    v = s[pos] & 0xff
+    v = (v << 8) | (s[pos + 1] & 0xff)
+    v = (v << 8) | (s[pos + 2] & 0xff)
+    v = (v << 8) | (s[pos + 3] & 0xff)
+}
+
+read-u16-be-local = (s str, pos i64) (v i64) {
+    v = s[pos] & 0xff
+    v = (v << 8) | (s[pos + 1] & 0xff)
+}
+
+// ═══════════════════════════════════════════════
+// index read
+// ═══════════════════════════════════════════════
+
+// read-index: read .git/index and return entries as flat arrays
+// git-dir str
+// returns:
+//   names str  — all entry names, newline-separated
+//   hexoids str — all entry oids as 40-char hex, concatenated
+//   modes str  — all entry modes as decimal strings, newline-separated
+//   count i64  — number of entries
+//   ok bool    — false if index is missing or corrupt
+//
+// Note: because nolang []str is unreliable across module boundaries, we
+// concatenate all names with '\n' and all hex oids together (each 40 chars).
+// The caller splits them by position.
+read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok bool) {
+    ok = false
+    p = git-dir - '/index'
+    content str
+    file-ok bool
+    content, file-ok = read-file-str(p)
+    file-ok == false -> return
+    content.len < 12 -> return
+    ; verify signature "DIRC"
+    content[0] != 68 -> return  ; D
+    content[1] != 73 -> return  ; I
+    content[2] != 82 -> return  ; R
+    content[3] != 67 -> return  ; C
+    ; version
+    ver i64
+    ver = read-u32-be-local(content, 4)
+    ver != 2 -> {
+        ; we support v2 only for now
+        ver == 3 -> {} -> return
+        ver == 4 -> {} -> return
+    }
+    ; entry count
+    count = read-u32-be-local(content, 8)
+    count < 0 -> return
+    ; parse entries
+    names = ''
+    hexoids = ''
+    modes = ''
+    pos = 12
+    i <- [0..count): {
+        pos + 62 > content.len -> {
+            count = i
+            break
+        }
+        ; skip ctime(8), mtime(8), dev(4), ino(4) = 24 bytes
+        pos = pos + 24
+        ; mode (4 bytes BE)
+        mode-val i64
+        mode-val = read-u32-be-local(content, pos)
+        pos = pos + 4
+        ; skip uid(4), gid(4), size(4) = 12 bytes
+        pos = pos + 12
+        ; sha1 (20 bytes)
+        oid-bytes = with-len(20)
+        k <- [0..20): {
+            oid-bytes[k] = content[pos + k]
+        }
+        pos = pos + 20
+        ; flags (2 bytes BE) — lower 12 bits = name length
+        flags i64
+        flags = read-u16-be-local(content, pos)
+        pos = pos + 2
+        name-len = flags & 0xfff
+        ; name (NUL-terminated, then padded to 8-byte boundary)
+        ; name is at pos, terminated by NUL
+        nl = find-byte-local(content, 0, pos)
+        nl < 0 -> {
+            count = i
+            break
+        }
+        nm = str-copy(content, pos, nl)
+        names = names - nm - '\n'
+        ; hex oid
+        hx = ''
+        hc = '0123456789abcdef'
+        j <- [0..20): {
+            b = oid-bytes[j]
+            c1 str = with-len(1)
+            c1[0] = hc[(b >> 4) & 15]
+            c2 str = with-len(1)
+            c2[0] = hc[b & 15]
+            hx = hx - c1 - c2
+        }
+        hexoids = hexoids - hx
+        ; mode as decimal
+        ms = local-i64-to-str(mode-val)
+        modes = modes - ms - '\n'
+        ; advance past name + NUL
+        entry-len = 62 + (nl - pos) + 1  ; fixed part + name + NUL
+        ; pad to 8-byte boundary (entry start was at pos-62, so align from there)
+        entry-start = pos - 62
+        padded = entry-start + 62 + (nl - pos) + 1
+        ; ceil to 8
+        rem = padded % 8
+        rem > 0 -> padded = padded + (8 - rem)
+        pos = padded
+        pos > content.len -> {
+            count = i + 1
+            break
+        }
+    }
+    ok = true
+}
+
+// read-index-entry-at: read a specific entry's full info from index
+// git-dir str, index i64 (0-based)
+// returns name str, oid oid, mode i64, ok bool
+read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool) {
+    ok = false
+    p = git-dir - '/index'
+    content str
+    file-ok bool
+    content, file-ok = read-file-str(p)
+    file-ok == false -> return
+    content.len < 12 -> return
+    ; verify signature
+    content[0] != 68 -> return
+    content[1] != 73 -> return
+    content[2] != 82 -> return
+    content[3] != 67 -> return
+    count = read-u32-be-local(content, 8)
+    idx >= count -> return
+    ; skip to entry idx
+    pos = 12
+    i <- [0..idx): {
+        pos + 62 > content.len -> return
+        pos = pos + 24  ; skip ctime/mtime/dev/ino
+        pos = pos + 4   ; skip mode
+        pos = pos + 12  ; skip uid/gid/size
+        pos = pos + 20  ; skip sha1
+        flags = read-u16-be-local(content, pos)
+        pos = pos + 2
+        nl = find-byte-local(content, 0, pos)
+        nl < 0 -> return
+        entry-start = pos - 62
+        padded = entry-start + 62 + (nl - pos) + 1
+        rem = padded % 8
+        rem > 0 -> padded = padded + (8 - rem)
+        pos = padded
+    }
+    ; now at entry idx
+    pos + 62 > content.len -> return
+    pos = pos + 24  ; skip ctime/mtime/dev/ino
+    mode = read-u32-be-local(content, pos)
+    pos = pos + 4
+    pos = pos + 12  ; skip uid/gid/size
+    ; read oid
+    tmp oid
+    k <- [0..20): {
+        tmp.id[k] = content[pos + k]
+    }
+    o = tmp
+    pos = pos + 20
+    flags = read-u16-be-local(content, pos)
+    pos = pos + 2
+    nl = find-byte-local(content, 0, pos)
+    nl < 0 -> nl = content.len
+    name = str-copy(content, pos, nl)
+    ok = true
+}
+
+// ═══════════════════════════════════════════════
+// index write
+// ═══════════════════════════════════════════════
+
+// write-index: write .git/index from flat arrays
+// git-dir str
+// names-str str: newline-separated file paths
+// oids-str str: concatenated 40-char hex oids
+// modes-str str: newline-separated mode strings
+// count i64: number of entries
+// returns ok bool
+//
+// We build the entire index file content as a single str (byte-string)
+// and write it byte-by-byte (stride-safe).
+write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i64) (ok bool) {
+    ok = false
+    p = git-dir - '/index'
+    ; build index content
+    ; header: DIRC + version(4) + count(4) = 12 bytes
+    ; each entry: 62 bytes fixed + name + NUL + padding
+    ; we need two passes: first compute total size, then build
+    ; for simplicity, build incrementally as a concat str
+    out = ''
+    ; DIRC signature
+    sig str = with-len(4)
+    sig[0] = 68  ; D
+    sig[1] = 73  ; I
+    sig[2] = 82  ; R
+    sig[3] = 67  ; C
+    out = out - sig
+    ; version 2
+    ver str = with-len(4)
+    i64-to-u32-be-at(ver, 0, 2)
+    out = out - ver
+    ; entry count
+    cnt str = with-len(4)
+    i64-to-u32-be-at(cnt, 0, count)
+    out = out - cnt
+    ; parse names, modes, oids from flat strings
+    ; iterate entries
+    i <- [0..count): {
+        ; extract name i
+        name-pos = 0
+        j <- [0..i): {
+            nl = find-byte-local(names-str, 10, name-pos)
+            name-pos = nl + 1
+        }
+        nl = find-byte-local(names-str, 10, name-pos)
+        nl < 0 -> nl = names-str.len
+        nm = str-copy(names-str, name-pos, nl)
+        ; extract mode i
+        mode-pos = 0
+        j2 <- [0..i): {
+            nl2 = find-byte-local(modes-str, 10, mode-pos)
+            mode-pos = nl2 + 1
+        }
+        nl2 = find-byte-local(modes-str, 10, mode-pos)
+        nl2 < 0 -> nl2 = modes-str.len
+        ms = str-copy(modes-str, mode-pos, nl2)
+        ; parse mode
+        mode-val i64 = 0
+        k <- [0..ms.len): {
+            mode-val = mode-val * 10 + (ms[k] - 48)
+        }
+        ; extract oid i (40 chars each)
+        hx = str-copy(oids-str, i * 40, i * 40 + 40)
+        ; parse oid
+        entry-oid oid
+        k <- [0..20): {
+            c0 = hx[k * 2]
+            c1 = hx[k * 2 + 1]
+            hi = util.hexdigit(c0)
+            lo = util.hexdigit(c1)
+            entry-oid.id[k] = (hi << 4) | lo
+        }
+        ; build entry (62 bytes fixed + name + NUL + padding)
+        ; for simplicity, use stat defaults (0 for ctime/mtime/dev/ino)
+        ; ctime(8)
+        zero8 str = with-len(8)
+        out = out - zero8
+        ; mtime(8)
+        out = out - zero8
+        ; dev(4)
+        zero4 str = with-len(4)
+        out = out - zero4
+        ; ino(4)
+        out = out - zero4
+        ; mode(4)
+        mode-bytes str = with-len(4)
+        i64-to-u32-be-at(mode-bytes, 0, mode-val)
+        out = out - mode-bytes
+        ; uid(4)
+        out = out - zero4
+        ; gid(4)
+        out = out - zero4
+        ; size(4) — we use 0 as placeholder
+        out = out - zero4
+        ; sha1(20)
+        oid-bytes str = with-len(20)
+        k <- [0..20): {
+            oid-bytes[k] = entry-oid.id[k]
+        }
+        out = out - oid-bytes
+        ; flags(2) — name length in lower 12 bits
+        name-len = nm.len
+        name-len > 0xfff -> name-len = 0xfff
+        flags-bytes str = with-len(2)
+        i64-to-u16-be-at(flags-bytes, 0, name-len)
+        out = out - flags-bytes
+        ; name + NUL
+        out = out - nm
+        nul-byte str = with-len(1)
+        nul-byte[0] = 0
+        out = out - nul-byte
+        ; pad to 8-byte boundary
+        ; entry total so far = 62 + nm.len + 1
+        entry-total = 62 + nm.len + 1
+        rem = entry-total % 8
+        rem > 0 -> {
+            pad-count = 8 - rem
+            k <- [0..pad-count): {
+                pb str = with-len(1)
+                pb[0] = 0
+                out = out - pb
+            }
+        }
+    }
+    ; SHA-1 trailer — hash the entire content built so far
+    ; We use oid.sha1-hex to compute the hash, then append the 20 raw bytes
+    trailer-hex = oid.sha1-hex(out)
+    ; convert hex to 20 raw bytes
+    k <- [0..20): {
+        c0 = trailer-hex[k * 2]
+        c1 = trailer-hex[k * 2 + 1]
+        hi = util.hexdigit(c0)
+        lo = util.hexdigit(c1)
+        tb str = with-len(1)
+        tb[0] = (hi << 4) | lo
+        out = out - tb
+    }
+    ; write byte-by-byte (stride-safe)
+    write-file-simple(p, out)
+    ok = true
+}
+
+// ═══════════════════════════════════════════════
+// index add / remove
+// ═══════════════════════════════════════════════
+
+// index-add: add a file to the index (blob already written to object store)
+// git-dir str, path str (file path relative to work tree), o oid, mode i64
+// returns ok bool
+//
+// Reads existing index, replaces or appends the entry, rewrites index.
+index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
+    ok = false
+    ; read existing index
+    names str
+    hexoids str
+    modes-str str
+    count i64
+    read-ok bool
+    names, hexoids, modes-str, count, read-ok = read-index(git-dir)
+    ; build new arrays
+    new-names = ''
+    new-oids = ''
+    new-modes = ''
+    new-count i64 = 0
+    ; hex of new oid
+    new-hex = hex-of(o)
+    mode-str = local-i64-to-str(mode)
+    found = false
+    ; iterate existing entries, replacing if path matches
+    pos = 0
+    i <- [0..count): {
+        ; extract name i
+        nl = find-byte-local(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = str-copy(names, pos, end)
+        ; check if it matches path
+        same = str-eq-local(nm, path)
+        same == true -> {
+            ; replace with new entry
+            new-names = new-names - path - '\n'
+            new-oids = new-oids - new-hex
+            new-modes = new-modes - mode-str - '\n'
+            new-count = new-count + 1
+            found = true
+        } -> {
+            ; keep existing
+            new-names = new-names - nm - '\n'
+            old-hex = str-copy(hexoids, i * 40, i * 40 + 40)
+            new-oids = new-oids - old-hex
+            old-mode = str-copy(modes-str, pos, end)  ; hmm, modes is also newline-sep
+            ; extract mode i
+            mpos = 0
+            j <- [0..i): {
+                mnl = find-byte-local(modes-str, 10, mpos)
+                mpos = mnl + 1
+            }
+            mnl2 = find-byte-local(modes-str, 10, mpos)
+            mend = modes-str.len
+            mnl2 >= 0 -> mend = mnl2
+            old-ms = str-copy(modes-str, mpos, mend)
+            new-modes = new-modes - old-ms - '\n'
+            new-count = new-count + 1
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    }
+    ; if path was not found, append new entry
+    found == false -> {
+        new-names = new-names - path - '\n'
+        new-oids = new-oids - new-hex
+        new-modes = new-modes - mode-str - '\n'
+        new-count = new-count + 1
+    }
+    ; rewrite index
+    write-ok bool
+    write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)
+    ok = write-ok
+}
+
+// index-remove: remove a file from the index
+// git-dir str, path str
+// returns ok bool
+index-remove = (git-dir str, path str) (ok bool) {
+    ok = false
+    names str
+    hexoids str
+    modes-str str
+    count i64
+    read-ok bool
+    names, hexoids, modes-str, count, read-ok = read-index(git-dir)
+    read-ok == false -> return
+    new-names = ''
+    new-oids = ''
+    new-modes = ''
+    new-count i64 = 0
+    pos = 0
+    i <- [0..count): {
+        nl = find-byte-local(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = str-copy(names, pos, end)
+        same = str-eq-local(nm, path)
+        same == true -> {} -> {
+            new-names = new-names - nm - '\n'
+            old-hex = str-copy(hexoids, i * 40, i * 40 + 40)
+            new-oids = new-oids - old-hex
+            ; extract mode i
+            mpos = 0
+            j <- [0..i): {
+                mnl = find-byte-local(modes-str, 10, mpos)
+                mpos = mnl + 1
+            }
+            mnl2 = find-byte-local(modes-str, 10, mpos)
+            mend = modes-str.len
+            mnl2 >= 0 -> mend = mnl2
+            old-ms = str-copy(modes-str, mpos, mend)
+            new-modes = new-modes - old-ms - '\n'
+            new-count = new-count + 1
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    }
+    write-ok bool
+    write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)
+    ok = write-ok
+}
+
+// ═══════════════════════════════════════════════
+// keepalive
+// ═══════════════════════════════════════════════
+
+index-keepalive = () (alive bool) {
+    _n str; _h str; _m str; _c i64; _ok bool
+    _n, _h, _m, _c, _ok = read-index('/tmp/.index-test')
+    _n2 str
+    _o oid
+    _mode i64
+    _ok2 bool
+    _n2, _o, _mode, _ok2 = read-index-entry-at('/tmp/.index-test', 0)
+    _ok3 bool
+    _ok3 = write-index('/tmp/.index-test', '', '', '', 0)
+    _o2 oid
+    _ok4 bool
+    _ok4 = index-add('/tmp/.index-test', 'test.txt', _o2, 33188)
+    _ok5 bool
+    _ok5 = index-remove('/tmp/.index-test', 'test.txt')
+    alive = true
+}
