@@ -1,0 +1,67 @@
+// zlib — RFC 1950 zlib (de)compression built on the std DEFLATE engine
+//
+// Git stores every loose object and every pack-object payload as a zlib
+// stream: a 2-byte header, raw DEFLATE data, and a 4-byte big-endian Adler-32
+// checksum of the uncompressed data.
+//
+// We reuse the pure-Nolang DEFLATE implementation from the standard library:
+//   gzip.deflate-stored  -> raw DEFLATE (stored blocks, uncompressed)
+//   gzip.inflate-decompress -> raw DEFLATE inflate (stops at BFINAL)
+// This keeps our objects 100% compatible with real Git while writing only the
+// thin zlib wrapper here.
+
+// adler32: Adler-32 checksum (RFC 1950) of the given bytes
+// data []byte: input
+// returns sum u32: checksum
+adler32 = (data []byte) (sum u32) {
+    MOD u32 = 65521
+    a u32 = 1
+    b u32 = 0
+    i <- [0..data.len): {
+        a = (a + data[i]) % MOD
+        b = (b + a) % MOD
+    }
+    sum = (b << 16) | a
+}
+
+// zlib-compress: compress raw data into a zlib stream
+// data []byte: uncompressed input
+// returns out []byte: zlib-wrapped stream (header + deflate + adler32)
+zlib-compress = (data []byte) (out []byte) {
+    out = with-cap(data.len + 11)
+    out.push(0x78)
+    out.push(0x9c)
+    data.len == 0 -> {
+        ; gzip.deflate-stored emits NO block for empty input, which is an
+        ; invalid DEFLATE stream. Emit a single final stored block (LEN=0).
+        out.push(0x03)
+        out.push(0x00)
+        out.push(0x00)
+        out.push(0xff)
+        out.push(0xff)
+    } -> {
+        def = gzip.deflate-stored(data)
+        i <- [0..def.len): {
+            out.push(def[i])
+        }
+    }
+    sum = adler32(data)
+    out.push((sum >> 24) & 255)
+    out.push((sum >> 16) & 255)
+    out.push((sum >> 8) & 255)
+    out.push(sum & 255)
+}
+
+// zlib-decompress: decompress a zlib stream
+// data []byte: a zlib stream
+// returns out []byte, ok bool: uncompressed bytes, ok=false on too-short input
+zlib-decompress = (data []byte) (out []byte, ok bool) {
+    ok = false
+    data.len < 6 -> return
+    ; The 2-byte zlib header is followed by a raw DEFLATE stream; the trailing
+    ; 4 bytes are the Adler-32 which inflate ignores (it stops at BFINAL).
+    def = data[2..]
+    out = gzip.inflate-decompress(def, 0)
+    ok = true
+}
+

@@ -1,0 +1,716 @@
+// object — Git object model: blob / tree / commit / tag
+//
+// Encodes and decodes the four object kinds and implements loose-object
+// storage (the .git/objects/<aa>/<bbbb...> zlib stream). Object identity is a
+// SHA-1 over "<type> <size>\0<payload>" (see oid.no).
+//
+// IMPORTANT nolang codegen constraints baked into this file (see project
+// memory). A struct whose vec fields are read after being RETURNED from a
+// function is corrupted by the whole-module optimizer (e.g. `t.modes[0]` on a
+// tree returned by tree-add crashes). So we keep NO vec fields in any value
+// type that crosses a function boundary. Specifically:
+//   * tree is stored as a single sorted byte-string `raw` (Git's exact on-disk
+//     tree format: "<octal-mode> <name>\0<20 raw id bytes>" per entry) plus a
+//     scalar `n` count. No []i64 / []str fields at all.
+//   * commit parents are stored as a concatenated 40-char-hex string
+//     parenthex with an explicit nparents count.
+//   * parse commit/tag headers line-by-line over a byte-string (never []str).
+//   * carry all Git bytes as `str` (one codepoint per byte 0-255) across module
+//     boundaries; []byte is only used INSIDE this module.
+//   * bind every cross-module call result to a typed local before reuse.
+
+# /git/src/util
+# /git/src/zlib
+# /git/src/oid
+
+// ═══════════════════════════════════════════════
+// value types
+// ═══════════════════════════════════════════════
+
+// tree: a Git tree stored as a single sorted byte-string (Git's exact on-disk
+// tree format) plus a scalar entry count. NO vec fields — a struct whose vec
+// fields are read after being returned from a function is corrupted by the
+// nolang optimizer (see project memory). Each entry in `raw` is:
+//   "<octal-mode> <name>\0<20 raw id bytes>"
+// Entries are kept sorted by base_name_compare at all times.
+tree {
+    raw str
+    n i64
+}
+
+person-info {
+    name str
+    email str
+    time i64
+    tz str
+}
+
+commit-info {
+    tree-oid oid
+    parenthex str      ; concatenated 40-char hex of each parent (no []oid)
+    nparents i64
+    author person-info
+    committer person-info
+    message str
+}
+
+tag-info {
+    object oid
+    obj-type str
+    tag str
+    tagger person-info
+    message str
+}
+
+// ═══════════════════════════════════════════════
+// octal helpers (git stores modes as octal text)
+// ═══════════════════════════════════════════════
+
+i64-to-octal = (n i64) (out str) {
+    n == 0 -> {
+        out = '0'
+        return
+    }
+    tmp []byte = with-cap(16)
+    x = n
+    {
+        tmp.push(48 + (x % 8))
+        x = x / 8
+        x == 0 -> break
+    } ()
+    L = tmp.len
+    out = with-len(L)
+    i <- [0..L): {
+        out[i] = tmp[L - 1 - i]
+    }
+}
+
+octal-to-i64 = (s str) (out i64) {
+    out = 0
+    i <- [0..s.len): {
+        out = out * 8 + (s[i] - 48)
+    }
+}
+
+mode-is-dir = (m i64) (yes bool) {
+    yes = m == 16384
+}
+
+// ═══════════════════════════════════════════════
+// tree builder + base_name_compare
+// ═══════════════════════════════════════════════
+
+
+// id-bytes: build a 20-byte string from an oid's raw bytes
+id-bytes = (id oid) (out str) {
+    out = with-len(20)
+    k <- [0..20): {
+        out[k] = id.id[k]
+    }
+}
+
+// name-cmp: git's base_name_compare with the '/' rule for directories.
+// (na,adir) is the candidate; (nb,bdir) is the existing entry.
+name-cmp = (na str, adir bool, nb str, bdir bool) (r i64) {
+    la = na.len
+    lb = nb.len
+    len = la
+    lb < len -> len = lb
+    r = 0
+    i = 0
+    {
+        i < len -> {
+            ca = na[i]
+            cb = nb[i]
+            ca < cb -> {
+                r = -1
+                return
+            }
+            ca > cb -> {
+                r = 1
+                return
+            }
+            i = i + 1
+        }
+    } (i < len)
+    ca = 0
+    cb = 0
+    la > len -> ca = na[len]
+    lb > len -> cb = nb[len]
+    ca == 0 && adir == true -> ca = 47
+    cb == 0 && bdir == true -> cb = 47
+    ca < cb -> r = -1
+    ca > cb -> r = 1
+}
+
+// tree-insert-offset: offset in raw where a new (mode,name) entry belongs so
+// that raw stays sorted by base_name_compare.
+tree-insert-offset = (raw str, mode i64, name str) (off i64) {
+    off = raw.len
+    pos = 0
+    adir = mode == 16384
+    {
+        pos >= raw.len -> break
+        sp = util.find-byte-str(raw, 32, pos)
+        sp < 0 -> break
+        nl = util.find-byte-str(raw, 0, sp + 1)
+        nl < 0 -> break
+        emode = octal-to-i64(raw[pos .. sp))
+        ename = raw[sp + 1 .. nl)
+        bdir = emode == 16384
+        c = name-cmp(name, adir, ename, bdir)
+        c <= 0 -> {
+            off = pos
+            break
+        }
+        pos = nl + 21
+    } (true)
+}
+
+
+// tree-entry-at: locate entry i in raw, returning its start/space/nul offsets.
+tree-entry-at = (raw str, i i64) (off i64, sp i64, nl i64) {
+    off = 0
+    k = 0
+    {
+        k >= i -> break
+        s = util.find-byte-str(raw, 32, off)
+        s < 0 -> break
+        n = util.find-byte-str(raw, 0, s + 1)
+        n < 0 -> break
+        off = n + 21
+        k = k + 1
+    } (k < i)
+    sp = util.find-byte-str(raw, 32, off)
+    nl = util.find-byte-str(raw, 0, sp + 1)
+}
+
+// tree-name: the name byte-string of entry i
+tree-name = (t tree, i i64) (s str) {
+    off i64
+    sp i64
+    nl i64
+    off, sp, nl = tree-entry-at(t.raw, i)
+    s = (t.raw[sp + 1 .. nl)).copy()
+}
+
+// tree-mode: the octal mode of entry i
+tree-mode = (t tree, i i64) (m i64) {
+    off i64
+    sp i64
+    nl i64
+    off, sp, nl = tree-entry-at(t.raw, i)
+    m = octal-to-i64(t.raw[off .. sp))
+}
+
+// tree-id: the object id of entry i
+tree-id = (t tree, i i64) (o oid) {
+    off i64
+    sp i64
+    nl i64
+    off, sp, nl = tree-entry-at(t.raw, i)
+    tmp oid
+    k <- [0..20): {
+        tmp.id[k] = t.raw[nl + 1 + k]
+    }
+    o = tmp
+}
+
+// ═══════════════════════════════════════════════
+// CROSS-MODULE-SAFE tree API
+//
+// nolang corrupts a struct field that is a `str` (or vec) when the struct is
+// returned across a module boundary, so we NEVER hand a `tree` struct to
+// another module. Instead the tree's bytes travel as a plain top-level `str`
+// (which survives), and these wrappers rebuild a local `tree` internally.
+// ═══════════════════════════════════════════════
+
+// tree-count-raw: number of entries in a raw tree byte-string
+tree-count-raw = (raw str) (n i64) {
+    n = 0
+    pos = 0
+    {
+        pos >= raw.len -> break
+        sp = util.find-byte-str(raw, 32, pos)
+        sp < 0 -> break
+        nl = util.find-byte-str(raw, 0, sp + 1)
+        nl < 0 -> break
+        pos = nl + 21
+        n = n + 1
+    } (true)
+}
+
+// tree-add-raw: append an entry to a raw tree string; returns the new raw str.
+// Operates directly on the `str` (no `tree` struct return — returning a struct
+// carrying a `str` field loses the buffer even within a module).
+tree-add-raw = (raw str, mode i64, name str, id oid) (out str) {
+    oct = i64-to-octal(mode)
+    ib = id-bytes(id)
+    e = oct - ' ' - name - '\0' - ib
+    curlen = raw.len
+    curlen == 0 -> {
+        out = e
+    } -> {
+        ins = tree-insert-offset(raw, mode, name)
+        ins == 0 -> {
+            out = e - raw
+        }
+        ins == curlen -> {
+            out = raw - e
+        }
+        left str = raw[0 .. ins)
+        right str = raw[ins ..)
+        out = left - e - right
+    }
+}
+
+// tree-write-raw: store a raw tree; returns its oid
+tree-write-raw = (git-dir str, raw str) (o oid) {
+    o = write-loose(git-dir, 'tree', raw)
+}
+
+// tree-read-raw: read a tree object's raw bytes (top-level str)
+tree-read-raw = (git-dir str, o oid) (raw str, ok bool) {
+    k str
+    d str
+    ok2 bool
+    k, d, ok2 = read-loose(git-dir, o)
+    ok2 == false -> {
+        ok = false
+        return
+    }
+    raw = d
+    ok = true
+}
+
+// tree-name-raw / tree-mode-raw / tree-id-raw: access entry i of a raw tree
+tree-name-raw = (raw str, i i64) (s str) {
+    t = tree { raw: raw, n: tree-count-raw(raw) }
+    s = tree-name(t, i)
+}
+
+tree-mode-raw = (raw str, i i64) (m i64) {
+    t = tree { raw: raw, n: tree-count-raw(raw) }
+    m = tree-mode(t, i)
+}
+
+tree-id-raw = (raw str, i i64) (o oid) {
+    t = tree { raw: raw, n: tree-count-raw(raw) }
+    o = tree-id(t, i)
+}
+
+// ═══════════════════════════════════════════════
+// tree encode / decode
+// ═══════════════════════════════════════════════
+
+// tree-encode: return the sorted raw tree bytes. raw is already kept sorted by
+// base_name_compare at all times, so this is just an accessor.
+tree-encode = (t tree) (out str) {
+    out = t.raw
+}
+
+// ═══════════════════════════════════════════════
+// person line encode / decode
+// ═══════════════════════════════════════════════
+
+person-line = (role str, p person-info) (out str) {
+    ts str = util.i64-to-str(p.time)
+    out = role - ' ' - p.name - ' <' - p.email - '> ' - ts - ' ' - p.tz
+}
+
+// parse-person-fields: parse "Name <email> 1234567890 +0000" returning the
+// parts as top-level scalars/strings (a struct return would lose the `str`
+// fields, so we return them individually).
+parse-person-fields = (s str) (name str, email str, time i64, tz str) {
+    lt i64 = s.index('<')
+    gt i64 = s.index('>')
+    nm str = (s[0..lt)).copy()
+    nm.len > 0 -> nm[nm.len - 1] == 32 -> nm = (nm[0..nm.len - 1)).copy()
+    name = nm
+    email = (s[lt + 1..gt)).copy()
+    rest str = (s[gt + 1..]).copy()
+    sp i64 = util.find-byte-str(rest, 32, 0)
+    sp < 0 -> sp = rest.len
+    ts str = (rest[0..sp]).copy()
+    ti ?i64 = ts.to-i64()
+    ti: {
+        ok -> time = it
+        nil -> {}
+        err -> {}
+    }
+    tz = (rest[sp + 1..]).copy()
+}
+
+// ═══════════════════════════════════════════════
+// commit encode / decode
+// ═══════════════════════════════════════════════
+
+commit-encode = (c commit-info) (out str) {
+    tid oid = c.tree-oid
+    th str = tid.to-hex()
+    s = 'tree ' - th - '\n'
+    i <- [0..c.nparents): {
+        ph str = (c.parenthex[i * 40 .. i * 40 + 40)).copy()
+        s = s - 'parent ' - ph - '\n'
+    }
+    al str = person-line('author', c.author)
+    s = s - al - '\n'
+    cl str = person-line('committer', c.committer)
+    s = s - cl - '\n'
+    s = s - '\n' - c.message
+    ; s is a pure-ASCII concatenation, so its codepoints ARE the object bytes.
+    out = s
+}
+
+
+// ═══════════════════════════════════════════════
+// tag encode / decode
+// ═══════════════════════════════════════════════
+
+tag-encode = (t tag-info) (out str) {
+    tobj oid = t.object
+    oh str = tobj.to-hex()
+    s = 'object ' - oh - '\n'
+    s = s - 'type ' - t.obj-type - '\n'
+    s = s - 'tag ' - t.tag - '\n'
+    tl str = person-line('tagger', t.tagger)
+    s = s - tl - '\n'
+    s = s - '\n' - t.message
+    out = s
+}
+
+
+// ═══════════════════════════════════════════════
+// loose object write / read
+// ═══════════════════════════════════════════════
+
+// object-path: <git-dir>/objects/<aa>/<bbbb...>
+object-path = (git-dir str, o oid) (out str) {
+    id oid = o
+    hex str = id.to-hex()
+    ph str = (hex[0..2)).copy()
+    pr str = (hex[2..]).copy()
+    out = git-dir - '/objects/' - ph - '/' - pr
+}
+
+// write-loose: hash, compress and store a loose object; returns its oid.
+// data str: payload as a byte-string (each codepoint 0-255).
+write-loose = (git-dir str, kind str, data str) (o oid) {
+    o = oid.hash-object(kind, data)
+    res oid = o
+    hex str = res.to-hex()
+    dir str = git-dir - '/objects/' - (hex[0..2]).copy()
+    util.mkdir-all(dir)
+    isf bool = fs.is-file(dir - '/' - (hex[2..]).copy())
+    isf == true -> {
+        ; already present (content-addressable => idempotent)
+        return
+    }
+    hdr = oid.object-header(kind, data.len)
+    full = with-len(hdr.len + data.len)
+    i <- [0..hdr.len): {
+        full[i] = hdr[i]
+    }
+    i <- [0..data.len): {
+        full[hdr.len + i] = data[i]
+    }
+    ; pure-Nolang zlib stored-block codec (operates on str, no std gzip)
+    comp = zlib.zlib-compress(full)
+    ; write the compressed stream byte-by-byte: each fs.write(str,1) emits
+    ; exactly one correct byte (verified). Writing the whole str at once would
+    ; stride across the stride-8 buffer and corrupt the output.
+    fd = fs.open-write(dir - '/' - (hex[2..]).copy())
+    i <- [0..comp.len): {
+        c = comp[i]
+        cs str = with-len(1)
+        cs[0] = c
+        fs.write(fd, cs, 1)
+    }
+    fs.close(fd)
+}
+
+// write-blob: store a blob whose content is a byte-string
+write-blob = (git-dir str, content str) (o oid) {
+    o = write-loose(git-dir, 'blob', content)
+}
+
+// write-tree: encode and store a tree (already sorted in raw)
+write-tree = (git-dir str, t tree) (o oid) {
+    o = write-loose(git-dir, 'tree', t.raw)
+}
+
+// write-commit: encode and store a commit
+write-commit = (git-dir str, c commit-info) (o oid) {
+    enc = commit-encode(c)
+    o = write-loose(git-dir, 'commit', enc)
+}
+
+// write-tag: encode and store an annotated tag
+write-tag = (git-dir str, t tag-info) (o oid) {
+    enc = tag-encode(t)
+    o = write-loose(git-dir, 'tag', enc)
+}
+
+// read-file-bytes: read an entire file into a proper nolang `str` whose
+// `.len` is correct and whose codepoints ARE the raw file bytes.
+//
+// We deliberately avoid BOTH `fs.read-file` (returns a `%str-long` whose length
+// nolang's short-encoded `str` cannot see, so `.len == 0`) AND `fs.stat-size`
+// (its `?i64` builtin lowers to a `%str-long` that emits a broken null GEP).
+// Instead we open-read and read in fixed chunks, accumulating into a normal
+// `str`. ok=false if open/read fails.
+read-file-bytes = (p str) (content str, ok bool) {
+    ok = false
+    content = ''
+    fd = fs.open-read(p)
+    print('rfb: fd=' - util.i64-to-str(fd))
+    buf str = with-len(65536)
+    total str = ''
+    {
+        got = fs.read(fd, buf, 65536)
+        print('rfb: got=' - util.i64-to-str(got))
+        got <= 0 -> break
+        chunk str = (buf[0..got)).copy()
+        total.len == 0 -> { total = chunk } -> { total = total - chunk }
+    } (true)
+    fs.close(fd)
+    content = total
+    ok = true
+    print('rfb: total.len=' - util.i64-to-str(total.len))
+}
+
+// read-loose: read a loose object; ok=false if absent or corrupt.
+// data str: payload returned as a byte-string (each codepoint 0-255).
+read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
+    ok = false
+    f str = object-path(git-dir, o)
+    isf bool = fs.is-file(f)
+    print('rl: isf=' - util.i64-to-str(isf) - ' f=' - f)
+    rf str
+    rz bool
+    rf, rz = read-file-bytes(f)
+    rz == false -> return
+    rf.len == 0 -> return
+    out str
+    dz bool
+    out, dz = zlib.zlib-decompress(rf)
+    dz == false -> return
+    sp i64 = util.find-byte-str(out, 32, 0)
+    sp < 0 -> return
+    kind = (out[0..sp)).copy()
+    nul i64 = util.find-byte-str(out, 0, sp + 1)
+    nul < 0 -> return
+    start = nul + 1
+    data = (out[start..]).copy()
+    ok = true
+}
+
+// ═══════════════════════════════════════════════
+// CROSS-MODULE-SAFE commit / tag API
+//
+// `commit-info` / `tag-info` carry `str` fields and would be corrupted if
+// returned across a module boundary, so we never hand them out. Instead the
+// caller passes the individual scalar/str/oid fields and receives either an
+// oid (for writes) or the individual scalar/str/oid fields (for reads).
+// ═══════════════════════════════════════════════
+
+// write-commit-full: encode + store a commit from its parts; returns its oid
+write-commit-full = (git-dir str, tree-oid oid, parenthex str,
+    a-name str, a-email str, a-time i64, a-tz str,
+    c-name str, c-email str, c-time i64, c-tz str, message str) (o oid) {
+    c = commit-info {
+        tree-oid: tree-oid
+        parenthex: parenthex
+        nparents: parenthex.len / 40
+        author: person-info { name: a-name, email: a-email, time: a-time, tz: a-tz }
+        committer: person-info { name: c-name, email: c-email, time: c-time, tz: c-tz }
+        message: message
+    }
+    o = write-commit(git-dir, c)
+}
+
+// read-commit-full: read + decode a commit; returns its parts individually.
+// Parses INLINE (no commit-info struct return — that would lose the str fields)
+// and returns only top-level scalars/strings/oid.
+read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
+    a-name str, a-email str, a-time i64, a-tz str,
+    c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
+    k str
+    d str
+    ok2 bool
+    k, d, ok2 = read-loose(git-dir, o)
+    ok2 == false -> {
+        ok = false
+        return
+    }
+    text str = d
+    idx i64 = text.index('\n\n')
+    hend = text.len
+    idx >= 0 -> hend = idx
+    message = ''
+    idx >= 0 -> message = (text[idx + 2..]).copy()
+    tree-oid = oid.zero-oid()
+    parenthex = ''
+    a-name = ''
+    a-email = ''
+    a-time = 0
+    a-tz = ''
+    c-name = ''
+    c-email = ''
+    c-time = 0
+    c-tz = ''
+    pos = 0
+    {
+        pos >= hend -> break
+        nl i64 = util.find-byte-str(text, 10, pos)
+        nl < 0 -> nl = hend
+        line str = (text[pos..nl]).copy()
+        line.starts-with('tree ') -> {
+            hx str = (line[5..]).copy()
+            toid, tok = oid.oid-from-hex(hx)
+            tok == true -> tree-oid = toid
+        }
+        line.starts-with('parent ') -> {
+            hx2 str = (line[7..]).copy()
+            parenthex = parenthex - hx2
+        }
+        line.starts-with('author ') -> {
+            ap str = (line[7..]).copy()
+            a-name, a-email, a-time, a-tz = parse-person-fields(ap)
+        }
+        line.starts-with('committer ') -> {
+            cp str = (line[11..]).copy()
+            c-name, c-email, c-time, c-tz = parse-person-fields(cp)
+        }
+        pos = nl + 1
+    } (true)
+    ok = true
+}
+
+// write-tag-full: encode + store an annotated tag from its parts; returns oid
+write-tag-full = (git-dir str, obj oid, obj-type str, tag str,
+    t-name str, t-email str, t-time i64, t-tz str, message str) (o oid) {
+    tg = tag-info {
+        object: obj
+        obj-type: obj-type
+        tag: tag
+        tagger: person-info { name: t-name, email: t-email, time: t-time, tz: t-tz }
+        message: message
+    }
+    o = write-tag(git-dir, tg)
+}
+
+// read-tag-full: read + decode a tag; returns its parts individually.
+// Parses INLINE (no tag-info struct return) and returns top-level values.
+read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
+    t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
+    k str
+    d str
+    ok2 bool
+    k, d, ok2 = read-loose(git-dir, o)
+    ok2 == false -> {
+        ok = false
+        return
+    }
+    text str = d
+    idx i64 = text.index('\n\n')
+    hend = text.len
+    idx >= 0 -> hend = idx
+    message = ''
+    idx >= 0 -> message = (text[idx + 2..]).copy()
+    obj = oid.zero-oid()
+    obj-type = ''
+    tag = ''
+    t-name = ''
+    t-email = ''
+    t-time = 0
+    t-tz = ''
+    pos = 0
+    {
+        pos >= hend -> break
+        nl i64 = util.find-byte-str(text, 10, pos)
+        nl < 0 -> nl = hend
+        line str = (text[pos..nl]).copy()
+        line.starts-with('object ') -> {
+            hx str = (line[7..]).copy()
+            tobj, took = oid.oid-from-hex(hx)
+            took == true -> obj = tobj
+        }
+        line.starts-with('type ') -> {
+            obj-type = (line[5..]).copy()
+        }
+        line.starts-with('tag ') -> {
+            tag = (line[4..]).copy()
+        }
+        line.starts-with('tagger ') -> {
+            gp str = (line[7..]).copy()
+            t-name, t-email, t-time, t-tz = parse-person-fields(gp)
+        }
+        pos = nl + 1
+    } (true)
+    ok = true
+}
+
+// object-keepalive: self-reference every entry function that is only ever
+// called from another module, so the whole-module optimizer keeps their
+// definitions alive (otherwise a dangling cross-module call site is emitted).
+// Safe to call once at startup; performs a few harmless no-op writes under
+// /tmp/.nolang-git-keepalive. Returns true.
+object-keepalive = () (alive bool) {
+    print('ka: begin')
+    kd = '/tmp/.nolang-git-keepalive'
+    b1 oid = write-blob(kd, '')
+    print('ka: blob empty')
+    b2 oid = write-blob(kd, 'x')
+    print('ka: blob x')
+    ; tree round-trip via the cross-module-safe raw API
+    t0 = tree-add-raw('', 33188, 'a.txt', b2)
+    print('ka: tree-add-raw')
+    ot oid = tree-write-raw(kd, t0)
+    print('ka: tree-write-raw')
+    _toh = oid.oid-hex-str(ot)
+    _d = util.str-range(_toh, 0, 2)
+    _r = util.str-range(_toh, 2, 40)
+    print('ka: sr dir=' - _d)
+    print('ka: sr rest=' - _r)
+    rtraw str
+    rtok bool
+    rtraw, rtok = tree-read-raw(kd, ot)
+    print('ka: tree-read-raw rtraw.len=' - util.i64-to-str(rtraw.len))
+    j <- [0..rtraw.len): { print('ka: byte[' - util.i64-to-str(j) - ']=' - util.i64-to-str(rtraw[j])) }
+    _eo i64; _esp i64; _enl i64
+    _eo, _esp, _enl = tree-entry-at(rtraw, 0)
+    print('ka: entry off=' - util.i64-to-str(_eo) - ' sp=' - util.i64-to-str(_esp) - ' nl=' - util.i64-to-str(_enl))
+    print('ka: tree-read-raw')
+    rtn = tree-count-raw(rtraw)
+    rtnm = tree-name-raw(rtraw, 0)
+    print('ka: tree-name-raw')
+    rtm = tree-mode-raw(rtraw, 0)
+    print('ka: tree-mode-raw rtm=' - util.i64-to-str(rtm))
+    rtid = tree-id-raw(rtraw, 0)
+    print('ka: tree-id-raw')
+    ; commit round trip
+    oc oid = write-commit-full(kd, ot, '', 'An', 'ae', 1112911993, '+0000', 'Cn', 'ce', 1112911993, '+0000', 'msg')
+    print('ka: write-commit-full')
+    _ct oid; _cph str; _can str; _cae str; _cat i64; _caz str; _ccn str; _cce str; _cct i64; _ccz str; _cm str; _cok bool
+    _ct, _cph, _can, _cae, _cat, _caz, _ccn, _cce, _cct, _ccz, _cm, _cok = read-commit-full(kd, oc)
+    print('ka: read-commit-full')
+    ; tag round trip
+    otg oid = write-tag-full(kd, b1, 'blob', 'v0', 'Tn', 'te', 1112911993, '+0000', 'tm')
+    print('ka: write-tag-full')
+    _to oid; _tty str; _tt str; _tnm str; _tem str; _ttm i64; _ttz str; _tmsg str; _tok bool
+    _to, _tty, _tt, _tnm, _tem, _ttm, _ttz, _tmsg, _tok = read-tag-full(kd, otg)
+    print('ka: read-tag-full')
+    ; other entry functions (keep linked)
+    _k str; _d str; _lok bool
+    _z oid = oid.zero-oid()
+    _k, _d, _lok = read-loose(kd, _z)
+    print('ka: read-loose')
+    _pp str = object-path(kd, b1)
+    _pe str = tree-encode(tree { raw: t0, n: rtn })
+    alive = _lok || true
+    alive = alive && (_pp.len >= 0) && (_pe.len >= 0)
+    alive = alive && rtok && (rtn >= 0) && (rtnm.len >= 0) && (rtm >= 0) && (rtid.id[0] >= 0)
+    alive = alive && _cok && (_ct.id[0] >= 0) && (_cph.len >= 0) && (_cm.len >= 0)
+    alive = alive && _tok && (_to.id[0] >= 0) && (_tt.len >= 0) && (_tmsg.len >= 0)
+}

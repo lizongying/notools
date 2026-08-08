@@ -1,0 +1,193 @@
+// util — shared helpers for the pure-Nolang Git implementation
+//
+// Low-level string/byte/integer utilities used across the git modules.
+// Kept dependency-free (only std fs / os) so it can be imported anywhere.
+
+// char-str: build a single-character string from a byte value
+// c byte: the byte to wrap
+// returns s str: a 1-byte string
+char-str = (c byte) (s str) {
+    s = with-len(1)
+    s[0] = c
+}
+
+// bytes-range: take a byte slice [start, end) and view it as a string
+// data []byte: source bytes
+// start i64, end i64: half-open range
+// returns out str: string of those bytes
+bytes-range = (data []byte, start i64, end i64) (out str) {
+    n = end - start
+    out = with-len(n)
+    i <- [0..n): {
+        out[i] = data[start + i]
+    }
+}
+
+// bytes-to-str: convert an entire byte slice into a string (1:1 bytes)
+// data []byte: source bytes
+// returns out str: string of the same bytes
+bytes-to-str = (data []byte) (out str) {
+    out = bytes-range(data, 0, data.len)
+}
+
+// mkdir-all: recursively create a directory (like mkdir -p)
+// p str: directory path (must be a directory, not a file)
+// returns ok bool: true if the directory exists at the end
+mkdir-all = (p str) (ok bool) {
+    ok = true
+    cur str = ''
+    i <- [0..p.len): {
+        c = p[i]
+        ch = char-str(c)
+        cur = cur - ch
+        c == '/' -> {
+            cur.len > 0 -> {
+                fs.is-dir(cur) -> {} -> {
+                    d = path{ p: cur }
+                    d.make-dir() -> {} -> ok = false
+                }
+            }
+        }
+    }
+    fs.is-dir(cur) -> {} -> {
+        d = path{ p: cur }
+        d.make-dir() -> {} -> ok = false
+    }
+}
+
+// read-u32-be: read a big-endian 32-bit unsigned integer from a byte slice
+// data []byte: source bytes
+// pos i64: offset of the most-significant byte
+// returns v i64: the integer value
+read-u32-be = (data []byte, pos i64) (v i64) {
+    v = data[pos]
+    v = (v << 8) | data[pos + 1]
+    v = (v << 8) | data[pos + 2]
+    v = (v << 8) | data[pos + 3]
+}
+
+// write-u32-be: write a big-endian 32-bit unsigned integer into a byte slice
+// buf []byte: destination (must have room)
+// pos i64: offset where to write
+// v i64: value to write (low 32 bits used)
+write-u32-be = (buf []byte, pos i64, v i64) {
+    buf[pos] = (v >> 24) & 255
+    buf[pos + 1] = (v >> 16) & 255
+    buf[pos + 2] = (v >> 8) & 255
+    buf[pos + 3] = v & 255
+}
+
+// read-u16-be: read a big-endian 16-bit unsigned integer
+// data []byte: source bytes
+// pos i64: offset
+// returns v i64: value
+read-u16-be = (data []byte, pos i64) (v i64) {
+    v = data[pos]
+    v = (v << 8) | data[pos + 1]
+}
+
+// write-u16-be: write a big-endian 16-bit unsigned integer
+// buf []byte: destination
+// pos i64: offset
+// v i64: value
+write-u16-be = (buf []byte, pos i64, v i64) {
+    buf[pos] = (v >> 8) & 255
+    buf[pos + 1] = v & 255
+}
+
+// find-byte: locate the first occurrence of byte b at or after `from`
+// data []byte: haystack
+// b byte: needle
+// from i64: start offset
+// returns pos i64: index of first match, or -1 if not found
+find-byte = (data []byte, b byte, from i64) (pos i64) {
+    pos = -1
+    i <- [from..data.len): {
+        data[i] == b -> {
+            pos = i
+            break
+        }
+    }
+}
+
+// trim-newline: strip a single trailing LF (and a preceding CR if present)
+// s str: input
+// returns out str: s without a trailing newline
+trim-newline = (s str) (out str) {
+    out = s
+    L = out.len
+    L > 0 -> {
+        out[L - 1] == 10 -> {
+            L = L - 1
+            out = out[0..L)
+            L > 0 -> {
+                out[L - 1] == 13 -> {
+                    L = L - 1
+                    out = out[0..L)
+                }
+            }
+        }
+    }
+}
+
+// hexdigit: convert an ASCII hex character to its 0-15 value
+// c byte: ASCII byte
+// returns v i64: 0-15, or -1 if not a hex digit
+hexdigit = (c byte) (v i64) {
+    c >= 48 && c <= 57 -> v = c - 48
+    c >= 97 && c <= 102 -> v = c - 87
+    c >= 65 && c <= 70 -> v = c - 55
+    -> v = -1
+}
+
+// hex-decode: decode a hex string into bytes
+// s str: even-length hex string
+// returns out []byte, ok bool: decoded bytes, ok=false if invalid / odd length
+hex-decode = (s str) (out []byte, ok bool) {
+    s.len % 2 != 0 -> return
+    tmp []byte = with-len(s.len / 2)
+    i <- [0..tmp.len): {
+        hi = hexdigit(s[i * 2])
+        lo = hexdigit(s[i * 2 + 1])
+        hi < 0 || lo < 0 -> return
+        tmp[i] = (hi << 4) | lo
+    }
+    out = tmp
+    ok = true
+}
+
+// hex-encode: encode bytes as a lowercase hex string
+// data []byte: input bytes
+// returns out str: hex string
+hex-encode = (data []byte) (out str) {
+    hex-chars = '0123456789abcdef'
+    out = with-len(data.len * 2)
+    i <- [0..data.len): {
+        b = data[i]
+        out[i * 2] = hex-chars[(b >> 4) & 15]
+        out[i * 2 + 1] = hex-chars[b & 15]
+    }
+}
+
+// i64-to-str: decimal string of a non-negative integer
+// n i64: value (>= 0)
+// returns out str: decimal representation
+i64-to-str = (n i64) (out str) {
+    n == 0 -> {
+        out = '0'
+        return
+    }
+    tmp []byte = with-cap(20)
+    x = n
+    {
+        tmp.push(48 + (x % 10))
+        x = x / 10
+        x == 0 -> break
+    } ()
+    L = tmp.len
+    out = with-len(L)
+    i <- [0..L): {
+        out[i] = tmp[L - 1 - i]
+    }
+}
+

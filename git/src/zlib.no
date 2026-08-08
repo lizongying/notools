@@ -1,0 +1,142 @@
+// zlib — RFC 1950 zlib (de)compression using pure-Nolang stored DEFLATE blocks
+//
+// Git stores every loose object and every pack-object payload as a zlib
+// stream: a 2-byte header, raw DEFLATE data, and a 4-byte big-endian Adler-32
+// checksum of the uncompressed data.
+//
+// We implement a self-contained zlib codec that uses ONLY DEFLATE *stored*
+// blocks (BTYPE=00). Stored blocks are uncompressed but are perfectly valid
+// DEFLATE and valid zlib, so real Git can read the objects we write. The codec
+// operates on *byte-strings* (str with one codepoint per byte 0-255) because
+// nolang's []byte is unreliable across module boundaries and str.to-bytes() is
+// broken on computed strings. See project memory for the rationale.
+//
+// Layout produced for a single stored block (data length L <= 65535):
+//   0x78 0x9c            zlib header (default 32K window, default algo)
+//   BFINAL               one byte: bit0=BFINAL(1), bits1-2=BTYPE(00) -> 0x01
+//   L0 L1                LEN, little-endian (16 bit)
+//   N0 N1                NLEN = ~LEN, little-endian (16 bit)
+//   <L bytes of data>    stored payload
+//   A3 A2 A1 A0          Adler-32 of data, big-endian
+// For L > 65535 we chain multiple stored blocks (all but the last BFINAL=0).
+
+// adler32: Adler-32 checksum (RFC 1950) of a byte-string
+// data str: input bytes (each codepoint 0-255)
+// returns sum i64: checksum (masked to 32 bits)
+adler32 = (data str) (sum i64) {
+    MOD i64 = 65521
+    a i64 = 1
+    b i64 = 0
+    i <- [0..data.len): {
+        a = (a + data[i]) % MOD
+        b = (b + a) % MOD
+    }
+    sum = ((b << 16) | a) & 0xffffffff
+}
+
+// zlib-compress: compress raw data into a zlib stream (stored blocks)
+// data str: uncompressed input bytes
+// returns out str: zlib-wrapped stream (header + deflate + adler32)
+zlib-compress = (data str) (out str) {
+    ; number of 65535-byte stored blocks needed
+    nblocks i64 = 1
+    data.len > 0 -> nblocks = (data.len + 65534) / 65535
+    total = 2 + nblocks * 5 + data.len + 4
+    out = with-len(total)
+    out[0] = 0x78
+    out[1] = 0x9c
+    pos = 2
+    remaining = data.len
+    off = 0
+    {
+        remaining <= 0 -> break
+        chunk = remaining
+        chunk > 65535 -> chunk = 65535
+        last = (chunk == remaining)
+        ; deflate block header byte: bit0=BFINAL, bits1-2=BTYPE(00)
+        hdr = 0
+        last == true -> hdr = 1
+        out[pos] = hdr
+        pos = pos + 1
+        ; LEN (little-endian)
+        out[pos] = chunk & 0xff
+        pos = pos + 1
+        out[pos] = (chunk >> 8) & 0xff
+        pos = pos + 1
+        ; NLEN = one's complement of LEN (little-endian)
+        nlen = (~chunk) & 0xffff
+        out[pos] = nlen & 0xff
+        pos = pos + 1
+        out[pos] = (nlen >> 8) & 0xff
+        pos = pos + 1
+        ; payload bytes
+        i <- [0..chunk): {
+            out[pos + i] = data[off + i]
+        }
+        pos = pos + chunk
+        off = off + chunk
+        remaining = remaining - chunk
+    } (true)
+    ; Adler-32 (big-endian)
+    s = adler32(data)
+    out[pos] = (s >> 24) & 0xff
+    pos = pos + 1
+    out[pos] = (s >> 16) & 0xff
+    pos = pos + 1
+    out[pos] = (s >> 8) & 0xff
+    pos = pos + 1
+    out[pos] = s & 0xff
+}
+
+// zlib-decompress: decompress a zlib stream (stored blocks only)
+// data str: a zlib stream
+// returns out str, ok bool: uncompressed bytes, ok=false on too-short / non-stored input
+zlib-decompress = (data str) (out str, ok bool) {
+    ok = false
+    data.len < 6 -> return
+    ; pass 1: scan stored blocks to learn total uncompressed size
+    total = 0
+    p = 2
+    {
+        p >= data.len -> break
+        bfinal = data[p] & 1
+        btype = (data[p] >> 1) & 3
+        btype != 0 -> return
+        p = p + 1
+        len = data[p] | (data[p + 1] << 8)
+        p = p + 2
+        p = p + 2
+        total = total + len
+        p = p + len
+        bfinal == 1 -> break
+    } (true)
+    out = with-len(total)
+    ; pass 2: copy payload bytes
+    wp = 0
+    p = 2
+    {
+        p >= data.len -> break
+        bfinal = data[p] & 1
+        p = p + 1
+        len = data[p] | (data[p + 1] << 8)
+        p = p + 4
+        i <- [0..len): {
+            out[wp + i] = data[p + i]
+        }
+        wp = wp + len
+        p = p + len
+        bfinal == 1 -> break
+    } (true)
+    ok = true
+}
+
+// zlib-keepalive: self-reference every zlib entry function so the
+// whole-module optimizer keeps their definitions alive for cross-module
+// callers. Pure.
+zlib-keepalive = () (alive bool) {
+    a i64 = adler32('')
+    c str = zlib-compress('hello')
+    d str
+    d, ok = zlib-decompress(c)
+    alive = (a >= 0) && (c.len > 0) && ok && (d.len == 5)
+}

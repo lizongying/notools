@@ -1,0 +1,294 @@
+// oid — Git object identifiers (SHA-1) and object hashing
+//
+// A Git object id is the SHA-1 (20 bytes) of the bytes:
+//   "<type> <size>\0<payload>"
+// We model it as a struct wrapping [20]byte so we can attach methods and keep
+// it distinct from a plain byte array.
+
+// oid: a 20-byte Git object identifier
+oid {
+    id [20]byte
+}
+
+// oid.to-hex: render the object id as a 40-character lowercase hex string
+// returns out str: hex digest
+oid.to-hex = () (out str) {
+    out = with-len(40)
+    hex-chars = '0123456789abcdef'
+    i <- [0..20): {
+        b = .id[i]
+        out[i * 2] = hex-chars[(b >> 4) & 15]
+        out[i * 2 + 1] = hex-chars[b & 15]
+    }
+}
+
+// oid-hex-str: render an oid as a 40-char hex string. Provided as a FREE
+// function (NOT the .to-hex method) so it can be called reliably across module
+// boundaries — nolang fails to resolve a method call on a struct returned from
+// another module (emits a dangling `call void @()`). Call this from other
+// modules instead of `someOid.to-hex()`.
+oid-hex-str = (o oid) (out str) {
+    out = o.to-hex()
+}
+
+// zero-oid: a zeroed object id (all zeros)
+zero-oid = () (o oid) {
+    i <- [0..20): o.id[i] = 0
+}
+
+// oid.eq: byte-wise equality with another oid
+// o oid: the other id
+// returns yes bool
+oid.eq = (o oid) (yes bool) {
+    yes = true
+    i <- [0..20): {
+        .id[i] != o.id[i] -> {
+            yes = false
+            return
+        }
+    }
+}
+
+// oid.is-zero: true when the id is all zeros (unused / unknown)
+// returns yes bool
+oid.is-zero = () (yes bool) {
+    yes = true
+    i <- [0..20): {
+        .id[i] != 0 -> {
+            yes = false
+            return
+        }
+    }
+}
+
+// oid-from-hex: parse a 40-char hex string into an oid
+// s str: hex digest
+// returns o oid, ok bool: the id, ok=false if not exactly 40 valid hex chars
+//
+// NOTE: we build into a LOCAL `tmp` and assign it to the return param `o` at
+// the end. Mutating the nested [20]byte array field of a return-parameter
+// struct directly does not persist in nolang, so we copy through a local.
+oid-from-hex = (s str) (o oid, ok bool) {
+    s.len != 40 -> return
+    tmp oid
+    i <- [0..20): {
+        c0 byte = s[i * 2]
+        c1 byte = s[i * 2 + 1]
+        hi = util.hexdigit(c0)
+        lo = util.hexdigit(c1)
+        hi < 0 || lo < 0 -> return
+        tmp.id[i] = (hi << 4) | lo
+    }
+    o = tmp
+    ok = true
+}
+
+// object-header: build the "<type> <size>\0" header bytes for an object,
+// returned as a *byte-string* (each codepoint == one byte 0-255). Git object
+// bytes are carried exclusively as str in this implementation because nolang's
+// []byte is unreliable across module boundaries (and str.to-bytes() is broken
+// on computed strings). See project memory for the rationale.
+// kind str: one of blob/tree/commit/tag
+// size i64: payload byte length
+// returns out str: header bytes (no payload appended)
+object-header = (kind str, size i64) (out str) {
+    sz str = util.i64-to-str(size)
+    out = kind - ' ' - sz - '\0'
+}
+
+// sha1-hex: SHA-1 digest of a byte-string, returned as a 40-char hex string.
+// data str: message bytes (each codepoint 0-255)
+// returns out str: lowercase hex digest
+//
+// Pure-Nolang implementation. IMPORTANT: all hash-state word math is done in
+// `u32`. nolang's bitwise operators (& | ^ ~) are correct on `u32` but truncate
+// to 8 bits on `i64`; `<<` / `rotate-left` widen to `i64`, so their result is
+// narrowed back to `u32` with `& 4294967295`. `u32` addition naturally wraps
+// mod 2^32 (same pattern gitoxide/md5.no rely on). The message bytes are still
+// carried as a `str` byte-string because []byte is unreliable across modules.
+sha1-hex = (data str) (out str) {
+    h0 u32 = 0x67452301
+    h1 u32 = 0xEFCDAB89
+    h2 u32 = 0x98BADCFE
+    h3 u32 = 0x10325476
+    h4 u32 = 0xC3D2E1F0
+
+    mlen = data.len
+    bitlen i64 = mlen * 8
+    total = mlen + 1
+    rem = total % 64
+    z = 56 - rem
+    z < 0 -> z = z + 64
+    plen = total + z + 8
+
+    msg str = with-len(plen)
+    i <- [0..mlen): {
+        msg[i] = data[i]
+    }
+    msg[mlen] = 0x80
+    i <- [0..z): {
+        msg[mlen + 1 + i] = 0
+    }
+    hi i64 = (bitlen >> 32) & 0xffffffff
+    lo i64 = bitlen & 0xffffffff
+    msg[mlen + 1 + z + 0] = (hi >> 24) & 0xff
+    msg[mlen + 1 + z + 1] = (hi >> 16) & 0xff
+    msg[mlen + 1 + z + 2] = (hi >> 8) & 0xff
+    msg[mlen + 1 + z + 3] = hi & 0xff
+    msg[mlen + 1 + z + 4] = (lo >> 24) & 0xff
+    msg[mlen + 1 + z + 5] = (lo >> 16) & 0xff
+    msg[mlen + 1 + z + 6] = (lo >> 8) & 0xff
+    msg[mlen + 1 + z + 7] = lo & 0xff
+
+    nchunks = plen / 64
+    w [80]u32
+    t u32
+    ci <- [0..nchunks): {
+        off = ci * 64
+        j <- [0..16): {
+            ; NOTE: indexing a str yields a byte 0-255, but assigning a byte
+            ; value > 127 into a u32 SIGN-extends it (e.g. 0x80 -> 0xFFFFFF80).
+            ; Mask with & 0xff to force zero-extension before the shift/OR.
+            a u32 = msg[off + j * 4] & 0xff
+            b u32 = msg[off + j * 4 + 1] & 0xff
+            c u32 = msg[off + j * 4 + 2] & 0xff
+            d u32 = msg[off + j * 4 + 3] & 0xff
+            w[j] = a
+            w[j] = (w[j] << 24) & 4294967295
+            t = (b << 16) & 4294967295
+            w[j] = w[j] | t
+            t = (c << 8) & 4294967295
+            w[j] = w[j] | t
+            w[j] = w[j] | d
+        }
+        j <- [16..80): {
+            v u32 = w[j - 3]
+            v = v ^ w[j - 8]
+            v = v ^ w[j - 14]
+            v = v ^ w[j - 16]
+            w[j] = rotate-left(v, 1) & 4294967295
+        }
+        a u32 = h0
+        b u32 = h1
+        c u32 = h2
+        d u32 = h3
+        e u32 = h4
+        ; working vars hoisted outside the loop (md5.no pattern)
+        ; NOTE: nolang `->` branches are sequential `if`s, NOT if-elif. Each
+        ; condition below is made mutually exclusive with a lower bound so the
+        ; correct f/k is selected for the round.
+        f u32
+        k u32
+        j <- [0..80): {
+            j < 20 -> {
+                f = (b & c) | ((~b) & d)
+                k = 0x5A827999
+            }
+            j >= 20 && j < 40 -> {
+                f = b ^ c ^ d
+                k = 0x6ED9EBA1
+            }
+            j >= 40 && j < 60 -> {
+                f = (b & c) | (b & d) | (c & d)
+                k = 0x8F1BBCDC
+            }
+            j >= 60 -> {
+                f = b ^ c ^ d
+                k = 0xCA62C1D6
+            }
+            ta u32 = rotate-left(a, 5) & 4294967295
+            temp u32 = ta + f
+            temp = temp + e
+            temp = temp + k
+            temp = temp + w[j]
+            e = d
+            d = c
+            c = rotate-left(b, 30) & 4294967295
+            b = a
+            a = temp
+        }
+        h0 = h0 + a
+        h1 = h1 + b
+        h2 = h2 + c
+        h3 = h3 + d
+        h4 = h4 + e
+    }
+
+    ; assemble 20 raw digest bytes then hex-encode
+    dig [20]byte
+    dig[0] = (h0 >> 24) & 0xff
+    dig[1] = (h0 >> 16) & 0xff
+    dig[2] = (h0 >> 8) & 0xff
+    dig[3] = h0 & 0xff
+    dig[4] = (h1 >> 24) & 0xff
+    dig[5] = (h1 >> 16) & 0xff
+    dig[6] = (h1 >> 8) & 0xff
+    dig[7] = h1 & 0xff
+    dig[8] = (h2 >> 24) & 0xff
+    dig[9] = (h2 >> 16) & 0xff
+    dig[10] = (h2 >> 8) & 0xff
+    dig[11] = h2 & 0xff
+    dig[12] = (h3 >> 24) & 0xff
+    dig[13] = (h3 >> 16) & 0xff
+    dig[14] = (h3 >> 8) & 0xff
+    dig[15] = h3 & 0xff
+    dig[16] = (h4 >> 24) & 0xff
+    dig[17] = (h4 >> 16) & 0xff
+    dig[18] = (h4 >> 8) & 0xff
+    dig[19] = h4 & 0xff
+
+    hex-chars = '0123456789abcdef'
+    out = with-len(40)
+    i <- [0..20): {
+        b = dig[i]
+        out[i * 2] = hex-chars[(b >> 4) & 15]
+        out[i * 2 + 1] = hex-chars[b & 15]
+    }
+}
+
+// hash-object: compute the object id of (kind, data)
+// kind str: object type
+// data str: payload as a byte-string (each codepoint 0-255)
+// returns o oid: SHA-1 of header + payload
+//
+// Pure-Nolang SHA-1 (sha1-hex) operating on str — no std sha1, no []byte
+// crossing a module boundary, so it is robust against the compiler bugs.
+hash-object = (kind str, data str) (o oid) {
+    hdr = object-header(kind, data.len)
+    buf str = with-len(hdr.len + data.len)
+    i <- [0..hdr.len): {
+        buf[i] = hdr[i]
+    }
+    i <- [0..data.len): {
+        buf[hdr.len + i] = data[i]
+    }
+    hx str = sha1-hex(buf)
+    o, ok = oid-from-hex(hx)
+    ok == true -> {}
+}
+
+// empty-tree-oid: the well-known id of the empty tree object
+// returns o oid
+empty-tree-oid = () (o oid) {
+    ; empty tree has zero payload bytes -> data is the empty byte-string
+    o = hash-object('tree', '')
+}
+
+// oid-keepalive: self-reference every oid entry function so the whole-module
+// optimizer keeps their definitions alive for cross-module callers. Pure.
+oid-keepalive = () (alive bool) {
+    h1 str = sha1-hex('')
+    h2 str = sha1-hex('abc')
+    o1 oid = hash-object('blob', 'x')
+    o2 oid = empty-tree-oid()
+    oh str = object-header('blob', 3)
+    d oid
+    d, _ok = oid-from-hex('0000000000000000000000000000000000000000')
+    id oid = o1
+    hex str = id.to-hex()
+    hs str = oid-hex-str(o1)
+    alive = (h1.len == 40) && (h2.len == 40)
+    alive = alive && (o1.id[0] >= 0) && (o2.id[0] >= 0) && (oh.len >= 0)
+    alive = alive && _ok && (hex.len == 40) && (hs.len == 40)
+}
+
