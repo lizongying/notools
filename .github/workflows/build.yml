@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── 1. 构建：调用 build-nolang action（自包含，支持跨仓库） ────────
+      # ── 1a. 构建 notools：调用 build-nolang action ──────────────────
       - name: Build notools for multiple platforms
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@v0.2.9
@@ -45,6 +45,22 @@ jobs:
           # 单个目标失败不终止整个 job，继续构建其他平台以获取完整测试结果
           fail-on-error: "false"
 
+      # ── 1b. 构建 git：纯 Nolang Git 实现 ───────────────────────────
+      - name: Build git for multiple platforms
+        id: build-git
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.9
+        with:
+          version: "0.2.9"
+          entry: git/main.no
+          name: git
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64
+          cc: zig
+          fail-on-error: "false"
+
       # ── 2. 构建结果报告 ───────────────────────────────────────────────
       - name: Build report
         if: always()
@@ -52,6 +68,8 @@ jobs:
         env:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
+          GIT_BINARIES: ${{ steps.build-git.outputs.binaries }}
+          GIT_FAILED: ${{ steps.build-git.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
         run: |
           echo "============================================"
@@ -59,16 +77,30 @@ jobs:
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
           echo ""
-          echo "--- Built successfully ---"
+          echo "--- notools: Built successfully ---"
           if [ -n "$BINARIES" ]; then
             printf '  %s\n' $BINARIES
           else
             echo "  (none)"
           fi
           echo ""
-          echo "--- Failed targets ---"
+          echo "--- notools: Failed targets ---"
           if [ -n "$FAILED" ]; then
             printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- git: Built successfully ---"
+          if [ -n "$GIT_BINARIES" ]; then
+            printf '  %s\n' $GIT_BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- git: Failed targets ---"
+          if [ -n "$GIT_FAILED" ]; then
+            printf '  %s\n' $GIT_FAILED
           else
             echo "  (none)"
           fi
@@ -76,13 +108,13 @@ jobs:
           echo "--- dist/ contents ---"
           ls -lh dist/ 2>/dev/null || echo "  dist/ not found"
 
-      # ── 3. Smoke test：验证 linux/amd64 产物功能正确 ──────────────────
-      - name: Smoke test (linux/amd64)
+      # ── 3a. Smoke test：验证 notools linux/amd64 产物功能正确 ─────────
+      - name: Smoke test notools (linux/amd64)
         run: |
           set -e
           BIN="dist/notools-linux-amd64"
           if [ ! -f "$BIN" ]; then
-            echo "::error::linux/amd64 binary not found — critical build failure"
+            echo "::error::notools linux/amd64 binary not found — critical build failure"
             exit 1
           fi
           chmod +x "$BIN"
@@ -141,7 +173,65 @@ jobs:
 
           echo ""
           echo "============================================"
-          echo "  Smoke test: $PASS passed, $FAIL failed"
+          echo "  notools Smoke test: $PASS passed, $FAIL failed"
+          echo "============================================"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      # ── 3b. Smoke test：验证 git linux/amd64 产物功能正确 ─────────────
+      - name: Smoke test git (linux/amd64)
+        run: |
+          set -e
+          BIN="dist/git-linux-amd64"
+          if [ ! -f "$BIN" ]; then
+            echo "::warning::git linux/amd64 binary not found — skipping git smoke test"
+            exit 0
+          fi
+          chmod +x "$BIN"
+
+          PASS=0; FAIL=0
+
+          check() {
+            local desc="$1" actual="$2" expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "  PASS: $desc"
+              PASS=$((PASS+1))
+            else
+              echo "  FAIL: $desc"
+              echo "    expected: '$expected'"
+              echo "    actual:   '$actual'"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          echo "=== git version ==="
+          out=$("$BIN" version)
+          check "version" "$out" "nolang-git v0.1.0 (pure nolang)"
+
+          echo "=== git init ==="
+          rm -rf /tmp/git-smoke-test
+          out=$("$BIN" init /tmp/git-smoke-test 2>&1)
+          echo "  init output: $out"
+          [ -d /tmp/git-smoke-test/.git ] && echo "  PASS: .git dir created" && PASS=$((PASS+1)) || echo "  FAIL: .git dir missing" && FAIL=$((FAIL+1))
+          [ -f /tmp/git-smoke-test/.git/HEAD ] && echo "  PASS: HEAD file exists" && PASS=$((PASS+1)) || echo "  FAIL: HEAD file missing" && FAIL=$((FAIL+1))
+          [ -d /tmp/git-smoke-test/.git/objects ] && echo "  PASS: objects dir exists" && PASS=$((PASS+1)) || echo "  FAIL: objects dir missing" && FAIL=$((FAIL+1))
+          [ -d /tmp/git-smoke-test/.git/refs/heads ] && echo "  PASS: refs/heads dir exists" && PASS=$((PASS+1)) || echo "  FAIL: refs/heads dir missing" && FAIL=$((FAIL+1))
+
+          echo "=== git add + commit ==="
+          echo "hello git" > /tmp/git-smoke-test/readme.txt
+          cd /tmp/git-smoke-test
+          "$BIN" add readme.txt 2>&1
+          out=$("$BIN" commit -m "initial commit" 2>&1)
+          echo "  commit output: $out"
+          [ -f /tmp/git-smoke-test/.git/refs/heads/main ] && echo "  PASS: main branch created" && PASS=$((PASS+1)) || echo "  FAIL: main branch missing" && FAIL=$((FAIL+1))
+
+          echo "=== git log ==="
+          out=$("$BIN" log 2>&1)
+          echo "  log output: $out"
+          echo "$out" | grep -q "initial commit" && echo "  PASS: log shows commit message" && PASS=$((PASS+1)) || echo "  FAIL: log missing commit message" && FAIL=$((FAIL+1))
+
+          echo ""
+          echo "============================================"
+          echo "  git Smoke test: $PASS passed, $FAIL failed"
           echo "============================================"
           [ "$FAIL" -eq 0 ] || exit 1
 
@@ -184,11 +274,15 @@ jobs:
             artifacts/notools-darwin-arm64
             artifacts/notools-windows-amd64.exe
             artifacts/notools-windows-arm64.exe
+            artifacts/git-linux-amd64
+            artifacts/git-linux-arm64
+            artifacts/git-darwin-amd64
+            artifacts/git-darwin-arm64
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
@@ -197,6 +291,11 @@ jobs:
             curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/notools-linux-amd64
             chmod +x notools
             sudo mv notools /usr/local/bin/
+
+            # git (纯 Nolang 实现)
+            curl -fsSL -o git https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/git-linux-amd64
+            chmod +x git
+            sudo mv git /usr/local/bin/nolang-git
             ```
 
             ### 校验

@@ -8,6 +8,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 单一可执行文件，子命令分发（193 个命令）
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
+- 内含纯 Nolang Git 实现（`git/` 子项目），不依赖系统 `git` 二进制
 
 ## 安装
 
@@ -286,6 +287,97 @@ cp dist/notools /usr/local/bin/notools
 | `getopt` | 解析命令行选项 | `notools getopt -o ab: -- -a -b x` |
 | `xargs` | 从 stdin 构建并执行命令 | `find . -name '*.txt' \| notools xargs rm` |
 
+## Git 实现
+
+notools 仓库内含一个**纯 Nolang 实现的 Git**（`git/` 目录），不依赖系统 `git` 二进制，从底层数据结构到 CLI 命令全部使用 Nolang 编写。
+
+### 支持的命令
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `init [path]` | 初始化新仓库（含 `.git` 目录结构） | `git init myrepo` |
+| `add <path>` | 将文件写入 blob 对象并加入暂存区 | `git add file.txt` |
+| `commit -m <msg>` | 从暂存区创建 tree 和 commit 对象 | `git commit -m 'initial'` |
+| `log [count]` | 沿 first-parent 遍历提交历史 | `git log -n 10` |
+| `status` | 显示当前分支与已暂存文件 | `git status` |
+| `branch [name]` | 列出或创建分支 | `git branch dev` |
+| `checkout <name>` | 切换分支 | `git checkout dev` |
+| `tag <name>` | 创建标签 | `git v1.0` |
+| `show <ref>` | 显示对象类型与内容 | `git show HEAD` |
+| `cat-file <opt> <ref>` | 按类型/引用查看对象（`-t`/`-s`/`-p`） | `git cat-file -p HEAD` |
+| `hash-object [-w] <file>` | 计算文件 SHA-1（`-w` 写入对象库） | `git hash-object -w file` |
+| `ls-tree <ref>` | 列出 tree 内容 | `git ls-tree HEAD` |
+| `ls-files` | 列出暂存区文件 | `git ls-files` |
+| `rev-parse <ref>` | 将引用解析为 OID | `git rev-parse HEAD` |
+| `write-tree` | 从暂存区写入 tree 对象 | `git write-tree` |
+| `update-ref <ref> <oid>` | 更新引用 | `git update-ref refs/heads/x <oid>` |
+| `config <key> [val]` | 读取或设置配置项 | `git config user.name 'Alice'` |
+| `reflog` | 显示 HEAD reflog | `git reflog` |
+
+### 底层模块
+
+| 模块 | 职责 |
+|------|------|
+| `util` | 通用工具函数（hex 编解码、字节查找、整数转字符串等） |
+| `oid` | SHA-1 对象标识符、对象头构造、hash-object |
+| `object` | Blob / Tree / Commit / Tag 对象的写入与读取（loose 格式） |
+| `refs` | 引用管理：分支、标签、HEAD、symbolic-ref、reflog |
+| `config` | Git config 文件解析与读写 |
+| `index` | 暂存区（Git index v2）读写 |
+| `repository` | 仓库初始化、`.git` 目录发现、路径辅助函数 |
+| `revwalk` | 提交遍历、引用解析、祖先检测 |
+| `zlib` | zlib 压缩 / 解压（deflate / inflate、Adler-32） |
+| `pack` | Packfile v2 读取（变量长头、ofs-delta、ref-delta） |
+
+### 技术特性
+
+- **纯 Nolang 实现**：不调用系统 `git`，从 SHA-1 哈希到 zlib 压缩均为原生代码
+- **Loose 对象存储**：blob / tree / commit / tag 以 zlib 压缩的 loose 对象形式存储在 `.git/objects/`
+- **Packfile v2 读取**：支持读取 Git packfile 格式，包括 ofs-delta 和 ref-delta 增量对象
+- **Git index v2**：完整支持暂存区（staging area）读写
+- **Reflog**：记录 HEAD 和分支引用的变更历史
+- **仓库发现**：从当前目录向上搜索 `.git` 目录
+- **配置管理**：支持 `user.name` / `user.email` 等 config 读写
+
+### 构建与运行
+
+```bash
+cd git
+no build
+; 产物位于 git/dist/main
+
+; 示例工作流
+cd my-project
+no run /path/to/git/dist/main init
+no run /path/to/git/dist/main config user.name 'Alice'
+no run /path/to/git/dist/main config user.email 'alice@example.com'
+no run /path/to/git/dist/main add file.txt
+no run /path/to/git/dist/main commit -m 'initial commit'
+no run /path/to/git/dist/main log
+```
+
+### 项目结构
+
+```
+git/
+├── main.no              ; CLI 入口与命令分发
+├── lib.no               ; 跨模块导出声明
+├── src/
+│   ├── util.no          ; 通用工具
+│   ├── oid.no           ; SHA-1 对象标识
+│   ├── object.no        ; 对象读写（blob/tree/commit/tag）
+│   ├── refs.no          ; 引用与 reflog
+│   ├── config.no        ; 配置文件
+│   ├── index.no         ; 暂存区
+│   ├── repository.no    ; 仓库初始化与发现
+│   ├── revwalk.no       ; 提交遍历
+│   ├── zlib.no          ; zlib 压缩/解压
+│   └── pack.no          ; Packfile v2 读取
+├── tests/
+│   └── test.no          ; 测试
+└── package.jsonc        ; 项目配置
+```
+
 ## 用法
 
 ```bash
@@ -343,6 +435,10 @@ notools/
 │   ├── sha512x.no       # SHA-512（64 位字运算）
 │   ├── md5x.no          # MD5
 │   └── ...              # 其余 190+ 个工具
+├── git/                 # 纯 Nolang Git 实现（独立子项目）
+│   ├── main.no          # Git CLI 入口与命令分发
+│   ├── lib.no           # 跨模块导出声明
+│   └── src/             # 底层模块（object/refs/index/pack/...）
 └── package.jsonc        # 项目配置
 ```
 
