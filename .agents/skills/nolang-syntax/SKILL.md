@@ -77,22 +77,22 @@ Nolang is an experimental systems programming language that adopts a pass-by-ref
 ### Quick Start
 
 ```nolang
-// Hello, World!
-// No main entry needed
+; Hello, World!
+; No main entry needed
 print('Hello, Nolang!')
 
-// Variable declaration
+; Variable declaration
 i64
 
-// Function definition
+; Function definition
 add = (a i64, b i64) (result i64) {
     result = a + b
 }
 
-// Standard library methods can be called directly
+; Standard library methods can be called directly
 c = math.max(a, b)
 
-// Struct
+; Struct
 user {
     name str
     age i64
@@ -103,7 +103,7 @@ u = user {
     age: 30
 }
 
-// Method
+; Method
 user.greet = () {
     print('Hello, ' - .name)
 }
@@ -331,12 +331,12 @@ Configure mirror addresses in the `mirrors` array of `mod.jsonc` to accelerate r
 Type aliases create a new name for an existing type. Use the equals syntax `name = type`, supporting single type aliases and multi-type unions.
 
 ```nolang
-// Union type: multiple types separated by |
+; Union type: multiple types separated by |
 int = i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64
 float = f32 | f64
 num = int | float
 
-// Single type alias
+; Single type alias
 bytes = []byte
 buf = [16]u8
 ```
@@ -344,7 +344,7 @@ buf = [16]u8
 Union types can reference other union types, forming a hierarchy. They can be used for function parameters and return values; the compiler automatically performs monomorphization, generating a separate function version for each member type.
 
 ```nolang
-// Parameter type is num union
+; Parameter type is num union
 max = (a ..num) (r num) {
     r = a[0]
     n = len(a)
@@ -365,59 +365,58 @@ max = (a ..num) (r num) {
 ### Variables
 
 ```nolang
-// i64 (default), f64, byte, bool, str can omit type annotation
+; i64 (default), f64, byte, bool, str can omit type annotation
 i = 1
 f = 1.0
 b = 0x00
 name = 'nolang'
 flag = true
 
-// Explicit type annotation
+; Explicit type annotation
 a u64 = 10
 c char = 中
 
-// If variable name matches type, type annotation can be omitted
+; If variable name matches type, type annotation can be omitted
 i8 = 3
 
-// Default zero value, variable definition does not need prior declaration
+; Default zero value, variable definition does not need prior declaration
 u16
 
-// Arr
-arr [3] = [1, 2, 3]        // i64 array
-typed [3]u16 = [1, 2, 3]   // typed
-a [?]u16 = [1, 2, 3]       // auto-inferred length
+; Arr
+arr [3] = [1, 2, 3]        ; i64 array
+typed [3]u16 = [1, 2, 3]   ; typed
+a [?]u16 = [1, 2, 3]       ; auto-inferred length
 
-// Vec
+; Vec
 typed []u8 = [1, 2, 3]
 
-// String concatenation uses '-'
+; String concatenation uses '-'
 greeting = 'hello, ' - name
 ```
 
 ### Comments
 
-Only single-line comments (`//`) are allowed.
+Single-line comments use `;` — a `;` at the start of a line (or used alone) marks the rest of the line as a comment.
 
-**Rule: one statement per line — never use semicolons `;` or commas `,` to combine multiple statements on one line.** This applies to comments too, including code examples inside comments.
+`//` is a legacy comment style and **will be abolished**. Prefer `;` in all new code.
+
+**Rule: one statement per line — never use commas `,` to combine multiple statements on one line.** This applies to comments too, including code examples inside comments.
 
 ```nolang
-// ❌ Wrong: semicolons in comment
-// h0 = 1732584193; h1 = 4023233417; h2 = 2562383102
+; ❌ Wrong: commas combining multiple statements
+; out = from-i64(v), out = from-u64(v)
+; debug(msg), info(msg), warn(msg)
 
-// ❌ Wrong: commas combining multiple statements
-// out = from-i64(v), out = from-u64(v)
-// debug(msg), info(msg), warn(msg)
-
-// ✅ Correct: each statement on its own line
-// h0 = 1732584193
-// h1 = 4023233417
-// h2 = 2562383102
-//
-// out = from-i64(v)
-// out = from-u64(v)
-// debug(msg)
-// info(msg)
-// warn(msg)
+; ✅ Correct: each statement on its own line
+; h0 = 1732584193
+; h1 = 4023233417
+; h2 = 2562383102
+;
+; out = from-i64(v)
+; out = from-u64(v)
+; debug(msg)
+; info(msg)
+; warn(msg)
 ```
 
 ### Naming Rules
@@ -430,10 +429,10 @@ Variable names, function names, struct names, etc. can start with an underscore,
 - **Function names, struct names**: lowercase (e.g. `sha1-block`, `db-mysql`)
 
 ```nolang
-NO-LANG = 'nolang'       // global constants uppercase
-_NOLANG = 'nolang'       // private global
-_x = 10                 // private
-foo-bar = 42            // hyphenated names
+NO-LANG = 'nolang'       ; global constants uppercase
+_NOLANG = 'nolang'       ; private global
+_x = 10                 ; private
+foo-bar = 42            ; hyphenated names
 ```
 
 ### API Documentation Conventions
@@ -441,18 +440,18 @@ foo-bar = 42            // hyphenated names
 Function documentation comments should include full parameter names and types, return parameter names and types. The API summary at the top of a module should also use full signatures (including parameter names, types, return names, types), not abbreviated forms.
 
 ```nolang
-// ❌ Wrong: missing types, missing return names
-// sha1(data) (hash)
-// sha1-block(s, h0..h4)
+; ❌ Wrong: missing types, missing return names
+; sha1(data) (hash)
+; sha1-block(s, h0..h4)
 
-// ✅ Correct: full param names, types, return names, types
-// sha1(data []byte) (hash [20]byte) — full hash
-// sha1-block(s []u32, h0 u32, h1 u32, h2 u32, h3 u32, h4 u32) — process single block
+; ✅ Correct: full param names, types, return names, types
+; sha1(data []byte) (hash [20]byte) — full hash
+; sha1-block(s []u32, h0 u32, h1 u32, h2 u32, h3 u32, h4 u32) — process single block
 
-// Documentation comments above function definitions should follow the same convention:
-// sha1: compute SHA-1 hash
-// data []byte: input byte array
-// returns hash [20]byte: 20-byte hash value
+; Documentation comments above function definitions should follow the same convention:
+; sha1: compute SHA-1 hash
+; data []byte: input byte array
+; returns hash [20]byte: 20-byte hash value
 sha1 = (data []byte) (hash [20]byte) {
     ...
 }
@@ -465,7 +464,7 @@ The Nolang standard library provides a rich set of common functionality, includi
 **Rule: If the standard library already provides corresponding functionality, reimplementing it yourself is not recommended.** Developers should carefully review the standard library documentation (see [Standard Library Overview](#standard-library-overview) below) to avoid reinventing the wheel.
 
 ```nolang
-// ❌ Wrong: reimplementing str → []byte conversion
+; ❌ Wrong: reimplementing str → []byte conversion
 str-to-bytes = (s str) (out []byte) {
     n = s.len
     i = 0
@@ -475,7 +474,7 @@ str-to-bytes = (s str) (out []byte) {
     }
 }
 
-// ✅ Correct: use standard library str.to-bytes() method
+; ✅ Correct: use standard library str.to-bytes() method
 data []byte = s.to-bytes()
 ```
 
@@ -514,23 +513,23 @@ add = (a i64, b i64) (result i64) {
     result = a + b
 }
 
-// Default parameter value
+; Default parameter value
 parse-line = (s str, max-fields i64 = 1024) (fields []str) {
     ...
 }
 
-// Both calls are valid:
-fields = csv.parse-line(line)              // max-fields defaults to 1024
-fields = csv.parse-line(line, 256)         // max-fields = 256
+; Both calls are valid:
+fields = csv.parse-line(line)              ; max-fields defaults to 1024
+fields = csv.parse-line(line, 256)         ; max-fields = 256
 
-// Variadic parameters
+; Variadic parameters
 add3 = (a ..i64) {
 }
 
-// Function call
-sum = add(1, 2)                 // sum == 3
+; Function call
+sum = add(1, 2)                 ; sum == 3
 
-// Anonymous function
+; Anonymous function
 (a i64) { print(a) }(10)
 ```
 
@@ -541,14 +540,14 @@ When a function may fail or return an empty value, **prefer the `?t` option type
 `?t` is a tagged enum with three states: `ok` (has value, implicitly bound), `nil` (empty), `err` (error). Normal values are implicitly bound. Use `nil` when the operation simply cannot find a value, and `err(...)` when the operation encounters an actual error.
 
 ```nolang
-// ❌ Wrong: dual-return pattern
+; ❌ Wrong: dual-return pattern
 stack.pop = () (val i64, ok bool) {
     .n == 0 -> return
     val = .data[.n]
     ok = true
 }
 
-// ✅ Correct: option type (nil for empty, err for errors)
+; ✅ Correct: option type (nil for empty, err for errors)
 stack.pop = () (val ?i64) {
     .n == 0 -> {
         val = nil
@@ -557,13 +556,13 @@ stack.pop = () (val ?i64) {
     val = .data[.n]
 }
 
-// ✅ Returning an error
+; ✅ Returning an error
 file.read = () (data ?str) {
     .fd < 0 -> {
         data = err('file not open')
         return
     }
-    // ... read data
+    ; ... read data
     data = buf
 }
 ```
@@ -573,8 +572,8 @@ Unwrap with match:
 val = s.pop()
 val: {
     nil -> print('empty')
-    err -> print(it)          // it = error message
-    -> print(it)              // it = the value
+    err -> print(it)          ; it = error message
+    -> print(it)              ; it = the value
 }
 ```
 
@@ -598,18 +597,18 @@ The parser automatically adds a hidden `self` parameter with the receiver type, 
 **Definition:**
 
 ```nolang
-// type aliases & union types — equals syntax
-// name = type1 | type2 | ...  — union of multiple types
-// name = type               — single type alias
+; type aliases & union types — equals syntax
+; name = type1 | type2 | ...  — union of multiple types
+; name = type               — single type alias
 int = i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64
 float = f32 | f64
 num = int | float
 
-// Single type alias
+; Single type alias
 bytes = []byte
 buf = [16]u8
 
-// method definition — NO explicit self parameter, use `.` inside body
+; method definition — NO explicit self parameter, use `.` inside body
 num.sign = () (r num) {
     {
         . > 0 -> r = 1
@@ -621,7 +620,7 @@ num.sign = () (r num) {
 int.to-str = () (out str) {
     out = ''
     n = .
-    // ... conversion logic using `n` (not `.` directly after first use)
+    ; ... conversion logic using `n` (not `.` directly after first use)
     out.len = len
 }
 ```
@@ -649,37 +648,37 @@ int.to-str = () (out str) {
 | Early return     | `return` (temporarily retained) | `...` (planned, not yet replaced) |
 
 ```nolang
-// Infinite loop (new style)
+; Infinite loop (new style)
 !! { }
 
-// Conditional loop (for keyword retained, for non-1 step or complex conditions)
+; Conditional loop (for keyword retained, for non-1 step or complex conditions)
 for i < 5 { }
 
-// Five iterations
+; Five iterations
 5 * { }
 
-// Range for — interval syntax supports four bracket combinations
-i <- [a..b]: {     // closed interval: a ≤ i ≤ b
+; Range for — interval syntax supports four bracket combinations
+i <- [a..b]: {     ; closed interval: a ≤ i ≤ b
 }
-i <- (a..b]: {     // left-open right-closed: a < i ≤ b
+i <- (a..b]: {     ; left-open right-closed: a < i ≤ b
 }
-i <- [a..b): {     // left-closed right-open: a ≤ i < b
+i <- [a..b): {     ; left-closed right-open: a ≤ i < b
 }
-i <- (a..b): {     // open interval: a < i < b
+i <- (a..b): {     ; open interval: a < i < b
 }
-i <- [5..0]: {     // decreasing
+i <- [5..0]: {     ; decreasing
 }
-i <- 'abc': {      // iterate over each character in the string
+i <- 'abc': {      ; iterate over each character in the string
 }
 
-// ❌ Explicitly rejected: interval bounds must be integers; nested expressions not supported
-//   for i <- [1.5..5.5] { }       // compile error
-//   for i <- [0..[1..5][0]] { }   // syntax error
+; ❌ Explicitly rejected: interval bounds must be integers; nested expressions not supported
+;   for i <- [1.5..5.5] { }       ; compile error
+;   for i <- [0..[1..5][0]] { }   ; syntax error
 
-// Single if (retained)
+; Single if (retained)
 x == 1 -> do-something()
 
-// Ternary (retained)
+; Ternary (retained)
 c = flag ? 1 : 2
 max = sum > 10 ? sum : 10
 ```
@@ -688,16 +687,16 @@ max = sum > 10 ? sum : 10
 
 ```nolang
 i <- [0..10): {
-    *      // break
-    **     // continue
-    ...    // return/terminate
+    *      ; break
+    **     ; continue
+    ...    ; return/terminate
 }
 ```
 
 ### Match (new style `x: { ... }`)
 
 ```nolang
-// Simple form, it is used to get the parameter
+; Simple form, it is used to get the parameter
 x: {
     err -> log(it)
     nil -> log('nil')
@@ -705,7 +704,7 @@ x: {
         do-right-thing(it)
 }
 
-// Destructuring form
+; Destructuring form
 x: {
     err(e) -> log(e)
     nil -> log('nil')
@@ -732,21 +731,21 @@ num: {
     -> print("larger number")
 }
 
-// With return value, the last statement/value
+; With return value, the last statement/value
 result = x: {
     1 -> 1
     2 -> 2 + 1
     -> a + b
 }
 
-// Match inside for-in body: executes one match per iteration
+; Match inside for-in body: executes one match per iteration
 i <- [0..10): {
     1 -> a = 1
     2 -> b = 2
     -> c = 0
 }
 
-// Multi-line arm body must use braces -> { ... }
+; Multi-line arm body must use braces -> { ... }
 x: {
     nil -> {
         log('nil')
@@ -769,7 +768,7 @@ x: {
 #### Match Style Guide
 
 ```nolang
-// ❌ Avoid: duplicate branch bodies
+; ❌ Avoid: duplicate branch bodies
 w = tls-c.send(req)
 w: {
     nil -> {
@@ -783,7 +782,7 @@ w: {
     ok -> n = it
 }
 
-// ✅ Shared logic in -> catch-all
+; ✅ Shared logic in -> catch-all
 w = tls-c.send(req)
 w: {
     ok -> n = it
@@ -793,7 +792,7 @@ w: {
     }
 }
 
-// ✅ Or vice versa: name simple branches, complex logic in ->
+; ✅ Or vice versa: name simple branches, complex logic in ->
 val: {
     nil -> return
     err -> log(it)
@@ -806,13 +805,13 @@ val: {
 ```
 
 ```nolang
-// Single statement — no braces
+; Single statement — no braces
 val: {
     ok -> print(it)
     -> print('empty or error')
 }
 
-// Multiple statements — must use braces
+; Multiple statements — must use braces
 val: {
     ok -> {
         n = it
@@ -826,17 +825,17 @@ val: {
 ```
 
 ```nolang
-// it implicit binding
+; it implicit binding
 val: {
-    ok -> process(it)       // it = unwrapped value
-    err -> log(it)          // it = error message string
-    -> log('empty')         // catch-all, handles nil here
+    ok -> process(it)       ; it = unwrapped value
+    err -> log(it)          ; it = error message string
+    -> log('empty')         ; catch-all, handles nil here
 }
 ```
 
 ```nolang
-// ✅ Combined option patterns: nil || err -> body
-// Matches when the option is nil OR err, sharing the same body.
+; ✅ Combined option patterns: nil || err -> body
+; Matches when the option is nil OR err, sharing the same body.
 val: {
     nil || err -> {
         cleanup()
@@ -845,7 +844,7 @@ val: {
     ok -> process(it)
 }
 
-// ✅ Also valid: any combination of nil, err, ok joined by ||
+; ✅ Also valid: any combination of nil, err, ok joined by ||
 val: {
     nil || err -> log('failed')
     ok -> process(it)
@@ -874,23 +873,23 @@ Nolang uses `run` and `awy` for async concurrency. Async function names must end
 - `awy` — wait for the async thread to complete and get the result
 
 ```nolang
-// Async function definition (name ends with -async)
+; Async function definition (name ends with -async)
 compute-async = (n i64) (r i64) {
     r = n * 2
 }
 
-// Basic async call
+; Basic async call
 h = run compute-async(21)
-r = awy h          // r = 42
+r = awy h          ; r = 42
 
-// Concurrent tasks
+; Concurrent tasks
 h1 = run compute-async(10)
 h2 = run compute-async(20)
-r1 = awy h1        // r1 = 20
-r2 = awy h2        // r2 = 40
+r1 = awy h1        ; r1 = 20
+r2 = awy h2        ; r2 = 40
 
-// Inline await
-r = awy run compute-async(5)   // r = 10
+; Inline await
+r = awy run compute-async(5)   ; r = 10
 ```
 
 > **Naming rule**: async function names must end with `-async` (e.g. `compute-async`, `fetch-data-async`). Do not use the `async` keyword.
@@ -907,7 +906,7 @@ swap = (a i64, b i64) (x i64, y i64) {
 
 a, b = swap(5, 3)
 
-// Also valid as a match arm body
+; Also valid as a match arm body
 val: {
     ok -> a, b = parse-pair(it)
     -> return
@@ -942,21 +941,21 @@ user.greet = () {
 Enum definitions use the same syntax as structs, but with commas between values. Values auto-increment from 0.
 
 ```nolang
-// red=0, green=1, blue=2
+; red=0, green=1, blue=2
 color {
     red,
     green,
     blue,
 }
 
-// This is a special enum, can have types, commas, and aliases
+; This is a special enum, can have types, commas, and aliases
 enum-name {
     a t,
     b u,
     c v,
 }
 
-// Note this is a regular struct, multiple fields without commas
+; Note this is a regular struct, multiple fields without commas
 struct-name {
     a t
     b u
@@ -967,11 +966,11 @@ struct-name {
 **Rule: enum values must always be referenced using qualified form `enum-type.value`, never as bare names.** This prevents naming conflicts and ensures external packages cannot use values directly without qualification.
 
 ```nolang
-// ❌ Wrong: bare enum value
+; ❌ Wrong: bare enum value
 kind = null
 yes = err-is(e, io)
 
-// ✅ Correct: qualified form
+; ✅ Correct: qualified form
 kind = json-kind.null
 yes = err-is(e, err-code.io)
 ```
@@ -993,7 +992,7 @@ Methods are defined on types, using `.` to reference the receiver. The receiver 
 **Examples:**
 
 ```nolang
-// str method
+; str method
 str.to-upper = () (out str) {
     out.len = .len
     i = 0
@@ -1007,13 +1006,13 @@ str.to-upper = () (out str) {
     }
 }
 
-// char method
+; char method
 char.is-digit = () (result bool) {
     result = false
     . >= 48 && . <= 57 -> result = true
 }
 
-// struct method
+; struct method
 user {
     name str
     age i64
@@ -1023,11 +1022,11 @@ user.greet = () {
     print('Hello, ' - .name)
 }
 
-// Calling methods
+; Calling methods
 s = 'hello'
-u = s.to-upper()     // receiver.method()
+u = s.to-upper()     ; receiver.method()
 c char = 5
-d = c.is-digit()     // receiver.method()
+d = c.is-digit()     ; receiver.method()
 u = user{
     name: 'Alice'
     age: 30
@@ -1050,38 +1049,38 @@ Slicing (`arr[1..3]`, `vec[1..3]`, `str[1..3]`) produces a **view** into the ori
 | `str` | `str` | All `str` methods (`to-upper`, `to-lower`, `index`, `contains`, `slice`, `copy`, `fill`, etc.) |
 
 ```nolang
-// arr slice → vec view, shares arr's memory
+; arr slice → vec view, shares arr's memory
 a [5]u8 = [0, 1, 2, 3, 4]
-s = a[1..4]       // s is []u8 view into a's buffer
-n = s.len         // vec.len
+s = a[1..4]       ; s is []u8 view into a's buffer
+n = s.len         ; vec.len
 
-// vec slice → vec view, shares vec's memory
+; vec slice → vec view, shares vec's memory
 v = [10, 20, 30, 40, 50]
-s = v[2..]        // s is []i64 view
-s.reverse(s.len)  // vec.reverse
+s = v[2..]        ; s is []i64 view
+s.reverse(s.len)  ; vec.reverse
 
-// str slice → str view, shares str's memory
+; str slice → str view, shares str's memory
 s = 'Hello World'
-sub = s[6..]      // sub is 'World' view
-upper = sub.to-upper()  // str.to-upper
+sub = s[6..]      ; sub is 'World' view
+upper = sub.to-upper()  ; str.to-upper
 
-// Modifying through a slice affects the original
+; Modifying through a slice affects the original
 data = [10, 20, 30, 40, 50]
-view = data[1..4]  // view = [20, 30, 40]
-view[0] = 99       // modifies data[1] too — shared memory
+view = data[1..4]  ; view = [20, 30, 40]
+view[0] = 99       ; modifies data[1] too — shared memory
 ```
 
 ### Indexing
 
 ```nolang
-// Get char from string (character, not byte)
+; Get char from string (character, not byte)
 str[i]
 
-// Get element from arr, vec
+; Get element from arr, vec
 arr[i]
 vec[i]
 
-// Get value from map
+; Get value from map
 map[str]
 ```
 
@@ -1090,7 +1089,7 @@ map[str]
 The standard library uses a consistent pattern for data structures and I/O abstractions: define a struct, then attach methods to it. The receiver is accessed via `.` inside the method body, and nested fields via `self.field` (or `.field` for single-level).
 
 ```nolang
-// Data structure: stack (LIFO)
+; Data structure: stack (LIFO)
 stack {
     data []i64
     n i64
@@ -1110,7 +1109,7 @@ stack.pop = () (val ?i64) {
     val = .data[.n]
 }
 
-// Usage
+; Usage
 buf [128]i64 = [0:128]
 s = stack {
     data: buf
@@ -1146,17 +1145,17 @@ The standard library includes comprehensive networking modules under `std/net/`:
 - `std/net/ip` — IPv4 address parsing and classification
 
 ```nolang
-// SSE client usage
-client = sse.sse-connect('http://localhost:3000/events')  // returns ?sse-client
+; SSE client usage
+client = sse.sse-connect('http://localhost:3000/events')  ; returns ?sse-client
 client: {
     nil -> print('connection failed')
     -> {
         !! {
-            ev = client.next-event()     // returns ?sse-event
+            ev = client.next-event()     ; returns ?sse-event
             ev: {
-                nil -> *                  // EOF
-                err -> print(it)        // error
-                -> print(ev.data)       // event data
+                nil -> *                  ; EOF
+                err -> print(it)        ; error
+                -> print(ev.data)       ; event data
             }
         }
         client.close()
@@ -1169,42 +1168,42 @@ client: {
 Method calls on struct fields via `self.field` (abbreviated `.field`) are fully supported. The type checker resolves the field type from the struct definition, so return types are correctly inferred:
 
 ```nolang
-// .recv-buf is a str field → .recv-buf.slice() returns str
-data = .recv-buf.slice(0, .recv-buf-len)   // correctly inferred as str
+; .recv-buf is a str field → .recv-buf.slice() returns str
+data = .recv-buf.slice(0, .recv-buf-len)   ; correctly inferred as str
 
-// .tls-c is a tls-conn field → .tls-c.send() works directly
+; .tls-c is a tls-conn field → .tls-c.send() works directly
 written = .tls-c.send(req, req.len)
 ```
 
 ### Interfaces
 
 ```nolang
-// Define interface
+; Define interface
 json {
     to-json()
 }
 
-// Interface default implementation
+; Interface default implementation
 json.to-json = () {
 }
 
-// Interface implementation
+; Interface implementation
 user json {
     name str
     age i64
 }
 
-// Override + call parent implementation
+; Override + call parent implementation
 user.to-json = () {
-    // Parent implementation
+    ; Parent implementation
     ..to-json()
 }
 
 user.other = () {
-    // Current implementation
+    ; Current implementation
     .to-json()
 
-    // Parent implementation
+    ; Parent implementation
     ..to-json()
 }
 ```
@@ -1227,13 +1226,13 @@ file.leave = () {
 }
 
 read-file = () {
-    // Auto f.enter()
+    ; Auto f.enter()
     f = file{
         path: 'data.txt',
     }
 
-    // Use f
-    // Auto f.leave()
+    ; Use f
+    ; Auto f.leave()
     read(f)
 }
 ```
@@ -1251,7 +1250,7 @@ arr_to_vec = (arr [n]t) (out []t) {
 ### Type Casting
 
 ```nolang
-// Returns the type name string
+; Returns the type name string
 a = typeof(x)
 
 y = x as i64
@@ -1262,26 +1261,26 @@ y = x as i64
 > **New syntax: `# path` (recommended). The old `use path` keyword is deprecated but still supported. Always prefer `#` in new code.**
 
 ```nolang
-// Std modules
+; Std modules
 # std/math.add
 
-// Remote modules
+; Remote modules
 # github.com/utils/math.add
 
-// Local modules (must start with /)
+; Local modules (must start with /)
 # /utils/math.add
 
-// Workspace package modules (path relative to workspace root)
+; Workspace package modules (path relative to workspace root)
 # /notools/src/echo.echo-run
 
-// Aliases
+; Aliases
 # std/math.add a
 
-// ── Old syntax (deprecated, still works) ──
-// use std/math.add
-// use github.com/utils/math.add
-// use /utils/math.add
-// use std/math.add a
+; ── Old syntax (deprecated, still works) ──
+; use std/math.add
+; use github.com/utils/math.add
+; use /utils/math.add
+; use std/math.add a
 ```
 
 #### Workspace Package Import Paths
@@ -1302,14 +1301,14 @@ workspace/               ← workspace dir (workspace.jsonc lives here)
 For the `notools` project, imports use `# /notools/src/module.function` format:
 
 ```nolang
-// In main.no — import from src/ subdirectory
+; In main.no — import from src/ subdirectory
 # /notools/src/echo.echo-run
 # /notools/src/hashutil.do-hash
 
-// In src/hashutil.no — import sibling modules
+; In src/hashutil.no — import sibling modules
 # /notools/src/md5x.md5x
 
-// In src/sha224sum.no — import sibling modules
+; In src/sha224sum.no — import sibling modules
 # /notools/src/sha224x.sha224x
 ```
 
@@ -1341,14 +1340,14 @@ ShortName is the last segment of FullPath when split by slashes (e.g. `hash/sha2
 When calling module-level functions or constants defined in other modules, you must use the `ShortName.` prefix.
 
 ```nolang
-// Module-level functions
+; Module-level functions
 sha256.sha256(data)
 sha256.sha256-hex(data)
 fs.open(path, opts)
 gzip.gzip-decompress(data)
 math.degrees(rad)
 
-// Module constants
+; Module constants
 net.NET-BUF-SIZE
 math.PI
 ```
@@ -1362,13 +1361,13 @@ The following cases do not require a prefix:
 These three functions are exempt from the prefix rule by convention. **This is a special case for these three functions only**, not because they are builtins — other builtin functions (such as `open`, `close`, `read`, `write`, etc.) still require the module prefix. They use **named format strings** `{name[:spec]}` referencing in-scope variables; positional arguments are not supported. `printf`/`eprintf`/`sprintf` are deprecated.
 
 ```nolang
-print('hello {n}')           // ✅ no prefix, named format, auto newline (stdout)
-eprint('err {x}')            // ✅ no prefix, named format, auto newline (stderr)
-s = format('x={x}')          // ✅ no prefix, returns formatted string
-io.out('no-newline')         // io.out / io.err require module prefix
-io.err('err-no-newline')     // io.err does not conflict with Option constructor err()
+print('hello {n}')           ; ✅ no prefix, named format, auto newline (stdout)
+eprint('err {x}')            ; ✅ no prefix, named format, auto newline (stderr)
+s = format('x={x}')          ; ✅ no prefix, returns formatted string
+io.out('no-newline')         ; io.out / io.err require module prefix
+io.err('err-no-newline')     ; io.err does not conflict with Option constructor err()
 
-fs.open(path, opts)          // ✅ with prefix (builtins need it too)
+fs.open(path, opts)          ; ✅ with prefix (builtins need it too)
 ```
 
 **2. Same-file definitions**
@@ -1376,9 +1375,9 @@ fs.open(path, opts)          // ✅ with prefix (builtins need it too)
 Functions, constants, and methods defined in the same `.no` file are used directly without a prefix.
 
 ```nolang
-// In sha256.no:
-sha256(data)              // sha256 is defined in this file
-HMAC-BLOCK-SIZE           // constant defined in this file
+; In sha256.no:
+sha256(data)              ; sha256 is defined in this file
+HMAC-BLOCK-SIZE           ; constant defined in this file
 ```
 
 **3. Built-in type methods**
@@ -1386,11 +1385,11 @@ HMAC-BLOCK-SIZE           // constant defined in this file
 Method calls on built-in types (`str`, `i64`, `vec`, `arr`, `byte`, `char`, `bool`, etc.) do not require a prefix. Methods are built into the type and resolved directly through the receiver type.
 
 ```nolang
-'hello'.starts-with('he')  // str method
-n.to-str()                 // int method
-v.push(42)                 // vec method
-a.contains(3)              // arr method
-c.is-digit()               // char method
+'hello'.starts-with('he')  ; str method
+n.to-str()                 ; int method
+v.push(42)                 ; vec method
+a.contains(3)              ; arr method
+c.is-digit()               ; char method
 ```
 
 **4. Struct instance methods**
@@ -1398,14 +1397,14 @@ c.is-digit()               // char method
 Calling methods on an already-created struct instance does not require a module prefix. Methods are resolved through the instance's type; the compiler automatically finds the corresponding `struct.method` definition.
 
 ```nolang
-f = fs.open(path, opts)    // fs.open is a module-level function, needs prefix
-f.read(buf, n)             // file.read is a struct method, no prefix needed
-f.close()                  // file.close is a struct method, no prefix needed
+f = fs.open(path, opts)    ; fs.open is a module-level function, needs prefix
+f.read(buf, n)             ; file.read is a struct method, no prefix needed
+f.close()                  ; file.close is a struct method, no prefix needed
 
 p = path{
     p: '/tmp'
 }
-p.exists()                 // path.exists is a struct method, no prefix needed
+p.exists()                 ; path.exists is a struct method, no prefix needed
 ```
 
 #### Method calls vs Module function calls
@@ -1421,37 +1420,37 @@ In `fs.fil()`, `fs` is the module's ShortName, and `fil` is the module-level fun
 #### Complete Example
 
 ```nolang
-// Standard library modules are auto-loaded, no explicit import needed
+; Standard library modules are auto-loaded, no explicit import needed
 
-// ─── No prefix needed ───
+; ─── No prefix needed ───
 
-// Same-file functions
+; Same-file functions
 sha256(data)
 
-// Built-in type methods
+; Built-in type methods
 'hello'.starts-with('he')
 n.to-str()
 v.push(42)
 
-// Struct instance methods
+; Struct instance methods
 f = fs.open(path, opts)
 f.read(buf, n)
 f.close()
 
-// print/eprint/format (named format strings)
+; print/eprint/format (named format strings)
 print('hello {n}')
 s = format('x={x}')
 
-// ─── Prefix required ───
+; ─── Prefix required ───
 
-// Module-level functions
+; Module-level functions
 sha256.sha256(data)
 sha256.sha256-hex(data)
 fs.open(path, opts)
 gzip.gzip-decompress(data)
 math.degrees(rad)
 
-// Module constants
+; Module constants
 net.NET-BUF-SIZE
 math.PI
 ```
@@ -1477,19 +1476,20 @@ Nolang uses the `@` keyword to declare exports in the package root `lib.no` file
 - Export items can only be final symbols such as functions, constants, enums
 - Structs, enums, and other types referenced by exported functions are **auto-exported**, no manual declaration needed
 - If an exported function does not exist in the module, LSP will report an error
+- **When the alias is the same as the function name, the alias should be omitted** — the compiler will emit a warning if a redundant alias is provided
 
 #### Example
 
 ```nolang
-// lib.no - package root export file
+; lib.no - package root export file
 @ /src/utils.greet a
 @ /src/utils.hello b
 @ /src/math.pi
 ```
 
 ```nolang
-// src/utils.no
-// Define exported functions
+; src/utils.no
+; Define exported functions
 greet = (name str) {
     print('Hello, ' - name)
 }
@@ -1504,10 +1504,10 @@ hello = () {
 External packages can only access exports declared in `lib.no` when importing via `#`:
 
 ```nolang
-// Import alias a (corresponds to package-name.utils.greet)
+; Import alias a (corresponds to package-name.utils.greet)
 # package-name.utils.greet a
 
-// Or use the function name directly
+; Or use the function name directly
 # package-name.utils.greet
 ```
 
@@ -1540,54 +1540,54 @@ External packages can only access exports declared in `lib.no` when importing vi
 
 #### Arithmetic Operators
 
-- `+` // addition
-- `-` // subtraction (also used for string concatenation)
-- `*` // multiplication (also used for string repetition)
-- `/` // division
+- `+` ; addition
+- `-` ; subtraction (also used for string concatenation)
+- `*` ; multiplication (also used for string repetition)
+- `/` ; division
 
 #### Comparison Operators
 
-- `==` // equal to
-- `!=` // not equal to
-- `<` // less than
-- `>` // greater than
-- `<=` // less than or equal to
-- `>=` // greater than or equal to
+- `==` ; equal to
+- `!=` ; not equal to
+- `<` ; less than
+- `>` ; greater than
+- `<=` ; less than or equal to
+- `>=` ; greater than or equal to
 
 #### Logical Operators
 
-- `&&` // logical AND
-- `||` // logical OR (also used for match branch combination, e.g. `nil || err -> body`)
-- `!` // logical NOT
+- `&&` ; logical AND
+- `||` ; logical OR (also used for match branch combination, e.g. `nil || err -> body`)
+- `!` ; logical NOT
 
 #### Bitwise Operators
 
-- `&` // bitwise AND
-- `|` // bitwise OR
-- `^` // bitwise XOR
-- `~` // bitwise NOT
-- `<<` // left shift
-- `>>` // right shift
+- `&` ; bitwise AND
+- `|` ; bitwise OR
+- `^` ; bitwise XOR
+- `~` ; bitwise NOT
+- `<<` ; left shift
+- `>>` ; right shift
 
 #### Assignment Operators
 
-- `=` // assignment
-- `+=` // add-assign
-- `-=` // subtract-assign
-- `*=` // multiply-assign
-- `/=` // divide-assign
-- `%=` // modulo-assign
-- `&=` // bitwise AND-assign
-- `|=` // bitwise OR-assign
-- `^=` // bitwise XOR-assign
-- `<<=` // left shift-assign
-- `>>=` // right shift-assign
+- `=` ; assignment
+- `+=` ; add-assign
+- `-=` ; subtract-assign
+- `*=` ; multiply-assign
+- `/=` ; divide-assign
+- `%=` ; modulo-assign
+- `&=` ; bitwise AND-assign
+- `|=` ; bitwise OR-assign
+- `^=` ; bitwise XOR-assign
+- `<<=` ; left shift-assign
+- `>>=` ; right shift-assign
 
 #### Others
 
-- `?` // ternary operator (e.g. `c = flag ? 1 : 2`)
-- `as` // type conversion (e.g. `y = x as i64`)
-- `..` // slice range (e.g. `arr[1..3]`, `arr[1..]`, `arr[..3]`)
+- `?` ; ternary operator (e.g. `c = flag ? 1 : 2`)
+- `as` ; type conversion (e.g. `y = x as i64`)
+- `..` ; slice range (e.g. `arr[1..3]`, `arr[1..]`, `arr[..3]`)
 
 ### FFI (`#{c}` annotation)
 
@@ -1606,29 +1606,29 @@ Declare external C functions through the `#{c}` annotation to implement FFI (For
 | `***byte`| triple pointer           | `i8***`  | rare triple indirection      |
 
 ```nolang
-// sqlite.no — FFI bindings and safe wrappers in the same file
-// Compiler automatically converts hyphens (-) to underscores (_) to match C ABI symbols
-// Names starting with _ are private; C ABI symbol automatically strips leading _
+; sqlite.no — FFI bindings and safe wrappers in the same file
+; Compiler automatically converts hyphens (-) to underscores (_) to match C ABI symbols
+; Names starting with _ are private; C ABI symbol automatically strips leading _
 
-// Basic type parameters
+; Basic type parameters
 #{c}
 c-strlen = (s str) (n i64)
 
-// Pointer parameter (*byte = opaque pointer), private declaration
+; Pointer parameter (*byte = opaque pointer), private declaration
 #{c}
 _sqlite3-close = (db *byte) (rc i32)
 
-// Double pointer (**byte = output parameter, value auto-stored back to variable after call), private declaration
+; Double pointer (**byte = output parameter, value auto-stored back to variable after call), private declaration
 #{c}
 _sqlite3-open = (filename str, db **byte) (rc i32)
 
-// Multiple pointer parameters, private declaration
+; Multiple pointer parameters, private declaration
 #{c}
 _sqlite3-exec = (db *byte, sql str, callback *byte, arg *byte, errmsg *byte) (rc i32)
 ```
 
 ```nolang
-// Safe wrapper in the same file
+; Safe wrapper in the same file
 
 open = (dsn str) (d db-sqlite) {
     handle i64 = 0
@@ -1682,7 +1682,7 @@ Multiple key-value pairs are separated by commas:
 The FFI annotation `#{c}` is a special form of the annotation system. When an annotation contains an FFI language key (`c`, `cpp`, `rust`, etc.) and is followed by a function declaration, the compiler identifies it as an FFI binding:
 
 ```nolang
-// #{c} with additional annotations
+; #{c} with additional annotations
 #{c, debug}
 _sqlite3-open = (filename str, db **byte) (rc i32)
 ```
@@ -1692,18 +1692,18 @@ _sqlite3-open = (filename str, db **byte) (rc i32)
 Non-FFI annotations are automatically attached to the declaration that follows. This is useful for tagging numeric types (like `num`) with range constraints:
 
 ```nolang
-// Variable declaration with range annotation
+; Variable declaration with range annotation
 #{range=[0..256)}
 x num = 42
 
-// Struct definition with annotation
+; Struct definition with annotation
 #{derive=[Serialize, Deserialize]}
 point {
     x i64
     y i64
 }
 
-// Struct field with range annotation (for num and other numeric types)
+; Struct field with range annotation (for num and other numeric types)
 person {
     #{range=[0..150]}
     age num
@@ -1731,10 +1731,10 @@ Nolang strings (`str`) are a union type (short ≤127 bytes stored on stack / lo
 **Concatenation (`-`)**
 
 ```nolang
-// Literal concatenation
+; Literal concatenation
 s = 'Hello' - ' ' - 'World'
 
-// Concatenation with variable
+; Concatenation with variable
 greeting = 'Hello, ' - name
 ```
 
@@ -1749,17 +1749,17 @@ s = 'Hello' * 3
 ```nolang
 s = 'Hello World'
 
-// Index to get char (character, not byte)
-c = s[0]           // c = 'H' code point
+; Index to get char (character, not byte)
+c = s[0]           ; c = 'H' code point
 
-// Slice (view, shares underlying memory)
-sub = s[6..]       // 'World'
-sub = s[6..11]     // 'World'
-sub = s[0..5)      // 'Hello'
+; Slice (view, shares underlying memory)
+sub = s[6..]       ; 'World'
+sub = s[6..11]     ; 'World'
+sub = s[0..5)      ; 'Hello'
 
-// Length
-n = s.len          // byte length
-n = s.count()      // code point count (Unicode character count)
+; Length
+n = s.len          ; byte length
+n = s.count()      ; code point count (Unicode character count)
 ```
 
 ### String Methods
@@ -1772,10 +1772,10 @@ When assigning `s[i] = v`, LLVM codegen automatically updates the `len` field to
 
 ```nolang
 s = ''
-s[0] = 72                      // len automatically becomes 1
-s[1] = 105                     // len automatically becomes 2
+s[0] = 72                      ; len automatically becomes 1
+s[1] = 105                     ; len automatically becomes 2
 
-// Manually setting .len is only for truncation (shortening)
+; Manually setting .len is only for truncation (shortening)
 s.len = 5
 ```
 
@@ -1821,12 +1821,12 @@ Nolang type to LLVM mapping:
 `option<t>` tagged enum (tag=0=val, 1=nil, 2=err):
 
 ```nolang
-x ?t                // Declare option<t>
-x = 42              // Set to has-value
-x = nil             // Set to empty
-x = err('msg')      // Set to error
+x ?t                ; Declare option<t>
+x = 42              ; Set to has-value
+x = nil             ; Set to empty
+x = err('msg')      ; Set to error
 
-// match
+; match
 x: {
     val -> f(it)
     nil ->
@@ -1843,12 +1843,12 @@ x: {
 #### fmt — Formatted Output
 
 ```nolang
-print(s str)            // Named format output to stdout, auto newline ({name[:spec]})
-eprint(s str)           // Named format output to stderr, auto newline
-s = format(fmt str) str // Return formatted string (replaces sprintf)
-io.out(s str)           // Write to stdout, no newline (requires module prefix)
-io.err(s str)           // Write to stderr, no newline (requires module prefix)
-// printf/eprintf/sprintf are deprecated
+print(s str)            ; Named format output to stdout, auto newline ({name[:spec]})
+eprint(s str)           ; Named format output to stderr, auto newline
+s = format(fmt str) str ; Return formatted string (replaces sprintf)
+io.out(s str)           ; Write to stdout, no newline (requires module prefix)
+io.err(s str)           ; Write to stderr, no newline (requires module prefix)
+; printf/eprintf/sprintf are deprecated
 ```
 
 #### math — Math Functions
@@ -1873,145 +1873,145 @@ char is essentially i32 (Unicode code point), all operations are provided as met
 
 ```nolang
 c char = 'A'
-c.is-digit()       // Is digit (0-9) (method)
-c.is-letter()      // Is letter (a-z, A-Z) (method)
-c.is-alpha()       // Alias for is-letter (method)
-c.is-alnum()       // Is letter or digit (method)
-c.is-space()       // Is whitespace character (method)
-c.is-upper()       // Is uppercase letter (method)
-c.is-lower()       // Is lowercase letter (method)
-c.to-upper()       // Convert to uppercase (ASCII) (method)
-c.to-lower()       // Convert to lowercase (ASCII) (method)
-c.to-bytes()       // Unicode → UTF-8 bytes (method)
-c.to-str()         // Unicode → string (UTF-8, method)
+c.is-digit()       ; Is digit (0-9) (method)
+c.is-letter()      ; Is letter (a-z, A-Z) (method)
+c.is-alpha()       ; Alias for is-letter (method)
+c.is-alnum()       ; Is letter or digit (method)
+c.is-space()       ; Is whitespace character (method)
+c.is-upper()       ; Is uppercase letter (method)
+c.is-lower()       ; Is lowercase letter (method)
+c.to-upper()       ; Convert to uppercase (ASCII) (method)
+c.to-lower()       ; Convert to lowercase (ASCII) (method)
+c.to-bytes()       ; Unicode → UTF-8 bytes (method)
+c.to-str()         ; Unicode → string (UTF-8, method)
 ```
 
 #### str — String Operations
 
 ```nolang
-ok = a.eq(b, n)               // Equality comparison (method)
-dst = s.copy()                // String copy (method)
-s.fill(val byte)              // Fill with byte value (method)
-pos = s.index(sub)            // Substring position
-ok = s.contains(sub)          // Contains
-ok = s.starts-with(sub)       // Prefix check
-ok = s.ends-with(sub)         // Suffix check
-s.to-upper()                  // Convert to uppercase
-s.to-lower()                  // Convert to lowercase
-out = s.trim()                // Trim leading/trailing whitespace
-out = s.repeat(n)             // Repeat
-out = s.slice(start, end)     // Slice
-b = s.to-bytes()              // Convert to []byte
-s = b.to-str()                // []byte to str (method)
-v = s.to-i64()                // String to i64 (returns ?i64)
-v = s.to-i8()                 // String to i8 (returns ?i8)
-v = s.to-i16()                // String to i16 (returns ?i16)
-v = s.to-i32()                // String to i32 (returns ?i32)
-v = s.to-u8()                 // String to u8 (returns ?u8)
-v = s.to-u16()                // String to u16 (returns ?u16)
-v = s.to-u32()                // String to u32 (returns ?u32)
-v = s.to-u64()                // String to u64 (returns ?u64)
-v = s.to-byte()               // String to byte (returns ?byte)
-v = s.to-f64()                // String to f64 (returns ?f64)
-v = s.to-bool()               // String "true"/"false" to bool (returns ?bool)
-s = v.to-str()                // i64 to string (method)
-out = s.reverse()             // Reverse
-c = s.compare(b)              // Lexicographic comparison
-n = s.count()                 // Total code point count
-val = s.replace-char(old, new) // Replace character (returns result string)
-out = s.trim-char(c)          // Trim specified character
-ok = s.empty()                // Is empty
-parts = s.split(sep)          // Split by separator (returns []str, method)
-out = ss.join(sep)            // Join []str with separator (method)
+ok = a.eq(b, n)               ; Equality comparison (method)
+dst = s.copy()                ; String copy (method)
+s.fill(val byte)              ; Fill with byte value (method)
+pos = s.index(sub)            ; Substring position
+ok = s.contains(sub)          ; Contains
+ok = s.starts-with(sub)       ; Prefix check
+ok = s.ends-with(sub)         ; Suffix check
+s.to-upper()                  ; Convert to uppercase
+s.to-lower()                  ; Convert to lowercase
+out = s.trim()                ; Trim leading/trailing whitespace
+out = s.repeat(n)             ; Repeat
+out = s.slice(start, end)     ; Slice
+b = s.to-bytes()              ; Convert to []byte
+s = b.to-str()                ; []byte to str (method)
+v = s.to-i64()                ; String to i64 (returns ?i64)
+v = s.to-i8()                 ; String to i8 (returns ?i8)
+v = s.to-i16()                ; String to i16 (returns ?i16)
+v = s.to-i32()                ; String to i32 (returns ?i32)
+v = s.to-u8()                 ; String to u8 (returns ?u8)
+v = s.to-u16()                ; String to u16 (returns ?u16)
+v = s.to-u32()                ; String to u32 (returns ?u32)
+v = s.to-u64()                ; String to u64 (returns ?u64)
+v = s.to-byte()               ; String to byte (returns ?byte)
+v = s.to-f64()                ; String to f64 (returns ?f64)
+v = s.to-bool()               ; String "true"/"false" to bool (returns ?bool)
+s = v.to-str()                ; i64 to string (method)
+out = s.reverse()             ; Reverse
+c = s.compare(b)              ; Lexicographic comparison
+n = s.count()                 ; Total code point count
+val = s.replace-char(old, new) ; Replace character (returns result string)
+out = s.trim-char(c)          ; Trim specified character
+ok = s.empty()                ; Is empty
+parts = s.split(sep)          ; Split by separator (returns []str, method)
+out = ss.join(sep)            ; Join []str with separator (method)
 ```
 
 #### number — Numeric Operations
 
 ```nolang
-number.max(a, b)                     // Maximum
-number.min(a, b)                     // Minimum
-r = num.clamp(lo, hi)         // Clamp to range (method)
-r = number.abs(a)                    // Absolute value (num generic)
-r = num.sign()                // Sign (-1/0/1, method)
-number.even(v)                       // Even/odd check
+number.max(a, b)                     ; Maximum
+number.min(a, b)                     ; Minimum
+r = num.clamp(lo, hi)         ; Clamp to range (method)
+r = number.abs(a)                    ; Absolute value (num generic)
+r = num.sign()                ; Sign (-1/0/1, method)
+number.even(v)                       ; Even/odd check
 number.odd(v)
-number.gcd(a, b)                     // Greatest common divisor
-number.lcm(a, b)                     // Least common multiple
-r = number.pow(a, n)                 // Integer power
-number.i64-to-f64(v)                 // Numeric conversion
+number.gcd(a, b)                     ; Greatest common divisor
+number.lcm(a, b)                     ; Least common multiple
+r = number.pow(a, n)                 ; Integer power
+number.i64-to-f64(v)                 ; Numeric conversion
 number.f64-to-i64(v)
-s = int.to-str()              // i64 to string (method)
-q = number.div(a, b)                 // Integer division quotient
-r = number.mod(a, b)                 // Modulo
-number.swap(a, b)                    // Swap
-yes = float.is-nan()          // NaN check (method)
-yes = float.is-inf()          // Inf check (method)
+s = int.to-str()              ; i64 to string (method)
+q = number.div(a, b)                 ; Integer division quotient
+r = number.mod(a, b)                 ; Modulo
+number.swap(a, b)                    ; Swap
+yes = float.is-nan()          ; NaN check (method)
+yes = float.is-inf()          ; Inf check (method)
 
-// Range constants
-i8.MIN / MAX                  // -128 / 127
-i16.MIN / MAX                 // -32768 / 32767
-i32.MIN / MAX                 // -2147483648 / 2147483647
-i64.MIN / MAX                 // -2^63 / 2^63-1
-u8.MIN / MAX                  // 0 / 255
-u16.MIN / MAX                 // 0 / 65535
-u32.MIN / MAX                 // 0 / 4294967295
-u64.MIN / MAX                 // 0 / 2^64-1
+; Range constants
+i8.MIN / MAX                  ; -128 / 127
+i16.MIN / MAX                 ; -32768 / 32767
+i32.MIN / MAX                 ; -2147483648 / 2147483647
+i64.MIN / MAX                 ; -2^63 / 2^63-1
+u8.MIN / MAX                  ; 0 / 255
+u16.MIN / MAX                 ; 0 / 65535
+u32.MIN / MAX                 ; 0 / 4294967295
+u64.MIN / MAX                 ; 0 / 2^64-1
 ```
 
 #### byte — Byte Operations
 
 ```nolang
-out = i64.to-bytes-be()         // i64 → big-endian [8]byte
-out = i64.to-bytes-le()         // i64 → little-endian [8]byte
-v = []byte.to-i64-be()          // big-endian []byte → i64 (1~8 bytes)
-v = []byte.to-i64-le()          // little-endian []byte → i64 (1~8 bytes)
-s = []byte.to-str()             // []byte to str (method)
-s = []byte.to-hex()             // []byte → uppercase hex string
-s = []byte.to-hex-lower()       // []byte → lowercase hex string
-s = byte.to-str()               // byte to str (method)
+out = i64.to-bytes-be()         ; i64 → big-endian [8]byte
+out = i64.to-bytes-le()         ; i64 → little-endian [8]byte
+v = []byte.to-i64-be()          ; big-endian []byte → i64 (1~8 bytes)
+v = []byte.to-i64-le()          ; little-endian []byte → i64 (1~8 bytes)
+s = []byte.to-str()             ; []byte to str (method)
+s = []byte.to-hex()             ; []byte → uppercase hex string
+s = []byte.to-hex-lower()       ; []byte → lowercase hex string
+s = byte.to-str()               ; byte to str (method)
 ```
 
 #### vec — Slice Operations
 
 ```nolang
-v = vec.vec-create(n, val)         // Create slice of length n, filled with val
-ok = []t.eq(a, b, n)           // Equality comparison
-n = []t.len()                  // Length
-[]t.push(val)                   // Append
-val, new-n = []t.pop()         // Pop
-found = []t.contains(n, val)   // Contains (n is length)
-[]t.reverse(n)                  // Reverse first n elements
-[]t.clone(dst)                  // Copy to dst
-[]t.fill(n, val)                // Fill first n elements
-arr = []t.to-arr()             // Convert to array
-[]t.sort-asc()                  // Ascending sort (method)
-[]t.sort-desc()                 // Descending sort (method)
+v = vec.vec-create(n, val)         ; Create slice of length n, filled with val
+ok = []t.eq(a, b, n)           ; Equality comparison
+n = []t.len()                  ; Length
+[]t.push(val)                   ; Append
+val, new-n = []t.pop()         ; Pop
+found = []t.contains(n, val)   ; Contains (n is length)
+[]t.reverse(n)                  ; Reverse first n elements
+[]t.clone(dst)                  ; Copy to dst
+[]t.fill(n, val)                ; Fill first n elements
+arr = []t.to-arr()             ; Convert to array
+[]t.sort-asc()                  ; Ascending sort (method)
+[]t.sort-desc()                 ; Descending sort (method)
 ```
 
 #### arr — Array Operations
 
 ```nolang
-out = [n]t.clone()             // Copy
-ok = [n]t.eq(b)                // Equality comparison
-[n]t.fill(val)                  // Fill
-[n]t.reverse()                  // Reverse
-ok = [n]t.contains(val)        // Contains
-v = [n]t.to-vec()              // Convert to slice
-v = [n]t.max()                 // Maximum
-v = [n]t.min()                 // Minimum
-v = [n]t.sum()                 // Sum
-i = [n]t.index-of(val)          // Index
-v = [n]t.last()                // Last element
-v = [n]t.first()               // First element
-[n]t.sort-asc()                 // Ascending sort
-[n]t.sort-desc()                // Descending sort
+out = [n]t.clone()             ; Copy
+ok = [n]t.eq(b)                ; Equality comparison
+[n]t.fill(val)                  ; Fill
+[n]t.reverse()                  ; Reverse
+ok = [n]t.contains(val)        ; Contains
+v = [n]t.to-vec()              ; Convert to slice
+v = [n]t.max()                 ; Maximum
+v = [n]t.min()                 ; Minimum
+v = [n]t.sum()                 ; Sum
+i = [n]t.index-of(val)          ; Index
+v = [n]t.last()                ; Last element
+v = [n]t.first()               ; First element
+[n]t.sort-asc()                 ; Ascending sort
+[n]t.sort-desc()                ; Descending sort
 ```
 
 #### sort — Sort Constants
 
 ```nolang
-sort.asc                         // Ascending
-sort.desc                        // Descending
+sort.asc                         ; Ascending
+sort.desc                        ; Descending
 ```
 
 ---
@@ -2023,24 +2023,24 @@ sort.desc                        // Descending
 Provides environment variables, directory operations, process management, system information, time, etc. For file read/write functionality, see the `fs` module.
 
 ```nolang
-// Environment variables
+; Environment variables
 val = os.get-env(key)
 os.set-env(key, val)
 
-// Directory
+; Directory
 dir = os.get-wd()
 os.ch-dir(dir)
 os.mkdir(path, mode)
 
-// Process
+; Process
 os.exit(code)
 pid = os.get-pid()
 
-// System information
+; System information
 name = os.host-name()
 msg = os.strerror(errnum)
 
-// Time
+; Time
 sec = os.now()
 ms = os.now-ms()
 us = os.now-us()
@@ -2049,7 +2049,7 @@ os.sleep(sec)
 os.sleep-us(us)
 os.sleep-ns(ns)
 
-// Command-line arguments
+; Command-line arguments
 count = os.args()
 val = os.arg(idx)
 ```
@@ -2059,13 +2059,13 @@ val = os.arg(idx)
 Wraps open files with the `file` struct and paths with the `path` struct.
 
 ```nolang
-// File struct
+; File struct
 file {
     fd i64
     path str
 }
 
-// Standard files
+; Standard files
 stdin = file{
     fd: 0
     path: '<stdin>'
@@ -2079,7 +2079,7 @@ stderr = file{
     path: '<stderr>'
 }
 
-// Open file (with options)
+; Open file (with options)
 file-mode {
     read,
     write,
@@ -2101,37 +2101,37 @@ file-opts {
     truncate bool
     append bool
 }
-f = fs.open(path, opts)             // Open file, returns nil on failure
+f = fs.open(path, opts)             ; Open file, returns nil on failure
 
-// file methods
-read-n = f.read(buf, n)          // Read up to n bytes
-line = f.read-line()              // Read one line (?str, nil=EOF)
-content, n = f.read-all()        // Read entire file
-written = f.write(data, n)       // Write n bytes
-ok = f.write-all(data, n)        // Write all (overwrite)
-ok = f.append(data, n)           // Append data
-ok = f.copy-to(dst-path)         // Copy to target path
-ok = f.close()                   // Close (standard files are not auto-closed)
-yes = f.is-open()                // Is open
-sz = f.size()                    // File size
+; file methods
+read-n = f.read(buf, n)          ; Read up to n bytes
+line = f.read-line()              ; Read one line (?str, nil=EOF)
+content, n = f.read-all()        ; Read entire file
+written = f.write(data, n)       ; Write n bytes
+ok = f.write-all(data, n)        ; Write all (overwrite)
+ok = f.append(data, n)           ; Append data
+ok = f.copy-to(dst-path)         ; Copy to target path
+ok = f.close()                   ; Close (standard files are not auto-closed)
+yes = f.is-open()                ; Is open
+sz = f.size()                    ; File size
 
-// Built-in functions
-fd = fs.open-read(path)             // Open read-only
-fd = fs.open-write(path)            // Open for writing (O_CREAT|O_TRUNC, 0644)
-fd = fs.open-file(path, flags, mode) // Open with custom flags
-n = fs.read(fd, buf, n)             // Low-level read
-written = fs.write(fd, data, n)     // Low-level write
-ok = fs.close(fd)                   // Low-level close
-ok = fs.remove(path)                // Delete file
-ok = fs.rename(old, new)            // Rename
-ok = fs.is-file(path)               // Check if it is a file
-ok = fs.is-dir(path)                // Check if it is a directory
-sz = fs.stat-size(path)             // Get file size
-sz = fs.file-size(path)             // Same as stat-size
-line = fs.get-line()                // Read one line from standard input (?str, nil=EOF)
-ok = fs.copy-file(src, dst)         // Copy file
+; Built-in functions
+fd = fs.open-read(path)             ; Open read-only
+fd = fs.open-write(path)            ; Open for writing (O_CREAT|O_TRUNC, 0644)
+fd = fs.open-file(path, flags, mode) ; Open with custom flags
+n = fs.read(fd, buf, n)             ; Low-level read
+written = fs.write(fd, data, n)     ; Low-level write
+ok = fs.close(fd)                   ; Low-level close
+ok = fs.remove(path)                ; Delete file
+ok = fs.rename(old, new)            ; Rename
+ok = fs.is-file(path)               ; Check if it is a file
+ok = fs.is-dir(path)                ; Check if it is a directory
+sz = fs.stat-size(path)             ; Get file size
+sz = fs.file-size(path)             ; Same as stat-size
+line = fs.get-line()                ; Read one line from standard input (?str, nil=EOF)
+ok = fs.copy-file(src, dst)         ; Copy file
 
-// macOS open() flag constants
+; macOS open() flag constants
 O-RDONLY = 0
 O-WRONLY = 1
 O-RDWR = 2
@@ -2145,7 +2145,7 @@ O-EXCL = 2048
 
 ```nolang
 val = env.get(key)
-val = env.lookup(key)               // Returns ?str (nil=not found)
+val = env.lookup(key)               ; Returns ?str (nil=not found)
 env.set(key, val)
 env.unset(key)
 val = env.get-with-default(key, default)
@@ -2168,50 +2168,50 @@ arg = args.get-positional(i)
 Wraps path strings with the `path` struct; all operations are provided as methods:
 
 ```nolang
-SEP = 47     // '/' (ASCII)
-DOT = 46     // '.'
+SEP = 47     ; '/' (ASCII)
+DOT = 46     ; '.'
 
-// Struct
+; Struct
 path {
     p str
 }
 
-// Path join and split (modifies .p in place)
+; Path join and split (modifies .p in place)
 p = path{
     p: '/a/b/c.txt'
 }
-p.join(b str)           // Join two paths (modifies in place)
-p.base() (out)           // Get filename
-p.dir()                  // Get directory (modifies .p in place)
-p.ext() (out)            // Get file extension
-p.clean()                // Normalize (modifies .p in place)
-p.split() (f str)        // Split into directory + filename (.p becomes directory, returns filename)
+p.join(b str)           ; Join two paths (modifies in place)
+p.base() (out)           ; Get filename
+p.dir()                  ; Get directory (modifies .p in place)
+p.ext() (out)            ; Get file extension
+p.clean()                ; Normalize (modifies .p in place)
+p.split() (f str)        ; Split into directory + filename (.p becomes directory, returns filename)
 
-// Path checks
-p.is-abs() (yes bool)    // Whether it is an absolute path
+; Path checks
+p.is-abs() (yes bool)    ; Whether it is an absolute path
 
-// File system operations (delegates to fs built-in functions)
-p.exists() (yes bool)        // Whether it exists
-p.is-dir() (yes bool)        // Whether it is a directory
-p.is-file() (yes bool)       // Whether it is a file
-p.size() (sz i64)            // File size
-p.make-dir() (ok bool)       // Create directory
-p.remove() (ok bool)         // Delete
-p.rename(new-p str) (ok bool)    // Rename
-p.change-dir() (ok bool)     // Change working directory
+; File system operations (delegates to fs built-in functions)
+p.exists() (yes bool)        ; Whether it exists
+p.is-dir() (yes bool)        ; Whether it is a directory
+p.is-file() (yes bool)       ; Whether it is a file
+p.size() (sz i64)            ; File size
+p.make-dir() (ok bool)       ; Create directory
+p.remove() (ok bool)         ; Delete
+p.rename(new-p str) (ok bool)    ; Rename
+p.change-dir() (ok bool)     ; Change working directory
 
-// Constructor methods
-path.current() (out path)    // Get current working directory
+; Constructor methods
+path.current() (out path)    ; Get current working directory
 ```
 
 #### bufio — Buffered Reading
 
 ```nolang
-r = reader.init(fd, buf)       // Initialize buffered reader (returns reader)
-ok = reader.fill()              // Fill buffer
-b = reader.read-byte()          // Read one byte (?byte, nil=EOF)
-ok = reader.read-line(line)     // Read one line into line
-reader.close()                  // Close
+r = reader.init(fd, buf)       ; Initialize buffered reader (returns reader)
+ok = reader.fill()              ; Fill buffer
+b = reader.read-byte()          ; Read one byte (?byte, nil=EOF)
+ok = reader.read-line(line)     ; Read one line into line
+reader.close()                  ; Close
 ```
 
 #### io — I/O Abstraction
@@ -2219,40 +2219,40 @@ reader.close()                  // Close
 Provides `io.reader` and `io.writer` structs to unify read/write operations across files, standard I/O, and other streams:
 
 ```nolang
-// Standard file descriptors
+; Standard file descriptors
 STDIN-FD = 0
 STDOUT-FD = 1
 STDERR-FD = 2
 
-// io.reader struct
+; io.reader struct
 io.reader {
     fd i64
 }
-r = io.reader.from-fd(fd)      // Create from fd
-r = io.reader.from-stdin()     // Create from standard input
-read-n = r.read(buf, n)        // Read n bytes
-b = r.read-byte()              // Read one byte (?byte, nil=EOF)
-line = r.read-line()           // Read one line (?str, nil=EOF)
-total = r.read-all(buf, size)  // Read all
+r = io.reader.from-fd(fd)      ; Create from fd
+r = io.reader.from-stdin()     ; Create from standard input
+read-n = r.read(buf, n)        ; Read n bytes
+b = r.read-byte()              ; Read one byte (?byte, nil=EOF)
+line = r.read-line()           ; Read one line (?str, nil=EOF)
+total = r.read-all(buf, size)  ; Read all
 
-// io.writer struct
+; io.writer struct
 io.writer {
     fd i64
 }
-w = io.writer.from-fd(fd)      // Create from fd
-w = io.writer.from-stdout()    // Create from standard output
-w = io.writer.from-stderr()    // Create from standard error
-written = w.write(data, n)     // Write n bytes
-written = w.write-str(s)       // Write entire string
-written = w.write-byte(b)      // Write one byte
-written = w.write-line(s)      // Write string + newline
+w = io.writer.from-fd(fd)      ; Create from fd
+w = io.writer.from-stdout()    ; Create from standard output
+w = io.writer.from-stderr()    ; Create from standard error
+written = w.write(data, n)     ; Write n bytes
+written = w.write-str(s)       ; Write entire string
+written = w.write-byte(b)      ; Write one byte
+written = w.write-line(s)      ; Write string + newline
 
-// Convenience functions
-n = io.out(s)                // Write to stdout (no newline)
-n = io.outln(s)              // Write to stdout (with newline)
-n = io.err(s)                  // Write to stderr (no newline)
-n = io.errln(s)                // Write to stderr (with newline)
-line = io.read-line()          // Read one line from stdin (?str, nil=EOF)
+; Convenience functions
+n = io.out(s)                ; Write to stdout (no newline)
+n = io.outln(s)              ; Write to stdout (with newline)
+n = io.err(s)                  ; Write to stderr (no newline)
+n = io.errln(s)                ; Write to stderr (with newline)
+line = io.read-line()          ; Read one line from stdin (?str, nil=EOF)
 ```
 
 #### regexp — Regular Expression
@@ -2260,17 +2260,17 @@ line = io.read-line()          // Read one line from stdin (?str, nil=EOF)
 Wraps pattern with the `regexp` struct; underlying implementation uses C standard library `regex.h`:
 
 ```nolang
-// Struct
+; Struct
 regexp {
     pattern str
 }
 
-// Methods
+; Methods
 re = regexp{
     pattern: '^hello'
 }
-matched = re.matches(text)        // Check whether it matches
-result = re.find(text)           // Find first matching substring
+matched = re.matches(text)        ; Check whether it matches
+result = re.find(text)           ; Find first matching substring
 ```
 
 #### process — Process Operations
@@ -2278,7 +2278,7 @@ result = re.find(text)           // Find first matching substring
 Provides process creation, standard stream access, process waiting, and process information query. Underlying implementation uses POSIX fork/exec/pipe/waitpid:
 
 ```nolang
-// Signal constants
+; Signal constants
 SIG-TERM = 15
 SIG-KILL = 9
 SIG-INT = 2
@@ -2287,7 +2287,7 @@ SIG-CONT = 18
 SIG-CHLD = 17
 WNOHANG = 1
 
-// Struct
+; Struct
 process {
     pid i64
     stdin-fd i64
@@ -2297,41 +2297,41 @@ process {
     running i64
 }
 
-// Process creation
+; Process creation
 p = process{}
-ok = p.start(program, arg)          // fork + exec, capture stdout
-ok = p.start-with-stdin(program, arg) // fork + exec, capture stdin + stdout
+ok = p.start(program, arg)          ; fork + exec, capture stdout
+ok = p.start-with-stdin(program, arg) ; fork + exec, capture stdin + stdout
 
-// Process waiting
-ok = p.wait()                       // Block waiting for child process to end
-ok = p.wait-nohang()                // Non-blocking polling
+; Process waiting
+ok = p.wait()                       ; Block waiting for child process to end
+ok = p.wait-nohang()                ; Non-blocking polling
 
-// Process control
-ok = p.kill(sig)                    // Send signal
-ok = p.terminate()                  // SIG-TERM
-ok = p.force-kill()                 // SIG-KILL
+; Process control
+ok = p.kill(sig)                    ; Send signal
+ok = p.terminate()                  ; SIG-TERM
+ok = p.force-kill()                 ; SIG-KILL
 
-// Standard stream operations
-read-n = p.read(buf, n)             // Read from stdout
-line = p.read-line()               // Read one line (?str, nil=EOF)
-content, n = p.read-all()           // Read all stdout
-written = p.write(data, n)          // Write to stdin
-p.close-stdin()                    // Close stdin pipe
-p.close-stdout()                   // Close stdout pipe
-p.close-stderr()                   // Close stderr pipe
+; Standard stream operations
+read-n = p.read(buf, n)             ; Read from stdout
+line = p.read-line()               ; Read one line (?str, nil=EOF)
+content, n = p.read-all()           ; Read all stdout
+written = p.write(data, n)          ; Write to stdin
+p.close-stdin()                    ; Close stdin pipe
+p.close-stdout()                   ; Close stdout pipe
+p.close-stderr()                   ; Close stderr pipe
 
-// Process information
-pid = p.pid-of()                    // Child process ID
-code = p.exit-code-of()             // Exit code
-yes = p.is-running()                // Whether still running
-pid = process.parent-pid()          // Parent process ID
+; Process information
+pid = p.pid-of()                    ; Child process ID
+code = p.exit-code-of()             ; Exit code
+yes = p.is-running()                ; Whether still running
+pid = process.parent-pid()          ; Parent process ID
 
-// Lifecycle
-p.close()                          // Close all pipes and wait
+; Lifecycle
+p.close()                          ; Close all pipes and wait
 
-// Convenience functions
-status = process.process-run(cmd)           // Execute shell command
-content, code = process.process-output(program, arg) // Execute and capture output
+; Convenience functions
+status = process.process-run(cmd)           ; Execute shell command
+content, code = process.process-output(program, arg) ; Execute and capture output
 ```
 
 #### net — Network Operations
@@ -2339,43 +2339,43 @@ content, code = process.process-output(program, arg) // Execute and capture outp
 Provides TCP networking capabilities, including server listening, client connections, and data send/receive. Underlying implementation uses POSIX socket API:
 
 ```nolang
-// Network constants
+; Network constants
 AF-INET = 2
 SOCK-STREAM = 1
 SOL-SOCKET = 65535
 SO-REUSEADDR = 4
 BACKLOG = 128
 
-// listener struct
+; listener struct
 listener {
     fd i64
 }
 
-// Listening operations
+; Listening operations
 l = listener{}
-ok = l.listen(host, port)            // Establish TCP listener (socket+setsockopt+bind+listen)
-c = l.accept()                       // Accept connection (?conn, nil=no connection)
-l.close()                           // Close listening socket
-fd = l.fd-of()                       // Get fd
+ok = l.listen(host, port)            ; Establish TCP listener (socket+setsockopt+bind+listen)
+c = l.accept()                       ; Accept connection (?conn, nil=no connection)
+l.close()                           ; Close listening socket
+fd = l.fd-of()                       ; Get fd
 
-// conn struct
+; conn struct
 conn {
     fd i64
 }
 
-// Connection operations
+; Connection operations
 c = conn{}
-ok = c.dial(host, port)              // Establish TCP connection (socket+connect)
-written = c.send(data)               // Send string
-read-n = c.recv(buf, n)              // Receive data into buf
-line = c.recv-line()                 // Receive one line (?str, nil=EOF, max 4096 bytes)
-content, total = c.recv-all()        // Receive all until connection closed
-c.close()                           // Close connection
-fd = c.fd-of()                       // Get fd
+ok = c.dial(host, port)              ; Establish TCP connection (socket+connect)
+written = c.send(data)               ; Send string
+read-n = c.recv(buf, n)              ; Receive data into buf
+line = c.recv-line()                 ; Receive one line (?str, nil=EOF, max 4096 bytes)
+content, total = c.recv-all()        ; Receive all until connection closed
+c.close()                           ; Close connection
+fd = c.fd-of()                       ; Get fd
 
-// Convenience functions
-l = net.net-listen-on(host, port)        // Create listener and start listening (?listener)
-c = net.net-dial-to(host, port)          // Create connection and dial (?conn)
+; Convenience functions
+l = net.net-listen-on(host, port)        ; Create listener and start listening (?listener)
+c = net.net-dial-to(host, port)          ; Create connection and dial (?conn)
 ```
 
 #### net/ip — IP Address Operations
@@ -2383,13 +2383,13 @@ c = net.net-dial-to(host, port)          // Create connection and dial (?conn)
 Provides IPv4 address parsing, validation, conversion, and classification. Pure Nolang implementation:
 
 ```nolang
-// Default address constants
-IP-ZERO       // 0.0.0.0
-IP-LOOPBACK   // 127.0.0.1
-IP-ANY        // 0.0.0.0
-IP-BROADCAST  // 255.255.255.255
+; Default address constants
+IP-ZERO       ; 0.0.0.0
+IP-LOOPBACK   ; 127.0.0.1
+IP-ANY        ; 0.0.0.0
+IP-BROADCAST  ; 255.255.255.255
 
-// ip-addr struct
+; ip-addr struct
 ip-addr {
     a i64
     b i64
@@ -2397,32 +2397,32 @@ ip-addr {
     d i64
 }
 
-// Parsing and conversion
+; Parsing and conversion
 ip = ip-addr{}
-ok = ip.parse('192.168.1.1')         // Parse from string
-s = ip.to-str()                      // Convert to string '192.168.1.1'
-v = ip.to-u32()                      // Convert to u32 (big-endian)
-ip.from-u32(v)                      // Create from u32
+ok = ip.parse('192.168.1.1')         ; Parse from string
+s = ip.to-str()                      ; Convert to string '192.168.1.1'
+v = ip.to-u32()                      ; Convert to u32 (big-endian)
+ip.from-u32(v)                      ; Create from u32
 
-// Address classification
-yes = ip.is-loopback()               // 127.0.0.0/8
-yes = ip.is-private()                // 10/8, 172.16/12, 192.168/16
-yes = ip.is-zero()                   // 0.0.0.0
-yes = ip.is-broadcast()              // 255.255.255.255
-yes = ip.is-multicast()              // 224.0.0.0/4
-yes = ip.is-link-local()             // 169.254.0.0/16
-yes = ip.is-class-a()                // Class A (1~126)
-yes = ip.is-class-b()                // Class B (128~191)
-yes = ip.is-class-c()                // Class C (192~223)
+; Address classification
+yes = ip.is-loopback()               ; 127.0.0.0/8
+yes = ip.is-private()                ; 10/8, 172.16/12, 192.168/16
+yes = ip.is-zero()                   ; 0.0.0.0
+yes = ip.is-broadcast()              ; 255.255.255.255
+yes = ip.is-multicast()              ; 224.0.0.0/4
+yes = ip.is-link-local()             ; 169.254.0.0/16
+yes = ip.is-class-a()                ; Class A (1~126)
+yes = ip.is-class-b()                ; Class B (128~191)
+yes = ip.is-class-c()                ; Class C (192~223)
 
-// Comparison and subnet
-yes = ip.equal(other)                // Address equality comparison
-yes = ip.in-subnet(base, prefix-len) // Subnet containment check
+; Comparison and subnet
+yes = ip.equal(other)                ; Address equality comparison
+yes = ip.in-subnet(base, prefix-len) ; Subnet containment check
 
-// Convenience functions
-addr = ip.ip-parse(s)                   // Quick parse (?ip-addr, nil=invalid)
-yes = ip.ip-is-loopback(s)              // Quick loopback check
-yes = ip.ip-is-private(s)               // Quick private check
+; Convenience functions
+addr = ip.ip-parse(s)                   ; Quick parse (?ip-addr, nil=invalid)
+yes = ip.ip-is-loopback(s)              ; Quick loopback check
+yes = ip.ip-is-private(s)               ; Quick private check
 ```
 
 #### net/sse — Server-Sent Events Client
@@ -2430,34 +2430,34 @@ yes = ip.ip-is-private(s)               // Quick private check
 Supports SSE streaming reception conforming to W3C EventSource spec. Underlying implementation uses HTTP/1.1 long connections, supporting both plain HTTP and HTTPS (TLS):
 
 ```nolang
-// sse-event struct
+; sse-event struct
 sse-event {
-    event str       // Event type (default 'message')
-    data str        // Event data (multi-line data joined with \n)
-    id str          // Event ID
-    retry i64       // Reconnect wait milliseconds (-1=not set)
+    event str       ; Event type (default 'message')
+    data str        ; Event data (multi-line data joined with \n)
+    id str          ; Event ID
+    retry i64       ; Reconnect wait milliseconds (-1=not set)
 }
 
-// sse-client struct
+; sse-client struct
 sse-client {
-    fd i64              // TCP socket fd
-    tls-c tls-conn      // TLS connection
-    use-tls bool        // Whether to use TLS
-    connected bool      // Connection state
-    host str            // Server hostname
-    port i64            // Port number
-    path str            // Request path
-    last-event-id str   // Last received event ID
-    recv-buf str        // Receive buffer
-    recv-buf-len i64    // Buffer data length
+    fd i64              ; TCP socket fd
+    tls-c tls-conn      ; TLS connection
+    use-tls bool        ; Whether to use TLS
+    connected bool      ; Connection state
+    host str            ; Server hostname
+    port i64            ; Port number
+    path str            ; Request path
+    last-event-id str   ; Last received event ID
+    recv-buf str        ; Receive buffer
+    recv-buf-len i64    ; Buffer data length
 }
 
-// Connection and event reception
-client = sse.sse-connect('http://host:3000/events')  // Returns ?sse-client
+; Connection and event reception
+client = sse.sse-connect('http://host:3000/events')  ; Returns ?sse-client
 client: {
     nil -> print('connect failed')
     ->
-        ev = client.next-event()     // Returns ?sse-event (nil=EOF, err=error)
+        ev = client.next-event()     ; Returns ?sse-event (nil=EOF, err=error)
         ev: {
             nil -> print('connection closed')
             err -> print('error: ' - it)
@@ -2466,9 +2466,9 @@ client: {
         client.close()
 }
 
-// Other methods
-yes = client.is-connected()         // Check connection state
-ok = client.reconnect()             // Reconnect (uses last-event-id)
+; Other methods
+yes = client.is-connected()         ; Check connection state
+ok = client.reconnect()             ; Reconnect (uses last-event-id)
 ```
 
 #### net/http — HTTP/1.1 Client
@@ -2476,7 +2476,7 @@ ok = client.reconnect()             // Reconnect (uses last-event-id)
 Provides an HTTP/1.1 protocol client, supporting GET, POST, PUT, DELETE, PATCH and other methods, with optional TLS:
 
 ```nolang
-// Structs
+; Structs
 http-request {
     method str
     url str
@@ -2494,18 +2494,18 @@ http-response {
     body str
 }
 
-// Convenience functions
-resp = http.http-get(url)                        // GET request (?http-response)
-resp = http.http-post(url, body)                  // POST request (?http-response)
-resp = http.http-do(method, url, body)            // Custom method (?http-response)
+; Convenience functions
+resp = http.http-get(url)                        ; GET request (?http-response)
+resp = http.http-post(url, body)                  ; POST request (?http-response)
+resp = http.http-do(method, url, body)            ; Custom method (?http-response)
 
-// Using request object
+; Using request object
 req = http-request{}
 req.init('POST', url, body)
 req.add-header('Content-Type', 'application/json')
-resp = http.http-do-req(req)                      // Send request (?http-response)
+resp = http.http-do-req(req)                      ; Send request (?http-response)
 
-// Parse response headers
+; Parse response headers
 resp.parse-headers()
 ```
 
@@ -2514,7 +2514,7 @@ resp.parse-headers()
 Supports HTTP/2 frame parsing and connection management, supports h2c prior knowledge mode:
 
 ```nolang
-// Frame struct
+; Frame struct
 http2-frame {
     length i64
     frame-type i64
@@ -2523,7 +2523,7 @@ http2-frame {
     payload str
 }
 
-// Connection struct
+; Connection struct
 http2-conn {
     fd i64
     next-stream-id i64
@@ -2533,16 +2533,16 @@ http2-conn {
     use-tls bool
 }
 
-// Connection and request
-c = http2.http2-connect(host, port)                // Establish connection (?http2-conn)
-resp = http2.http2-do(method, url, body)           // Send request (?http-response)
+; Connection and request
+c = http2.http2-connect(host, port)                ; Establish connection (?http2-conn)
+resp = http2.http2-do(method, url, body)           ; Send request (?http-response)
 
-// Frame operations
+; Frame operations
 frame = http2-frame{}
-pos = frame.parse(data, pos)                 // Parse frame (?i64)
-pos = frame.serialize(buf, pos)              // Serialize frame
-ok = c.send-frame(frame)                     // Send frame
-frame = c.recv-frame()                       // Receive frame (?http2-frame)
+pos = frame.parse(data, pos)                 ; Parse frame (?i64)
+pos = frame.serialize(buf, pos)              ; Serialize frame
+ok = c.send-frame(frame)                     ; Send frame
+frame = c.recv-frame()                       ; Receive frame (?http2-frame)
 ```
 
 #### net/http3 — HTTP/3.0 Client (RFC 9114)
@@ -2550,7 +2550,7 @@ frame = c.recv-frame()                       // Receive frame (?http2-frame)
 HTTP/3 client based on QUIC protocol:
 
 ```nolang
-// Method constants
+; Method constants
 HTTP3-METHOD-GET = 'GET'
 HTTP3-METHOD-POST = 'POST'
 HTTP3-METHOD-PUT = 'PUT'
@@ -2559,13 +2559,13 @@ HTTP3-METHOD-PATCH = 'PATCH'
 HTTP3-METHOD-HEAD = 'HEAD'
 HTTP3-METHOD-OPTIONS = 'OPTIONS'
 
-// Convenience functions
-c = http3.http3-connect(host, port)                // Establish QUIC connection (?http3-conn)
-resp = http3.http3-send-request(c, method, path, headers, body) // Send request (?http-response)
-resp = http3.http3-get(url)                        // GET request (?http-response)
-resp = http3.http3-post(url, body)                 // POST request (?http-response)
+; Convenience functions
+c = http3.http3-connect(host, port)                ; Establish QUIC connection (?http3-conn)
+resp = http3.http3-send-request(c, method, path, headers, body) ; Send request (?http-response)
+resp = http3.http3-get(url)                        ; GET request (?http-response)
+resp = http3.http3-post(url, body)                 ; POST request (?http-response)
 
-// QPACK header encoding/decoding
+; QPACK header encoding/decoding
 buf, n = http3.qpack-encode-header(name, value)
 buf, n = http3.qpack-encode-headers(names, values, count)
 name, value, pos = http3.qpack-decode-header(buf, pos)
@@ -2576,26 +2576,26 @@ name, value, pos = http3.qpack-decode-header(buf, pos)
 Supports full-duplex communication over WebSocket protocol, can act as client or server:
 
 ```nolang
-// Message struct
+; Message struct
 ws-message {
-    opcode i64           // 0=continuation, 1=text, 2=binary, 8=close, 9=ping, 10=pong
+    opcode i64           ; 0=continuation, 1=text, 2=binary, 8=close, 9=ping, 10=pong
     data str
     fin bool
 }
 
-// Server
-s = ws.ws-listen-on(host, port)                 // Create listener (?ws-server)
-c = s.accept()                               // Accept connection (?ws-server-conn)
-msg = c.recv()                               // Receive message (?ws-message)
-ok = c.send-text(text)                       // Send text
-ok = c.send-binary(data)                     // Send binary
+; Server
+s = ws.ws-listen-on(host, port)                 ; Create listener (?ws-server)
+c = s.accept()                               ; Accept connection (?ws-server-conn)
+msg = c.recv()                               ; Receive message (?ws-message)
+ok = c.send-text(text)                       ; Send text
+ok = c.send-binary(data)                     ; Send binary
 c.close()
 
-// Client
-c = ws.ws-connect(url)                          // Connect to server (?ws-client)
-msg = c.recv()                               // Receive message (?ws-message)
-ok = c.send-text(text)                       // Send text
-ok = c.send-binary(data)                     // Send binary
+; Client
+c = ws.ws-connect(url)                          ; Connect to server (?ws-client)
+msg = c.recv()                               ; Receive message (?ws-message)
+ok = c.send-text(text)                       ; Send text
+ok = c.send-binary(data)                     ; Send binary
 c.close()
 ```
 
@@ -2604,10 +2604,10 @@ c.close()
 Provides TLS encrypted connections, supporting TLS 1.2 and 1.3:
 
 ```nolang
-// Connection
-c = tls.tls-dial(host, port)                     // Establish TLS connection (?tls-conn)
-n = c.send(data)                             // Send encrypted data (?i64)
-n = c.recv(buf, n)                           // Receive decrypted data (?i64)
+; Connection
+c = tls.tls-dial(host, port)                     ; Establish TLS connection (?tls-conn)
+n = c.send(data)                             ; Send encrypted data (?i64)
+n = c.recv(buf, n)                           ; Receive decrypted data (?i64)
 c.close()
 ```
 
@@ -2616,14 +2616,14 @@ c.close()
 Wraps the `conn` struct, providing auto-reconnect and other features:
 
 ```nolang
-c = client.net-client(host, port)                   // Create client (?client)
-ok = c.connect(host, port)                   // Connect
-ok = c.reconnect()                           // Reconnect
-written = c.send(data)                       // Send
-read-n = c.recv(buf, n)                      // Receive
-line = c.recv-line()                         // Receive one line (?str)
-response = c.request(data)                   // Request-response mode (?str)
-yes = c.is-connected()                       // Connection state
+c = client.net-client(host, port)                   ; Create client (?client)
+ok = c.connect(host, port)                   ; Connect
+ok = c.reconnect()                           ; Reconnect
+written = c.send(data)                       ; Send
+read-n = c.recv(buf, n)                      ; Receive
+line = c.recv-line()                         ; Receive one line (?str)
+response = c.request(data)                   ; Request-response mode (?str)
+yes = c.is-connected()                       ; Connection state
 c.close()
 ```
 
@@ -2632,9 +2632,9 @@ c.close()
 Provides QUIC transport protocol implementation, serving as the underlying transport layer for HTTP/3:
 
 ```nolang
-c = quic.quic-dial(host, port)                    // Establish QUIC connection (?quic-conn)
-n = c.send(data, n)                          // Send data
-n = c.recv(buf, n)                           // Receive data
+c = quic.quic-dial(host, port)                    ; Establish QUIC connection (?quic-conn)
+n = c.send(data, n)                          ; Send data
+n = c.recv(buf, n)                           ; Receive data
 c.close()
 ```
 
@@ -2642,22 +2642,22 @@ c.close()
 
 ```nolang
 s = server{}
-ok = s.listen(host, port)                    // Start listening
-ok = s.serve()                               // Handle requests
+ok = s.listen(host, port)                    ; Start listening
+ok = s.serve()                               ; Handle requests
 s.close()
 ```
 
 #### net/dns — DNS Resolution
 
 ```nolang
-ip = dns.dns-resolve(host)                       // Resolve hostname (?str)
+ip = dns.dns-resolve(host)                       ; Resolve hostname (?str)
 ```
 
 #### net/url — URL Parsing
 
 ```nolang
-u = url.url-parse(url)                           // Parse URL
-s = u.to-str()                               // Convert to string
+u = url.url-parse(url)                           ; Parse URL
+s = u.to-str()                               ; Convert to string
 ```
 
 #### net/cookie — HTTP Cookie
@@ -2693,17 +2693,17 @@ c = proxy.proxy-dial(proxy-url, target-host, target-port)
 ```nolang
 p = pool{}
 p.init(capacity)
-c = p.get()                                  // Get connection from pool
-p.put(c)                                     // Return connection
+c = p.get()                                  ; Get connection from pool
+p.put(c)                                     ; Return connection
 p.close()
 ```
 
 #### net/unix — Unix Domain Socket
 
 ```nolang
-fd = unix.unix-listen(path)                       // Listen
-fd = unix.unix-dial(path)                         // Connect
-fd = unix.unix-accept(listen-fd)                  // Accept connection
+fd = unix.unix-listen(path)                       ; Listen
+fd = unix.unix-dial(path)                         ; Connect
+fd = unix.unix-accept(listen-fd)                  ; Accept connection
 ```
 
 ---
@@ -2713,14 +2713,14 @@ fd = unix.unix-accept(listen-fd)                  // Accept connection
 #### time — Time Operations
 
 ```nolang
-sec = time.now-s()                   // Current Unix timestamp (seconds)
-ms = time.now-ms()                   // Current timestamp (milliseconds)
-us = time.now-us()                   // Current timestamp (microseconds)
-out = time.format-time(t, fmt)        // Format time
-time.sleep-ms(ms)                    // Sleep (milliseconds)
-time.sleep-us(us)                    // Sleep (microseconds)
-d = time.duration-between(start, end) // Elapsed (seconds)
-d = time.duration-ms-between(s, e)    // Elapsed (milliseconds)
+sec = time.now-s()                   ; Current Unix timestamp (seconds)
+ms = time.now-ms()                   ; Current timestamp (milliseconds)
+us = time.now-us()                   ; Current timestamp (microseconds)
+out = time.format-time(t, fmt)        ; Format time
+time.sleep-ms(ms)                    ; Sleep (milliseconds)
+time.sleep-us(us)                    ; Sleep (microseconds)
+d = time.duration-between(start, end) ; Elapsed (seconds)
+d = time.duration-ms-between(s, e)    ; Elapsed (milliseconds)
 ```
 
 ---
@@ -2751,15 +2751,15 @@ log.fatal(msg)
 #### set — Set (Array-based)
 
 ```nolang
-new-n = set.add(s, n, val)           // Add element
-new-n = set.set-remove(s, n, val)        // Remove element
-ok = set.contains(s, n, val)         // Whether it contains
-new-an = set.union(a, an, b, bn)     // Union
-out, n = set.intersection(a, an, b, bn)// Intersection
-out, n = set.difference(a, an, b, bn)  // Difference
-v = set.to-vec(s, n)                 // Convert to slice
-sz = set.set-size(s, n)                   // Element count
-yes = set.set-empty(s, n)                    // Whether empty
+new-n = set.add(s, n, val)           ; Add element
+new-n = set.set-remove(s, n, val)        ; Remove element
+ok = set.contains(s, n, val)         ; Whether it contains
+new-an = set.union(a, an, b, bn)     ; Union
+out, n = set.intersection(a, an, b, bn)  ; Intersection
+out, n = set.difference(a, an, b, bn)  ; Difference
+v = set.to-vec(s, n)                 ; Convert to slice
+sz = set.set-size(s, n)                   ; Element count
+yes = set.set-empty(s, n)                    ; Whether empty
 ```
 
 #### deque — Double-ended Queue
@@ -2767,7 +2767,7 @@ yes = set.set-empty(s, n)                    // Whether empty
 Double-ended queue implemented with a circular buffer, wrapped in the `deque` struct:
 
 ```nolang
-// Struct
+; Struct
 deque {
     buf []i64
     cap i64
@@ -2775,7 +2775,7 @@ deque {
     tail i64
 }
 
-// Initialization
+; Initialization
 d = deque{
     buf: buf
     cap: 128
@@ -2783,16 +2783,16 @@ d = deque{
     tail: 0
 }
 
-// Methods
-d.push-front(val)              // Push from front
-d.push-back(val)               // Push from back
-val = d.pop-front()             // Pop from front
-val = d.pop-back()              // Pop from back
-val = d.peek-front()            // Peek front element (?i64, nil=empty)
-val = d.peek-back()             // Peek back element (?i64, nil=empty)
-sz = d.size()                   // Size
-yes = d.empty()                 // Whether empty
-d.clear()                      // Clear
+; Methods
+d.push-front(val)              ; Push from front
+d.push-back(val)               ; Push from back
+val = d.pop-front()             ; Pop from front
+val = d.pop-back()              ; Pop from back
+val = d.peek-front()            ; Peek front element (?i64, nil=empty)
+val = d.peek-back()             ; Peek back element (?i64, nil=empty)
+sz = d.size()                   ; Size
+yes = d.empty()                 ; Whether empty
+d.clear()                      ; Clear
 ```
 
 #### heap — Min Heap
@@ -2800,21 +2800,21 @@ d.clear()                      // Clear
 Binary min heap wrapped in the `heap` struct:
 
 ```nolang
-// Struct
+; Struct
 heap {
     data []i64
     n i64
 }
 
-// Initialization
-h = heap.init(data)            // Build heap
+; Initialization
+h = heap.init(data)            ; Build heap
 
-// Methods
-h.push(val)                    // Push element
-val = h.pop()                  // Pop minimum element (?i64, nil=empty)
-val = h.peek()                 // Peek minimum element (?i64, nil=empty)
-sz = h.size()                  // Size
-yes = h.empty()                // Whether empty
+; Methods
+h.push(val)                    ; Push element
+val = h.pop()                  ; Pop minimum element (?i64, nil=empty)
+val = h.peek()                 ; Peek minimum element (?i64, nil=empty)
+sz = h.size()                  ; Size
+yes = h.empty()                ; Whether empty
 ```
 
 #### stack — Stack
@@ -2822,26 +2822,26 @@ yes = h.empty()                // Whether empty
 Last-in-first-out (LIFO) data structure, wrapped in the `stack` struct:
 
 ```nolang
-// Struct
+; Struct
 stack {
     data []i64
     n i64
 }
 
-// Initialization
+; Initialization
 buf [128]i64 = [0:128]
 s = stack{
     data: buf
     n: 0
 }
 
-// Methods
-s.push(val)                    // Push element
-val = s.pop()                  // Pop top element (?i64, nil=empty)
-val = s.peek()                 // Peek top element (?i64, nil=empty)
-sz = s.size()                  // Size
-yes = s.empty()                // Whether empty
-s.clear()                      // Clear
+; Methods
+s.push(val)                    ; Push element
+val = s.pop()                  ; Pop top element (?i64, nil=empty)
+val = s.peek()                 ; Peek top element (?i64, nil=empty)
+sz = s.size()                  ; Size
+yes = s.empty()                ; Whether empty
+s.clear()                      ; Clear
 ```
 
 #### map/linked-hash-map — Ordered Hash Map
@@ -2852,7 +2852,7 @@ Fixed capacity 64 (i64→i64), linear probing, doubly-linked list preserves inse
 m = linked-hash-map{}
 m.init()
 m.put(key, val)
-result = m.get(key)   // ?i64, nil=not found
+result = m.get(key)   ; ?i64, nil=not found
 found = m.contains(key)
 removed = m.remove(key)
 m.clear()
@@ -2885,7 +2885,7 @@ Fixed capacity 256, FNV-1a hash, linear probing:
 m = str-map{}
 m.init()
 m.put('key', 'val')
-result = m.get('key')   // ?str, nil=not found
+result = m.get('key')   ; ?str, nil=not found
 found = m.contains('key')
 removed = m.remove('key')
 m.clear()
@@ -2916,16 +2916,16 @@ Ordered map (i64→i64) implemented based on AVL self-balancing binary search tr
 
 ```nolang
 m = tree-map{}
-m.clear()                           // Initialize
-ok = m.put(key, val)                // Insert or update
-val = m.get(key)                    // Lookup (?i64, nil=not found)
-yes = m.contains(key)               // Check whether key exists
-ok = m.remove(key)                  // Delete key
-key = m.first()                     // Minimum key (?i64)
-key = m.last()                      // Maximum key (?i64)
-key = m.lower-bound(target)         // First key ≥ target (?i64)
-key = m.upper-bound(target)         // First key > target (?i64)
-m.for-each(k, v)                    // Traverse in ascending key order
+m.clear()                           ; Initialize
+ok = m.put(key, val)                ; Insert or update
+val = m.get(key)                    ; Lookup (?i64, nil=not found)
+yes = m.contains(key)               ; Check whether key exists
+ok = m.remove(key)                  ; Delete key
+key = m.first()                     ; Minimum key (?i64)
+key = m.last()                      ; Maximum key (?i64)
+key = m.lower-bound(target)         ; First key ≥ target (?i64)
+key = m.upper-bound(target)         ; First key > target (?i64)
+m.for-each(k, v)                    ; Traverse in ascending key order
 sz = m.size()
 yes = m.empty()
 yes = m.full()
@@ -2937,15 +2937,15 @@ Ordered set (i64) implemented based on AVL self-balancing binary search tree, ca
 
 ```nolang
 s = tree-set{}
-s.clear()                           // Initialize
-ok = s.add(key)                     // Add element
-yes = s.contains(key)               // Check whether it exists
-ok = s.remove(key)                  // Delete element
-val = s.first()                     // Minimum value (?i64)
-val = s.last()                      // Maximum value (?i64)
-val = s.lower-bound(target)         // First element ≥ target (?i64)
-val = s.upper-bound(target)         // First element > target (?i64)
-s.for-each(val)                     // Traverse in ascending order
+s.clear()                           ; Initialize
+ok = s.add(key)                     ; Add element
+yes = s.contains(key)               ; Check whether it exists
+ok = s.remove(key)                  ; Delete element
+val = s.first()                     ; Minimum value (?i64)
+val = s.last()                      ; Maximum value (?i64)
+val = s.lower-bound(target)         ; First element ≥ target (?i64)
+val = s.upper-bound(target)         ; First element > target (?i64)
+s.for-each(val)                     ; Traverse in ascending order
 sz = s.size()
 yes = s.empty()
 yes = s.full()
@@ -2958,9 +2958,9 @@ Ring buffer implementation based on fixed-length array, buffer provided by the `
 ```nolang
 buf [128]i64 = [0:128]
 q = buf.queue-init()
-ok = buf.queue-push(q, val)         // Push to tail
-val = buf.queue-pop(q)              // Pop from head (?t)
-val = buf.queue-peek(q)             // Peek queue head (?t)
+ok = buf.queue-push(q, val)         ; Push to tail
+val = buf.queue-pop(q)              ; Pop from head (?t)
+val = buf.queue-peek(q)             ; Peek queue head (?t)
 sz = q.size()
 yes = q.empty()
 yes = q.full()
@@ -2974,9 +2974,9 @@ Stack implementation based on fixed-length array, buffer provided by the `[n]t` 
 ```nolang
 buf [128]i64 = [0:128]
 s = buf.arr-stack-init()
-ok = buf.arr-stack-push(s, val)     // Push
-val = buf.arr-stack-pop(s)          // Pop (?t)
-val = buf.arr-stack-peek(s)         // Peek top (?t)
+ok = buf.arr-stack-push(s, val)     ; Push
+val = buf.arr-stack-pop(s)          ; Pop (?t)
+val = buf.arr-stack-peek(s)         ; Peek top (?t)
 sz = s.size()
 yes = s.empty()
 yes = s.full()
@@ -2992,12 +2992,12 @@ buf [128]i64 = [0:128]
 nxt [128]i64 = [0:128]
 prv [128]i64 = [0:128]
 l = buf.link-init(nxt, prv)
-ok = buf.link-push-front(l, val)    // Insert at head
-ok = buf.link-push-back(l, val)     // Insert at tail
-val = buf.link-pop-front(l)         // Pop head (?t)
-val = buf.link-pop-back(l)          // Pop tail (?t)
-val = buf.link-peek-front(l)        // Peek head (?t)
-val = buf.link-peek-back(l)         // Peek tail (?t)
+ok = buf.link-push-front(l, val)    ; Insert at head
+ok = buf.link-push-back(l, val)     ; Insert at tail
+val = buf.link-pop-front(l)         ; Pop head (?t)
+val = buf.link-pop-back(l)          ; Pop tail (?t)
+val = buf.link-peek-front(l)        ; Peek head (?t)
+val = buf.link-peek-back(l)         ; Peek tail (?t)
 sz = l.size()
 yes = l.empty()
 yes = l.full()
@@ -3012,13 +3012,13 @@ yes = l.full()
 Defines standard interfaces for database connections, queries, and prepared statements, implemented by concrete drivers:
 
 ```nolang
-// Execution result
+; Execution result
 result {
     last-id i64
     affected i64
 }
 
-// Connection interface (enter/leave auto-management)
+; Connection interface (enter/leave auto-management)
 db enter, leave {
     close() (ok bool)
     exec(sql str) (r result)
@@ -3026,16 +3026,16 @@ db enter, leave {
     prepare(sql str) (s stmt)
 }
 
-// Result set interface
+; Result set interface
 rows enter, leave {
-    next() (ok bool)                    // Iterate to next row
-    scan-int(col i64) (v i64)           // Read integer
-    scan-str(col i64) (v str)           // Read string
-    scan-float(col i64) (v f64)         // Read float
+    next() (ok bool)                    ; Iterate to next row
+    scan-int(col i64) (v i64)           ; Read integer
+    scan-str(col i64) (v str)           ; Read string
+    scan-float(col i64) (v f64)         ; Read float
     close() (ok bool)
 }
 
-// Prepared statement interface
+; Prepared statement interface
 stmt enter, leave {
     bind-int(idx i64, v i64) (ok bool)
     bind-str(idx i64, v str) (ok bool)
@@ -3053,12 +3053,12 @@ stmt enter, leave {
 #### encoding/hex — Hexadecimal
 
 ```nolang
-// Encoding (defined in byte module)
-out = data.to-hex()                  // []byte → uppercase hex str
-out = data.to-hex-lower()            // []byte → lowercase hex str
+; Encoding (defined in byte module)
+out = data.to-hex()                  ; []byte → uppercase hex str
+out = data.to-hex-lower()            ; []byte → lowercase hex str
 
-// Decoding (defined in str module)
-out = s.from-hex()                   // hex str → ?[]byte (nil=empty, err=invalid character)
+; Decoding (defined in str module)
+out = s.from-hex()                   ; hex str → ?[]byte (nil=empty, err=invalid character)
 ```
 
 #### encoding/base64 — Base64 (RFC 4648)
@@ -3066,20 +3066,20 @@ out = s.from-hex()                   // hex str → ?[]byte (nil=empty, err=inva
 ```nolang
 BASE64-STD = 'ABC...+/'
 BASE64-URL = 'ABC...-_'
-PAD = 61  // '='
+PAD = 61  ; '='
 
-out-n = base64.encode(data, n, table, out)    // Base64 encode
-out-n = base64.encode-std(data, n, out)       // Standard encoding
-out-n = base64.encode-url(data, n, out)       // URL-safe encoding
-out-n = base64.decode(s, n, table, out)   // Base64 decode (?i64, nil=invalid input)
+out-n = base64.encode(data, n, table, out)    ; Base64 encode
+out-n = base64.encode-std(data, n, out)       ; Standard encoding
+out-n = base64.encode-url(data, n, out)       ; URL-safe encoding
+out-n = base64.decode(s, n, table, out)   ; Base64 decode (?i64, nil=invalid input)
 ```
 
 #### encoding/csv — CSV Parsing (RFC 4180)
 
 ```nolang
-fn, new-pos = csv.parse-field(s, sn, pos, field)  // Parse single field
-n = csv.parse-line(s, sn, fields, max)             // Parse one line
-out-n = csv.encode-field(field, fn, out)           // Encode field
+fn, new-pos = csv.parse-field(s, sn, pos, field)  ; Parse single field
+n = csv.parse-line(s, sn, fields, max)             ; Parse one line
+out-n = csv.encode-field(field, fn, out)           ; Encode field
 ```
 
 ---
@@ -3089,7 +3089,7 @@ out-n = csv.encode-field(field, fn, out)           // Encode field
 #### archive/tar — TAR Archive (POSIX ustar)
 
 ```nolang
-// Read regular tar
+; Read regular tar
 archive = tar{
     data: raw-bytes
 }
@@ -3097,23 +3097,23 @@ count = archive.count()
 e = archive.entry(idx)
 name = archive.name(idx)
 sz = archive.size(idx)
-typ = archive.type(idx)              // "file" / "dir" / "unknown"
+typ = archive.type(idx)              ; "file" / "dir" / "unknown"
 yes = archive.is-dir(idx)
 yes = archive.is-file(idx)
 out = archive.read(idx)
 mode = archive.mode(idx)
 ts = archive.mtime(idx)
 
-// Read .tar.gz (auto decompress)
+; Read .tar.gz (auto decompress)
 archive = tar.tar-open-gz(gz-data)
 
-// tar-entry methods
+; tar-entry methods
 name = e.name()
 sz = e.size()
 typ = e.type()
 out = e.read()
 
-// Write tar
+; Write tar
 builder = tar-builder{}
 builder.add-file(name, content)
 builder.add-dir(name)
@@ -3126,15 +3126,15 @@ archive = builder.finish()
 archive = zip{
     data: raw-bytes
 }
-count = archive.count()                        // Entry count
-e = archive.entry(idx)                         // Get zip-entry
-name = archive.name(idx)                       // Filename
-sz = archive.size(idx)                         // Original size
-csz = archive.compressed-size(idx)             // Compressed size
-method = archive.method(idx)                   // 0=stored, 8=deflate
-out = archive.extract(idx)                     // stored and deflate modes
+count = archive.count()                        ; Entry count
+e = archive.entry(idx)                         ; Get zip-entry
+name = archive.name(idx)                       ; Filename
+sz = archive.size(idx)                         ; Original size
+csz = archive.compressed-size(idx)             ; Compressed size
+method = archive.method(idx)                   ; 0=stored, 8=deflate
+out = archive.extract(idx)                     ; stored and deflate modes
 
-// zip-entry methods
+; zip-entry methods
 name = e.name()
 sz = e.size()
 csz = e.compressed-size()
@@ -3145,9 +3145,9 @@ out = e.extract()
 #### archive/gzip — GZIP Compression and Raw DEFLATE
 
 ```nolang
-out = gzip.gzip-compress(data)                      // zlib compression
-out = gzip.gzip-decompress(data)                    // zlib decompression
-out = gzip.inflate-decompress(data, out-size)       // Raw DEFLATE decompression (ZIP method 8)
+out = gzip.gzip-compress(data)                      ; zlib compression
+out = gzip.gzip-decompress(data)                    ; zlib decompression
+out = gzip.inflate-decompress(data, out-size)       ; Raw DEFLATE decompression (ZIP method 8)
 ```
 
 ---
@@ -3157,8 +3157,8 @@ out = gzip.inflate-decompress(data, out-size)       // Raw DEFLATE decompression
 #### hash/aes — AES-128 Encryption/Decryption (ECB mode)
 
 ```nolang
-aes.aes-128-enc(plain, 16, key, out)   // Encrypt 16-byte block
-aes.aes-128-dec(cipher, 16, key, out)  // Decrypt 16-byte block
+aes.aes-128-enc(plain, 16, key, out)   ; Encrypt 16-byte block
+aes.aes-128-dec(cipher, 16, key, out)  ; Decrypt 16-byte block
 ```
 
 Also includes standalone modules `hash/aes-128-enc` and `hash/aes-128-dec`.
@@ -3166,8 +3166,8 @@ Also includes standalone modules `hash/aes-128-enc` and `hash/aes-128-dec`.
 #### hash/des — DES Encryption/Decryption (ECB mode)
 
 ```nolang
-des.des-enc(plain, 8, key, out)        // Encrypt 8-byte block
-des.des-dec(cipher, 8, key, out)       // Decrypt 8-byte block
+des.des-enc(plain, 8, key, out)        ; Encrypt 8-byte block
+des.des-dec(cipher, 8, key, out)       ; Decrypt 8-byte block
 ```
 
 Also includes standalone modules `hash/des-enc` and `hash/des-dec`.
@@ -3237,8 +3237,8 @@ fnv-1a-32.fnv-1a-32(s []byte, n, h)
 #### hash/rand — Random Number Generator (xorshift32)
 
 ```nolang
-r = rand.rand(state)                     // 32-bit pseudo-random number
-rand.rand-str(state, n, s)              // Random alphanumeric string
+r = rand.rand(state)                     ; 32-bit pseudo-random number
+rand.rand-str(state, n, s)              ; Random alphanumeric string
 ```
 
 #### hash/x509 — X.509 Certificate DER Parsing
@@ -3246,15 +3246,15 @@ rand.rand-str(state, n, s)              // Random alphanumeric string
 ```nolang
 tag = x509.der-tag(data, pos)
 len, adv = x509.der-len(data, pos)
-x509.x509-fingerprint(cert, n, h0..h7)  // SHA-256 certificate fingerprint
-x509.x509-rsa-e(cert, n, e)             // RSA public key exponent extraction
+x509.x509-fingerprint(cert, n, h0..h7)  ; SHA-256 certificate fingerprint
+x509.x509-rsa-e(cert, n, e)             ; RSA public key exponent extraction
 ```
 
 #### hash/aes-256 — AES-256 Encryption/Decryption (ECB mode)
 
 ```nolang
-aes-256.aes-256-enc(in [16]byte, key [32]byte) (out [16]byte)   // Encrypt
-aes-256.aes-256-dec(in [16]byte, key [32]byte) (out [16]byte)   // Decrypt
+aes-256.aes-256-enc(in [16]byte, key [32]byte) (out [16]byte)   ; Encrypt
+aes-256.aes-256-dec(in [16]byte, key [32]byte) (out [16]byte)   ; Decrypt
 ```
 
 #### hash/aes-cbc — AES-CBC Mode (with PKCS7 Padding)
@@ -3283,7 +3283,7 @@ out = aes-ctr.aes-256-ctr(in []byte, key [32]byte, iv [16]byte)
 #### hash/aes-gcm — AES-GCM AEAD
 
 ```nolang
-// AES-128-GCM
+; AES-128-GCM
 sealed = aes-gcm.aes-128-gcm-seal(key [16]byte, iv [12]byte, aad []byte, plain []byte)
 plain = aes-gcm.aes-128-gcm-open(key [16]byte, iv [12]byte, aad []byte, sealed []byte)
 ```
@@ -3425,7 +3425,7 @@ shared = x25519.x25519-derive-shared(priv [32]byte, peer-pub [32]byte) (shared [
 #### hash/rand-str — Random String Generation
 
 ```nolang
-rand-str.rand-str(state i64, n i64, s str)   // Generate random alphanumeric string of length n
+rand-str.rand-str(state i64, n i64, s str)   ; Generate random alphanumeric string of length n
 ```
 
 ---
@@ -3435,7 +3435,7 @@ rand-str.rand-str(state i64, n i64, s str)   // Generate random alphanumeric str
 #### json — JSON Parsing and Generation
 
 ```nolang
-// Type enum
+; Type enum
 json-kind {
     null,
     bool,
@@ -3445,17 +3445,17 @@ json-kind {
     obj,
 }
 
-// Parsing
-v = json.parse(s, n)          // Full parse
-v = json.parse-str(s, n)                 // Parse string value
-v = json.parse-num(s, n)                 // Parse numeric value
+; Parsing
+v = json.parse(s, n)          ; Full parse
+v = json.parse-str(s, n)                 ; Parse string value
+v = json.parse-num(s, n)                 ; Parse numeric value
 
-// Generation
-n = json.stringify(v, out)    // Serialize
+; Generation
+n = json.stringify(v, out)    ; Serialize
 
-// Access
-val = json.get-key(v, key)    // Get object property
-json.set-key(v json-value, key, val)    // Set object property
+; Access
+val = json.get-key(v, key)    ; Get object property
+json.set-key(v json-value, key, val)    ; Set object property
 ```
 
 ---
@@ -3473,46 +3473,46 @@ Unicode-related features have been distributed across the `char` and `str` modul
 #### uuid — UUID v4 Generation and Parsing
 
 ```nolang
-out = uuid.new-v4(state)                  // Generate UUID v4
-out-n = uuid.to-str(out)             // Convert to lowercase string (method)
-out-n = uuid.to-str-upper(out)       // Convert to uppercase string (method)
-ok = uuid.from-str(s, sn, out)            // Parse from string (supports with/without hyphens)
-ok = uuid.parse-with-dashes(s, pos, out)  // Parse with hyphens
-ok = uuid.parse-no-dashes(s, pos, out)    // Parse without hyphens
-ok = uuid.validate()                 // Validate UUID format (method)
-v = uuid.version()                   // Get version (method)
-v = uuid.variant()                   // Get variant (method)
-yes = uuid.is-nil()                  // Whether it is nil (method)
-yes = uuid.eq(b)                     // Equality comparison (method)
-r = uuid.cmp(b)                      // Compare (method)
-uuid.nil-uuid(out)                        // Return nil UUID
+out = uuid.new-v4(state)                  ; Generate UUID v4
+out-n = uuid.to-str(out)             ; Convert to lowercase string (method)
+out-n = uuid.to-str-upper(out)       ; Convert to uppercase string (method)
+ok = uuid.from-str(s, sn, out)            ; Parse from string (supports with/without hyphens)
+ok = uuid.parse-with-dashes(s, pos, out)  ; Parse with hyphens
+ok = uuid.parse-no-dashes(s, pos, out)    ; Parse without hyphens
+ok = uuid.validate()                 ; Validate UUID format (method)
+v = uuid.version()                   ; Get version (method)
+v = uuid.variant()                   ; Get variant (method)
+yes = uuid.is-nil()                  ; Whether it is nil (method)
+yes = uuid.eq(b)                     ; Equality comparison (method)
+r = uuid.cmp(b)                      ; Compare (method)
+uuid.nil-uuid(out)                        ; Return nil UUID
 ```
 
 #### bigint — Arbitrary Precision Integer
 
 ```nolang
-// Type
+; Type
 bigint {
     sign i64
     limbs []i64
     len i64
 }
 
-// Construction
+; Construction
 out = bigint.from-i64(v)
 out = bigint.from-u64(v)
 out = bigint.zero()
 out = bigint.one()
 out = bigint.copy(a)
 
-// Comparison
+; Comparison
 r = bigint.cmp(a, b)
 r = bigint.eq(a, b)
 r = bigint.is-zero(a)
 r = bigint.is-neg(a)
 r = bigint.is-pos(a)
 
-// Arithmetic
+; Arithmetic
 c = bigint.add(a, b)
 c = bigint.sub(a, b)
 c = bigint.mul(a, b)
@@ -3523,21 +3523,21 @@ r = bigint.mod-i64(a, v)
 c = bigint.pow(a, n)
 r = bigint.mod-pow(base, exp, mod, r)
 
-// Number theory
+; Number theory
 bigint.gcd(a, b, g)
 bigint.lcm(a, b, l)
 
-// Shifting
+; Shifting
 bigint.shl(a, n, c)
 bigint.shr(a, n, c)
 
-// String conversion
+; String conversion
 n = bigint.to-str(a, out)
 out = bigint.from-str(s, sn)
 n = bigint.to-hex(a, out)
 out = bigint.from-hex(s, sn)
 
-// Small integer helpers
+; Small integer helpers
 bigint.add-i64(a, v, c)
 bigint.mul-i64(a, v, c)
 ```
@@ -3547,7 +3547,7 @@ bigint.mul-i64(a, v, c)
 Structured error type and utility functions:
 
 ```nolang
-// Error code enum
+; Error code enum
 err-code {
     ok,
     not-found,
@@ -3559,37 +3559,37 @@ err-code {
     overflow,
 }
 
-// Struct
+; Struct
 error {
     code err-code
     msg str
 }
 
-// Functions
-e = err.err-new(err-code.io, msg)      // Create error
-e = err.err-from-errno(errno)         // Create from C errno
-yes = err.err-is(e, err-code.io)      // Check error code
-msg = err.err-msg(e)                  // Get error message
-code = err.err-code-of(e)             // Get error code
-s, n = err.err-format(e)              // Format as string
+; Functions
+e = err.err-new(err-code.io, msg)      ; Create error
+e = err.err-from-errno(errno)         ; Create from C errno
+yes = err.err-is(e, err-code.io)      ; Check error code
+msg = err.err-msg(e)                  ; Get error message
+code = err.err-code-of(e)             ; Get error code
+s, n = err.err-format(e)              ; Format as string
 ```
 
 ### bool — Boolean Type
 
 ```nolang
-bool.to-str() (out str)     // true→"true", false→"false" (method)
+bool.to-str() (out str)     ; true→"true", false→"false" (method)
 ```
 
 ### enter / leave — Lifecycle Hooks
 
 ```nolang
 
-// Execute on startup
+; Execute on startup
 enter { 
     enter()
 }     
 
-// Execute on exit
+; Execute on exit
 leave {
     leave()
 }     
