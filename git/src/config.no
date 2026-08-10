@@ -14,48 +14,6 @@
 ; local helpers
 ; ═══════════════════════════════════════════════
 
-str-copy = (s str, a i64, b i64) (out str) {
-    out = ''
-    i <- [a..b): {
-        cb str = with-len(1)
-        cb[0] = s[i]
-        out = out - cb
-    }
-}
-
-find-byte-local = (s str, b byte, from i64) (pos i64) {
-    r i64 = -1
-    i = from
-    {
-        i >= s.len -> break
-        c i64 = s[i]
-        r = (c == b) ? i : r
-        c == b -> break
-        i = i + 1
-    } ()
-    pos = r
-}
-
-trim-newline-local = (s str) (out str) {
-    L = s.len
-    L > 0 -> {
-        last = s[L - 1]
-        last == 10 -> {
-            L = L - 1
-            out = str-copy(s, 0, L)
-            L > 0 -> {
-                s2 = out
-                last2 = s2[L - 1]
-                last2 == 13 -> {
-                    out = str-copy(s2, 0, L - 1)
-                }
-            }
-            return
-        }
-    }
-    out = s
-}
-
 ; trim leading/trailing whitespace
 trim-ws = (s str) (out str) {
     ; find start
@@ -74,51 +32,7 @@ trim-ws = (s str) (out str) {
         c == 32 || c == 9 || c == 10 || c == 13 -> end = end - 1
         c != 32 && c != 9 && c != 10 && c != 13 -> break
     } ()
-    out = str-copy(s, start, end)
-}
-
-read-file-str = (p str) (out str, ok bool) {
-    ok = false
-    isf = fs.is-file(p)
-    isf == false -> {
-        out = ''
-        return
-    }
-    raw = fs.read-file(p)
-    out = ''
-    i <- [0..raw.len): {
-        cb str = with-len(1)
-        cb[0] = raw[i]
-        out = out - cb
-    }
-    ok = true
-}
-
-write-file-simple = (p str, content str) (ok bool) {
-    ok = false
-    fd = fs.open-write(p)
-    i <- [0..content.len): {
-        cs str = with-len(1)
-        cs[0] = content[i]
-        fs.write(fd, cs, 1)
-    }
-    fs.close(fd)
-    ok = true
-}
-
-str-eq-local = (a str, b str) (yes bool) {
-    yes = false
-    a.len != b.len -> return
-    yes = true
-    i = 0
-    {
-        i >= a.len -> break
-        a[i] != b[i] -> {
-            yes = false
-            return
-        }
-        i = i + 1
-    } ()
+    out = util.str-range(s, start, end)
 }
 
 to-lower-local = (s str) (out str) {
@@ -154,7 +68,7 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
     p = git-dir - '/config'
     content str
     file-ok bool
-    content, file-ok = read-file-str(p)
+    content, file-ok = util.read-file-str(p)
     file-ok == false -> return
     ; parse section name and optional subsection from `section` param
     ; if section contains '.', split into section + subsection
@@ -165,27 +79,27 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
     current-section str = ''
     {
         pos >= content.len -> break
-        nl = find-byte-local(content, 10, pos)
+        nl = util.find-byte-str(content, 10, pos)
         end = content.len
         nl >= 0 -> end = nl
-        line = str-copy(content, pos, end)
+        line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
         trimmed.len == 0 -> {} -> {
             ; section header: [section] or [section "subsection"]
             trimmed.starts-with('[') -> {
                 ; extract section content between [ and ]
-                rb = find-byte-local(trimmed, 93, 0) ; ]
+                rb = util.find-byte-str(trimmed, 93, 0) ; ]
                 rb >= 0 -> {
-                    inner = str-copy(trimmed, 1, rb)
+                    inner = util.str-range(trimmed, 1, rb)
                     ; check for subsection: section "subsection"
-                    dq = find-byte-local(inner, 34, 0) ; "
+                    dq = util.find-byte-str(inner, 34, 0) ; "
                     dq >= 0 -> {
-                        sname = str-copy(inner, 0, dq)
+                        sname = util.str-range(inner, 0, dq)
                         sname = trim-ws(sname)
                         sname-upper = to-lower-local(sname)
-                        dq2 = find-byte-local(inner, 34, dq + 1)
+                        dq2 = util.find-byte-str(inner, 34, dq + 1)
                         dq2 >= 0 -> {
-                            subsec = str-copy(inner, dq + 1, dq2)
+                            subsec = util.str-range(inner, dq + 1, dq2)
                             dot str = '.'
                             current-section = sname-upper - dot - subsec
                         }
@@ -195,26 +109,26 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
                         current-section = inner-upper
                     }
                     ; check if this matches our target section
-                    same = str-eq-local(current-section, sect-upper)
+                    same = util.str-eq(current-section, sect-upper)
                     in-section = same
                 }
             } -> {
                 ; key = value line
                 in-section == true -> {
-                    eq = find-byte-local(trimmed, 61, 0) ; =
+                    eq = util.find-byte-str(trimmed, 61, 0) ; =
                     eq >= 0 -> {
-                        k = str-copy(trimmed, 0, eq)
+                        k = util.str-range(trimmed, 0, eq)
                         k = trim-ws(k)
                         k-upper = to-lower-local(k)
                         target-key-upper = to-lower-local(key)
-                        key-same = str-eq-local(k-upper, target-key-upper)
+                        key-same = util.str-eq(k-upper, target-key-upper)
                         key-same == true -> {
-                            v = str-copy(trimmed, eq + 1, trimmed.len)
+                            v = util.str-range(trimmed, eq + 1, trimmed.len)
                             v = trim-ws(v)
                             ; strip surrounding quotes if present
                             v.len >= 2 -> {
                                 v[0] == 34 -> {
-                                    v2 = str-copy(v, 1, v.len - 1)
+                                    v2 = util.str-range(v, 1, v.len - 1)
                                     v = v2
                                 }
                             }
@@ -239,7 +153,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
     p = git-dir - '/config'
     content str
     file-ok bool
-    content, file-ok = read-file-str(p)
+    content, file-ok = util.read-file-str(p)
     file-ok == false -> {
         content = ''
     }
@@ -256,27 +170,27 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
     last-section-end i64 = 0
     {
         pos >= content.len -> break
-        nl = find-byte-local(content, 10, pos)
+        nl = util.find-byte-str(content, 10, pos)
         end = content.len
         nl >= 0 -> end = nl
-        line = str-copy(content, pos, end)
+        line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
         trimmed.len == 0 -> {
             new-content = new-content - line - '\n'
         } -> {
             ; section header
             trimmed.starts-with('[') -> {
-                rb = find-byte-local(trimmed, 93, 0)
+                rb = util.find-byte-str(trimmed, 93, 0)
                 rb >= 0 -> {
-                    inner = str-copy(trimmed, 1, rb)
-                    dq = find-byte-local(inner, 34, 0)
+                    inner = util.str-range(trimmed, 1, rb)
+                    dq = util.find-byte-str(inner, 34, 0)
                     dq >= 0 -> {
-                        sname = str-copy(inner, 0, dq)
+                        sname = util.str-range(inner, 0, dq)
                         sname = trim-ws(sname)
                         sname-upper = to-lower-local(sname)
-                        dq2 = find-byte-local(inner, 34, dq + 1)
+                        dq2 = util.find-byte-str(inner, 34, dq + 1)
                         dq2 >= 0 -> {
-                            subsec = str-copy(inner, dq + 1, dq2)
+                            subsec = util.str-range(inner, dq + 1, dq2)
                             dot str = '.'
                             current-section = sname-upper - dot - subsec
                         }
@@ -285,7 +199,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
                         inner-upper = to-lower-local(inner)
                         current-section = inner-upper
                     }
-                    same = str-eq-local(current-section, sect-upper)
+                    same = util.str-eq(current-section, sect-upper)
                     in-section = same
                     same == true -> section-found = true
                 }
@@ -293,12 +207,12 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
             } -> {
                 ; key = value line
                 in-section == true -> {
-                    eq = find-byte-local(trimmed, 61, 0)
+                    eq = util.find-byte-str(trimmed, 61, 0)
                     eq >= 0 -> {
-                        k = str-copy(trimmed, 0, eq)
+                        k = util.str-range(trimmed, 0, eq)
                         k = trim-ws(k)
                         k-upper = to-lower-local(k)
-                        key-same = str-eq-local(k-upper, target-key-upper)
+                        key-same = util.str-eq(k-upper, target-key-upper)
                         key-same == true -> {
                             ; replace this line
                             new-content = new-content - '\t' - key - ' = ' - value - '\n'
@@ -328,7 +242,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         }
         new-content = new-content - '\t' - key - ' = ' - value - '\n'
     }
-    write-file-simple(p, new-content)
+    util.write-file-simple(p, new-content)
     ok = true
 }
 

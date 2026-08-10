@@ -16,60 +16,6 @@
 ; local helpers
 ; ═══════════════════════════════════════════════
 
-str-copy = (s str, a i64, b i64) (out str) {
-    out = ''
-    i <- [a..b): {
-        cb str = with-len(1)
-        cb[0] = s[i]
-        out = out - cb
-    }
-}
-
-find-byte-local = (s str, b byte, from i64) (pos i64) {
-    r i64 = -1
-    i = from
-    {
-        i >= s.len -> break
-        c i64 = s[i]
-        r = (c == b) ? i : r
-        c == b -> break
-        i = i + 1
-    } ()
-    pos = r
-}
-
-hex-of = (o oid) (out str) {
-    out = ''
-    hc = '0123456789abcdef'
-    i <- [0..20): {
-        b = o.id[i]
-        c1 str = with-len(1)
-        c1[0] = hc[(b >> 4) & 15]
-        c2 str = with-len(1)
-        c2[0] = hc[b & 15]
-        out = out - c1 - c2
-    }
-}
-
-local-i64-to-str = (n i64) (out str) {
-    n == 0 -> {
-        out = '0'
-        return
-    }
-    digs str = ''
-    x = n
-    {
-        rem = x % 10
-        ch byte = 48 + rem
-        cs str = with-len(1)
-        cs[0] = ch
-        digs = cs - digs
-        x = x / 10
-        x == 0 -> break
-    } ()
-    out = digs
-}
-
 ; ═══════════════════════════════════════════════
 ; commit lookup
 ; ═══════════════════════════════════════════════
@@ -109,29 +55,23 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
     isf = fs.is-file(p)
     isf == true -> {
         raw = fs.read-file(p)
-        ; build concat copy
-        content = ''
-        i <- [0..raw.len): {
-            cb str = with-len(1)
-            cb[0] = raw[i]
-            content = content - cb
-        }
+        content = raw
         ; trim newline
         L = content.len
         L > 0 -> {
             content[L - 1] == 10 -> {
-                content = str-copy(content, 0, L - 1)
+                content = util.str-range(content, 0, L - 1)
             }
         }
         ; check symbolic ref
         content.starts-with('ref: ') -> {
-            target = str-copy(content, 5, content.len)
+            target = util.str-range(content, 5, content.len)
             o, ok = read-ref-from-module(git-dir, target)
             return
         }
         ; parse as hex
         content.len >= 40 -> {
-            o, ok = oid.oid-from-hex(str-copy(content, 0, 40))
+            o, ok = oid.oid-from-hex(util.str-range(content, 0, 40))
             return
         }
     }
@@ -140,26 +80,21 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
     isf2 = fs.is-file(pr-path)
     isf2 == true -> {
         raw2 = fs.read-file(pr-path)
-        content2 = ''
-        i <- [0..raw2.len): {
-            cb str = with-len(1)
-            cb[0] = raw2[i]
-            content2 = content2 - cb
-        }
+        content2 = raw2
         ; scan lines: "<hex> <refname>"
         pos = 0
         {
             pos >= content2.len -> break
-            nl = find-byte-local(content2, 10, pos)
+            nl = util.find-byte-str(content2, 10, pos)
             end = content2.len
             nl >= 0 -> end = nl
-            line = str-copy(content2, pos, end)
+            line = util.str-range(content2, pos, end)
             line.starts-with('#') -> {} -> {
                 line.starts-with('^') -> {} -> {
-                    sp = find-byte-local(line, 32, 0)
+                    sp = util.find-byte-str(line, 32, 0)
                     sp >= 0 -> {
-                        hx = str-copy(line, 0, sp)
-                        refname = str-copy(line, sp + 1, line.len)
+                        hx = util.str-range(line, 0, sp)
+                        refname = util.str-range(line, sp + 1, line.len)
                         ; compare refname with name
                         ; str-eq local
                         same = true
@@ -174,7 +109,7 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
                         }
                         same == true -> {
                             hx.len >= 40 -> {
-                                o, ok = oid.oid-from-hex(str-copy(hx, 0, 40))
+                                o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
                                 ok == true -> break
                             }
                         }
@@ -201,7 +136,7 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
     read-ok == false -> return
     ; parse "tree <hex>\n" — "tree " is 5 bytes, then 40-char hex
     _d.len < 45 -> return
-    hx = str-copy(_d, 5, 45)
+    hx = util.str-range(_d, 5, 45)
     tree-oid, ok = oid.oid-from-hex(hx)
 }
 
@@ -218,12 +153,12 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
     pos = 0
     {
         pos >= data.len -> break
-        nl = find-byte-local(data, 10, pos)
+        nl = util.find-byte-str(data, 10, pos)
         end = data.len
         nl >= 0 -> end = nl
-        line = str-copy(data, pos, end)
+        line = util.str-range(data, pos, end)
         line.starts-with('parent ') -> {
-            hx = str-copy(line, 7, line.len)
+            hx = util.str-range(line, 7, line.len)
             parent-hex = parent-hex - hx
             nparents = nparents + 1
         }
@@ -271,13 +206,13 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
         _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
         ; append this commit
-        ch = hex-of(cur)
+        ch = oid.oid-hex-str(cur)
         commit-hex = commit-hex - ch - '\n'
         count = count + 1
         ; follow first parent
         np == 0 -> break
         ; parse first parent hex
-        first-parent-hex = str-copy(ph, 0, 40)
+        first-parent-hex = util.str-range(ph, 0, 40)
         cur, cok = oid.oid-from-hex(first-parent-hex)
         cok == false -> break
     } (true)
@@ -294,7 +229,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
     count = 0
     ; simple queue: we store visited oids as concatenated hex
     visited-hex = ''
-    queue-hex = hex-of(start-oid)
+    queue-hex = oid.oid-hex-str(start-oid)
     queue-n i64 = 1
     {
         queue-n == 0 -> break
@@ -302,8 +237,8 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
             count >= max-count -> break
         }
         ; dequeue first
-        cur-hex = str-copy(queue-hex, 0, 40)
-        queue-hex = str-copy(queue-hex, 40, queue-hex.len)
+        cur-hex = util.str-range(queue-hex, 0, 40)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
         queue-n = queue-n - 1
         ; parse oid
         cur oid
@@ -315,7 +250,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
         vpos = 0
         {
             vpos >= visited-hex.len -> break
-            vh = str-copy(visited-hex, vpos, vpos + 40)
+            vh = util.str-range(visited-hex, vpos, vpos + 40)
             ; compare
             same = true
             j <- [0..40): {
@@ -343,7 +278,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
                 count = count + 1
                 ; enqueue parents
                 i <- [0..np): {
-                    parent-hex = str-copy(ph, i * 40, i * 40 + 40)
+                    parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
                     queue-hex = queue-hex - parent-hex
                     queue-n = queue-n + 1
                 }
@@ -364,13 +299,13 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
     yes = false
     ; walk all parents of descendant, check if ancestor is among them
     visited-hex = ''
-    queue-hex = hex-of(descendant)
+    queue-hex = oid.oid-hex-str(descendant)
     queue-n i64 = 1
-    ancestor-hex = hex-of(ancestor)
+    ancestor-hex = oid.oid-hex-str(ancestor)
     {
         queue-n == 0 -> break
-        cur-hex = str-copy(queue-hex, 0, 40)
-        queue-hex = str-copy(queue-hex, 40, queue-hex.len)
+        cur-hex = util.str-range(queue-hex, 0, 40)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
         queue-n = queue-n - 1
         ; check if this is the ancestor
         same = true
@@ -389,7 +324,7 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         vpos = 0
         {
             vpos >= visited-hex.len -> break
-            vh = str-copy(visited-hex, vpos, vpos + 40)
+            vh = util.str-range(visited-hex, vpos, vpos + 40)
             vsame = true
             j <- [0..40): {
                 vh[j] != cur-hex[j] -> {
@@ -415,7 +350,7 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
                 _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
                 cok == true -> {
                     i <- [0..np): {
-                        parent-hex = str-copy(ph, i * 40, i * 40 + 40)
+                        parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
                         queue-hex = queue-hex - parent-hex
                         queue-n = queue-n + 1
                     }

@@ -155,9 +155,9 @@ tree-insert-offset = (raw str, mode i64, name str) (off i64) {
     adir = mode == 16384
     {
         pos >= raw.len -> break
-        sp = find-byte-local(raw, 32, pos)
+        sp = util.find-byte-str(raw, 32, pos)
         sp < 0 -> break
-        nl = find-byte-local(raw, 0, sp + 1)
+        nl = util.find-byte-str(raw, 0, sp + 1)
         nl < 0 -> break
         emode = octal-to-i64(raw[pos .. sp))
         ename = raw[sp + 1 .. nl)
@@ -178,15 +178,15 @@ tree-entry-at = (raw str, i i64) (off i64, sp i64, nl i64) {
     k = 0
     {
         k >= i -> break
-        s = find-byte-local(raw, 32, off)
+        s = util.find-byte-str(raw, 32, off)
         s < 0 -> break
-        n = find-byte-local(raw, 0, s + 1)
+        n = util.find-byte-str(raw, 0, s + 1)
         n < 0 -> break
         off = n + 21
         k = k + 1
     } (k < i)
-    sp = find-byte-local(raw, 32, off)
-    nl = find-byte-local(raw, 0, sp + 1)
+    sp = util.find-byte-str(raw, 32, off)
+    nl = util.find-byte-str(raw, 0, sp + 1)
 }
 
 ; tree-name: the name byte-string of entry i
@@ -195,7 +195,7 @@ tree-name = (t tree, i i64) (s str) {
     sp i64
     nl i64
     off, sp, nl = tree-entry-at(t.raw, i)
-    s = str-copy(t.raw, sp + 1, nl)
+    s = util.str-range(t.raw, sp + 1, nl)
 }
 
 ; tree-mode: the octal mode of entry i
@@ -204,7 +204,7 @@ tree-mode = (t tree, i i64) (m i64) {
     sp i64
     nl i64
     off, sp, nl = tree-entry-at(t.raw, i)
-    m = octal-to-i64(str-copy(t.raw, off, sp))
+    m = octal-to-i64(util.str-range(t.raw, off, sp))
 }
 
 ; tree-id: the object id of entry i
@@ -235,9 +235,9 @@ tree-count-raw = (raw str) (n i64) {
     pos = 0
     {
         pos >= raw.len -> break
-        sp = find-byte-local(raw, 32, pos)
+        sp = util.find-byte-str(raw, 32, pos)
         sp < 0 -> break
-        nl = find-byte-local(raw, 0, sp + 1)
+        nl = util.find-byte-str(raw, 0, sp + 1)
         nl < 0 -> break
         pos = nl + 21
         n = n + 1
@@ -264,8 +264,8 @@ tree-add-raw = (raw str, mode i64, name str, id oid) (out str) {
         ins == curlen -> {
             out = raw - e
         }
-        left str = str-copy(raw, 0, ins)
-        right str = str-copy(raw, ins, raw.len)
+        left str = util.str-range(raw, 0, ins)
+        right str = util.str-range(raw, ins, raw.len)
         out = left - e - right
     }
 }
@@ -322,7 +322,7 @@ tree-encode = (t tree) (out str) {
 person-line = (role str, p person-info) (out str) {
     ; Use the intra-module concat builder (NOT util.i64-to-str — a cross-module
     ; stride-8 return concatenated here corrupts the commit payload).
-    ts str = local-i64-to-str(p.time)
+    ts str = util.i64-to-str(p.time)
     sp str = ' '
     out = role - sp - p.name - ' <' - p.email - '> ' - ts - sp - p.tz
 }
@@ -333,21 +333,21 @@ person-line = (role str, p person-info) (out str) {
 parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     lt i64 = s.index('<')
     gt i64 = s.index('>')
-    nm str = str-copy(s, 0, lt)
-    nm.len > 0 -> nm[nm.len - 1] == 32 -> nm = str-copy(nm, 0, nm.len - 1)
+    nm str = util.str-range(s, 0, lt)
+    nm.len > 0 -> nm[nm.len - 1] == 32 -> nm = util.str-range(nm, 0, nm.len - 1)
     name = nm
-    email = str-copy(s, lt + 1, gt)
-    rest str = str-copy(s, gt + 1, s.len)
-    sp i64 = find-byte-local(rest, 32, 0)
+    email = util.str-range(s, lt + 1, gt)
+    rest str = util.str-range(s, gt + 1, s.len)
+    sp i64 = util.find-byte-str(rest, 32, 0)
     sp < 0 -> sp = rest.len
-    ts str = str-copy(rest, 0, sp)
+    ts str = util.str-range(rest, 0, sp)
     ti ?i64 = ts.to-i64()
     ti: {
         ok -> time = it
         nil -> {}
         err -> {}
     }
-    tz = str-copy(rest, sp + 1, rest.len)
+    tz = util.str-range(rest, sp + 1, rest.len)
 }
 
 ; ═══════════════════════════════════════════════
@@ -356,11 +356,11 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
 
 commit-encode = (c commit-info) (out str) {
     tid oid = c.tree-oid
-    th str = hex-of(tid)
+    th str = oid.oid-hex-str(tid)
     nl str = '\n'
     s = 'tree ' - th - nl
     i <- [0..c.nparents): {
-        ph str = str-copy(c.parenthex, i * 40, i * 40 + 40)
+        ph str = util.str-range(c.parenthex, i * 40, i * 40 + 40)
         s = s - 'parent ' - ph - nl
     }
     al str = person-line('author', c.author)
@@ -377,7 +377,7 @@ commit-encode = (c commit-info) (out str) {
 
 tag-encode = (t tag-info) (out str) {
     tobj oid = t.object
-    oh str = hex-of(tobj)
+    oh str = oid.oid-hex-str(tobj)
     nl str = '\n'
     s = 'object ' - oh - nl
     s = s - 'type ' - t.obj-type - nl
@@ -392,62 +392,6 @@ tag-encode = (t tag-info) (out str) {
 ; loose object write / read
 ; ═══════════════════════════════════════════════
 
-; str-copy: half-open char copy [a, b) from s into a fresh LOCAL str. Avoids
-; nolang's native `[a..b)` slice (inconsistent semantics + broken LLVM for
-; some representations). `s` is a local str so `s[a+i]` indexing is reliable.
-; str-copy: half-open char copy [a, b) from s into a fresh CONCAT (stride-1)
-; string. A concat result is safe to RETURN or PASS to another function — a
-; with-len (stride-8) result would be indexed stride-1 by the callee/caller and
-; corrupted. s is indexed here locally so it reads correctly whatever its layout.
-str-copy = (s str, a i64, b i64) (out str) {
-    out = ''
-    i <- [a..b): {
-        cb str = with-len(1)
-        cb[0] = s[i]
-        out = out - cb
-    }
-}
-
-; find-byte-local: locate first byte b at or after `from` in s (local indexing,
-; so it reads s correctly regardless of stride). Returns -1 if absent.
-; NOTE: nolang does NOT persist a variable assignment made inside a `-> { }`
-; block that is nested within a loop body (the block scopes the assignment).
-; So we accumulate into a regular local `r` via the ternary `? :` (a flat
-; assignment, which DOES persist) and copy to the named return once, after
-; the loop.
-find-byte-local = (s str, b byte, from i64) (pos i64) {
-    r i64 = -1
-    i = from
-    {
-        i >= s.len -> break
-        c i64 = s[i]
-        r = (c == b) ? i : r
-        c == b -> break
-        i = i + 1
-    } ()
-    pos = r
-}
-
-; hex-of: render an oid as a 40-char hex string, built LOCALLY so the result
-; is a proper nolang `str` (indexable). Cross-file `str` returns become
-; `%str-long` and are corrupted (`.len` reads 0, indexing is wrong), so we
-; never call `oid.to-hex()` from another file — we convert the oid's raw
-; bytes here instead.
-hex-of = (o oid) (out str) {
-    ; Concat-return (stride-1): each hex char built as a with-len(1) byte so
-    ; the result survives any indexing or boundary.
-    out = ''
-    hc = '0123456789abcdef'
-    i <- [0..20): {
-        b = o.id[i]
-        c1 str = with-len(1)
-        c1[0] = hc[(b >> 4) & 15]
-        c2 str = with-len(1)
-        c2[0] = hc[b & 15]
-        out = out - c1 - c2
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; INLINE zlib stored-block codec
 ;
@@ -461,36 +405,11 @@ hex-of = (o oid) (out str) {
 ; stored-block stream, so real git can read our objects.
 ; ═══════════════════════════════════════════════
 
-; local-i64-to-str: decimal string of a non-negative integer, built as a PROPER
-; concat string. We avoid util.i64-to-str here because its with-len return would
-; be corrupted by the module boundary; this local version is used only
-; intra-module (building the object header) so it is safe. Builds each digit as
-; a with-len(1) byte (NOT by indexing a string literal with an i64, which the
-; compiler rejects as %str-longlit).
-local-i64-to-str = (n i64) (out str) {
-    n == 0 -> {
-        out = '0'
-        return
-    }
-    digs str = ''
-    x = n
-    {
-        rem = x % 10
-        ch byte = 48 + rem
-        cs str = with-len(1)
-        cs[0] = ch
-        digs = cs - digs
-        x = x / 10
-        x == 0 -> break
-    } ()
-    out = digs
-}
-
 ; build-header: "<type> <size>\0" header, built locally as a PROPER concat str.
 ; Replaces the cross-module oid.object-header call whose with-len return was
 ; corrupted at the boundary.
 build-header = (kind str, size i64) (out str) {
-    sz = local-i64-to-str(size)
+    sz = util.i64-to-str(size)
     sp str = ' '
     nul str = '\0'
     out = kind - sp - sz - nul
@@ -577,18 +496,9 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     comp[7 + full-len + 1] = (ad >> 16) & 0xff
     comp[7 + full-len + 2] = (ad >> 8) & 0xff
     comp[7 + full-len + 3] = ad & 0xff
-    ; Write byte-by-byte. nolang stores a `str` with an 8-byte stride in memory,
-    ; so writing the whole `comp` at once via fs.write(fd, comp, comp.len) would
-    ; emit one real byte + 7 null bytes per codepoint. Writing a single codepoint
-    ; per fs.write(fd, cs, 1) call into a with-len(1) buffer emits exactly the
-    ; correct byte. `comp[i]` (a local) is indexed stride-8-aware = correct byte.
+    ; Write the compressed object to file.
     fd = fs.open-write(f)
-    i <- [0..comp.len): {
-        c = comp[i]
-        cs str = with-len(1)
-        cs[0] = c
-        fs.write(fd, cs, 1)
-    }
+    fs.write(fd, comp, comp.len)
     fs.close(fd)
 }
 
@@ -660,7 +570,7 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
         p = p + len
         bfinal == 1 -> break
     } (true)
-    ; Second pass: build `out` as a concat string, one byte at a time.
+    ; Second pass: build `out` by concatenating payload from each stored block.
     out = ''
     p = 2
     {
@@ -669,21 +579,17 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
         p = p + 1
         len = rf[p] | (rf[p + 1] << 8)
         p = p + 4
-        i <- [0..len): {
-            bc str = with-len(1)
-            bc[0] = rf[p + i]
-            out = out - bc
-        }
+        out = out - rf[p..p + len)
         p = p + len
         bfinal == 1 -> break
     } (true)
-    sp i64 = find-byte-local(out, 32, 0)
+    sp i64 = util.find-byte-str(out, 32, 0)
     sp < 0 -> return
-    kind = str-copy(out, 0, sp)
-    nul i64 = find-byte-local(out, 0, sp + 1)
+    kind = util.str-range(out, 0, sp)
+    nul i64 = util.find-byte-str(out, 0, sp + 1)
     nul < 0 -> return
     start = nul + 1
-    data = str-copy(out, start, out.len)
+    data = util.str-range(out, start, out.len)
     ok = true
 }
 
@@ -730,7 +636,7 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
     hend = text.len
     idx >= 0 -> hend = idx
     message = ''
-    idx >= 0 -> message = str-copy(text, idx + 2, text.len)
+    idx >= 0 -> message = util.str-range(text, idx + 2, text.len)
     tree-oid = oid.zero-oid()
     parenthex = ''
     a-name = ''
@@ -744,24 +650,24 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
     pos = 0
     {
         pos >= hend -> break
-        nl i64 = find-byte-local(text, 10, pos)
+        nl i64 = util.find-byte-str(text, 10, pos)
         nl < 0 -> nl = hend
-        line str = str-copy(text, pos, nl)
+        line str = util.str-range(text, pos, nl)
         line.starts-with('tree ') -> {
-            hx str = str-copy(line, 5, line.len)
+            hx str = util.str-range(line, 5, line.len)
             toid, tok = oid.oid-from-hex(hx)
             tok == true -> tree-oid = toid
         }
         line.starts-with('parent ') -> {
-            hx2 str = str-copy(line, 7, line.len)
+            hx2 str = util.str-range(line, 7, line.len)
             parenthex = parenthex - hx2
         }
         line.starts-with('author ') -> {
-            ap str = str-copy(line, 7, line.len)
+            ap str = util.str-range(line, 7, line.len)
             a-name, a-email, a-time, a-tz = parse-person-fields(ap)
         }
         line.starts-with('committer ') -> {
-            cp str = str-copy(line, 11, line.len)
+            cp str = util.str-range(line, 11, line.len)
             c-name, c-email, c-time, c-tz = parse-person-fields(cp)
         }
         pos = nl + 1
@@ -799,7 +705,7 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
     hend = text.len
     idx >= 0 -> hend = idx
     message = ''
-    idx >= 0 -> message = str-copy(text, idx + 2, text.len)
+    idx >= 0 -> message = util.str-range(text, idx + 2, text.len)
     obj = oid.zero-oid()
     obj-type = ''
     tag = ''
@@ -810,22 +716,22 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
     pos = 0
     {
         pos >= hend -> break
-        nl i64 = find-byte-local(text, 10, pos)
+        nl i64 = util.find-byte-str(text, 10, pos)
         nl < 0 -> nl = hend
-        line str = str-copy(text, pos, nl)
+        line str = util.str-range(text, pos, nl)
         line.starts-with('object ') -> {
-            hx str = str-copy(line, 7, line.len)
+            hx str = util.str-range(line, 7, line.len)
             tobj, took = oid.oid-from-hex(hx)
             took == true -> obj = tobj
         }
         line.starts-with('type ') -> {
-            obj-type = str-copy(line, 5, line.len)
+            obj-type = util.str-range(line, 5, line.len)
         }
         line.starts-with('tag ') -> {
-            tag = str-copy(line, 4, line.len)
+            tag = util.str-range(line, 4, line.len)
         }
         line.starts-with('tagger ') -> {
-            gp str = str-copy(line, 7, line.len)
+            gp str = util.str-range(line, 7, line.len)
             t-name, t-email, t-time, t-tz = parse-person-fields(gp)
         }
         pos = nl + 1

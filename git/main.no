@@ -95,58 +95,6 @@ print-usage = () {
 ; local helpers
 ; ═══════════════════════════════════════════════
 
-str-copy = (s str, a i64, b i64) (out str) {
-    out = ''
-    i <- [a..b): {
-        cb str = with-len(1)
-        cb[0] = s[i]
-        out = out - cb
-    }
-}
-
-find-byte-local = (s str, b byte, from i64) (pos i64) {
-    r i64 = -1
-    i = from
-    {
-        i >= s.len -> break
-        c i64 = s[i]
-        r = (c == b) ? i : r
-        c == b -> break
-        i = i + 1
-    } ()
-    pos = r
-}
-
-hex-of = (o oid) (out str) {
-    out = ''
-    hc = '0123456789abcdef'
-    i <- [0..20): {
-        b = o.id[i]
-        c1 str = with-len(1)
-        c1[0] = hc[(b >> 4) & 15]
-        c2 str = with-len(1)
-        c2[0] = hc[b & 15]
-        out = out - c1 - c2
-    }
-}
-
-read-file-str = (p str) (out str, ok bool) {
-    ok = false
-    isf = fs.is-file(p)
-    isf == false -> {
-        out = ''
-        return
-    }
-    raw = fs.read-file(p)
-    out = ''
-    i <- [0..raw.len): {
-        cb str = with-len(1)
-        cb[0] = raw[i]
-        out = out - cb
-    }
-    ok = true
-}
-
 read-worktree-file = (work-tree str, path str) (content str, ok bool) {
     sl str = '/'
     full = work-tree - sl - path
@@ -154,7 +102,7 @@ read-worktree-file = (work-tree str, path str) (content str, ok bool) {
         last = work-tree[work-tree.len - 1]
         last == '/' -> full = work-tree - path
     }
-    read-file-str(full)
+    util.read-file-str(full)
 }
 
 ; ═══════════════════════════════════════════════
@@ -176,7 +124,7 @@ cmd-init = (argc i64) {
     path.starts-with('.') -> {
         sl str = '/'
         path.starts-with('./') -> {
-            full-path = cwd - sl - str-copy(path, 2, path.len)
+            full-path = cwd - sl - util.str-range(path, 2, path.len)
         } -> {
             full-path = cwd - sl - path
         }
@@ -271,27 +219,27 @@ cmd-commit = (argc i64) {
     i <- [0..count): {
         name-pos = 0
         j <- [0..i): {
-            nl = find-byte-local(names, 10, name-pos)
+            nl = util.find-byte-str(names, 10, name-pos)
             name-pos = nl + 1
         }
-        nl = find-byte-local(names, 10, name-pos)
+        nl = util.find-byte-str(names, 10, name-pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, name-pos, end)
+        nm = util.str-range(names, name-pos, end)
         mode-pos = 0
         j2 <- [0..i): {
-            mnl = find-byte-local(modes-str, 10, mode-pos)
+            mnl = util.find-byte-str(modes-str, 10, mode-pos)
             mode-pos = mnl + 1
         }
-        mnl2 = find-byte-local(modes-str, 10, mode-pos)
+        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
         mend = modes-str.len
         mnl2 >= 0 -> mend = mnl2
-        ms = str-copy(modes-str, mode-pos, mend)
+        ms = util.str-range(modes-str, mode-pos, mend)
         mode-val i64 = 0
         k <- [0..ms.len): {
             mode-val = mode-val * 10 + (ms[k] - 48)
         }
-        hx = str-copy(hexoids, i * 40, i * 40 + 40)
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
         entry-oid oid
         k <- [0..20): {
             c0 = hx[k * 2]
@@ -307,7 +255,7 @@ cmd-commit = (argc i64) {
     parent-ok bool
     parent-oid, parent-ok = refs.read-ref(git-dir, 'HEAD')
     parenthex = ''
-    parent-ok == true -> parenthex = hex-of(parent-oid)
+    parent-ok == true -> parenthex = oid.oid-hex-str(parent-oid)
     a-name str
     a-email str
     a-ok bool
@@ -345,7 +293,7 @@ cmd-commit = (argc i64) {
         refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit-oid,
             a-name, a-email, now, tz, 'commit (initial): ' - message)
     }
-    ch = hex-of(commit-oid)
+    ch = oid.oid-hex-str(commit-oid)
     sp str = ' '
     print('[' - branch - sp - ch - '] ' - message)
 }
@@ -396,10 +344,10 @@ cmd-log = (argc i64) {
     }
     pos = 0
     i <- [0..count): {
-        nl = find-byte-local(commit-hex, 10, pos)
+        nl = util.find-byte-str(commit-hex, 10, pos)
         end = commit-hex.len
         nl >= 0 -> end = nl
-        ch = str-copy(commit-hex, pos, end)
+        ch = util.str-range(commit-hex, pos, end)
         _t oid; ph str; np i64
         an str; ae str; at i64; az str
         cn str; ce str; ct i64; cz str; msg str; cok bool
@@ -453,10 +401,10 @@ cmd-status = (argc i64) {
     print('Changes to be committed:')
     pos = 0
     i <- [0..count): {
-        nl = find-byte-local(names, 10, pos)
+        nl = util.find-byte-str(names, 10, pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, pos, end)
+        nm = util.str-range(names, pos, end)
         print('  new file: ' - nm)
         pos = nl + 1
         nl < 0 -> break
@@ -503,10 +451,10 @@ cmd-branch = (argc i64) {
     pos = 0
     {
         pos >= names.len -> break
-        nl = find-byte-local(names, 10, pos)
+        nl = util.find-byte-str(names, 10, pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, pos, end)
+        nm = util.str-range(names, pos, end)
         is-cur = true
         nm.len != cur-branch.len -> is-cur = false
         is-cur == true -> {
@@ -590,10 +538,10 @@ cmd-tag = (argc i64) {
     pos = 0
     {
         pos >= names.len -> break
-        nl = find-byte-local(names, 10, pos)
+        nl = util.find-byte-str(names, 10, pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, pos, end)
+        nm = util.str-range(names, pos, end)
         print(nm)
         pos = nl + 1
         nl < 0 -> break
@@ -677,18 +625,18 @@ cmd-hash-object = (argc i64) {
     }
     content str
     read-ok bool
-    content, read-ok = read-file-str(path)
+    content, read-ok = util.read-file-str(path)
     read-ok == false -> {
         print('fatal: could not read ' - path)
         return
     }
     write == true -> {
         o oid = object.write-blob(git-dir, content)
-        ch = hex-of(o)
+        ch = oid.oid-hex-str(o)
         print(ch)
     } -> {
         o oid = oid.hash-object('blob', content)
-        ch = hex-of(o)
+        ch = oid.oid-hex-str(o)
         print(ch)
     }
 }
@@ -771,7 +719,7 @@ cmd-ls-tree = (argc i64) {
                 mode-str = '0' - mode-str
             }
         }
-        ch = hex-of(entry-oid)
+        ch = oid.oid-hex-str(entry-oid)
         sp str = ' '
         tab str = '\t'
         print(mode-str - sp - type-name - sp - ch - tab - nm)
@@ -800,10 +748,10 @@ cmd-ls-files = (argc i64) {
     index-ok == false -> return
     pos = 0
     i <- [0..count): {
-        nl = find-byte-local(names, 10, pos)
+        nl = util.find-byte-str(names, 10, pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, pos, end)
+        nm = util.str-range(names, pos, end)
         print(nm)
         pos = nl + 1
         nl < 0 -> break
@@ -835,7 +783,7 @@ cmd-rev-parse = (argc i64) {
         print('fatal: could not resolve ' - ref)
         return
     }
-    ch = hex-of(o)
+    ch = oid.oid-hex-str(o)
     print(ch)
 }
 
@@ -866,27 +814,27 @@ cmd-write-tree = (argc i64) {
     i <- [0..count): {
         name-pos = 0
         j <- [0..i): {
-            nl = find-byte-local(names, 10, name-pos)
+            nl = util.find-byte-str(names, 10, name-pos)
             name-pos = nl + 1
         }
-        nl = find-byte-local(names, 10, name-pos)
+        nl = util.find-byte-str(names, 10, name-pos)
         end = names.len
         nl >= 0 -> end = nl
-        nm = str-copy(names, name-pos, end)
+        nm = util.str-range(names, name-pos, end)
         mode-pos = 0
         j2 <- [0..i): {
-            mnl = find-byte-local(modes-str, 10, mode-pos)
+            mnl = util.find-byte-str(modes-str, 10, mode-pos)
             mode-pos = mnl + 1
         }
-        mnl2 = find-byte-local(modes-str, 10, mode-pos)
+        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
         mend = modes-str.len
         mnl2 >= 0 -> mend = mnl2
-        ms = str-copy(modes-str, mode-pos, mend)
+        ms = util.str-range(modes-str, mode-pos, mend)
         mode-val i64 = 0
         k <- [0..ms.len): {
             mode-val = mode-val * 10 + (ms[k] - 48)
         }
-        hx = str-copy(hexoids, i * 40, i * 40 + 40)
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
         entry-oid oid
         k <- [0..20): {
             c0 = hx[k * 2]
@@ -898,7 +846,7 @@ cmd-write-tree = (argc i64) {
         tree-raw = object.tree-add-raw(tree-raw, mode-val, nm, entry-oid)
     }
     tree-oid oid = object.tree-write-raw(git-dir, tree-raw)
-    ch = hex-of(tree-oid)
+    ch = oid.oid-hex-str(tree-oid)
     print(ch)
 }
 
@@ -952,13 +900,13 @@ cmd-config = (argc i64) {
         return
     }
     key = os.arg(1)
-    dot = find-byte-local(key, 46, 0)
+    dot = util.find-byte-str(key, 46, 0)
     dot < 0 -> {
         print('invalid key format, use section.key')
         return
     }
-    section = str-copy(key, 0, dot)
-    skey = str-copy(key, dot + 1, key.len)
+    section = util.str-range(key, 0, dot)
+    skey = util.str-range(key, dot + 1, key.len)
     argc >= 3 -> {
         val = os.arg(2)
         config.config-set(git-dir, section, skey, val)
@@ -1031,7 +979,7 @@ cmd-show = (argc i64) {
         return
     }
     print('type: ' - kind)
-    ch = hex-of(o)
+    ch = oid.oid-hex-str(o)
     print('oid: ' - ch)
     print('')
     print(data)

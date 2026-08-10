@@ -31,20 +31,13 @@ bytes-to-str = (data []byte) (out str) {
 }
 
 ; str-range: copy byte-string chars in the half-open range [start, end) into a
-; fresh string. Uses ONLY single-char indexing of a *parameter* str and
-; with-len allocation — never nolang's native `[a..b)` slice, whose semantics
-; are inconsistent (inclusive for literals, shifted for builtin/computed
-; strings) and which can emit broken LLVM. Half-open like every other language.
+; fresh string. Uses nolang's native slice s[a..b) which is now correct for all
+; str representations (unified %str-long, stride=1, elemSize=1).
 ; s str: source byte-string
 ; start i64, end i64: half-open char range (0 <= start <= end <= s.len)
 ; returns out str: the copied substring
 str-range = (s str, start i64, end i64) (out str) {
-    n = end - start
-    tmp str = with-len(n)
-    i <- [0..n): {
-        tmp[i] = s[start + i]
-    }
-    out = tmp
+    out = s[start..end)
 }
 
 ; mkdir-all: recursively create a directory (like mkdir -p)
@@ -141,6 +134,7 @@ find-byte-str = (s str, b byte, from i64) (pos i64) {
 }
 
 ; trim-newline: strip a single trailing LF (and a preceding CR if present)
+; Uses str-range (native slice wrapper).
 ; s str: input
 ; returns out str: s without a trailing newline
 trim-newline = (s str) (out str) {
@@ -149,11 +143,10 @@ trim-newline = (s str) (out str) {
     L > 0 -> {
         out[L - 1] == 10 -> {
             L = L - 1
-            out = out[0..L)
+            out = str-range(out, 0, L)
             L > 0 -> {
                 out[L - 1] == 13 -> {
-                    L = L - 1
-                    out = out[0..L)
+                    out = str-range(out, 0, L - 1)
                 }
             }
         }
@@ -164,9 +157,7 @@ trim-newline = (s str) (out str) {
 ; c byte: ASCII byte
 ; returns v i64: 0-15, or -1 if not a hex digit
 ;
-; NOTE: nolang mis-lowers a trailing unguarded `-> v = -1` as an
-; unconditional `if (true)` (always-overwrites), so we instead default v to
-; -1 as a plain statement and let the guarded branches override it.
+; Default value placed before guarded branches; the guards override it when matched.
 hexdigit = (c byte) (v i64) {
     v = -1
     c >= 48 && c <= 57 -> v = c - 48
@@ -206,9 +197,6 @@ hex-encode = (data []byte) (out str) {
 ; i64-to-str: decimal string of a non-negative integer
 ; n i64: value (>= 0)
 ; returns out str: decimal representation
-; Concat-return (stride-1) so the result is safe to concatenate or return
-; across a module boundary (a with-len/strike-8 return is indexed stride-1 by
-; the caller and corrupted — sometimes triggering an out-of-bounds read).
 i64-to-str = (n i64) (out str) {
     n == 0 -> {
         out = '0'
@@ -231,6 +219,50 @@ i64-to-str = (n i64) (out str) {
 }
 
 
+; str-eq: byte-wise equality of two byte-strings.
+; Avoids relying on nolang's `==` for str (inconsistent for computed strings).
+; a str, b str: strings to compare
+; returns yes bool: true if equal
+str-eq = (a str, b str) (yes bool) {
+    yes = false
+    a.len != b.len -> return
+    yes = true
+    i = 0
+    {
+        i >= a.len -> break
+        a[i] != b[i] -> {
+            yes = false
+            return
+        }
+        i = i + 1
+    } ()
+}
+
+; read-file-str: read an entire file into a str.
+; p str: file path
+; returns out str: file content, ok bool: false if file not found
+read-file-str = (p str) (out str, ok bool) {
+    ok = false
+    isf = fs.is-file(p)
+    isf == false -> {
+        out = ''
+        return
+    }
+    out = fs.read-file(p)
+    ok = true
+}
+
+; write-file-simple: write content to a file path.
+; p str: file path, content str: content to write
+; returns ok bool: true on success
+write-file-simple = (p str, content str) (ok bool) {
+    ok = false
+    fd = fs.open-write(p)
+    fs.write(fd, content, content.len)
+    fs.close(fd)
+    ok = true
+}
+
 ; util-keepalive: force every leaf helper to be considered live so the
 ; whole-module optimizer does not DCE its definition while leaving a dangling
 ; cross-module call site. Call once from main; returns true. All helper
@@ -249,8 +281,14 @@ util-keepalive = () (alive bool) {
     _u i64 = read-u32-be(_b, 0)
     _v i64 = read-u16-be(_b, 0)
     _m str = trim-newline('')
+    _sr str = str-range('abc', 0, 2)
+    _se bool = str-eq('a', 'a')
+    _rf str; _rfok bool
+    _rf, _rfok = read-file-str('/tmp')
+    _wf bool = write-file-simple('/tmp/.util-keepalive', '')
     alive = _ok && _ok2
     alive = alive && (p1 >= -1) && (p2 >= -1) && (_s.len >= 0) && (_n.len >= 0)
     alive = alive && (_h >= -1) && (_x.len >= 0) && (_e.len >= 0) && (_t.len >= 0)
-    alive = alive && (_u >= 0) && (_v >= 0) && (_m.len >= 0)
+    alive = alive && (_u >= 0) && (_v >= 0) && (_m.len >= 0) && (_sr.len >= 0)
+    alive = alive && _se && (_rf.len >= 0) && _wf
 }

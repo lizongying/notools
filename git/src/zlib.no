@@ -7,9 +7,7 @@
 ; We implement a self-contained zlib codec that uses ONLY DEFLATE *stored*
 ; blocks (BTYPE=00). Stored blocks are uncompressed but are perfectly valid
 ; DEFLATE and valid zlib, so real Git can read the objects we write. The codec
-; operates on *byte-strings* (str with one codepoint per byte 0-255) because
-; nolang's []byte is unreliable across module boundaries and str.to-bytes() is
-; broken on computed strings. See project memory for the rationale.
+; operates on *byte-strings* (str with one codepoint per byte 0-255).
 ;
 ; Layout produced for a single stored block (data length L <= 65535):
 ;   0x78 0x9c            zlib header (default 32K window, default algo)
@@ -20,17 +18,9 @@
 ;   A3 A2 A1 A0          Adler-32 of data, big-endian
 ; For L > 65535 we chain multiple stored blocks (all but the last BFINAL=0).
 
-; to-concat: copy n bytes of s into a fresh CONCAT (stride-1) string. s is
-; indexed LOCALLY here (stride-8-aware) so a with-len/strike-8 s yields correct
-; bytes; the result is safe to RETURN or PASS to another function (a with-len
-; return would be indexed stride-1 by the caller and corrupted / out-of-bounds).
+; to-concat: copy n bytes of s into a fresh string via native slice.
 to-concat = (s str, n i64) (out str) {
-    out = ''
-    i <- [0..n): {
-        cb str = with-len(1)
-        cb[0] = s[i]
-        out = out - cb
-    }
+    out = s[0..n)
 }
 
 ; adler32: Adler-32 checksum (RFC 1950) of a byte-string
@@ -99,8 +89,6 @@ zlib-compress = (data str) (out str) {
     out[pos] = (s >> 8) & 0xff
     pos = pos + 1
     out[pos] = s & 0xff
-    ; Return a CONCAT copy so the caller indexes correct bytes (a with-len
-    ; return would be mis-indexed / out-of-bounds at the call site).
     o2 str = to-concat(out, total)
     out = o2
 }
@@ -144,10 +132,9 @@ zlib-decompress = (data str) (out str, ok bool) {
         p = p + len
         bfinal == 1 -> break
     } (true)
-    ; Return a CONCAT copy (stride-1) so the caller's s.len and indexing are
-    ; correct.
     o2 str = to-concat(out, total)
     out = o2
+    ok = true
     ok = true
 }
 
