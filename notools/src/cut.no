@@ -42,21 +42,23 @@ should-emit = (list-str str, field-num i64) (yes bool) {
         ; Parse range
         lo = 1
         hi = 1000000000
-        dash < 0 -> {
-            lo = atoi-slice(list-str, seg-start, seg-end)
-            hi = lo
-        }
-        dash >= 0 -> {
-            dash > seg-start -> lo = atoi-slice(list-str, seg-start, dash)
-            dash < seg-end - 1 -> hi = atoi-slice(list-str, dash + 1, seg-end)
-        }
+        {
+            dash < 0 -> {
+                lo = atoi-slice(list-str, seg-start, seg-end)
+                hi = lo
+            }
+            dash >= 0 -> {
+                dash > seg-start -> lo = atoi-slice(list-str, seg-start, dash)
+                dash < seg-end - 1 -> hi = atoi-slice(list-str, dash + 1, seg-end)
+            }
 
-        ; Check if field-num is in range
-        field-num >= lo -> field-num <= hi -> yes = true
-        yes -> return
+            ; Check if field-num is in range
+            field-num >= lo -> field-num <= hi -> yes = true
+            yes -> return
 
-        ; Move to next segment or exit
-        comma < 0 -> return
+            ; Move to next segment or exit
+            comma < 0 -> return
+        }
         seg-start = comma + 1
         seg-start >= len -> return
     }
@@ -89,11 +91,13 @@ emit-fields = (line str, list-str str, d str) {
 
     ; Last field (after last delimiter or entire line if no delimiter)
     yes = false
-    should-emit(list-str, field-num) -> yes = true
-    yes -> {
-        first == 0 -> io.out(d)
-        field = line.slice(field-start, line.len)
-        io.out(field)
+    {
+        should-emit(list-str, field-num) -> yes = true
+        yes -> {
+            first == 0 -> io.out(d)
+            field = line.slice(field-start, line.len)
+            io.out(field)
+        }
     }
     print('')
 }
@@ -115,8 +119,10 @@ emit-chars = (line str, list-str str) {
 
 cut-emit = (content str, start i64, end i64, mode i64, d str, list-str str) {
     line = content.slice(start, end)
-    mode == 1 -> emit-fields(line, list-str, d)
-    mode == 2 -> emit-chars(line, list-str)
+    {
+        mode == 1 -> emit-fields(line, list-str, d)
+        mode == 2 -> emit-chars(line, list-str)
+    }
 }
 
 ; process-input: process a single input (file content or stdin)
@@ -142,61 +148,63 @@ cut-run = () {
     for i < argc {
         a = arg(i)
         isflag = 0
-        a.starts-with('-') -> a.len > 1 -> isflag = 1
+        {
+            a.starts-with('-') -> a.len > 1 -> isflag = 1
 
-        isflag == 1 -> {
-            key = a[1]
-            attached = 0
-            a.len > 2 -> attached = 1
+            isflag == 1 -> {
+                key = a[1]
+                attached = 0
+                a.len > 2 -> attached = 1
 
-            ; -d: delimiter
-            key == 100 -> {
-                attached == 1 -> {
-                    delim-str = char-to-str(a[2])
+                ; -d: delimiter
+                key == 100 -> {
+                    attached == 1 -> {
+                        delim-str = char-to-str(a[2])
+                    }
+                    attached == 0 -> {
+                        i = i + 1
+                        i < argc -> delim-str = arg(i)
+                    }
                 }
-                attached == 0 -> {
-                    i = i + 1
-                    i < argc -> delim-str = arg(i)
+
+                ; -f: fields mode
+                key == 102 -> {
+                    mode = 1
+                    attached == 1 -> {
+                        list-str = a.slice(2, a.len)
+                    }
+                    attached == 0 -> {
+                        i = i + 1
+                        i < argc -> list-str = arg(i)
+                    }
+                }
+
+                ; -c: chars mode
+                key == 99 -> {
+                    mode = 2
+                    attached == 1 -> {
+                        list-str = a.slice(2, a.len)
+                    }
+                    attached == 0 -> {
+                        i = i + 1
+                        i < argc -> list-str = arg(i)
+                    }
                 }
             }
 
-            ; -f: fields mode
-            key == 102 -> {
-                mode = 1
-                attached == 1 -> {
-                    list-str = a.slice(2, a.len)
-                }
-                attached == 0 -> {
-                    i = i + 1
-                    i < argc -> list-str = arg(i)
-                }
-            }
-
-            ; -c: chars mode
-            key == 99 -> {
-                mode = 2
-                attached == 1 -> {
-                    list-str = a.slice(2, a.len)
-                }
-                attached == 0 -> {
-                    i = i + 1
-                    i < argc -> list-str = arg(i)
-                }
-            }
-        }
-
-        isflag == 0 -> {
-            ; Process file immediately
-            has-file = true
-            mode > 0 -> {
-                fs.is-file(a) == false -> {
-                    msg = 'cut: ' - a - ': No such file or directory'
-                    io.errln(msg)
-                    had-error = true
-                }
-                fs.is-file(a) -> {
-                    content = fs.read-file(a)
-                    process-input(content, mode, delim-str, list-str)
+            isflag == 0 -> {
+                ; Process file immediately
+                has-file = true
+                mode > 0 -> {
+                    fs.is-file(a) == false -> {
+                        msg = 'cut: ' - a - ': No such file or directory'
+                        io.errln(msg)
+                        had-error = true
+                    }
+                    fs.is-file(a) -> {
+                        content = fs.read-file(a)
+                        process-input(content, mode, delim-str, list-str)
+                    }
                 }
             }
         }
@@ -205,21 +213,23 @@ cut-run = () {
     }
 
     ; No file arguments: read from stdin
-    has-file == false -> {
+    {
+        has-file == false -> {
+            mode == 0 -> {
+                io.errln('Usage: cut -d DELIM -f LIST | cut -c LIST [file...]')
+                os.exit(1)
+            }
+            mode > 0 -> {
+                content = fs.read-file('/dev/stdin')
+                process-input(content, mode, delim-str, list-str)
+            }
+        }
+
         mode == 0 -> {
             io.errln('Usage: cut -d DELIM -f LIST | cut -c LIST [file...]')
             os.exit(1)
         }
-        mode > 0 -> {
-            content = fs.read-file('/dev/stdin')
-            process-input(content, mode, delim-str, list-str)
-        }
-    }
 
-    mode == 0 -> {
-        io.errln('Usage: cut -d DELIM -f LIST | cut -c LIST [file...]')
-        os.exit(1)
+        had-error -> os.exit(1)
     }
-
-    had-error -> os.exit(1)
 }

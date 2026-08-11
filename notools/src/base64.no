@@ -15,69 +15,75 @@ base64-run = () {
             ! a.starts-with('-') -> files.push(a)
         }
     }
-    decode == false -> encode-cmd(files)
-    decode == true -> {
-        decode-cmd(files)
-        // 规避：解码路径正常输出后进程收尾阶段会 SIGTRAP（退出码 133），
-        // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
-        os.exit(0)
+    {
+        decode == false -> encode-cmd(files)
+        decode == true -> {
+            decode-cmd(files)
+            // 规避：解码路径正常输出后进程收尾阶段会 SIGTRAP（退出码 133），
+            // 疑似含二进制内容的 str 析构/清理 codegen 问题，显式正常退出绕过
+            os.exit(0)
+        }
     }
 }
 
 // encode-cmd: 编码模式
 encode-cmd = (files []str) {
-    files.len == 0 -> {
-        inp = fs.read-file('/dev/stdin')
-        // stdin 管道 stat 競態讀空（B18）重試
-        t <- [0..40): {
-            inp.len == 0 -> {
-                os.sleep-us(1000)
-                inp = fs.read-file('/dev/stdin')
+    {
+        files.len == 0 -> {
+            inp = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                inp.len == 0 -> {
+                    os.sleep-us(1000)
+                    inp = fs.read-file('/dev/stdin')
+                }
             }
-        }
-        inp.len == 0 -> os.exit(0)
-        data = inp.to-bytes()
-        enc = base64.encode-std(data)
-        print(enc)
-        os.exit(0)
-    }
-    files.len > 0 -> {
-        fi <- [0..files.len): {
-            f = files[fi]
-            fs.is-file(f) == false -> {
-                io.errln('base64: ' - f - ': No such file or directory')
-                os.exit(1)
-            }
-            inp = fs.read-file(f)
+            inp.len == 0 -> os.exit(0)
             data = inp.to-bytes()
             enc = base64.encode-std(data)
             print(enc)
+            os.exit(0)
+        }
+        files.len > 0 -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('base64: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                inp = fs.read-file(f)
+                data = inp.to-bytes()
+                enc = base64.encode-std(data)
+                print(enc)
+            }
         }
     }
 }
 
 // decode-cmd: 解码模式
 decode-cmd = (files []str) {
-    files.len == 0 -> {
-        s = fs.read-file('/dev/stdin')
-        // stdin 管道 stat 競態讀空（B18）重試
-        t <- [0..40): {
-            s.len == 0 -> {
-                os.sleep-us(1000)
-                s = fs.read-file('/dev/stdin')
+    {
+        files.len == 0 -> {
+            s = fs.read-file('/dev/stdin')
+            // stdin 管道 stat 競態讀空（B18）重試
+            t <- [0..40): {
+                s.len == 0 -> {
+                    os.sleep-us(1000)
+                    s = fs.read-file('/dev/stdin')
+                }
             }
-        }
-        decode-write(s)
-    }
-    files.len > 0 -> {
-        fi <- [0..files.len): {
-            f = files[fi]
-            fs.is-file(f) == false -> {
-                io.errln('base64: ' - f - ': No such file or directory')
-                os.exit(1)
-            }
-            s = fs.read-file(f)
             decode-write(s)
+        }
+        files.len > 0 -> {
+            fi <- [0..files.len): {
+                f = files[fi]
+                fs.is-file(f) == false -> {
+                    io.errln('base64: ' - f - ': No such file or directory')
+                    os.exit(1)
+                }
+                s = fs.read-file(f)
+                decode-write(s)
+            }
         }
     }
 }
@@ -148,16 +154,18 @@ decode-write = (s str) {
         }
     }
     // 处理末尾不足 4 字符的分组
-    { cnt == 3 -> {
-        out[p] = (acc >> 10) & 255
-        p = p + 1
-        out[p] = (acc >> 2) & 255
-        p = p + 1
-    } }
-    { cnt == 2 -> {
-        out[p] = (acc >> 4) & 255
-        p = p + 1
-    } }
+    {
+        { cnt == 3 -> {
+            out[p] = (acc >> 10) & 255
+            p = p + 1
+            out[p] = (acc >> 2) & 255
+            p = p + 1
+        } }
+        { cnt == 2 -> {
+            out[p] = (acc >> 4) & 255
+            p = p + 1
+        } }
+    }
     fd = fs.open-write('/dev/stdout')
     fs.write(fd, out, out.len)
 }

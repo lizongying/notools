@@ -12,49 +12,55 @@
 ; Note: returns tokens via input parameter (output-param slice push is buggy in codegen)
 split-input = (mode i64, tokens []str) {
     content = fs.read-file('/dev/stdin')
-    content.len == 0 -> return
+    {
+        content.len == 0 -> return
 
-    mode == 1 -> {
-        ; NUL-separated
-        start = 0
-        i <- [0..content.len): {
-            content[i] == 0 -> {
-                tokens.push(content.slice(start, i))
-                start = i + 1
+        mode == 1 -> {
+            ; NUL-separated
+            start = 0
+            i <- [0..content.len): {
+                content[i] == 0 -> {
+                    tokens.push(content.slice(start, i))
+                    start = i + 1
+                }
             }
+            start < content.len -> tokens.push(content.slice(start, content.len))
         }
-        start < content.len -> tokens.push(content.slice(start, content.len))
-    }
-    mode == 0 -> {
-        ; Whitespace-separated
-        start = 0
-        in-field = false
-        i <- [0..content.len): {
-            c = content[i]
-            is-space = c == 32 || c == 9 || c == 10 || c == 13
-            is-space && in-field -> {
-                tokens.push(content.slice(start, i))
-                in-field = false
+        mode == 0 -> {
+            ; Whitespace-separated
+            start = 0
+            in-field = false
+            i <- [0..content.len): {
+                c = content[i]
+                is-space = c == 32 || c == 9 || c == 10 || c == 13
+                is-space && in-field -> {
+                    tokens.push(content.slice(start, i))
+                    in-field = false
+                }
+                !is-space && !in-field -> {
+                    start = i
+                    in-field = true
+                }
             }
-            !is-space && !in-field -> {
-                start = i
-                in-field = true
-            }
+            in-field -> tokens.push(content.slice(start, content.len))
         }
-        in-field -> tokens.push(content.slice(start, content.len))
     }
 }
 
 ; run-cmd: build and run a command string via sh -c, returns exit code
 run-cmd = (cmd str, trace bool) (code i64) {
-    trace == true -> {
-        eprint(cmd)
+    {
+        trace == true -> {
+            eprint(cmd)
+        }
     }
     pid = process.process-spawn(cmd)
-    pid < 0 -> {
-        eprint('xargs: failed to spawn command')
-        code = 1
-        return
+    {
+        pid < 0 -> {
+            eprint('xargs: failed to spawn command')
+            code = 1
+            return
+        }
     }
     code = process.process-wait(pid)
 }
@@ -126,80 +132,84 @@ xargs-run = () {
     }
 
     ; If no command, default to /bin/echo
-    base-args.len == 0 -> {
-        base-args.push('echo')
+    {
+        base-args.len == 0 -> {
+            base-args.push('echo')
+        }
     }
 
     ; Read tokens from stdin
     tokens []str = with-cap(64)
     split-input(mode, tokens)
 
-    tokens.len == 0 -> {
-        no-run-if-empty -> os.exit(0)
-        ; Run command with no extra args
-        cmd = join(base-args, ' ')
-        code = run-cmd(cmd, trace)
-        os.exit(code)
-    }
-
-    ; Mode 1: -I replace mode
-    replace-str.len > 0 -> {
-        j <- [0..tokens.len): {
-            parts []str
-            k <- [0..base-args.len): {
-                arg-str = base-args[k]
-                arg-str == replace-str -> {
-                    parts.push(tokens[j])
-                }
-                arg-str != replace-str -> {
-                    ; Check if replace-str is substring
-                    pos = arg-str.index(replace-str)
-                    pos >= 0 -> {
-                        ; Replace all occurrences
-                        result = ''
-                        start = 0
-                        {
-                            result = result - arg-str.slice(start, pos)
-                            result = result - tokens[j]
-                            start = pos + replace-str.len
-                            pos = arg-str.index-from(replace-str, start)
-                        } (pos >= 0)
-                        result = result - arg-str.slice(start, arg-str.len)
-                        parts.push(result)
-                    }
-                    pos < 0 -> {
-                        parts.push(arg-str)
-                    }
-                }
-            }
-            cmd = join(parts, ' ')
+    {
+        tokens.len == 0 -> {
+            no-run-if-empty -> os.exit(0)
+            ; Run command with no extra args
+            cmd = join(base-args, ' ')
             code = run-cmd(cmd, trace)
-            code != 0 -> os.exit(code)
+            os.exit(code)
         }
-        os.exit(0)
-    }
 
-    ; Mode 2: -n max-args mode
-    max-args > 0 -> {
-        idx = 0
-        {
-            idx < tokens.len -> {
-                batch []str
+        ; Mode 1: -I replace mode
+        replace-str.len > 0 -> {
+            j <- [0..tokens.len): {
+                parts []str
                 k <- [0..base-args.len): {
-                    batch.push(base-args[k])
+                    arg-str = base-args[k]
+                    arg-str == replace-str -> {
+                        parts.push(tokens[j])
+                    }
+                    arg-str != replace-str -> {
+                        ; Check if replace-str is substring
+                        pos = arg-str.index(replace-str)
+                        pos >= 0 -> {
+                            ; Replace all occurrences
+                            result = ''
+                            start = 0
+                            {
+                                result = result - arg-str.slice(start, pos)
+                                result = result - tokens[j]
+                                start = pos + replace-str.len
+                                pos = arg-str.index-from(replace-str, start)
+                            } (pos >= 0)
+                            result = result - arg-str.slice(start, arg-str.len)
+                            parts.push(result)
+                        }
+                        pos < 0 -> {
+                            parts.push(arg-str)
+                        }
+                    }
                 }
-                end = idx + max-args
-                end > tokens.len -> end = tokens.len
-                k <- [idx..end): {
-                    batch.push(tokens[k])
-                }
-                cmd = join(batch, ' ')
+                cmd = join(parts, ' ')
                 code = run-cmd(cmd, trace)
                 code != 0 -> os.exit(code)
-                idx = idx + max-args
             }
-        } (idx < tokens.len)
-        os.exit(0)
+            os.exit(0)
+        }
+
+        ; Mode 2: -n max-args mode
+        max-args > 0 -> {
+            idx = 0
+            {
+                idx < tokens.len -> {
+                    batch []str
+                    k <- [0..base-args.len): {
+                        batch.push(base-args[k])
+                    }
+                    end = idx + max-args
+                    end > tokens.len -> end = tokens.len
+                    k <- [idx..end): {
+                        batch.push(tokens[k])
+                    }
+                    cmd = join(batch, ' ')
+                    code = run-cmd(cmd, trace)
+                    code != 0 -> os.exit(code)
+                    idx = idx + max-args
+                }
+            } (idx < tokens.len)
+            os.exit(0)
+        }
     }
 
     ; Mode 3: default — all tokens at once

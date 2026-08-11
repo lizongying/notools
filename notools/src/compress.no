@@ -14,56 +14,60 @@ compress-cmd = () {
     i = 2
     for i < argc {
         a = arg(i)
-        a == '-c' -> to-stdout = true
-        a == '-f' -> *
-        a.starts-with('-b') -> {
-            bs = a.slice(2, a.len)
-            max-bits = 0
-            j <- [0..bs.len): {
-                bs[j] >= 48 && bs[j] <= 57 -> max-bits = max-bits * 10 + (bs[j] - 48)
+        {
+            a == '-c' -> to-stdout = true
+            a == '-f' -> *
+            a.starts-with('-b') -> {
+                bs = a.slice(2, a.len)
+                max-bits = 0
+                j <- [0..bs.len): {
+                    bs[j] >= 48 && bs[j] <= 57 -> max-bits = max-bits * 10 + (bs[j] - 48)
+                }
+                max-bits < 9 -> max-bits = 16
+                max-bits > 16 -> max-bits = 16
             }
-            max-bits < 9 -> max-bits = 16
-            max-bits > 16 -> max-bits = 16
-        }
-        a.starts-with('-') == false -> {
-            has-file = true
-            f = a
+            a.starts-with('-') == false -> {
+                has-file = true
+                f = a
 
-            fs.is-file(f) == false -> {
-                eprint('compress: ' - f - ': No such file')
-                i = i + 1
-                continue
-            }
-            content = fs.read-file(f)
-            data = content.to-bytes()
-            out = lzw-compress(data, max-bits)
+                fs.is-file(f) == false -> {
+                    eprint('compress: ' - f - ': No such file')
+                    i = i + 1
+                    continue
+                }
+                content = fs.read-file(f)
+                data = content.to-bytes()
+                out = lzw-compress(data, max-bits)
 
-            to-stdout -> {
-                s = out.to-str()
-                io.out(s)
-            }
-            -> {
-                out-name = f - '.Z'
-                fs.write-file(out-name, out)
-                fs.remove(f)
+                to-stdout -> {
+                    s = out.to-str()
+                    io.out(s)
+                }
+                -> {
+                    out-name = f - '.Z'
+                    fs.write-file(out-name, out)
+                    fs.remove(f)
+                }
             }
         }
 
         i = i + 1
     }
 
-    has-file == false -> {
-        content = fs.read-file('/dev/stdin')
-        t <- [0..40): {
-            content.len == 0 -> {
-                os.sleep-us(1000)
-                content = fs.read-file('/dev/stdin')
+    {
+        has-file == false -> {
+            content = fs.read-file('/dev/stdin')
+            t <- [0..40): {
+                content.len == 0 -> {
+                    os.sleep-us(1000)
+                    content = fs.read-file('/dev/stdin')
+                }
             }
+            data = content.to-bytes()
+            out = lzw-compress(data, max-bits)
+            s = out.to-str()
+            io.out(s)
         }
-        data = content.to-bytes()
-        out = lzw-compress(data, max-bits)
-        s = out.to-str()
-        io.out(s)
     }
 }
 
@@ -121,37 +125,67 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
         found = -1
         for ht[hkey] != -1 {
             c = ht[hkey]
-            prefix[c] == cur-prefix && suffix[c] == b -> {
-                found = c
-                break
+            {
+                prefix[c] == cur-prefix && suffix[c] == b -> {
+                    found = c
+                    break
+                }
             }
             hkey = (hkey + 1) & ht-mask
         }
 
-        found >= 0 -> {
-            cur-prefix = found
-        }
-        -> {
-            // Output cur-prefix code (bit packing, LSB first)
-            bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
-            bit-count = bit-count + cur-bits
-            codes-at-width = codes-at-width + 1
-            for bit-count >= 8 {
-                out.push(bit-buf & 255)
-                bit-buf = bit-buf >> 8
-                bit-count = bit-count - 8
+        {
+            found >= 0 -> {
+                cur-prefix = found
             }
+            -> {
+                // Output cur-prefix code (bit packing, LSB first)
+                bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
+                bit-count = bit-count + cur-bits
+                codes-at-width = codes-at-width + 1
+                for bit-count >= 8 {
+                    out.push(bit-buf & 255)
+                    bit-buf = bit-buf >> 8
+                    bit-count = bit-count - 8
+                }
 
-            // Add (cur-prefix, b) to dictionary
-            prefix[next-code] = cur-prefix
-            suffix[next-code] = b
-            ht[hkey] = next-code
-            next-code = next-code + 1
+                // Add (cur-prefix, b) to dictionary
+                prefix[next-code] = cur-prefix
+                suffix[next-code] = b
+                ht[hkey] = next-code
+                next-code = next-code + 1
 
-            // Check code width increase
-            next-code == (1 << cur-bits) -> {
-                cur-bits < max-bits -> {
-                    // Alignment: pad to complete group of 8 codes
+                // Check code width increase
+                next-code == (1 << cur-bits) -> {
+                    cur-bits < max-bits -> {
+                        // Alignment: pad to complete group of 8 codes
+                        pad = 8 - (codes-at-width % 8)
+                        pad < 8 -> {
+                            bit-count = bit-count + pad * cur-bits
+                            for bit-count >= 8 {
+                                out.push(bit-buf & 255)
+                                bit-buf = bit-buf >> 8
+                                bit-count = bit-count - 8
+                            }
+                        }
+                        cur-bits = cur-bits + 1
+                        codes-at-width = 0
+                    }
+                }
+
+                // Check dictionary full
+                next-code >= max-codes -> {
+                    // Output CLEAR code
+                    bit-buf = bit-buf | ((clear-code & ((1 << cur-bits) - 1)) << bit-count)
+                    bit-count = bit-count + cur-bits
+                    codes-at-width = codes-at-width + 1
+                    for bit-count >= 8 {
+                        out.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+                        bit-count = bit-count - 8
+                    }
+
+                    // Alignment padding after CLEAR
                     pad = 8 - (codes-at-width % 8)
                     pad < 8 -> {
                         bit-count = bit-count + pad * cur-bits
@@ -161,42 +195,16 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                             bit-count = bit-count - 8
                         }
                     }
-                    cur-bits = cur-bits + 1
+
+                    // Reset dictionary
+                    next-code = 257
+                    cur-bits = 9
                     codes-at-width = 0
+                    j <- [0..ht-size): { ht[j] = -1 }
                 }
+
+                cur-prefix = b
             }
-
-            // Check dictionary full
-            next-code >= max-codes -> {
-                // Output CLEAR code
-                bit-buf = bit-buf | ((clear-code & ((1 << cur-bits) - 1)) << bit-count)
-                bit-count = bit-count + cur-bits
-                codes-at-width = codes-at-width + 1
-                for bit-count >= 8 {
-                    out.push(bit-buf & 255)
-                    bit-buf = bit-buf >> 8
-                    bit-count = bit-count - 8
-                }
-
-                // Alignment padding after CLEAR
-                pad = 8 - (codes-at-width % 8)
-                pad < 8 -> {
-                    bit-count = bit-count + pad * cur-bits
-                    for bit-count >= 8 {
-                        out.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-                        bit-count = bit-count - 8
-                    }
-                }
-
-                // Reset dictionary
-                next-code = 257
-                cur-bits = 9
-                codes-at-width = 0
-                j <- [0..ht-size): { ht[j] = -1 }
-            }
-
-            cur-prefix = b
         }
 
         pos = pos + 1

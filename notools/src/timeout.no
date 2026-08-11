@@ -12,18 +12,22 @@ parse-sig = (s str) (sig i64) {
     sig = -1
     s.len == 0 -> return
     first = s[0]
-    first >= 48 && first <= 57 -> {
-        v = 0
-        i <- [0..s.len): {
-            c = s[i]
-            c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    {
+        first >= 48 && first <= 57 -> {
+            v = 0
+            i <- [0..s.len): {
+                c = s[i]
+                c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+            }
+            sig = v
+            return
         }
-        sig = v
-        return
     }
     upper = s.to-upper()
-    upper.starts-with('SIG-') -> upper = upper.slice(4, upper.len)
-    upper.starts-with('SIG') -> upper = upper.slice(3, upper.len)
+    {
+        upper.starts-with('SIG-') -> upper = upper.slice(4, upper.len)
+        upper.starts-with('SIG') -> upper = upper.slice(3, upper.len)
+    }
     {
         upper == 'HUP'    -> sig = 1
         upper == 'INT'    -> sig = 2
@@ -67,15 +71,19 @@ parse-duration = (s str) (us i64) {
     v = 0
     last = s[s.len - 1]
     end = s.len
-    last == 's' -> end = s.len - 1
-    last == 'm' -> end = s.len - 1
-    last == 'h' -> end = s.len - 1
+    {
+        last == 's' -> end = s.len - 1
+        last == 'm' -> end = s.len - 1
+        last == 'h' -> end = s.len - 1
+    }
     i <- [0..end): {
         c = s[i]
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
-    last == 'm' -> v = v * 60
-    last == 'h' -> v = v * 3600
+    {
+        last == 'm' -> v = v * 60
+        last == 'h' -> v = v * 3600
+    }
     us = v * 1000000
 }
 
@@ -145,14 +153,16 @@ timeout-run = () {
         }
     }
 
-    have-duration == false -> {
-        eprint('Usage: timeout [-s SIGNAL] DURATION COMMAND [ARGS...]')
-        os.exit(1)
-    }
+    {
+        have-duration == false -> {
+            eprint('Usage: timeout [-s SIGNAL] DURATION COMMAND [ARGS...]')
+            os.exit(1)
+        }
 
-    cmd-start >= argc -> {
-        eprint('timeout: no command specified')
-        os.exit(1)
+        cmd-start >= argc -> {
+            eprint('timeout: no command specified')
+            os.exit(1)
+        }
     }
 
     ; Build command string
@@ -163,17 +173,21 @@ timeout-run = () {
     }
 
     duration-us = parse-duration(duration-str)
-    duration-us <= 0 -> {
-        eprint('timeout: invalid duration ' - duration-str)
-        os.exit(1)
+    {
+        duration-us <= 0 -> {
+            eprint('timeout: invalid duration ' - duration-str)
+            os.exit(1)
+        }
     }
 
     ; Start child process
     p = process{}
     ok = p.start('/bin/sh', '-c ' - cmd)
-    ok == false -> {
-        eprint('timeout: failed to start command')
-        os.exit(1)
+    {
+        ok == false -> {
+            eprint('timeout: failed to start command')
+            os.exit(1)
+        }
     }
 
     ; Poll for duration-us microseconds, checking every 100ms
@@ -190,25 +204,27 @@ timeout-run = () {
 
     ; Check if process exited
     exited = p.wait-nohang()
-    exited == false -> {
-        ; Send the configured signal
-        p.kill(sig)
-        timed-out = true
-        ; Grace period: 10 seconds, poll every 100ms
-        grace-us = 0
-        grace-limit = 10000000
-        {
-            grace-us >= grace-limit -> *
-            done = p.wait-nohang()
-            done == true -> break
-            os.sleep-us(step-us)
-            grace-us = grace-us + step-us
-        } (true)
-        ; Force kill if still running
-        still = p.wait-nohang()
-        still == false -> {
-            p.kill(9)
-            p.wait()
+    {
+        exited == false -> {
+            ; Send the configured signal
+            p.kill(sig)
+            timed-out = true
+            ; Grace period: 10 seconds, poll every 100ms
+            grace-us = 0
+            grace-limit = 10000000
+            {
+                grace-us >= grace-limit -> *
+                done = p.wait-nohang()
+                done == true -> break
+                os.sleep-us(step-us)
+                grace-us = grace-us + step-us
+            } (true)
+            ; Force kill if still running
+            still = p.wait-nohang()
+            still == false -> {
+                p.kill(9)
+                p.wait()
+            }
         }
     }
 

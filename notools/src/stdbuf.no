@@ -85,14 +85,16 @@ stdbuf-cmd = () {
     } (i < argc)
 
     ; 檢查命令
-    cmd-start < 0 -> {
-        eprint('stdbuf: missing command')
-        eprint('Try \'stdbuf --help\' for more information.')
-        os.exit(1)
-    }
-    cmd-start >= argc -> {
-        eprint('stdbuf: missing command')
-        os.exit(1)
+    {
+        cmd-start < 0 -> {
+            eprint('stdbuf: missing command')
+            eprint('Try \'stdbuf --help\' for more information.')
+            os.exit(1)
+        }
+        cmd-start >= argc -> {
+            eprint('stdbuf: missing command')
+            os.exit(1)
+        }
     }
 
     ; 構建命令字符串
@@ -112,44 +114,48 @@ stdbuf-cmd = () {
     need-err-pipe = err-mode >= 0
     err-read = -1
     err-write = -1
-    need-err-pipe -> {
-        err-fds = process-pipe()
-        err-read = err-fds >> 32
-        err-write = err-fds & 0xFFFFFFFF
+    {
+        need-err-pipe -> {
+            err-fds = process-pipe()
+            err-read = err-fds >> 32
+            err-write = err-fds & 0xFFFFFFFF
+        }
     }
 
     ; fork
     pid = process-fork()
 
-    pid == 0 -> {
-        ; 子進程：重定向 stdout 到管道寫端
-        process-dup2(out-write, 1)
-        fs.close(out-read)
-        fs.close(out-write)
+    {
+        pid == 0 -> {
+            ; 子進程：重定向 stdout 到管道寫端
+            process-dup2(out-write, 1)
+            fs.close(out-read)
+            fs.close(out-write)
 
-        ; 重定向 stderr（如果需要）
-        need-err-pipe -> {
-            process-dup2(err-write, 2)
-            fs.close(err-read)
-            fs.close(err-write)
+            ; 重定向 stderr（如果需要）
+            need-err-pipe -> {
+                process-dup2(err-write, 2)
+                fs.close(err-read)
+                fs.close(err-write)
+            }
+
+            ; 執行命令
+            process-exec-shell(cmd)
+            ; exec 失敗
+            os.exit(127)
         }
 
-        ; 執行命令
-        process-exec-shell(cmd)
-        ; exec 失敗
-        os.exit(127)
-    }
-
-    pid < 0 -> {
-        ; fork 失敗
-        fs.close(out-read)
-        fs.close(out-write)
-        need-err-pipe -> {
-            fs.close(err-read)
-            fs.close(err-write)
+        pid < 0 -> {
+            ; fork 失敗
+            fs.close(out-read)
+            fs.close(out-write)
+            need-err-pipe -> {
+                fs.close(err-read)
+                fs.close(err-write)
+            }
+            eprint('stdbuf: fork failed')
+            os.exit(1)
         }
-        eprint('stdbuf: fork failed')
-        os.exit(1)
     }
 
     ; 父進程：關閉寫端
@@ -159,104 +165,108 @@ stdbuf-cmd = () {
     ; 按緩衝模式處理 stdout
     buf str = with-len(1024)
 
-    out-mode == 0 -> {
-        ; 無緩衝：讀取後立即寫入
-        {
-            n = fs.read(out-read, buf, 1024)
-            n <= 0 -> *
-            fs.write(1, buf, n)
-        } (true)
-    }
+    {
+        out-mode == 0 -> {
+            ; 無緩衝：讀取後立即寫入
+            {
+                n = fs.read(out-read, buf, 1024)
+                n <= 0 -> *
+                fs.write(1, buf, n)
+            } (true)
+        }
 
-    out-mode == 1 -> {
-        ; 行緩衝：累積直到換行符
-        acc = ''
-        {
-            n = fs.read(out-read, buf, 1024)
-            n <= 0 -> *
-            j <- [0..n): {
-                c = buf[j] & 255
-                acc = acc - number.char-to-str(c)
-                c == 10 -> {
-                    ; 換行符，立即寫出
+        out-mode == 1 -> {
+            ; 行緩衝：累積直到換行符
+            acc = ''
+            {
+                n = fs.read(out-read, buf, 1024)
+                n <= 0 -> *
+                j <- [0..n): {
+                    c = buf[j] & 255
+                    acc = acc - number.char-to-str(c)
+                    c == 10 -> {
+                        ; 換行符，立即寫出
+                        fs.write(1, acc, acc.len)
+                        acc = ''
+                    }
+                }
+            } (true)
+            ; 寫出剩餘數據
+            acc.len > 0 -> fs.write(1, acc, acc.len)
+        }
+
+        out-mode == 2 -> {
+            ; 塊緩衝：累積直到塊大小
+            acc = ''
+            {
+                n = fs.read(out-read, buf, 1024)
+                n <= 0 -> *
+                j <- [0..n): {
+                    acc = acc - number.char-to-str(buf[j] & 255)
+                }
+                acc.len >= out-size -> {
                     fs.write(1, acc, acc.len)
                     acc = ''
                 }
-            }
-        } (true)
-        ; 寫出剩餘數據
-        acc.len > 0 -> fs.write(1, acc, acc.len)
-    }
-
-    out-mode == 2 -> {
-        ; 塊緩衝：累積直到塊大小
-        acc = ''
-        {
-            n = fs.read(out-read, buf, 1024)
-            n <= 0 -> *
-            j <- [0..n): {
-                acc = acc - number.char-to-str(buf[j] & 255)
-            }
-            acc.len >= out-size -> {
-                fs.write(1, acc, acc.len)
-                acc = ''
-            }
-        } (true)
-        ; 寫出剩餘數據
-        acc.len > 0 -> fs.write(1, acc, acc.len)
+            } (true)
+            ; 寫出剩餘數據
+            acc.len > 0 -> fs.write(1, acc, acc.len)
+        }
     }
 
     fs.close(out-read)
 
     ; 處理 stderr（如果需要）
-    need-err-pipe -> {
-        err-buf str = with-len(1024)
+    {
+        need-err-pipe -> {
+            err-buf str = with-len(1024)
 
-        err-mode == 0 -> {
-            ; 無緩衝
-            {
-                n = fs.read(err-read, err-buf, 1024)
-                n <= 0 -> *
-                fs.write(2, err-buf, n)
-            } (true)
-        }
+            err-mode == 0 -> {
+                ; 無緩衝
+                {
+                    n = fs.read(err-read, err-buf, 1024)
+                    n <= 0 -> *
+                    fs.write(2, err-buf, n)
+                } (true)
+            }
 
-        err-mode == 1 -> {
-            ; 行緩衝
-            acc = ''
-            {
-                n = fs.read(err-read, err-buf, 1024)
-                n <= 0 -> *
-                j <- [0..n): {
-                    c = err-buf[j] & 255
-                    acc = acc - number.char-to-str(c)
-                    c == 10 -> {
+            err-mode == 1 -> {
+                ; 行緩衝
+                acc = ''
+                {
+                    n = fs.read(err-read, err-buf, 1024)
+                    n <= 0 -> *
+                    j <- [0..n): {
+                        c = err-buf[j] & 255
+                        acc = acc - number.char-to-str(c)
+                        c == 10 -> {
+                            fs.write(2, acc, acc.len)
+                            acc = ''
+                        }
+                    }
+                } (true)
+                acc.len > 0 -> fs.write(2, acc, acc.len)
+            }
+
+            err-mode == 2 -> {
+                ; 塊緩衝
+                acc = ''
+                {
+                    n = fs.read(err-read, err-buf, 1024)
+                    n <= 0 -> *
+                    j <- [0..n): {
+                        acc = acc - number.char-to-str(err-buf[j] & 255)
+                    }
+                    acc.len >= err-size -> {
                         fs.write(2, acc, acc.len)
                         acc = ''
                     }
-                }
-            } (true)
-            acc.len > 0 -> fs.write(2, acc, acc.len)
-        }
+                } (true)
+                acc.len > 0 -> fs.write(2, acc, acc.len)
+            }
 
-        err-mode == 2 -> {
-            ; 塊緩衝
-            acc = ''
-            {
-                n = fs.read(err-read, err-buf, 1024)
-                n <= 0 -> *
-                j <- [0..n): {
-                    acc = acc - number.char-to-str(err-buf[j] & 255)
-                }
-                acc.len >= err-size -> {
-                    fs.write(2, acc, acc.len)
-                    acc = ''
-                }
-            } (true)
-            acc.len > 0 -> fs.write(2, acc, acc.len)
+            fs.close(err-read)
         }
-
-        fs.close(err-read)
     }
 
     ; 等待子進程

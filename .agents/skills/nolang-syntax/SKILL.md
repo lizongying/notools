@@ -675,7 +675,7 @@ i <- 'abc': {      ; iterate over each character in the string
 ;   for i <- [1.5..5.5] { }       ; compile error
 ;   for i <- [0..[1..5][0]] { }   ; syntax error
 
-; Single if (retained)
+; Single if — standalone, independent (no short-circuit with adjacent ifs)
 x == 1 -> do-something()
 
 ; Ternary (retained)
@@ -853,7 +853,10 @@ val: {
 
 ### If/Else (new style `{ cond -> body }`)
 
+If-else groups (short-circuit) **must** be wrapped in `{}`. The first matching condition wins; later conditions are not checked.
+
 ```nolang
+; Multiple branches (new style recommended) — short-circuit if-else chain
 {
     a == 1 -> {
         a = 1
@@ -862,6 +865,28 @@ val: {
     a == 2 || a == 3 -> do-something()
     ->
         c = 0
+}
+
+; Single if (retained) — standalone, no short-circuit
+x == 1 -> do-something()
+```
+
+**Rules:**
+
+1. **Short-circuit group** — Multiple `cond -> body` wrapped in `{}` form an if-elif-else chain. Only the first matching branch executes.
+2. **Standalone if** — Writing `cond -> body` directly in a function/loop body (without wrapping `{}`) is an independent if. It does **not** short-circuit with adjacent if-then lines.
+3. **No mixing** — Inside a `{}` short-circuit group, all direct children must be `cond -> body` arms. Regular statements (assignments, calls, etc.) are not allowed as direct children; place them inside branch bodies instead.
+
+```nolang
+; ❌ No short-circuit — these are independent ifs, all conditions are checked
+x == 1 -> do-a()
+x == 2 -> do-b()
+
+; ✅ Short-circuit — wrapped in {}, first match wins
+{
+    x == 1 -> do-a()
+    x == 2 -> do-b()
+    -> do-c()
 }
 ```
 
