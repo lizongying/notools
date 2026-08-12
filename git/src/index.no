@@ -58,6 +58,56 @@ i64-to-u16-be-at = (buf str, pos i64, v i64) {
     buf[pos + 1] = v & 0xff
 }
 
+; hexdigit-local: convert hex char byte to value 0-15
+; intra-module safe (avoids cross-module util.hexdigit)
+hexdigit-local = (c i64) (v i64) {
+    v = 0
+    c >= 48 -> {
+        c <= 57 -> v = c - 48
+    }
+    c >= 97 -> {
+        c <= 102 -> v = c - 87
+    }
+    c >= 65 -> {
+        c <= 70 -> v = c - 55
+    }
+}
+
+; i64-to-str-local: convert i64 to decimal string
+; intra-module safe (avoids cross-module util.i64-to-str)
+i64-to-str-local = (n i64) (out str) {
+    n == 0 -> {
+        out = '0'
+        return
+    }
+    tmp []byte = with-cap(20)
+    x = n
+    {
+        tmp.push(48 + (x % 10))
+        x = x / 10
+        x == 0 -> break
+    } ()
+    out = ''
+    L = tmp.len
+    i <- [0..L): {
+        cb str = with-len(1)
+        cb[0] = tmp[L - 1 - i]
+        out = out - cb
+    }
+}
+
+; oid-hex-str-local: convert oid to 40-char hex string
+; intra-module safe (avoids cross-module oid.oid-hex-str)
+oid-hex-str-local = (o oid) (out str) {
+    out = with-len(40)
+    hc = '0123456789abcdef'
+    i <- [0..20): {
+        b = o.id[i]
+        out[i * 2] = hc[(b >> 4) & 15]
+        out[i * 2 + 1] = hc[b & 15]
+    }
+}
+
 ; read-u32-be-local: read big-endian 32-bit from a str at offset
 read-u32-be-local = (s str, pos i64) (v i64) {
     v = s[pos] & 0xff
@@ -89,6 +139,10 @@ read-u16-be-local = (s str, pos i64) (v i64) {
 ; The caller splits them by position.
 read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok bool) {
     ok = false
+    names = ''
+    hexoids = ''
+    modes = ''
+    count = 0
     p = git-dir - '/index'
     content str
     file-ok bool
@@ -144,14 +198,8 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         flags = read-u16-be-local(content, pos)
         pos = pos + 2
         name-len = flags & 0xfff
-        ; name (NUL-terminated, then padded to 8-byte boundary)
-        ; name is at pos, terminated by NUL
-        nl = util.find-byte-str(content, 0, pos)
-        nl < 0 -> {
-            count = i
-            break
-        }
-        nm = util.str-range(content, pos, nl)
+        ; name (name-len bytes, then NUL, then padding)
+        nm = content[pos..pos + name-len)
         names = names - nm - '\n'
         ; hex oid
         hx = ''
@@ -166,17 +214,15 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         }
         hexoids = hexoids - hx
         ; mode as decimal
-        ms = util.i64-to-str(mode-val)
+        ms = i64-to-str-local(mode-val)
         modes = modes - ms - '\n'
         ; advance past name + NUL
-        entry-len = 62 + (nl - pos) + 1  ; fixed part + name + NUL
-        ; pad to 8-byte boundary (entry start was at pos-62, so align from there)
+        ; pad entry length to 8-byte boundary
         entry-start = pos - 62
-        padded = entry-start + 62 + (nl - pos) + 1
-        ; ceil to 8
-        rem = padded % 8
-        rem > 0 -> padded = padded + (8 - rem)
-        pos = padded
+        entry-len = 62 + name-len + 1
+        rem = entry-len % 8
+        rem > 0 -> entry-len = entry-len + (8 - rem)
+        pos = entry-start + entry-len
         pos > content.len -> {
             count = i + 1
             break
@@ -190,6 +236,8 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
 ; returns name str, oid oid, mode i64, ok bool
 read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool) {
     ok = false
+    name = ''
+    mode = 0
     p = git-dir - '/index'
     content str
     file-ok bool
@@ -215,13 +263,12 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
         pos = pos + 20  ; skip sha1
         flags = read-u16-be-local(content, pos)
         pos = pos + 2
-        nl = util.find-byte-str(content, 0, pos)
-        nl < 0 -> return
+        skip-name-len = flags & 0xfff
         entry-start = pos - 62
-        padded = entry-start + 62 + (nl - pos) + 1
-        rem = padded % 8
-        rem > 0 -> padded = padded + (8 - rem)
-        pos = padded
+        entry-len = 62 + skip-name-len + 1
+        rem = entry-len % 8
+        rem > 0 -> entry-len = entry-len + (8 - rem)
+        pos = entry-start + entry-len
     }
     ; now at entry idx
     pos + 62 > content.len -> return
@@ -238,9 +285,8 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
     pos = pos + 20
     flags = read-u16-be-local(content, pos)
     pos = pos + 2
-    nl = util.find-byte-str(content, 0, pos)
-    nl < 0 -> nl = content.len
-    name = util.str-range(content, pos, nl)
+    name-len = flags & 0xfff
+    name = content[pos..pos + name-len)
     ok = true
 }
 
@@ -283,40 +329,42 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
     i64-to-u32-be-at(cnt, 0, count)
     out = out - cnt
     ; parse names, modes, oids from flat strings
-    ; iterate entries
+    ; iterate entries with inline newline search (find-newline-local broken)
+    name-pos = 0
+    mode-pos = 0
     i <- [0..count): {
-        ; extract name i
-        name-pos = 0
-        j <- [0..i): {
-            nl = util.find-byte-str(names-str, 10, name-pos)
-            name-pos = nl + 1
+        ; find end of name i (inline search)
+        nl = names-str.len
+        j <- [name-pos..names-str.len): {
+            names-str[j] == 10 -> {
+                nl = j
+                break
+            }
         }
-        nl = util.find-byte-str(names-str, 10, name-pos)
-        nl < 0 -> nl = names-str.len
-        nm = util.str-range(names-str, name-pos, nl)
-        ; extract mode i
-        mode-pos = 0
-        j2 <- [0..i): {
-            nl2 = util.find-byte-str(modes-str, 10, mode-pos)
-            mode-pos = nl2 + 1
+        nm = names-str[name-pos..nl)
+        ; find end of mode i (inline search)
+        nl2 = modes-str.len
+        j2 <- [mode-pos..modes-str.len): {
+            modes-str[j2] == 10 -> {
+                nl2 = j2
+                break
+            }
         }
-        nl2 = util.find-byte-str(modes-str, 10, mode-pos)
-        nl2 < 0 -> nl2 = modes-str.len
-        ms = util.str-range(modes-str, mode-pos, nl2)
+        ms = modes-str[mode-pos..nl2)
         ; parse mode
         mode-val i64 = 0
         k <- [0..ms.len): {
             mode-val = mode-val * 10 + (ms[k] - 48)
         }
         ; extract oid i (40 chars each)
-        hx = util.str-range(oids-str, i * 40, i * 40 + 40)
+        hx = oids-str[i * 40..i * 40 + 40)
         ; parse oid
         entry-oid oid
         k <- [0..20): {
             c0 = hx[k * 2]
             c1 = hx[k * 2 + 1]
-            hi = util.hexdigit(c0)
-            lo = util.hexdigit(c1)
+            hi = hexdigit-local(c0)
+            lo = hexdigit-local(c1)
             entry-oid.id[k] = (hi << 4) | lo
         }
         ; build entry (62 bytes fixed + name + NUL + padding)
@@ -370,6 +418,9 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
                 out = out - pb
             }
         }
+        ; advance positions for next entry
+        name-pos = nl + 1
+        mode-pos = nl2 + 1
     }
     ; SHA-1 trailer — hash the entire content built so far
     ; We use oid.sha1-hex to compute the hash, then append the 20 raw bytes
@@ -378,8 +429,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
     k <- [0..20): {
         c0 = trailer-hex[k * 2]
         c1 = trailer-hex[k * 2 + 1]
-        hi = util.hexdigit(c0)
-        lo = util.hexdigit(c1)
+        hi = hexdigit-local(c0)
+        lo = hexdigit-local(c1)
         tb str = with-len(1)
         tb[0] = (hi << 4) | lo
         out = out - tb
@@ -407,23 +458,38 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
     count i64
     read-ok bool
     names, hexoids, modes-str, count, read-ok = read-index(git-dir)
+    read-ok == false -> count = 0
     ; build new arrays
     new-names = ''
     new-oids = ''
     new-modes = ''
     new-count i64 = 0
     ; hex of new oid
-    new-hex = oid.oid-hex-str(o)
-    mode-str = util.i64-to-str(mode)
+    new-hex = oid-hex-str-local(o)
+    mode-str = i64-to-str-local(mode)
     found = false
     ; iterate existing entries, replacing if path matches
     pos = 0
+    mode-pos = 0
     i <- [0..count): {
-        ; extract name i
-        nl = util.find-byte-str(names, 10, pos)
-        end = names.len
-        nl >= 0 -> end = nl
-        nm = util.str-range(names, pos, end)
+        ; find end of name i (inline search)
+        nl = names.len
+        j <- [pos..names.len): {
+            names[j] == 10 -> {
+                nl = j
+                break
+            }
+        }
+        nm = names[pos..nl)
+        ; find end of mode i (inline search)
+        mnl2 = modes-str.len
+        j2 <- [mode-pos..modes-str.len): {
+            modes-str[j2] == 10 -> {
+                mnl2 = j2
+                break
+            }
+        }
+        old-ms = modes-str[mode-pos..mnl2)
         ; check if it matches path
         same = util.str-eq(nm, path)
         same == true -> {
@@ -436,24 +502,15 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
         } -> {
             ; keep existing
             new-names = new-names - nm - '\n'
-            old-hex = util.str-range(hexoids, i * 40, i * 40 + 40)
+            old-hex = hexoids[i * 40..i * 40 + 40)
             new-oids = new-oids - old-hex
-            ; extract mode i (separate scan, same pattern as names)
-            mpos = 0
-            j <- [0..i): {
-                mnl = util.find-byte-str(modes-str, 10, mpos)
-                mnl < 0 -> break
-                mpos = mnl + 1
-            }
-            mnl2 = util.find-byte-str(modes-str, 10, mpos)
-            mend = modes-str.len
-            mnl2 >= 0 -> mend = mnl2
-            old-ms = util.str-range(modes-str, mpos, mend)
             new-modes = new-modes - old-ms - '\n'
             new-count = new-count + 1
         }
+        ; advance positions
         pos = nl + 1
-        nl < 0 -> break
+        mode-pos = mnl2 + 1
+        nl >= names.len -> break
     }
     ; if path was not found, append new entry
     {
@@ -487,31 +544,38 @@ index-remove = (git-dir str, path str) (ok bool) {
     new-modes = ''
     new-count i64 = 0
     pos = 0
+    mode-pos = 0
     i <- [0..count): {
-        nl = util.find-byte-str(names, 10, pos)
-        end = names.len
-        nl >= 0 -> end = nl
-        nm = util.str-range(names, pos, end)
+        ; find end of name i (inline search)
+        nl = names.len
+        j <- [pos..names.len): {
+            names[j] == 10 -> {
+                nl = j
+                break
+            }
+        }
+        nm = names[pos..nl)
+        ; find end of mode i (inline search)
+        mnl2 = modes-str.len
+        j2 <- [mode-pos..modes-str.len): {
+            modes-str[j2] == 10 -> {
+                mnl2 = j2
+                break
+            }
+        }
+        old-ms = modes-str[mode-pos..mnl2)
         same = util.str-eq(nm, path)
         same == true -> {} -> {
             new-names = new-names - nm - '\n'
-            old-hex = util.str-range(hexoids, i * 40, i * 40 + 40)
+            old-hex = hexoids[i * 40..i * 40 + 40)
             new-oids = new-oids - old-hex
-            ; extract mode i
-            mpos = 0
-            j <- [0..i): {
-                mnl = util.find-byte-str(modes-str, 10, mpos)
-                mpos = mnl + 1
-            }
-            mnl2 = util.find-byte-str(modes-str, 10, mpos)
-            mend = modes-str.len
-            mnl2 >= 0 -> mend = mnl2
-            old-ms = util.str-range(modes-str, mpos, mend)
             new-modes = new-modes - old-ms - '\n'
             new-count = new-count + 1
         }
+        ; advance positions
         pos = nl + 1
-        nl < 0 -> break
+        mode-pos = mnl2 + 1
+        nl >= names.len -> break
     }
     write-ok bool
     write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)
