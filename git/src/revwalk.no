@@ -205,26 +205,102 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
     count = 0
     cur = start-oid
     {
+        ; safety limit: never walk more than 10000 commits
+        count >= 10000 -> break
         ; check if we've reached the limit
         max-count > 0 -> {
             count >= max-count -> break
         }
+        ; compute hex BEFORE read-commit-full (oid may be corrupted by cross-module call)
+        ch = oid.oid-hex-str(cur)
         ; read commit
-        ph str; np i64; cok bool
+        ph str; cok bool
         _t oid; _an str; _ae str; _at i64; _az str
         _cn str; _ce str; _ct i64; _cz str; _msg str
-        _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+        _t, ph, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
-        ; append this commit
-        ch = oid.oid-hex-str(cur)
+        ; compute nparents from parenthex length
+        np i64 = ph.len / 40
+        ; append this commit (use ch computed before the call)
         commit-hex = commit-hex - ch - '\n'
         count = count + 1
         ; follow first parent
         np == 0 -> break
+        np > 1 -> {
+            ; only follow first parent
+        }
         ; parse first parent hex
-        first-parent-hex = util.str-range(ph, 0, 40)
-        cur, cok = oid.oid-from-hex(first-parent-hex)
+        ph.len >= 40 -> {
+            first-parent-hex = util.str-range(ph, 0, 40)
+            cur, cok = oid.oid-from-hex(first-parent-hex)
+            cok == false -> break
+        } -> {
+            break
+        }
+    } (true)
+    ok = true
+}
+
+; revwalk-from-ref: resolve a ref name and walk first-parent history
+; This wrapper keeps the oid within revwalk.no to avoid cross-module oid corruption.
+; git-dir str, ref str (e.g. "HEAD"), max-count i64 (0 = unlimited)
+; returns commit-hex str (newline-separated 40-char hex), count i64, ok bool
+revwalk-from-ref = (git-dir str, ref str, max-count i64) (commit-hex str, count i64, ok bool) {
+    ok = false
+    commit-hex = ''
+    count = 0
+    start-oid oid
+    ref-ok bool
+    start-oid, ref-ok = resolve-ref(git-dir, ref)
+    ref-ok == false -> return
+    commit-hex, count, ok = revwalk-first-parent(git-dir, start-oid, max-count)
+}
+
+; revwalk-format-log: resolve ref, walk commits, format log output — all within revwalk.no
+; This avoids cross-module oid round-trips that corrupt oids.
+; git-dir str, ref str (e.g. "HEAD"), max-count i64 (0 = unlimited)
+; returns output str (formatted log), ok bool
+revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool) {
+    ok = false
+    output = ''
+    ; resolve ref
+    start-oid oid
+    ref-ok bool
+    start-oid, ref-ok = resolve-ref(git-dir, ref)
+    ref-ok == false -> return
+    ; walk commits inline (avoid round-trip through revwalk-first-parent)
+    cur = start-oid
+    count i64 = 0
+    {
+        count >= 10000 -> break
+        max-count > 0 -> {
+            count >= max-count -> break
+        }
+        ; compute hex before cross-module call
+        ch = oid.oid-hex-str(cur)
+        ; read commit
+        ph str; cok bool
+        _t oid; an str; ae str; at i64; az str
+        cn str; ce str; ct i64; cz str; msg str
+        _t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
+        ; format output
+        output = output - 'commit ' - ch - '\n'
+        output = output - 'Author: ' - an - ' <' - ae - '>\n'
+        output = output - '\n'
+        output = output - '    ' - msg - '\n'
+        output = output - '\n'
+        count = count + 1
+        ; follow first parent
+        np i64 = ph.len / 40
+        np == 0 -> break
+        ph.len >= 40 -> {
+            first-parent-hex = ph[0..40)
+            cur, cok = oid.oid-from-hex(first-parent-hex)
+            cok == false -> break
+        } -> {
+            break
+        }
     } (true)
     ok = true
 }

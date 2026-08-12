@@ -167,7 +167,7 @@ read-worktree-file = (work-tree str, path str) (content str, ok bool) {
             last == 47 -> full = work-tree - path
         }
     }
-    util.read-file-str(full)
+    content, ok = util.read-file-str(full)
 }
 
 ; ═══════════════════════════════════════════════
@@ -353,20 +353,42 @@ cmd-commit = (argc i64) {
     commit-oid oid = object.write-commit-full(git-dir, tree-oid, parenthex,
         a-name, a-email, now, tz,
         a-name, a-email, now, tz, message)
+    ; Pre-compute all strings before any ref-update calls
+    ; (Nolang scope model can invalidate str vars after cross-module calls)
+    ch = oid.oid-hex-str(commit-oid)
     branch str
     detached bool
     branch-ok bool
-    ref-name str
     branch, detached, branch-ok = refs.current-branch(git-dir)
+    ; Print result immediately
     {
         branch-ok == true -> {
             detached == false -> {
-                ref-name = 'refs/heads/' - branch
+                line = '[' - branch
+                line = line - ' '
+                line = line - ch
+                line = line - '] '
+                line = line - message
+                print(line)
+            } -> {
+                print('HEAD detached at ' - ch)
+            }
+        } -> {
+            print('[main ' - ch - '] ' - message)
+        }
+    }
+    ; Pre-compute ref names and messages
+    ref-name = 'refs/heads/' - branch
+    commit-msg = 'commit: ' - message
+    initial-msg = 'commit (initial): ' - message
+    {
+        branch-ok == true -> {
+            detached == false -> {
                 refs.write-ref(git-dir, ref-name, commit-oid)
                 refs.write-reflog(git-dir, 'HEAD', parent-oid, commit-oid,
-                    a-name, a-email, now, tz, 'commit: ' - message)
-                refs.write-reflog(git-dir, 'refs/heads/' - branch, parent-oid, commit-oid,
-                    a-name, a-email, now, tz, 'commit: ' - message)
+                    a-name, a-email, now, tz, commit-msg)
+                refs.write-reflog(git-dir, ref-name, parent-oid, commit-oid,
+                    a-name, a-email, now, tz, commit-msg)
             } -> {
                 refs.set-head-detached(git-dir, commit-oid)
             }
@@ -374,11 +396,9 @@ cmd-commit = (argc i64) {
             refs.create-branch(git-dir, 'main', commit-oid)
             refs.update-head(git-dir, 'refs/heads/main')
             refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit-oid,
-                a-name, a-email, now, tz, 'commit (initial): ' - message)
+                a-name, a-email, now, tz, initial-msg)
         }
     }
-    ch = oid.oid-hex-str(commit-oid)
-print('[' - branch - ' ' - ch - '] ' - message)
 }
 
 ; ═══════════════════════════════════════════════
@@ -393,15 +413,6 @@ cmd-log = (argc i64) {
     {
         repo-ok == false -> {
             print('fatal: not a git repository')
-            return
-        }
-    }
-    head-oid oid
-    head-ok bool
-    head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
-    {
-        head-ok == false -> {
-            print('fatal: no HEAD ref found')
             return
         }
     }
@@ -421,36 +432,16 @@ cmd-log = (argc i64) {
             }
         }
     }
-    commit-hex str
-    count i64
-    walk-ok bool
-    commit-hex, count, walk-ok = revwalk.revwalk-first-parent(git-dir, head-oid, max-count)
+    log-output str
+    log-ok bool
+    log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
     {
-        walk-ok == false -> {
+        log-ok == false -> {
             print('fatal: could not walk commits')
             return
         }
     }
-    pos = 0
-    i <- [0..count): {
-        nl = util.find-byte-str(commit-hex, 10, pos)
-        end = commit-hex.len
-        nl >= 0 -> end = nl
-        ch = util.str-range(commit-hex, pos, end)
-        _t oid; ph str; np i64
-        an str; ae str; at i64; az str
-        cn str; ce str; ct i64; cz str; msg str; cok bool
-        _t, ph, np, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, ch)
-        cok == true -> {
-            print('commit ' - ch)
-            print('Author: ' - an - ' <' - ae - '>')
-            print('')
-            print('    ' - msg)
-            print('')
-        }
-        pos = nl + 1
-        nl < 0 -> break
-    }
+    print(log-output)
 }
 
 ; ═══════════════════════════════════════════════
@@ -500,7 +491,9 @@ cmd-status = (argc i64) {
         end = names.len
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
-        print('  new file: ' - nm)
+        line = '  new file: '
+        line = line - nm
+        print(line)
         pos = nl + 1
         nl < 0 -> break
     }
