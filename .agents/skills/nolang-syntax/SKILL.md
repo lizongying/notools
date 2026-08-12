@@ -402,6 +402,26 @@ Single-line comments use `;` — a `;` at the start of a line (or used alone) ma
 
 **Rule: one statement per line — never use commas `,` to combine multiple statements on one line.** This applies to comments too, including code examples inside comments.
 
+**Rule: never use `;` to separate multiple variable declarations on one line.** Since `;` is the comment character, `a str = ''; b str = ''` is parsed as `a str = ''` followed by a comment — `b` is never declared. Each variable declaration must be on its own line.
+
+```nolang
+; ❌ Wrong: semicolons treated as comments, not separators
+; a str = ''; b str = ''; c str = ''
+; _t oid; _an str; _ae str; _at i64
+; ph str; cok bool
+
+; ✅ Correct: each declaration on its own line
+a str = ''
+b str = ''
+c str = ''
+_t oid
+_an str
+_ae str
+_at i64
+ph str
+cok bool
+```
+
 ```nolang
 ; ❌ Wrong: commas combining multiple statements
 ; out = from-i64(v), out = from-u64(v)

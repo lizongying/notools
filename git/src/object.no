@@ -327,10 +327,13 @@ tree-encode = (t tree) (out str) {
 ; ═══════════════════════════════════════════════
 
 person-line = (role str, p person-info) (out str) {
-    ; Use the intra-module concat builder (NOT util.i64-to-str — a cross-module
-    ; stride-8 return concatenated here corrupts the commit payload).
-ts str = util.i64-to-str(p.time)
-out = role - ' ' - p.name - ' <' - p.email - '> ' - ts - ' ' - p.tz
+    ; DEBUG: read struct fields BEFORE cross-module call
+    nm str = p.name
+    em str = p.email
+    tm i64 = p.time
+    tzh str = p.tz
+    ts str = util.i64-to-str(tm)
+    out = role - ' ' - nm - ' <' - em - '> ' - ts - ' ' - tzh
 }
 
 ; parse-person-fields: parse "Name <email> 1234567890 +0000" returning the
@@ -615,15 +618,16 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 write-commit-full = (git-dir str, tree-oid oid, parenthex str,
     a-name str, a-email str, a-time i64, a-tz str,
     c-name str, c-email str, c-time i64, c-tz str, message str) (o oid) {
-    c = commit-info {
-        tree-oid: tree-oid
-        parenthex: parenthex
-        nparents: parenthex.len / 40
-        author: person-info { name: a-name, email: a-email, time: a-time, tz: a-tz }
-        committer: person-info { name: c-name, email: c-email, time: c-time, tz: c-tz }
-        message: message
-    }
-    o = write-commit(git-dir, c)
+    ; DEBUG: bypass struct, build directly from parameters
+    th str = oid.oid-hex-str(tree-oid)
+    nl str = '\n'
+    ats str = util.i64-to-str(a-time)
+    cts str = util.i64-to-str(c-time)
+    enc str = 'tree ' - th - nl
+    enc = enc - 'author ' - a-name - ' <' - a-email - '> ' - ats - ' ' - a-tz - nl
+    enc = enc - 'committer ' - c-name - ' <' - c-email - '> ' - cts - ' ' - c-tz - nl
+    enc = enc - nl - message
+    o = write-loose(git-dir, 'commit', enc)
 }
 
 ; read-commit-full: read + decode a commit; returns its parts individually.
@@ -807,14 +811,33 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && oid.eq(id0, b)
     ; --- commit round trip ---
     oc = write-commit-full(git-dir, tid, '', 'An', 'ae', 1112911993, '+0000', 'Cn', 'ce', 1112911993, '+0000', 'msg')
-    _ct oid; _cph str; _can str; _cae str; _cat i64; _caz str; _ccn str; _cce str; _cct i64; _ccz str; _cm str; _cok bool
+    _ct oid
+    _cph str
+    _can str
+    _cae str
+    _cat i64
+    _caz str
+    _ccn str
+    _cce str
+    _cct i64
+    _ccz str
+    _cm str
+    _cok bool
     _ct, _cph, _can, _cae, _cat, _caz, _ccn, _cce, _cct, _ccz, _cm, _cok = read-commit-full(git-dir, oc)
     ok = ok && _cok
     ok = ok && str-eq(_can, 'An')
     ok = ok && str-eq(_cm, 'msg')
     ; --- tag round trip ---
     otg = write-tag-full(git-dir, b, 'blob', 'v0', 'Tn', 'te', 1112911993, '+0000', 'tm')
-    _to oid; _tty str; _tt str; _tnm str; _tem str; _ttm i64; _ttz str; _tmsg str; _tok bool
+    _to oid
+    _tty str
+    _tt str
+    _tnm str
+    _tem str
+    _ttm i64
+    _ttz str
+    _tmsg str
+    _tok bool
     _to, _tty, _tt, _tnm, _tem, _ttm, _ttz, _tmsg, _tok = read-tag-full(git-dir, otg)
     ok = ok && _tok
     ok = ok && str-eq(_tt, 'v0')
