@@ -7,6 +7,7 @@
 ;   * Ancestor checking
 ;
 ; Cross-module safety: returns individual scalars/strings/oids.
+; Resolve ref, walk commits, format log output.
 
 # /git/src/util
 # /git/src/oid
@@ -102,18 +103,7 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
                         sp >= 0 -> {
                             hx = util.str-range(line, 0, sp)
                             refname = util.str-range(line, sp + 1, line.len)
-                            ; compare refname with name
-                            ; str-eq local
-                            same = true
-                            refname.len != name.len -> same = false
-                            same == true -> {
-                                j <- [0..refname.len): {
-                                    refname[j] != name[j] -> {
-                                        same = false
-                                        break
-                                    }
-                                }
-                            }
+                            same = util.str-eq(refname, name)
                             same == true -> {
                                 hx.len >= 40 -> {
                                     o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
@@ -140,8 +130,6 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
 commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
     ok = false
     _k str
-    _d str
-    read-ok bool
     _k, _d, read-ok = object.read-loose(git-dir, commit-oid)
     {
         read-ok == false -> return
@@ -158,8 +146,6 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
 commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok bool) {
     ok = false
     _k str
-    data str
-    read-ok bool
     _k, data, read-ok = object.read-loose(git-dir, commit-oid)
     read-ok == false -> return
     parent-hex = ''
@@ -193,7 +179,8 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
 ;   a-name str, a-email str, a-time i64, a-tz str,
 ;   c-name str, c-email str, c-time i64, c-tz str, message str, ok bool
 commit-info-full = (git-dir str, commit-oid oid) (tree-oid oid, parent-hex str, nparents i64, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
-    tree-oid, parent-hex, nparents, a-name, a-email, a-time, a-tz, c-name, c-email, c-time, c-tz, message, ok = object.read-commit-full(git-dir, commit-oid)
+    tree-oid, parent-hex, a-name, a-email, a-time, a-tz, c-name, c-email, c-time, c-tz, message, ok = object.read-commit-full(git-dir, commit-oid)
+    nparents = parent-hex.len / 40
 }
 
 ; ═══════════════════════════════════════════════
@@ -213,18 +200,7 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
         max-count > 0 -> {
             count >= max-count -> break
         }
-        ph str
-        cok bool
         _t oid
-        _an str
-        _ae str
-        _at i64
-        _az str
-        _cn str
-        _ce str
-        _ct i64
-        _cz str
-        _msg str
         _t, ph, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
         ch = oid.oid-hex-str(cur)
@@ -243,8 +219,7 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
     ok = true
 }
 
-; revwalk-format-log: resolve ref, walk commits, format log output — all within revwalk.no
-; Workaround for Nolang issue #1/#3: cross-module oid/str corruption.
+; revwalk-format-log: resolve ref, walk commits, format log output
 ; git-dir str, ref str (e.g. "HEAD"), max-count i64 (0 = unlimited)
 ; returns output str (formatted log), ok bool
 revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool) {
@@ -262,19 +237,7 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
             count >= max-count -> break
         }
         ch = oid.oid-hex-str(cur)
-        ; read commit (12 returns — str fields may be corrupted by cross-module)
-        ph str
-        cok bool
         _t oid
-        _an str
-        _ae str
-        _at i64
-        _az str
-        _cn str
-        _ce str
-        _ct i64
-        _cz str
-        _msg str
         _t, ph, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
         output = output - 'commit ' - ch - '\n'
@@ -328,14 +291,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
         {
             vpos >= visited-hex.len -> break
             vh = util.str-range(visited-hex, vpos, vpos + 40)
-            ; compare
-            same = true
-            j <- [0..40): {
-                vh[j] != cur-hex[j] -> {
-                    same = false
-                    break
-                }
-            }
+            same = util.str-eq(vh, cur-hex)
             same == true -> {
                 is-visited = true
                 break
@@ -346,24 +302,13 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
             ; mark as visited
             visited-hex = visited-hex - cur-hex
             ; read commit
-            ph str
-            np i64
-            cok bool
             _t oid
-            _an str
-            _ae str
-            _at i64
-            _az str
-            _cn str
-            _ce str
-            _ct i64
-            _cz str
-            _msg str
-            _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+            _t, ph, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
             cok == true -> {
                 commit-hex = commit-hex - cur-hex - '\n'
                 count = count + 1
                 ; enqueue parents
+                np i64 = ph.len / 40
                 i <- [0..np): {
                     parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
                     queue-hex = queue-hex - parent-hex
@@ -395,13 +340,7 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
         queue-n = queue-n - 1
         ; check if this is the ancestor
-        same = true
-        j <- [0..40): {
-            cur-hex[j] != ancestor-hex[j] -> {
-                same = false
-                break
-            }
-        }
+        same = util.str-eq(cur-hex, ancestor-hex)
         same == true -> {
             yes = true
             break
@@ -412,13 +351,7 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         {
             vpos >= visited-hex.len -> break
             vh = util.str-range(visited-hex, vpos, vpos + 40)
-            vsame = true
-            j <- [0..40): {
-                vh[j] != cur-hex[j] -> {
-                    vsame = false
-                    break
-                }
-            }
+            vsame = util.str-eq(vh, cur-hex)
             vsame == true -> {
                 is-visited = true
                 break
@@ -427,25 +360,12 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         } (true)
         is-visited == true -> {} -> {
             visited-hex = visited-hex - cur-hex
-            cur oid
-            cur-ok bool
             cur, cur-ok = oid.oid-from-hex(cur-hex)
             cur-ok == true -> {
-                ph str
-                np i64
-                cok bool
                 _t oid
-                _an str
-                _ae str
-                _at i64
-                _az str
-                _cn str
-                _ce str
-                _ct i64
-                _cz str
-                _msg str
-                _t, ph, np, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
+                _t, ph, _an, _ae, _at, _az, _cn, _ce, _ct, _cz, _msg, cok = object.read-commit-full(git-dir, cur)
                 cok == true -> {
+                    np i64 = ph.len / 40
                     i <- [0..np): {
                         parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
                         queue-hex = queue-hex - parent-hex

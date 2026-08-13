@@ -4,11 +4,11 @@
 ; storage (the .git/objects/<aa>/<bbbb...> zlib stream). Object identity is a
 ; SHA-1 over "<type> <size>\0<payload>" (see oid.no).
 ;
-; IMPORTANT nolang codegen constraints baked into this file (see project
-; memory). A struct whose vec fields are read after being RETURNED from a
-; function is corrupted by the whole-module optimizer (e.g. `t.modes[0]` on a
-; tree returned by tree-add crashes). So we keep NO vec fields in any value
-; type that crosses a function boundary. Specifically:
+; IMPORTANT nolang codegen constraints (some resolved in latest compiler, some
+; remain — see comments below). A struct whose vec fields are read after being
+; RETURNED from a function is corrupted by the whole-module optimizer (e.g.
+; `t.modes[0]` on a tree returned by tree-add crashes). So we keep NO vec fields
+; in any value type that crosses a function boundary. Specifically:
 ;   * tree is stored as a single sorted byte-string `raw` (Git's exact on-disk
 ;     tree format: "<octal-mode> <name>\0<20 raw id bytes>" per entry) plus a
 ;     scalar `n` count. No []i64 / []str fields at all.
@@ -79,7 +79,7 @@ i64-to-octal = (n i64) (out str) {
         x = x / 8
         x == 0 -> break
     } ()
-    ; Concat-return (stride-1) so the result is safe wherever it is used.
+    ; Concat-return so the result is safe wherever it is used.
     out = ''
     L = tmp.len
     i <- [0..L): {
@@ -327,13 +327,8 @@ tree-encode = (t tree) (out str) {
 ; ═══════════════════════════════════════════════
 
 person-line = (role str, p person-info) (out str) {
-    ; DEBUG: read struct fields BEFORE cross-module call
-    nm str = p.name
-    em str = p.email
-    tm i64 = p.time
-    tzh str = p.tz
-    ts str = util.i64-to-str(tm)
-    out = role - ' ' - nm - ' <' - em - '> ' - ts - ' ' - tzh
+    ts str = util.i64-to-str(p.time)
+    out = role - ' ' - p.name - ' <' - p.email - '> ' - ts - ' ' - p.tz
 }
 
 ; parse-person-fields: parse "Name <email> 1234567890 +0000" returning the
@@ -618,16 +613,15 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 write-commit-full = (git-dir str, tree-oid oid, parenthex str,
     a-name str, a-email str, a-time i64, a-tz str,
     c-name str, c-email str, c-time i64, c-tz str, message str) (o oid) {
-    ; DEBUG: bypass struct, build directly from parameters
-    th str = oid.oid-hex-str(tree-oid)
-    nl str = '\n'
-    ats str = util.i64-to-str(a-time)
-    cts str = util.i64-to-str(c-time)
-    enc str = 'tree ' - th - nl
-    enc = enc - 'author ' - a-name - ' <' - a-email - '> ' - ats - ' ' - a-tz - nl
-    enc = enc - 'committer ' - c-name - ' <' - c-email - '> ' - cts - ' ' - c-tz - nl
-    enc = enc - nl - message
-    o = write-loose(git-dir, 'commit', enc)
+    c = commit-info {
+        tree-oid: tree-oid
+        parenthex: parenthex
+        nparents: parenthex.len / 40
+        author: person-info { name: a-name, email: a-email, time: a-time, tz: a-tz }
+        committer: person-info { name: c-name, email: c-email, time: c-time, tz: c-tz }
+        message: message
+    }
+    o = write-commit(git-dir, c)
 }
 
 ; read-commit-full: read + decode a commit; returns its parts individually.
@@ -756,31 +750,10 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
     ok = true
 }
 
-; str-eq: length + byte-wise equality of two byte-strings (intra-module safe;
-; avoids relying on nolang's `==` semantics for str, which are inconsistent for
-; computed/with-len strings).
-; Accumulate in a regular local `r` (named-return assignment inside a loop's
-; `-> { }` block does not persist in nolang); copy to the named return `yes`
-; once, at top level, at the end.
-str-eq = (a str, b str) (yes bool) {
-    r i64 = 0
-    a.len != b.len -> return
-    r = 1
-    i = 0
-    {
-        i >= a.len -> break
-        m i64 = a[i] != b[i]
-        r = m ? 0 : r
-        m == 1 -> break
-        i = i + 1
-    } ()
-    yes = r == 1
-}
-
 ; object-roundtrip-test: full write+read round trip for blob, tree, commit and
 ; tag, entirely INTRA-module so no `str` payload crosses a module boundary
 ; (which is where nolang corrupts stride-8 strings). Validation uses oid.eq
-; (struct compare) and str-eq (byte compare), never `print` of a string.
+; (struct compare) and util.str-eq (byte compare), never `print` of a string.
 ; Returns true only if every round trip reproduces the original bytes.
 object-roundtrip-test = (git-dir str) (ok bool) {
     ; --- blob round trip ---
@@ -790,8 +763,8 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     bok bool
     bk, bd, bok = read-loose(git-dir, b)
     ok = bok
-    ok = ok && str-eq(bd, 'hello')
-    ok = ok && str-eq(bk, 'blob')
+    ok = ok && util.str-eq(bd, 'hello')
+    ok = ok && util.str-eq(bk, 'blob')
     ob i64 = 0
     ok == true -> ob = 1
     ; --- tree round trip ---
@@ -806,41 +779,22 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     m = tree-mode-raw(back, 0)
     ok = ok && (m == 33188)
     nm = tree-name-raw(back, 0)
-    ok = ok && str-eq(nm, 'hello.txt')
+    ok = ok && util.str-eq(nm, 'hello.txt')
     id0 = tree-id-raw(back, 0)
     ok = ok && oid.eq(id0, b)
     ; --- commit round trip ---
     oc = write-commit-full(git-dir, tid, '', 'An', 'ae', 1112911993, '+0000', 'Cn', 'ce', 1112911993, '+0000', 'msg')
     _ct oid
-    _cph str
-    _can str
-    _cae str
-    _cat i64
-    _caz str
-    _ccn str
-    _cce str
-    _cct i64
-    _ccz str
-    _cm str
-    _cok bool
     _ct, _cph, _can, _cae, _cat, _caz, _ccn, _cce, _cct, _ccz, _cm, _cok = read-commit-full(git-dir, oc)
     ok = ok && _cok
-    ok = ok && str-eq(_can, 'An')
-    ok = ok && str-eq(_cm, 'msg')
+    ok = ok && util.str-eq(_can, 'An')
+    ok = ok && util.str-eq(_cm, 'msg')
     ; --- tag round trip ---
     otg = write-tag-full(git-dir, b, 'blob', 'v0', 'Tn', 'te', 1112911993, '+0000', 'tm')
     _to oid
-    _tty str
-    _tt str
-    _tnm str
-    _tem str
-    _ttm i64
-    _ttz str
-    _tmsg str
-    _tok bool
     _to, _tty, _tt, _tnm, _tem, _ttm, _ttz, _tmsg, _tok = read-tag-full(git-dir, otg)
     ok = ok && _tok
-    ok = ok && str-eq(_tt, 'v0')
-    ok = ok && str-eq(_tmsg, 'tm')
+    ok = ok && util.str-eq(_tt, 'v0')
+    ok = ok && util.str-eq(_tmsg, 'tm')
 }
 
