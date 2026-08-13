@@ -123,7 +123,6 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
     pk-ok = true
     {
         pk-ok == false -> break
-        fname str
         fname, pk-ok = fs.read-dir(dirp)
         pk-ok == true -> {
             fname.len > 5 -> {
@@ -137,7 +136,6 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                 fname[ext-start + 4] != 107 -> is-pack = false  ; k
                 is-pack == true -> {
                     pp = pack-dir - '/' - fname
-                    found bool
                     offset, found = scan-pack-for-oid(pp, o)
                     found == true -> {
                         pack-path = pp
@@ -156,11 +154,8 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
 ; returns offset i64, ok bool
 scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
     ok = false
-    data str
-    read-ok bool
     data, read-ok = util.read-file-str(pack-path)
     read-ok == false -> return
-    ver i64; count i64; hdr-ok bool
     ver, count, hdr-ok = read-pack-header(data)
     hdr-ok == false -> return
     ; walk all objects
@@ -168,17 +163,15 @@ scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
     i <- [0..count): {
         pos >= data.len -> break
         obj-start = pos
-        type i64; size i64; new-pos i64; ohdr-ok bool
         type, size, new-pos, ohdr-ok = read-pack-object-header(data, pos)
         ohdr-ok == false -> break
         pos = new-pos
         ; handle delta types
         type == 6 -> {
             ; OBJ_OFS_DELTA
-            _ofs i64; _np i64; _dok bool
-            _ofs, _np, _dok = read-ofs-delta-base(data, pos)
-            _dok == false -> break
-            pos = _np
+            ofs, np, dok = read-ofs-delta-base(data, pos)
+            dok == false -> break
+            pos = np
         }
         type == 7 -> {
             ; OBJ_REF_DELTA — 20 bytes base oid
@@ -193,8 +186,6 @@ scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
         ; This is a simplified skip — real packs may use compressed DEFLATE blocks.
         ; For now, we decompress and hash to check if this is our object.
         comp-start = pos
-        decompressed str
-        decomp-ok bool
         decompressed, decomp-ok = zlib.zlib-decompress(data[comp-start..data.len))
         decomp-ok == true -> {
             ; build header and hash
@@ -286,18 +277,12 @@ scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
 ; returns kind str, data str, ok bool
 read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
     ok = false
-    pack-path str
-    offset i64
-    found-ok bool
     pack-path, offset, found-ok = find-pack-object(git-dir, o)
     found-ok == false -> return
     ; read pack data
-    pack-data str
-    read-ok bool
     pack-data, read-ok = util.read-file-str(pack-path)
     read-ok == false -> return
     ; read object header at offset
-    type i64; size i64; new-pos i64; hdr-ok bool
     type, size, new-pos, hdr-ok = read-pack-object-header(pack-data, offset)
     hdr-ok == false -> return
     pos = new-pos
@@ -313,8 +298,6 @@ read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
         }
     }
     ; direct object — decompress
-    decompressed str
-    decomp-ok bool
     decompressed, decomp-ok = zlib.zlib-decompress(pack-data[pos..pack-data.len))
     {
         decomp-ok == false -> return

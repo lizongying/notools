@@ -21,6 +21,7 @@
 
 # /git/src/util
 # /git/src/oid
+# /git/src/zlib
 
 ; ═══════════════════════════════════════════════
 ; value types
@@ -397,25 +398,15 @@ tag-encode = (t tag-info) (out str) {
 ; ═══════════════════════════════════════════════
 
 ; ═══════════════════════════════════════════════
-; INLINE zlib stored-block codec
-;
-; The zlib compression/decompression is inlined directly into write-loose /
-; read-loose (NOT a separate z-compress/z-decompress function). nolang's codegen
-; treats a `with-len` (stride-8) string RETURNED from a function call differently
-; from a `with-len` string that is a LOCAL: the caller indexes a returned str
-; stride-1, so only the first byte survives. By keeping `comp` / `out` as LOCALS
-; inside the same function that built them, every index is stride-8-aware and
-; the bytes survive. The stream is byte-for-byte identical to a real zlib
-; stored-block stream, so real git can read our objects.
+; zlib stored-block codec — uses git/src/zlib module functions
+; (zlib-compress / zlib-decompress) instead of inlined code.
 ; ═══════════════════════════════════════════════
 
 ; build-header: "<type> <size>\0" header, built locally as a PROPER concat str.
-; Replaces the cross-module oid.object-header call whose with-len return was
-; corrupted at the boundary.
 build-header = (kind str, size i64) (out str) {
-sz = util.i64-to-str(size)
-nul str = '\0'
-out = kind - ' ' - sz - nul
+    sz = util.i64-to-str(size)
+    nul str = '\0'
+    out = kind - ' ' - sz - nul
 }
 
 ; hex-char: render one byte as a 2-char lowercase hex string. Built purely by
@@ -464,41 +455,7 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     i <- [0..data.len): {
         full[hdr.len + i] = data[i]
     }
-    ; Inline zlib stored-block compression. `comp` stays a LOCAL here so every
-    ; index is stride-8-aware (a returned str would be indexed stride-1 by the
-    ; caller and corrupted). Builds a single stored block (BTYPE=00).
-    ; NOTE: single block supports up to 65535 bytes. For larger objects,
-    ; multiple blocks should be chained — but this covers the vast majority
-    ; of Git objects (source files, small trees, commits).
-    full-len = full.len
-    full-len > 65535 -> full-len = 65535
-    comp str = with-len(2 + 5 + full-len + 4)
-    comp[0] = 0x78
-    comp[1] = 0x9c
-    comp[2] = 1
-    comp[3] = full-len & 0xff
-    comp[4] = (full-len >> 8) & 0xff
-    nlen = (~full-len) & 0xffff
-    comp[5] = nlen & 0xff
-    comp[6] = (nlen >> 8) & 0xff
-    i <- [0..full-len): {
-        comp[7 + i] = full[i]
-    }
-    ; Adler-32 computed INLINE (reading full[i] locally, stride-8-aware). A
-    ; separate adler function would index its `s` parameter stride-1 and produce
-    ; a wrong checksum.
-    a = 1
-    b = 0
-    i <- [0..full-len): {
-        bb = full[i]
-        a = (a + bb) % 65521
-        b = (b + a) % 65521
-    }
-    ad = ((b << 16) | a) & 0xffffffff
-    comp[7 + full-len] = (ad >> 24) & 0xff
-    comp[7 + full-len + 1] = (ad >> 16) & 0xff
-    comp[7 + full-len + 2] = (ad >> 8) & 0xff
-    comp[7 + full-len + 3] = ad & 0xff
+    comp str = zlib.zlib-compress(full)
     ; Write the compressed object to file.
     fd = fs.open-write(f)
     fs.write(fd, comp, comp.len)
@@ -547,10 +504,9 @@ read-file-bytes = (p str) (content str, ok bool) {
 ; read-loose: read a loose object; ok=false if absent or corrupt.
 ; data str: payload returned as a byte-string (each codepoint 0-255).
 ;
-; `rf` is a stride-1 proper str from fs.read-file, so rf[p] reads are correct.
-; `out` is built as a CONCAT (stride-1) string so find-byte-local / str-copy
-; (which index it locally) read correct bytes AND so the returned kind/data
-; (via str-copy, also concat) survive any boundary.
+; `rf` is a proper str from fs.read-file; zlib.zlib-decompress handles
+; decompression. The returned kind/data are concat strings that survive
+; any module boundary.
 read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
     ok = false
     f str = object-path(git-dir, o)
@@ -561,35 +517,10 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
         rf.len == 0 -> return
         rf.len < 6 -> return
     }
-    ; First pass: sum the uncompressed lengths across stored blocks.
-    total = 0
-    p = 2
-    {
-        p >= rf.len -> break
-        bfinal = rf[p] & 1
-        btype = (rf[p] >> 1) & 3
-        btype != 0 -> return
-        p = p + 1
-        len = rf[p] | (rf[p + 1] << 8)
-        p = p + 2
-        p = p + 2
-        total = total + len
-        p = p + len
-        bfinal == 1 -> break
-    } (true)
-    ; Second pass: build `out` by concatenating payload from each stored block.
-    out = ''
-    p = 2
-    {
-        p >= rf.len -> break
-        bfinal = rf[p] & 1
-        p = p + 1
-        len = rf[p] | (rf[p + 1] << 8)
-        p = p + 4
-        out = out - rf[p..p + len)
-        p = p + len
-        bfinal == 1 -> break
-    } (true)
+    out str
+    dec-ok bool
+    out, dec-ok = zlib.zlib-decompress(rf)
+    dec-ok == false -> return
     sp i64 = util.find-byte-str(out, 32, 0)
     sp < 0 -> return
     kind = util.str-range(out, 0, sp)
@@ -629,7 +560,7 @@ write-commit-full = (git-dir str, tree-oid oid, parenthex str,
 ; and returns only top-level scalars/strings/oid.
 read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
     a-name str, a-email str, a-time i64, a-tz str,
-    c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
+c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
     k str
     d str
     ok2 bool
@@ -700,7 +631,7 @@ write-tag-full = (git-dir str, obj oid, obj-type str, tag str,
 ; read-tag-full: read + decode a tag; returns its parts individually.
 ; Parses INLINE (no tag-info struct return) and returns top-level values.
 read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
-    t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
+t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
     k str
     d str
     ok2 bool
@@ -751,9 +682,7 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
 }
 
 ; object-roundtrip-test: full write+read round trip for blob, tree, commit and
-; tag, entirely INTRA-module so no `str` payload crosses a module boundary
-; (which is where nolang corrupts stride-8 strings). Validation uses oid.eq
-; (struct compare) and util.str-eq (byte compare), never `print` of a string.
+; tag. Validation uses oid.eq (struct compare) and util.str-eq (byte compare).
 ; Returns true only if every round trip reproduces the original bytes.
 object-roundtrip-test = (git-dir str) (ok bool) {
     ; --- blob round trip ---
@@ -770,8 +699,6 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ; --- tree round trip ---
     traw = tree-add-raw('', 33188, 'hello.txt', b)
     tid = tree-write-raw(git-dir, traw)
-    back str
-    tok bool
     back, tok = tree-read-raw(git-dir, tid)
     ok = ok && tok
     n = tree-count-raw(back)
@@ -784,17 +711,15 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && oid.eq(id0, b)
     ; --- commit round trip ---
     oc = write-commit-full(git-dir, tid, '', 'An', 'ae', 1112911993, '+0000', 'Cn', 'ce', 1112911993, '+0000', 'msg')
-    _ct oid
-    _ct, _cph, _can, _cae, _cat, _caz, _ccn, _cce, _cct, _ccz, _cm, _cok = read-commit-full(git-dir, oc)
-    ok = ok && _cok
-    ok = ok && util.str-eq(_can, 'An')
-    ok = ok && util.str-eq(_cm, 'msg')
+    ct, cph, can, cae, cat, caz, ccn, cce, cct, ccz, cm, cok = read-commit-full(git-dir, oc)
+    ok = ok && cok
+    ok = ok && util.str-eq(can, 'An')
+    ok = ok && util.str-eq(cm, 'msg')
     ; --- tag round trip ---
     otg = write-tag-full(git-dir, b, 'blob', 'v0', 'Tn', 'te', 1112911993, '+0000', 'tm')
-    _to oid
-    _to, _tty, _tt, _tnm, _tem, _ttm, _ttz, _tmsg, _tok = read-tag-full(git-dir, otg)
-    ok = ok && _tok
-    ok = ok && util.str-eq(_tt, 'v0')
-    ok = ok && util.str-eq(_tmsg, 'tm')
+    to, tty, tt, tnm, tem, ttm, ttz, tmsg, tag-ok = read-tag-full(git-dir, otg)
+    ok = ok && tag-ok
+    ok = ok && util.str-eq(tt, 'v0')
+    ok = ok && util.str-eq(tmsg, 'tm')
 }
 

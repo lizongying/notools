@@ -407,17 +407,17 @@ Single-line comments use `;` — a `;` at the start of a line (or used alone) ma
 ```nolang
 ; ❌ Wrong: semicolons treated as comments, not separators
 ; a str = ''; b str = ''; c str = ''
-; _t oid; _an str; _ae str; _at i64
+; t oid; an str; ae str; at i64
 ; ph str; cok bool
 
 ; ✅ Correct: each declaration on its own line
 a str = ''
 b str = ''
 c str = ''
-_t oid
-_an str
-_ae str
-_at i64
+t oid
+an str
+ae str
+at i64
 ph str
 cok bool
 ```
@@ -442,6 +442,8 @@ cok bool
 ### Naming Rules
 
 Variable names, function names, struct names, etc. can start with an underscore, followed by hyphens, letters, and digits; cannot start with a digit, cannot end with a hyphen, and cannot have consecutive hyphens.
+
+**Underscore prefix `_`**: The `_` prefix marks **module-level** declarations (functions, globals, FFI bindings) as private (not exported). **Local variables never need the `_` prefix** — they are already function-scoped and cannot be exported.
 
 **Case conventions:**
 - **Global constants/variables**: uppercase (e.g. `NO-LANG`, `MAX-SIZE`)
@@ -956,6 +958,19 @@ val: {
     ok -> a, b = parse-pair(it)
     -> return
 }
+```
+
+**Multi-assignment implicitly declares variables.** There is no need to pre-declare variables before a multi-assignment — the variables are declared by the assignment itself:
+
+```nolang
+; ✅ Correct: no pre-declaration needed
+k, d, ok = read-loose(git-dir, o)
+
+; ❌ Wrong: redundant pre-declarations
+k str
+d str
+ok bool
+k, d, ok = read-loose(git-dir, o)
 ```
 
 ### Structs & Methods
