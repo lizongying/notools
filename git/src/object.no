@@ -4,20 +4,14 @@
 ; storage (the .git/objects/<aa>/<bbbb...> zlib stream). Object identity is a
 ; SHA-1 over "<type> <size>\0<payload>" (see oid.no).
 ;
-; IMPORTANT nolang codegen constraints (some resolved in latest compiler, some
-; remain — see comments below). A struct whose vec fields are read after being
-; RETURNED from a function is corrupted by the whole-module optimizer (e.g.
-; `t.modes[0]` on a tree returned by tree-add crashes). So we keep NO vec fields
-; in any value type that crosses a function boundary. Specifically:
+; Design notes:
 ;   * tree is stored as a single sorted byte-string `raw` (Git's exact on-disk
 ;     tree format: "<octal-mode> <name>\0<20 raw id bytes>" per entry) plus a
-;     scalar `n` count. No []i64 / []str fields at all.
+;     scalar `n` count.
 ;   * commit parents are stored as a concatenated 40-char-hex string
 ;     parenthex with an explicit nparents count.
-;   * parse commit/tag headers line-by-line over a byte-string (never []str).
-;   * carry all Git bytes as `str` (one codepoint per byte 0-255) across module
-;     boundaries; []byte is only used INSIDE this module.
-;   * bind every cross-module call result to a typed local before reuse.
+;   * parse commit/tag headers line-by-line over a byte-string.
+;   * carry all Git bytes as `str` (one codepoint per byte 0-255).
 
 # /git/src/util
 # /git/src/oid
@@ -28,9 +22,7 @@
 ; ═══════════════════════════════════════════════
 
 ; tree: a Git tree stored as a single sorted byte-string (Git's exact on-disk
-; tree format) plus a scalar entry count. NO vec fields — a struct whose vec
-; fields are read after being returned from a function is corrupted by the
-; nolang optimizer (see project memory). Each entry in `raw` is:
+; tree format) plus a scalar entry count. Each entry in `raw` is:
 ;   "<octal-mode> <name>\0<20 raw id bytes>"
 ; Entries are kept sorted by base_name_compare at all times.
 tree {
@@ -226,12 +218,10 @@ tree-id = (t tree, i i64) (o oid) {
 }
 
 ; ═══════════════════════════════════════════════
-; CROSS-MODULE-SAFE tree API
+; Tree API
 ;
-; nolang corrupts a struct field that is a `str` (or vec) when the struct is
-; returned across a module boundary, so we NEVER hand a `tree` struct to
-; another module. Instead the tree's bytes travel as a plain top-level `str`
-; (which survives), and these wrappers rebuild a local `tree` internally.
+; The tree's bytes travel as a plain top-level `str`, and these wrappers
+; rebuild a local `tree` internally.
 ; ═══════════════════════════════════════════════
 
 ; tree-count-raw: number of entries in a raw tree byte-string
@@ -250,8 +240,6 @@ tree-count-raw = (raw str) (n i64) {
 }
 
 ; tree-add-raw: append an entry to a raw tree string; returns the new raw str.
-; Operates directly on the `str` (no `tree` struct return — returning a struct
-; carrying a `str` field loses the buffer even within a module).
 tree-add-raw = (raw str, mode i64, name str, id oid) (out str) {
 oct = i64-to-octal(mode)
 ib = id-bytes(id)
@@ -402,30 +390,19 @@ tag-encode = (t tag-info) (out str) {
 ; (zlib-compress / zlib-decompress) instead of inlined code.
 ; ═══════════════════════════════════════════════
 
-; build-header: "<type> <size>\0" header, built locally as a PROPER concat str.
-build-header = (kind str, size i64) (out str) {
-    sz = util.i64-to-str(size)
-    nul str = '\0'
-    out = kind - ' ' - sz - nul
-}
-
-; hex-char: render one byte as a 2-char lowercase hex string. Built purely by
-; CONCATENATION so the result is a proper `%str` (accepted by C builtins such
-; as open-write / is-file). A str built with `with-len`+assignment is a
-; `%str-long` that C builtins misread — that is why earlier writes created no
-; file. `hc[hi] - ''` turns a byte into a single-char proper str.
+; hex-char: render one byte as a 2-char lowercase hex string.
 hex-char = (b byte) (s str) {
     hc = '0123456789abcdef'
     hi = (b >> 4) & 15
     lo = b & 15
-    s = hc[hi] - '' - hc[lo] - ''
+    s = with-len(2)
+    s[0] = hc[hi]
+    s[1] = hc[lo]
 }
 
-; object-path: <git-dir>/objects/<aa>/<bbbb...> as a PROPER %str (built purely
-; by concatenation of literals + single-char strings). Required so C builtins
-; like open-write and is-file accept the path. `hex-char` takes ONE oid byte
-; and emits 2 hex chars, so the dir is byte[0] (2 hex) and the file is bytes
-; [1..20) (19 bytes -> 38 hex). Do NOT index o.id by hex position.
+; object-path: <git-dir>/objects/<aa>/<bbbb...> path string.
+; hex-char takes ONE oid byte and emits 2 hex chars, so the dir is byte[0]
+; (2 hex) and the file is bytes [1..20) (19 bytes -> 38 hex).
 object-path = (git-dir str, o oid) (out str) {
     out = git-dir - '/objects/'
     out = out - hex-char(o.id[0])
@@ -447,7 +424,7 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     dir str = object-dir(git-dir, o)
     util.mkdir-all(dir)
     f str = object-path(git-dir, o)
-    hdr = build-header(kind, data.len)
+    hdr = oid.object-header(kind, data.len)
     full str = with-len(hdr.len + data.len)
     i <- [0..hdr.len): {
         full[i] = hdr[i]
@@ -532,12 +509,10 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 }
 
 ; ═══════════════════════════════════════════════
-; CROSS-MODULE-SAFE commit / tag API
+; Commit / tag API
 ;
-; `commit-info` / `tag-info` carry `str` fields and would be corrupted if
-; returned across a module boundary, so we never hand them out. Instead the
-; caller passes the individual scalar/str/oid fields and receives either an
-; oid (for writes) or the individual scalar/str/oid fields (for reads).
+; The caller passes the individual scalar/str/oid fields and receives either
+; an oid (for writes) or the individual scalar/str/oid fields (for reads).
 ; ═══════════════════════════════════════════════
 
 ; write-commit-full: encode + store a commit from its parts; returns its oid
@@ -556,8 +531,6 @@ write-commit-full = (git-dir str, tree-oid oid, parenthex str,
 }
 
 ; read-commit-full: read + decode a commit; returns its parts individually.
-; Parses INLINE (no commit-info struct return — that would lose the str fields)
-; and returns only top-level scalars/strings/oid.
 read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
     a-name str, a-email str, a-time i64, a-tz str,
 c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
@@ -629,7 +602,6 @@ write-tag-full = (git-dir str, obj oid, obj-type str, tag str,
 }
 
 ; read-tag-full: read + decode a tag; returns its parts individually.
-; Parses INLINE (no tag-info struct return) and returns top-level values.
 read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
 t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
     k str

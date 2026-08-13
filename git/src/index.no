@@ -58,56 +58,6 @@ i64-to-u16-be-at = (buf str, pos i64, v i64) {
     buf[pos + 1] = v & 0xff
 }
 
-; hexdigit-local: convert hex char byte to value 0-15
-; intra-module safe (avoids cross-module util.hexdigit)
-hexdigit-local = (c i64) (v i64) {
-    v = 0
-    c >= 48 -> {
-        c <= 57 -> v = c - 48
-    }
-    c >= 97 -> {
-        c <= 102 -> v = c - 87
-    }
-    c >= 65 -> {
-        c <= 70 -> v = c - 55
-    }
-}
-
-; i64-to-str-local: convert i64 to decimal string
-; intra-module safe (avoids cross-module util.i64-to-str)
-i64-to-str-local = (n i64) (out str) {
-    n == 0 -> {
-        out = '0'
-        return
-    }
-    tmp []byte = with-cap(20)
-    x = n
-    {
-        tmp.push(48 + (x % 10))
-        x = x / 10
-        x == 0 -> break
-    } ()
-    out = ''
-    L = tmp.len
-    i <- [0..L): {
-        cb str = with-len(1)
-        cb[0] = tmp[L - 1 - i]
-        out = out - cb
-    }
-}
-
-; oid-hex-str-local: convert oid to 40-char hex string
-; intra-module safe (avoids cross-module oid.oid-hex-str)
-oid-hex-str-local = (o oid) (out str) {
-    out = with-len(40)
-    hc = '0123456789abcdef'
-    i <- [0..20): {
-        b = o.id[i]
-        out[i * 2] = hc[(b >> 4) & 15]
-        out[i * 2 + 1] = hc[b & 15]
-    }
-}
-
 ; read-u32-be-local: read big-endian 32-bit from a str at offset
 read-u32-be-local = (s str, pos i64) (v i64) {
     v = s[pos] & 0xff
@@ -123,14 +73,10 @@ read-u16-be-local = (s str, pos i64) (v i64) {
 
 ; find-newline-local: find byte 10 (newline) in str from position
 ; Returns s.len if not found.
+; Wraps util.find-byte-str (which returns -1) converting to s.len.
 find-newline-local = (s str, from i64) (pos i64) {
-    pos = s.len
-    i <- [from..s.len): {
-        s[i] == 10 -> {
-            pos = i
-            break
-        }
-    }
+    pos = util.find-byte-str(s, 10, from)
+    pos < 0 -> pos = s.len
 }
 
 ; ═══════════════════════════════════════════════
@@ -226,7 +172,7 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         }
         hexoids = hexoids - hx
         ; mode as decimal
-        ms = i64-to-str-local(mode-val)
+        ms = util.i64-to-str(mode-val)
         modes = modes - ms - '\n'
         ; advance past name + NUL
         ; pad entry length to 8-byte boundary
@@ -362,8 +308,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         k <- [0..20): {
             c0 = hx[k * 2]
             c1 = hx[k * 2 + 1]
-            hi = hexdigit-local(c0)
-            lo = hexdigit-local(c1)
+            hi = util.hexdigit(c0)
+            lo = util.hexdigit(c1)
             entry-oid.id[k] = (hi << 4) | lo
         }
         ; build entry (62 bytes fixed + name + NUL + padding)
@@ -428,8 +374,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
     k <- [0..20): {
         c0 = trailer-hex[k * 2]
         c1 = trailer-hex[k * 2 + 1]
-        hi = hexdigit-local(c0)
-        lo = hexdigit-local(c1)
+        hi = util.hexdigit(c0)
+        lo = util.hexdigit(c1)
         tb str = with-len(1)
         tb[0] = (hi << 4) | lo
         out = out - tb
@@ -464,8 +410,8 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
     new-modes = ''
     new-count i64 = 0
     ; hex of new oid
-    new-hex = oid-hex-str-local(o)
-    mode-str = i64-to-str-local(mode)
+    new-hex = oid.oid-hex-str(o)
+    mode-str = util.i64-to-str(mode)
     found = false
     ; iterate existing entries, replacing if path matches
     pos = 0
