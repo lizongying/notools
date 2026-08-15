@@ -394,6 +394,27 @@ typed []u8 = [1, 2, 3]
 greeting = 'hello, ' - name
 ```
 
+**Rule: never pre-declare variables before a multi-assignment.** Multi-assignment implicitly declares variables with inferred types. Pre-declaring variables before a multi-assignment is redundant and can trigger compiler bugs (e.g. `bool` type inference producing invalid `zext i1 to i64` IR). Always assign directly:
+
+```nolang
+; ✅ Correct: no pre-declaration needed
+git-dir, work-tree, ok = repository.repo-discover-cwd()
+k, d, ok = read-loose(git-dir, o)
+o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+
+; ❌ Wrong: redundant pre-declarations before multi-assignment
+git-dir str
+work-tree str
+ok bool
+git-dir, work-tree, ok = repository.repo-discover-cwd()
+
+; ❌ Wrong: inline typed assignment with bool triggers compiler bug
+; ok bool = refs.create-branch(git-dir, name, head-oid)
+
+; ✅ Correct: omit type, let the assignment infer it
+ok = refs.create-branch(git-dir, name, head-oid)
+```
+
 ### Comments
 
 Single-line comments use `;` — a `;` at the start of a line (or used alone) marks the rest of the line as a comment.
