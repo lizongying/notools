@@ -1,7 +1,7 @@
-// uncompress.no — uncompress utility (LZW decompression, pure Nolang)
-// Decompresses .Z files created by compress(1)
-// Usage: uncompress [-c] FILE...
-//   -c  write to stdout
+; uncompress.no — uncompress utility (LZW decompression, pure Nolang)
+; Decompresses .Z files created by compress(1)
+; Usage: uncompress [-c] FILE...
+;   -c  write to stdout
 
 uncompress-cmd = () {
     argc = args()
@@ -70,20 +70,20 @@ uncompress-cmd = () {
     }
 }
 
-// lzw-decompress: LZW decompression of .Z format
-// data []byte: compressed data with header
-// returns out []byte: decompressed data (empty if invalid)
+; lzw-decompress: LZW decompression of .Z format
+; data []byte: compressed data with header
+; returns out []byte: decompressed data (empty if invalid)
 lzw-decompress = (data []byte) (out []byte) {
     data-len = data.len
     {
         data-len < 3 -> return
 
-        // Verify magic header
+        ; Verify magic header
         data[0] != 31 -> return
         data[1] != 157 -> return
     }
 
-    // Parse flags
+    ; Parse flags
     flags = data[2] & 255
     max-bits = (flags >> 5) & 7
     block-mode = (flags >> 4) & 1
@@ -92,11 +92,11 @@ lzw-decompress = (data []byte) (out []byte) {
         max-bits > 16 -> return
     }
 
-    // Calculate max-codes = 2^max-bits
+    ; Calculate max-codes = 2^max-bits
     max-codes = 1
     j <- [0..max-bits): { max-codes = max-codes * 2 }
 
-    // Dictionary: prefix[code], suffix[code]
+    ; Dictionary: prefix[code], suffix[code]
     prefix []i64 = with-len(max-codes)
     suffix []i64 = with-len(max-codes)
     j <- [0..256): {
@@ -109,23 +109,23 @@ lzw-decompress = (data []byte) (out []byte) {
     next-code = 257
     cur-bits = 9
 
-    // Bit input buffer
+    ; Bit input buffer
     bit-buf = 0
     bit-count = 0
     pos = 3
 
-    // Codes read at current width (for alignment)
+    ; Codes read at current width (for alignment)
     codes-read = 0
 
-    // String reconstruction stack
+    ; String reconstruction stack
     stack []byte
 
-    // Read first code
+    ; Read first code
     first = true
     old-code = -1
 
     for pos < data-len || bit-count >= cur-bits {
-        // Fill bit buffer
+        ; Fill bit buffer
         for bit-count < cur-bits && pos < data-len {
             bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
             bit-count = bit-count + 8
@@ -133,16 +133,16 @@ lzw-decompress = (data []byte) (out []byte) {
         }
         bit-count < cur-bits -> break
 
-        // Extract code
+        ; Extract code
         code = bit-buf & ((1 << cur-bits) - 1)
         bit-buf = bit-buf >> cur-bits
         bit-count = bit-count - cur-bits
         codes-read = codes-read + 1
 
-        // Handle CLEAR code
+        ; Handle CLEAR code
         {
             block-mode == 1 && code == clear-code -> {
-                // Skip alignment padding
+                ; Skip alignment padding
                 pad = 8 - (codes-read % 8)
                 pad < 8 -> {
                     skip-bits = pad * cur-bits
@@ -156,7 +156,7 @@ lzw-decompress = (data []byte) (out []byte) {
                     bit-buf = bit-buf >> consume
                     bit-count = bit-count - consume
                 }
-                // Reset dictionary
+                ; Reset dictionary
                 next-code = first-code
                 cur-bits = 9
                 codes-read = 0
@@ -165,21 +165,21 @@ lzw-decompress = (data []byte) (out []byte) {
             }
         }
 
-        // Reconstruct string for code
+        ; Reconstruct string for code
         stack = []
         c = code
-        // Special case: code == next-code (KwKwK)
+        ; Special case: code == next-code (KwKwK)
         {
             c >= next-code -> {
-                // string = old_string + first_byte(old_string)
+                ; string = old_string + first_byte(old_string)
                 old-code >= 0 -> {
-                    // Follow prefix chain from old-code to get first byte
+                    ; Follow prefix chain from old-code to get first byte
                     tc = old-code
                     for prefix[tc] != -1 {
                         tc = prefix[tc]
                     }
                     fb = suffix[tc]
-                    // Build string: old_string + first_byte
+                    ; Build string: old_string + first_byte
                     tc = old-code
                     stack.push(fb)
                     for prefix[tc] != -1 {
@@ -190,7 +190,7 @@ lzw-decompress = (data []byte) (out []byte) {
                 }
             }
             -> {
-                // Normal case: code is in dictionary
+                ; Normal case: code is in dictionary
                 for prefix[c] != -1 {
                     stack.push(suffix[c])
                     c = prefix[c]
@@ -199,25 +199,25 @@ lzw-decompress = (data []byte) (out []byte) {
             }
         }
 
-        // Output string (stack is in reverse order)
+        ; Output string (stack is in reverse order)
         fi <- [0..stack.len): {
             out.push(stack[stack.len - 1 - fi])
         }
 
-        // Get first byte of output
+        ; Get first byte of output
         first-byte = stack[stack.len - 1]
 
-        // Add to dictionary
+        ; Add to dictionary
         {
             first == false -> {
                 prefix[next-code] = old-code
                 suffix[next-code] = first-byte
                 next-code = next-code + 1
 
-                // Check code width increase
+                ; Check code width increase
                 next-code == (1 << cur-bits) -> {
                     cur-bits < max-bits -> {
-                        // Skip alignment padding
+                        ; Skip alignment padding
                         pad = 8 - (codes-read % 8)
                         pad < 8 -> {
                             skip-bits = pad * cur-bits
@@ -236,10 +236,10 @@ lzw-decompress = (data []byte) (out []byte) {
                     }
                 }
 
-                // Check dictionary full
+                ; Check dictionary full
                 next-code >= max-codes -> {
-                    // In block mode, wait for CLEAR
-                    // In non-block mode, freeze dictionary
+                    ; In block mode, wait for CLEAR
+                    ; In non-block mode, freeze dictionary
                 }
             }
         }

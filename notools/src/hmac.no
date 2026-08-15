@@ -1,9 +1,14 @@
-// hmac.no — HMAC 消息认证码（RFC 2104）
-// 用法：hmac [-a md5|sha1|sha256|sha512] -k KEY [message...]
-//   无 message 参数时从 stdin 读取；有参数时以空格拼接为消息
-// 输出：所选算法的 HMAC 十六进制字符串
-// 注意：编译器会丢弃 `;` 分隔的第二条语句，本文件全部使用多行块
+; hmac.no — HMAC 消息认证码（RFC 2104）
+; 用法：hmac [-a md5|sha1|sha256|sha512] -k KEY [message...]
+;   无 message 参数时从 stdin 读取；有参数时以空格拼接为消息
+; 输出：所选算法的 HMAC 十六进制字符串
+; 注意：编译器会丢弃 `;` 分隔的第二条语句，本文件全部使用多行块
+; 注意：标准库 hmac.hmac-sha* 不存在/不可用，且 stdlib hash 返回 [N]byte
+; 跨包损坏，故全部用 -hex 辅助函数（返回 str）手工实现 HMAC
+;   md5 无 -hex 辅助函数，由 md5x 处理
+;   sha512 无 -hex 辅助函数，由 sha512x 处理
 # /notools/src/md5x.md5x
+# /notools/src/sha512x.sha512x
 hmac-run = () {
     argc = args()
     algo = 'sha256'
@@ -11,7 +16,7 @@ hmac-run = () {
     skip-next = false
     has-msg = false
     total = 0
-    // 单遍：解析 -a / -k，同时统计消息总长度、标记是否存在 message 参数
+    ; 单遍：解析 -a / -k，同时统计消息总长度、标记是否存在 message 参数
     i <- [2..argc): {
         handled = false
         {
@@ -47,8 +52,8 @@ hmac-run = () {
     mb []byte
     {
         has-msg == false -> {
-            // fs.read-file('/dev/stdin') uses stat to get size, which returns 0
-            // for pipes. Use fs.get-line() which uses fgets (no stat needed).
+            ; fs.read-file('/dev/stdin') uses stat to get size, which returns 0
+            ; for pipes. Use fs.get-line() which uses fgets (no stat needed).
             mdata, ok = fs.get-line()
             mb = mdata.to-bytes()
         }
@@ -96,19 +101,19 @@ hmac-run = () {
         }
     }
     kb = key.to-bytes()
-    hex-chars = '0123456789abcdef'
-    space = ' '
     matched = false
     {
         algo == 'md5' -> {
             matched = true
-            // 手工 HMAC-MD5：stdlib hmac-md5 返回 [16]byte 跨包损坏，改用 md5x（hex str 返回）组合
-            k0 []byte = with-len(64)
-            i <- [0..64): { k0[i] = 0 }
+            ; 手工 HMAC-MD5：md5x 返回 hex str，block-size=64，hash-len=16
+            bsize = 64
+            hlen = 16
+            k0 []byte = with-len(bsize)
+            i <- [0..bsize): { k0[i] = 0 }
             {
-                kb.len > 64 -> {
+                kb.len > bsize -> {
                     kh = md5x(kb)
-                    i <- [0..16): {
+                    i <- [0..hlen): {
                         hi-c = kh[i * 2]
                         lo-c = kh[i * 2 + 1]
                         hi-v = hi-c - 48
@@ -122,53 +127,149 @@ hmac-run = () {
                     i <- [0..kb.len): { k0[i] = kb[i] }
                 }
             }
-            inner []byte = with-len(64 + mb.len)
-            i <- [0..64): { inner[i] = k0[i] ^ 54 }
-            i <- [0..mb.len): { inner[64 + i] = mb[i] }
+            inner []byte = with-len(bsize + mb.len)
+            i <- [0..bsize): { inner[i] = k0[i] ^ 54 }
+            i <- [0..mb.len): { inner[bsize + i] = mb[i] }
             ih = md5x(inner)
-            outer []byte = with-len(80)
-            i <- [0..64): { outer[i] = k0[i] ^ 92 }
-            i <- [0..16): {
+            outer []byte = with-len(bsize + hlen)
+            i <- [0..bsize): { outer[i] = k0[i] ^ 92 }
+            i <- [0..hlen): {
                 hi-c = ih[i * 2]
                 lo-c = ih[i * 2 + 1]
                 hi-v = hi-c - 48
                 { hi-c >= 97 -> hi-v = hi-c - 87 }
                 lo-v = lo-c - 48
                 { lo-c >= 97 -> lo-v = lo-c - 87 }
-                outer[64 + i] = (hi-v << 4) | lo-v
+                outer[bsize + i] = (hi-v << 4) | lo-v
             }
             oh = md5x(outer)
             print(oh)
         }
         algo == 'sha1' -> {
             matched = true
-            h = hmac.hmac-sha1(kb, mb)
-            hx = space.repeat(40)
-            i <- [0..20): {
-                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
-                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            ; 手工 HMAC-SHA1：sha1.sha1-hex 返回 hex str，block-size=64，hash-len=20
+            bsize = 64
+            hlen = 20
+            k0 []byte = with-len(bsize)
+            i <- [0..bsize): { k0[i] = 0 }
+            {
+                kb.len > bsize -> {
+                    kh = sha1.sha1-hex(kb)
+                    i <- [0..hlen): {
+                        hi-c = kh[i * 2]
+                        lo-c = kh[i * 2 + 1]
+                        hi-v = hi-c - 48
+                        { hi-c >= 97 -> hi-v = hi-c - 87 }
+                        lo-v = lo-c - 48
+                        { lo-c >= 97 -> lo-v = lo-c - 87 }
+                        k0[i] = (hi-v << 4) | lo-v
+                    }
+                }
+                -> {
+                    i <- [0..kb.len): { k0[i] = kb[i] }
+                }
             }
-            print(hx)
+            inner []byte = with-len(bsize + mb.len)
+            i <- [0..bsize): { inner[i] = k0[i] ^ 54 }
+            i <- [0..mb.len): { inner[bsize + i] = mb[i] }
+            ih = sha1.sha1-hex(inner)
+            outer []byte = with-len(bsize + hlen)
+            i <- [0..bsize): { outer[i] = k0[i] ^ 92 }
+            i <- [0..hlen): {
+                hi-c = ih[i * 2]
+                lo-c = ih[i * 2 + 1]
+                hi-v = hi-c - 48
+                { hi-c >= 97 -> hi-v = hi-c - 87 }
+                lo-v = lo-c - 48
+                { lo-c >= 97 -> lo-v = lo-c - 87 }
+                outer[bsize + i] = (hi-v << 4) | lo-v
+            }
+            oh = sha1.sha1-hex(outer)
+            print(oh)
         }
         algo == 'sha256' -> {
             matched = true
-            h = hmac.hmac-sha256(kb, mb)
-            hx = space.repeat(64)
-            i <- [0..32): {
-                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
-                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            ; 手工 HMAC-SHA256：sha256.sha256-hex 返回 hex str，block-size=64，hash-len=32
+            bsize = 64
+            hlen = 32
+            k0 []byte = with-len(bsize)
+            i <- [0..bsize): { k0[i] = 0 }
+            {
+                kb.len > bsize -> {
+                    kh = sha256.sha256-hex(kb)
+                    i <- [0..hlen): {
+                        hi-c = kh[i * 2]
+                        lo-c = kh[i * 2 + 1]
+                        hi-v = hi-c - 48
+                        { hi-c >= 97 -> hi-v = hi-c - 87 }
+                        lo-v = lo-c - 48
+                        { lo-c >= 97 -> lo-v = lo-c - 87 }
+                        k0[i] = (hi-v << 4) | lo-v
+                    }
+                }
+                -> {
+                    i <- [0..kb.len): { k0[i] = kb[i] }
+                }
             }
-            print(hx)
+            inner []byte = with-len(bsize + mb.len)
+            i <- [0..bsize): { inner[i] = k0[i] ^ 54 }
+            i <- [0..mb.len): { inner[bsize + i] = mb[i] }
+            ih = sha256.sha256-hex(inner)
+            outer []byte = with-len(bsize + hlen)
+            i <- [0..bsize): { outer[i] = k0[i] ^ 92 }
+            i <- [0..hlen): {
+                hi-c = ih[i * 2]
+                lo-c = ih[i * 2 + 1]
+                hi-v = hi-c - 48
+                { hi-c >= 97 -> hi-v = hi-c - 87 }
+                lo-v = lo-c - 48
+                { lo-c >= 97 -> lo-v = lo-c - 87 }
+                outer[bsize + i] = (hi-v << 4) | lo-v
+            }
+            oh = sha256.sha256-hex(outer)
+            print(oh)
         }
         algo == 'sha512' -> {
             matched = true
-            h = hmac.hmac-sha512(kb, mb)
-            hx = space.repeat(128)
-            i <- [0..64): {
-                hx[i * 2] = hex-chars[(h[i] >> 4) & 15]
-                hx[i * 2 + 1] = hex-chars[h[i] & 15]
+            ; 手工 HMAC-SHA512：sha512x 返回 hex str，block-size=128，hash-len=64
+            bsize = 128
+            hlen = 64
+            k0 []byte = with-len(bsize)
+            i <- [0..bsize): { k0[i] = 0 }
+            {
+                kb.len > bsize -> {
+                    kh = sha512x(kb)
+                    i <- [0..hlen): {
+                        hi-c = kh[i * 2]
+                        lo-c = kh[i * 2 + 1]
+                        hi-v = hi-c - 48
+                        { hi-c >= 97 -> hi-v = hi-c - 87 }
+                        lo-v = lo-c - 48
+                        { lo-c >= 97 -> lo-v = lo-c - 87 }
+                        k0[i] = (hi-v << 4) | lo-v
+                    }
+                }
+                -> {
+                    i <- [0..kb.len): { k0[i] = kb[i] }
+                }
             }
-            print(hx)
+            inner []byte = with-len(bsize + mb.len)
+            i <- [0..bsize): { inner[i] = k0[i] ^ 54 }
+            i <- [0..mb.len): { inner[bsize + i] = mb[i] }
+            ih = sha512x(inner)
+            outer []byte = with-len(bsize + hlen)
+            i <- [0..bsize): { outer[i] = k0[i] ^ 92 }
+            i <- [0..hlen): {
+                hi-c = ih[i * 2]
+                lo-c = ih[i * 2 + 1]
+                hi-v = hi-c - 48
+                { hi-c >= 97 -> hi-v = hi-c - 87 }
+                lo-v = lo-c - 48
+                { lo-c >= 97 -> lo-v = lo-c - 87 }
+                outer[bsize + i] = (hi-v << 4) | lo-v
+            }
+            oh = sha512x(outer)
+            print(oh)
         }
     }
     {
