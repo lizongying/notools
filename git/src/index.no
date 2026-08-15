@@ -104,7 +104,16 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
     p = git-dir - '/index'
     content str
     file-ok bool
-    content, file-ok = util.read-file-str(p)
+    isf = fs.is-file(p)
+    {
+        isf == false -> {
+            content = ''
+            file-ok = false
+        } -> {
+            content = fs.read-file(p)
+            file-ok = true
+        }
+    }
     {
         file-ok == false -> return
         content.len < 12 -> return
@@ -199,7 +208,16 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
     p = git-dir - '/index'
     content str
     file-ok bool
-    content, file-ok = util.read-file-str(p)
+    isf = fs.is-file(p)
+    {
+        isf == false -> {
+            content = ''
+            file-ok = false
+        } -> {
+            content = fs.read-file(p)
+            file-ok = true
+        }
+    }
     {
         file-ok == false -> return
         content.len < 12 -> return
@@ -396,14 +414,14 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 ; Reads existing index, replaces or appends the entry, rewrites index.
 index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
     ok = false
-    ; read existing index
-    names str
-    hexoids str
-    modes-str str
-    count i64
-    read-ok bool
-    names, hexoids, modes-str, count, read-ok = read-index(git-dir)
-    read-ok == false -> count = 0
+    ; read existing index (avoid multi-return assign to prevent string corruption)
+    ri-names str
+    ri-hexoids str
+    ri-modes str
+    ri-count i64
+    ri-ok bool
+    ri-names, ri-hexoids, ri-modes, ri-count, ri-ok = read-index(git-dir)
+    ri-ok == false -> ri-count = 0
     ; build new arrays
     new-names = ''
     new-oids = ''
@@ -416,13 +434,13 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
     ; iterate existing entries, replacing if path matches
     pos = 0
     mode-pos = 0
-    i <- [0..count): {
+    i <- [0..ri-count): {
         ; find end of name i
-        nl = find-newline-local(names, pos)
-        nm = names[pos..nl)
+        nl = find-newline-local(ri-names, pos)
+        nm = ri-names[pos..nl)
         ; find end of mode i
-        mnl2 = find-newline-local(modes-str, mode-pos)
-        old-ms = modes-str[mode-pos..mnl2)
+        mnl2 = find-newline-local(ri-modes, mode-pos)
+        old-ms = ri-modes[mode-pos..mnl2)
         ; check if it matches path
         same = util.str-eq(nm, path)
         same == true -> {
@@ -435,7 +453,7 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
         } -> {
             ; keep existing
             new-names = new-names - nm - '\n'
-            old-hex = hexoids[i * 40..i * 40 + 40)
+            old-hex = ri-hexoids[i * 40..i * 40 + 40)
             new-oids = new-oids - old-hex
             new-modes = new-modes - old-ms - '\n'
             new-count = new-count + 1
@@ -443,7 +461,7 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
         ; advance positions
         pos = nl + 1
         mode-pos = mnl2 + 1
-        nl >= names.len -> break
+        nl >= ri-names.len -> break
     }
     ; if path was not found, append new entry
     {
@@ -465,30 +483,31 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
 ; returns ok bool
 index-remove = (git-dir str, path str) (ok bool) {
     ok = false
-    names str
-    hexoids str
-    modes-str str
-    count i64
-    read-ok bool
-    names, hexoids, modes-str, count, read-ok = read-index(git-dir)
-    read-ok == false -> return
+    ; read existing index (avoid multi-return assign to prevent string corruption)
+    ri-names str
+    ri-hexoids str
+    ri-modes str
+    ri-count i64
+    ri-ok bool
+    ri-names, ri-hexoids, ri-modes, ri-count, ri-ok = read-index(git-dir)
+    ri-ok == false -> return
     new-names = ''
     new-oids = ''
     new-modes = ''
     new-count i64 = 0
     pos = 0
     mode-pos = 0
-    i <- [0..count): {
+    i <- [0..ri-count): {
         ; find end of name i
-        nl = find-newline-local(names, pos)
-        nm = names[pos..nl)
+        nl = find-newline-local(ri-names, pos)
+        nm = ri-names[pos..nl)
         ; find end of mode i
-        mnl2 = find-newline-local(modes-str, mode-pos)
-        old-ms = modes-str[mode-pos..mnl2)
+        mnl2 = find-newline-local(ri-modes, mode-pos)
+        old-ms = ri-modes[mode-pos..mnl2)
         same = util.str-eq(nm, path)
         same == true -> {} -> {
             new-names = new-names - nm - '\n'
-            old-hex = hexoids[i * 40..i * 40 + 40)
+            old-hex = ri-hexoids[i * 40..i * 40 + 40)
             new-oids = new-oids - old-hex
             new-modes = new-modes - old-ms - '\n'
             new-count = new-count + 1
@@ -496,7 +515,7 @@ index-remove = (git-dir str, path str) (ok bool) {
         ; advance positions
         pos = nl + 1
         mode-pos = mnl2 + 1
-        nl >= names.len -> break
+        nl >= ri-names.len -> break
     }
     write-ok bool
     write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)

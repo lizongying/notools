@@ -71,7 +71,7 @@ i64-to-octal = (n i64) (out str) {
         tmp.push(48 + (x % 8))
         x = x / 8
         x == 0 -> break
-    } ()
+    } (true)
     ; Concat-return so the result is safe wherever it is used.
     out = ''
     L = tmp.len
@@ -286,19 +286,56 @@ tree-read-raw = (git-dir str, o oid) (raw str, ok bool) {
 }
 
 ; tree-name-raw / tree-mode-raw / tree-id-raw: access entry i of a raw tree
+; NOTE: inlined tree-entry-at logic to avoid struct field corruption bug
+; in the Nolang compiler when creating a local tree struct and passing it
+; to another function that does cross-module calls on the str field.
 tree-name-raw = (raw str, i i64) (s str) {
-    t = tree { raw: raw, n: tree-count-raw(raw) }
-    s = tree-name(t, i)
+    off i64 = 0
+    k = 0
+    {
+        k >= i -> break
+        sp0 = util.find-byte-str(raw, 32, off)
+        nl0 = util.find-byte-str(raw, 0, sp0 + 1)
+        off = nl0 + 21
+        k = k + 1
+    } (k < i)
+    sp = util.find-byte-str(raw, 32, off)
+    nl = util.find-byte-str(raw, 0, sp + 1)
+    s = util.str-range(raw, sp + 1, nl)
 }
 
 tree-mode-raw = (raw str, i i64) (m i64) {
-    t = tree { raw: raw, n: tree-count-raw(raw) }
-    m = tree-mode(t, i)
+    off i64 = 0
+    k = 0
+    {
+        k >= i -> break
+        sp0 = util.find-byte-str(raw, 32, off)
+        nl0 = util.find-byte-str(raw, 0, sp0 + 1)
+        off = nl0 + 21
+        k = k + 1
+    } (k < i)
+    sp = util.find-byte-str(raw, 32, off)
+    ms = util.str-range(raw, off, sp)
+    m = octal-to-i64(ms)
 }
 
 tree-id-raw = (raw str, i i64) (o oid) {
-    t = tree { raw: raw, n: tree-count-raw(raw) }
-    o = tree-id(t, i)
+    off i64 = 0
+    k = 0
+    {
+        k >= i -> break
+        sp0 = util.find-byte-str(raw, 32, off)
+        nl0 = util.find-byte-str(raw, 0, sp0 + 1)
+        off = nl0 + 21
+        k = k + 1
+    } (k < i)
+    sp = util.find-byte-str(raw, 32, off)
+    nl = util.find-byte-str(raw, 0, sp + 1)
+    tmp oid
+    j <- [0..20): {
+        tmp.id[j] = raw[nl + 1 + j]
+    }
+    o = tmp
 }
 
 ; ═══════════════════════════════════════════════
@@ -395,7 +432,7 @@ hex-char = (b byte) (s str) {
     hc = '0123456789abcdef'
     hi = (b >> 4) & 15
     lo = b & 15
-    s = with-len(2)
+    s str = with-len(2)
     s[0] = hc[hi]
     s[1] = hc[lo]
 }

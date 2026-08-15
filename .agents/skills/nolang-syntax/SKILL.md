@@ -655,11 +655,11 @@ int.to-str = () (out str) {
 
 ### Control Flow
 
-> **Old syntax (deprecated, will be removed after version n)**: `for { }` / `for cond { }` / `for i=0,i<n,i++ { }` / `for i <- [...] { }` / `for i in [...] { }` / `match x { }` / `if/elif/else { }` can still be parsed but will output a deprecation warning. Please use the "new style" syntax in the table below.
+> **Old syntax (deprecated, will be removed after version n)**: `for { }` / `for cond { }` / `for i=0,i<n,i++ { }` / `for i <- [...] { }` / `for i in [...] { }` / `!! { }` / `match x { }` / `if/elif/else { }` can still be parsed but will output a deprecation warning. Please use the "new style" syntax in the table below.
 
 | Purpose          | New syntax                     | Old (deprecated)       |
 | ---------------- | ------------------------------ | ----------------------- |
-| Infinite loop    | `!! { }`                       | `for { }`               |
+| Infinite loop    | `{ } (true)`                  | `!! { }` / `for { }`    |
 | Conditional loop | `for cond { }`                 | `while cond { }`        |
 | Counted loop     | `n * { }` or `i <- [0..n): { }` | `for i=0, i<n, i++ { }` |
 | Range iteration  | `i <- [a..b]: { }`             | `for i <- [a..b] { }`   |
@@ -671,7 +671,16 @@ int.to-str = () (out str) {
 
 ```nolang
 ; Infinite loop (new style)
-!! { }
+{ } (true)
+
+; Infinite loop with body
+{
+    *     ; break
+    **    ; continue
+} (true)
+
+; Not executed (condition is false / empty)
+{ } ()
 
 ; Conditional loop (for keyword retained, for non-1 step or complex conditions)
 for i < 5 { }
@@ -1210,14 +1219,14 @@ client = sse.sse-connect('http://localhost:3000/events')  ; returns ?sse-client
 client: {
     nil -> print('connection failed')
     -> {
-        !! {
+        {
             ev = client.next-event()     ; returns ?sse-event
             ev: {
                 nil -> *                  ; EOF
                 err -> print(it)        ; error
                 -> print(ev.data)       ; event data
             }
-        }
+        } (true)
         client.close()
     }
 }
@@ -1587,7 +1596,8 @@ External packages can only access exports declared in `lib.no` when importing vi
 - `.` — self
 - `!` — false (planned, currently still uses `false`)
 - `!!` — true (planned, currently still uses `true`)
-- `!! { }` — infinite loop
+- `{ } (true)` — infinite loop (new style; `!! { }` is deprecated)
+- `{ } ()` — not executed (condition is false / empty)
 - `**` — continue (skip current iteration) (planned, currently still uses `continue`)
 - `*` — break (exit loop) (planned, currently still uses `break`)
 - `...` — return/terminate (planned, currently still uses `return`)

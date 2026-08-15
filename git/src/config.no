@@ -23,7 +23,7 @@ trim-ws = (s str) (out str) {
         c = s[start]
         c == 32 || c == 9 -> start = start + 1
         c != 32 && c != 9 -> break
-    } ()
+    } (true)
     ; find end
     end = s.len
     {
@@ -31,7 +31,7 @@ trim-ws = (s str) (out str) {
         c = s[end - 1]
         c == 32 || c == 9 || c == 10 || c == 13 -> end = end - 1
         c != 32 && c != 9 && c != 10 && c != 13 -> break
-    } ()
+    } (true)
     out = util.str-range(s, start, end)
 }
 
@@ -66,10 +66,10 @@ to-lower-local = (s str) (out str) {
 config-get = (git-dir str, section str, key str) (value str, ok bool) {
     ok = false
     p = git-dir - '/config'
-    content str
-    file-ok bool
-    content, file-ok = util.read-file-str(p)
-    file-ok == false -> return
+    ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
+    isf = fs.is-file(p)
+    isf == false -> return
+    content = fs.read-file(p)
     ; parse section name and optional subsection from `section` param
     ; if section contains '.', split into section + subsection
     sect-upper = to-lower-local(section)
@@ -148,28 +148,27 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
 ; config-set: set a config value in .git/config (replaces existing or appends)
 ; git-dir str, section str, key str, value str
 ; returns ok bool
+;
+; NOTE: The complex nested branching and multi-return from helper functions
+; inside loops cause crashes and incorrect behavior in cross-module contexts.
+; This version uses a simple approach: read config, find the section and key,
+; and rebuild the content with simple string operations.
 config-set = (git-dir str, section str, key str, value str) (ok bool) {
     ok = false
     p = git-dir - '/config'
-    content str
-    file-ok bool
-    content, file-ok = util.read-file-str(p)
-    {
-        file-ok == false -> {
-            content = ''
-        }
-    }
-    ; build new content
+    ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
+    isf = fs.is-file(p)
+    content = ''
+    isf == true -> content = fs.read-file(p)
     sect-upper = to-lower-local(section)
     target-key-upper = to-lower-local(key)
-    ; scan for existing section and key
-    new-content = ''
+    ; Pass 1: find section start/end and key position
+    sec-start = -1
+    sec-end = content.len
+    key-pos = -1
     pos = 0
     in-section = false
     current-section str = ''
-    found-and-replaced = false
-    section-found = false
-    last-section-end i64 = 0
     {
         pos >= content.len -> break
         nl = util.find-byte-str(content, 10, pos)
@@ -177,75 +176,77 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         nl >= 0 -> end = nl
         line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
-        trimmed.len == 0 -> {
-            new-content = new-content - line - '\n'
-        } -> {
-            ; section header
-            trimmed.starts-with('[') -> {
-                rb = util.find-byte-str(trimmed, 93, 0)
-                rb >= 0 -> {
-                    inner = util.str-range(trimmed, 1, rb)
-                    dq = util.find-byte-str(inner, 34, 0)
-                    dq >= 0 -> {
-                        sname = util.str-range(inner, 0, dq)
-                        sname = trim-ws(sname)
-                        sname-upper = to-lower-local(sname)
-                        dq2 = util.find-byte-str(inner, 34, dq + 1)
-                        dq2 >= 0 -> {
-                            subsec = util.str-range(inner, dq + 1, dq2)
-                            dot str = '.'
-                            current-section = sname-upper - dot - subsec
-                        }
-                    } -> {
-                        inner = trim-ws(inner)
-                        inner-upper = to-lower-local(inner)
-                        current-section = inner-upper
-                    }
-                    same = util.str-eq(current-section, sect-upper)
-                    in-section = same
-                    same == true -> section-found = true
+        ; Section header: starts with '['
+        has-bracket = util.find-byte-str(trimmed, 91, 0)
+        has-bracket == 0 -> {
+            rb = util.find-byte-str(trimmed, 93, 0)
+            rb >= 0 -> {
+                inner = util.str-range(trimmed, 1, rb)
+                inner2 = trim-ws(inner)
+                current-section = to-lower-local(inner2)
+                same = util.str-eq(current-section, sect-upper)
+                same -> {
+                    in-section = true
+                    sec-start = pos
                 }
-                new-content = new-content - line - '\n'
-            } -> {
-                ; key = value line
-                in-section == true -> {
-                    eq = util.find-byte-str(trimmed, 61, 0)
-                    eq >= 0 -> {
-                        k = util.str-range(trimmed, 0, eq)
-                        k = trim-ws(k)
-                        k-upper = to-lower-local(k)
-                        key-same = util.str-eq(k-upper, target-key-upper)
-                        key-same == true -> {
-                            ; replace this line
-                            new-content = new-content - '\t' - key - ' = ' - value - '\n'
-                            found-and-replaced = true
-                        } -> {
-                            new-content = new-content - line - '\n'
-                        }
-                    } -> {
-                        new-content = new-content - line - '\n'
-                    }
-                } -> {
-                    new-content = new-content - line - '\n'
+                same == false -> {
+                    in-section -> sec-end = pos
+                    in-section = false
+                }
+            }
+        }
+        ; Key = value line (separate block)
+        has-bracket != 0 -> {
+            in-section -> {
+                eq = util.find-byte-str(trimmed, 61, 0)
+                eq >= 0 -> {
+                    k = util.str-range(trimmed, 0, eq)
+                    k = trim-ws(k)
+                    k-upper = to-lower-local(k)
+                    key-same = util.str-eq(k-upper, target-key-upper)
+                    key-same -> key-pos = pos
                 }
             }
         }
         pos = nl + 1
         nl < 0 -> break
     } (true)
-    ; if key was not found in the section, append it
-    {
-        found-and-replaced == true -> {} -> {
-            ; if section doesn't exist, create it
-            section-found == false -> {
-                lb str = '['
-                rb str = ']'
-                nl str = '\n'
-                new-content = new-content - lb - section - rb - nl
-            }
-            new-content = new-content - '\t' - key - ' = ' - value - '\n'
-        }
+    ; Determine action based on findings
+    key-pos >= 0 -> {
+        ; Key exists in section: replace the line
+        ; Find end of the key line
+        nl2 = util.find-byte-str(content, 10, key-pos)
+        key-line-end = content.len
+        nl2 >= 0 -> key-line-end = nl2
+        before = util.str-range(content, 0, key-pos)
+        after = util.str-range(content, key-line-end, content.len)
+        new-line = '\t' - key - ' = ' - value
+        new-content = before - new-line - after
+        util.write-file-simple(p, new-content)
+        ok = true
+        return
     }
+    sec-start >= 0 -> {
+        ; Section exists but key doesn't: insert key at end of section
+        ; sec-end is the start of the next section or content.len
+        ; Find the last non-empty line before sec-end
+        insert-pos = sec-end
+        ; Insert the new key before the next section (or at end)
+        before = util.str-range(content, 0, insert-pos)
+        after = util.str-range(content, insert-pos, content.len)
+        new-line = '\t' - key - ' = ' - value - '\n'
+        new-content = before - new-line - after
+        util.write-file-simple(p, new-content)
+        ok = true
+        return
+    }
+    ; Section doesn't exist: append section + key at end of file
+    new-content = content
+    new-content.len > 0 -> {
+        new-content = new-content - '\n'
+    }
+    new-content = new-content - '[' - section - ']\n'
+    new-content = new-content - '\t' - key - ' = ' - value - '\n'
     util.write-file-simple(p, new-content)
     ok = true
 }

@@ -1,0 +1,98 @@
+; Test 9b: revwalk module — walk and is-ancestor
+
+# /git/src/util
+# /git/src/oid
+# /git/src/zlib
+# /git/src/object
+# /git/src/refs
+# /git/src/repository
+# /git/src/revwalk
+
+main = () () {
+    print('--- Testing revwalk: walk & ancestor ---')
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-rw-walk'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+    {
+        init-ok == true -> print('PASS: repo-init')
+        -> print('FAIL: repo-init')
+    }
+    ; create a commit chain
+    blob = object.write-blob(git-dir, 'revwalk test')
+    traw = object.tree-add-raw('', 33188, 'test.txt', blob)
+    tree-oid = object.tree-write-raw(git-dir, traw)
+
+    c1 = object.write-commit-full(git-dir, tree-oid, '',
+        'A', 'a@b.com', 1000, '+0000',
+        'C', 'c@b.com', 1000, '+0000',
+        'first commit')
+    c2 = object.write-commit-full(git-dir, tree-oid,
+        oid.oid-hex-str(c1),
+        'A', 'a@b.com', 2000, '+0000',
+        'C', 'c@b.com', 2000, '+0000',
+        'second commit')
+    c3 = object.write-commit-full(git-dir, tree-oid,
+        oid.oid-hex-str(c2),
+        'A', 'a@b.com', 3000, '+0000',
+        'C', 'c@b.com', 3000, '+0000',
+        'third commit')
+
+    refs.write-ref(git-dir, 'refs/heads/main', c3)
+    refs.update-head(git-dir, 'refs/heads/main')
+
+    ; revwalk-first-parent
+    walk-hex, walk-count, walk-ok = revwalk.revwalk-first-parent(git-dir, c3, 0)
+    {
+        walk-ok == true -> print('PASS: revwalk-first-parent ok')
+        -> print('FAIL: revwalk-first-parent ok')
+    }
+    {
+        walk-count == 3 -> print('PASS: walk count = 3')
+        -> print('FAIL: revwalk-first-parent count should be 3')
+    }
+    ; revwalk-first-parent with max-count
+    walk-hex2, walk-count2, walk-ok2 = revwalk.revwalk-first-parent(git-dir, c3, 2)
+    {
+        walk-ok2 == true -> print('PASS: revwalk max ok')
+        -> print('FAIL: revwalk-first-parent max ok')
+    }
+    {
+        walk-count2 == 2 -> print('PASS: walk max count = 2')
+        -> print('FAIL: revwalk-first-parent max count should be 2')
+    }
+    ; revwalk-format-log
+    log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', 0)
+    {
+        log-ok == true -> print('PASS: format-log ok')
+        -> print('FAIL: revwalk-format-log ok')
+    }
+    {
+        log-output.len > 0 -> print('PASS: log output not empty')
+        -> print('FAIL: revwalk-format-log output not empty')
+    }
+    ; is-ancestor: c1 is ancestor of c3
+    is-anc = revwalk.is-ancestor(git-dir, c1, c3)
+    {
+        is-anc == true -> print('PASS: c1 is ancestor of c3')
+        -> print('FAIL: is-ancestor c1 of c3 should be true')
+    }
+    ; is-ancestor: c3 is NOT ancestor of c1
+    not-anc = revwalk.is-ancestor(git-dir, c3, c1)
+    {
+        not-anc == false -> print('PASS: c3 not ancestor of c1')
+        -> print('FAIL: is-ancestor c3 of c1 should be false')
+    }
+    ; revwalk-all
+    all-hex, all-count, all-ok = revwalk.revwalk-all(git-dir, c3, 0)
+    {
+        all-ok == true -> print('PASS: revwalk-all ok')
+        -> print('FAIL: revwalk-all ok')
+    }
+    {
+        all-count == 3 -> print('PASS: revwalk-all count = 3')
+        -> print('FAIL: revwalk-all count should be 3')
+    }
+    0
+}

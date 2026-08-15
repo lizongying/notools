@@ -1,0 +1,136 @@
+; Debug test - copy config-set inline
+
+# /git/src/util
+# /git/src/config
+# /git/src/repository
+
+main = () () {
+    print('--- Debug config-set copied ---')
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-debug-cfg8'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+
+    p = git-dir - '/config'
+    content, file-ok = util.read-file-str(p)
+    print('content.len=')
+    print(content.len)
+
+    section = 'core'
+    key = 'bare'
+    value = 'true'
+
+    sect-upper = config.to-lower-local(section)
+    target-key-upper = config.to-lower-local(key)
+    print('sect-upper=')
+    print(sect-upper)
+
+    new-content = ''
+    pos = 0
+    in-section = false
+    current-section str = ''
+    found-and-replaced = false
+    section-found = false
+
+    {
+        pos >= content.len -> break
+        print('loop pos=')
+        print(pos)
+        nl = util.find-byte-str(content, 10, pos)
+        print('nl=')
+        print(nl)
+        end = content.len
+        nl >= 0 -> end = nl
+        line = util.str-range(content, pos, end)
+        print('line=')
+        print(line)
+        trimmed = config.trim-ws(line)
+        print('trimmed=')
+        print(trimmed)
+        print('trimmed.len=')
+        print(trimmed.len)
+
+        trimmed.len == 0 -> {
+            new-content = new-content - line - '\n'
+            print('empty line, new-content.len=')
+            print(new-content.len)
+        } -> {
+            trimmed.starts-with('[') -> {
+                print('section header')
+                rb = util.find-byte-str(trimmed, 93, 0)
+                print('rb=')
+                print(rb)
+                rb >= 0 -> {
+                    inner = util.str-range(trimmed, 1, rb)
+                    print('inner=')
+                    print(inner)
+                    inner2 = config.trim-ws(inner)
+                    inner-upper = config.to-lower-local(inner2)
+                    current-section = inner-upper
+                    print('current-section=')
+                    print(current-section)
+                    same = util.str-eq(current-section, sect-upper)
+                    print('same=')
+                    print(same)
+                    in-section = same
+                    same == true -> section-found = true
+                }
+                new-content = new-content - line - '\n'
+                print('after section, new-content.len=')
+                print(new-content.len)
+            } -> {
+                print('key=value line')
+                in-section == true -> {
+                    eq = util.find-byte-str(trimmed, 61, 0)
+                    print('eq=')
+                    print(eq)
+                    eq >= 0 -> {
+                        k = util.str-range(trimmed, 0, eq)
+                        k = config.trim-ws(k)
+                        k-upper = config.to-lower-local(k)
+                        print('k-upper=')
+                        print(k-upper)
+                        key-same = util.str-eq(k-upper, target-key-upper)
+                        print('key-same=')
+                        print(key-same)
+                        key-same == true -> {
+                            new-content = new-content - '\t' - key - ' = ' - value - '\n'
+                            found-and-replaced = true
+                            print('replaced!')
+                        } -> {
+                            new-content = new-content - line - '\n'
+                        }
+                    } -> {
+                        new-content = new-content - line - '\n'
+                    }
+                } -> {
+                    new-content = new-content - line - '\n'
+                }
+            }
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+
+    print('loop done')
+    print('found-and-replaced=')
+    print(found-and-replaced)
+    print('section-found=')
+    print(section-found)
+
+    {
+        found-and-replaced == true -> {} -> {
+            section-found == false -> {
+                new-content = new-content - '[' - section - ']\n'
+            }
+            new-content = new-content - '\t' - key - ' = ' - value - '\n'
+        }
+    }
+
+    print('writing file')
+    util.write-file-simple(p, new-content)
+    print('done')
+
+    0
+}

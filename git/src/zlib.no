@@ -18,9 +18,10 @@
 ;   A3 A2 A1 A0          Adler-32 of data, big-endian
 ; For L > 65535 we chain multiple stored blocks (all but the last BFINAL=0).
 
-; to-concat: copy n bytes of s into a fresh string via native slice.
-to-concat = (s str, n i64) (out str) {
-    out = s[0..n)
+; byte-to-str: wrap a single byte value into a 1-byte string
+byte-to-str = (b byte) (s str) {
+    s = with-len(1)
+    s[0] = b
 }
 
 ; adler32: Adler-32 checksum (RFC 1950) of a byte-string
@@ -40,68 +41,64 @@ adler32 = (data str) (sum i64) {
 ; zlib-compress: compress raw data into a zlib stream (stored blocks)
 ; data str: uncompressed input bytes
 ; returns out str: zlib-wrapped stream (header + deflate + adler32)
+; NOTE: uses string concatenation with byte-to-str for each byte to work
+; around a Nolang compiler bug where str index assignment and slicing
+; in loops inside cross-module functions do not persist correctly.
 zlib-compress = (data str) (out str) {
-    ; number of 65535-byte stored blocks needed
-    nblocks i64 = 1
-    data.len > 0 -> nblocks = (data.len + 65534) / 65535
-    total = 2 + nblocks * 5 + data.len + 4
-    out = with-len(total)
-    out[0] = 0x78
-    out[1] = 0x9c
-    pos = 2
+    out = ''
+    ; zlib header
+    bh0 str = byte-to-str(0x78)
+    bh1 str = byte-to-str(0x9c)
+    out = out - bh0 - bh1
+    ; deflate stored blocks
     remaining = data.len
     off = 0
     {
-        remaining <= 0 -> break
+        remaining <= 0 -> {
+            ; empty data: emit a single final empty stored block
+            out = out - byte-to-str(1)
+            out = out - byte-to-str(0) - byte-to-str(0)
+            out = out - byte-to-str(0xff) - byte-to-str(0xff)
+            break
+        }
         chunk = remaining
         chunk > 65535 -> chunk = 65535
         last = (chunk == remaining)
-        ; deflate block header byte: bit0=BFINAL, bits1-2=BTYPE(00)
-        hdr = 0
-        last == true -> hdr = 1
-        out[pos] = hdr
-        pos = pos + 1
+        ; block header byte
+        bhdr = 0
+        last == true -> bhdr = 1
+        out = out - byte-to-str(bhdr)
         ; LEN (little-endian)
-        out[pos] = chunk & 0xff
-        pos = pos + 1
-        out[pos] = (chunk >> 8) & 0xff
-        pos = pos + 1
+        out = out - byte-to-str(chunk & 0xff) - byte-to-str((chunk >> 8) & 0xff)
         ; NLEN = one's complement of LEN (little-endian)
         nlen = (~chunk) & 0xffff
-        out[pos] = nlen & 0xff
-        pos = pos + 1
-        out[pos] = (nlen >> 8) & 0xff
-        pos = pos + 1
-        ; payload bytes
+        out = out - byte-to-str(nlen & 0xff) - byte-to-str((nlen >> 8) & 0xff)
+        ; payload bytes — copy byte by byte via byte-to-str
         i <- [0..chunk): {
-            out[pos + i] = data[off + i]
+            out = out - byte-to-str(data[off + i])
         }
-        pos = pos + chunk
         off = off + chunk
         remaining = remaining - chunk
     } (true)
     ; Adler-32 (big-endian)
     s = adler32(data)
-    out[pos] = (s >> 24) & 0xff
-    pos = pos + 1
-    out[pos] = (s >> 16) & 0xff
-    pos = pos + 1
-    out[pos] = (s >> 8) & 0xff
-    pos = pos + 1
-    out[pos] = s & 0xff
-    o2 str = to-concat(out, total)
-    out = o2
+    out = out - byte-to-str((s >> 24) & 0xff)
+    out = out - byte-to-str((s >> 16) & 0xff)
+    out = out - byte-to-str((s >> 8) & 0xff)
+    out = out - byte-to-str(s & 0xff)
 }
 
 ; zlib-decompress: decompress a zlib stream (stored blocks only)
 ; data str: a zlib stream
 ; returns out str, ok bool: uncompressed bytes, ok=false on too-short / non-stored input
+; NOTE: uses string concatenation with byte-to-str for each byte to work
+; around a Nolang compiler bug where str index assignment and slicing
+; in loops inside cross-module functions do not persist correctly.
 zlib-decompress = (data str) (out str, ok bool) {
     ok = false
     out = ''
     data.len < 6 -> return
-    ; pass 1: scan stored blocks to learn total uncompressed size
-    total = 0
+    ; single pass: extract payload bytes from each stored block
     p = 2
     {
         p >= data.len -> break
@@ -113,31 +110,14 @@ zlib-decompress = (data str) (out str, ok bool) {
         }
         p = p + 1
         len = data[p] | (data[p + 1] << 8)
-        p = p + 2
-        p = p + 2
-        total = total + len
-        p = p + len
-        bfinal == 1 -> break
-    } (true)
-    out = with-len(total)
-    ; pass 2: copy payload bytes
-    wp = 0
-    p = 2
-    {
-        p >= data.len -> break
-        bfinal = data[p] & 1
-        p = p + 1
-        len = data[p] | (data[p + 1] << 8)
         p = p + 4
+        ; extract payload byte by byte via byte-to-str
         i <- [0..len): {
-            out[wp + i] = data[p + i]
+            out = out - byte-to-str(data[p + i])
         }
-        wp = wp + len
         p = p + len
         bfinal == 1 -> break
     } (true)
-    o2 str = to-concat(out, total)
-    out = o2
     ok = true
 }
 
