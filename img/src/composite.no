@@ -1,0 +1,383 @@
+; composite.no — Cropping, padding, compositing, and blending operations
+; Inspired by libvips vips_crop / vips_embed / vips_composite / vips_bandjoin
+
+; Blend mode constants
+
+# /img/src/image.new
+# /img/src/image.new-from-data
+# /img/src/image.copy
+# /img/src/image.fill
+# /img/src/image.invert
+# /img/src/image.add-const
+# /img/src/image.avg
+# /img/src/image.min-val
+# /img/src/image.max-val
+# /img/src/image.get-pixel
+# /img/src/image.set-pixel
+
+; Blend mode constants (inlined as literal values to avoid compiler global var bug)
+; 0=normal, 1=multiply, 2=screen, 3=overlay, 4=add, 5=subtract, 6=diff, 7=lighten, 8=darken, 9=copy
+
+; ── Crop ──
+
+; composite.crop: extract a region from image
+; img image: input
+; left i64: left x coordinate
+; top i64: top y coordinate
+; w i64: crop width
+; h i64: crop height
+; returns out image: cropped region
+crop = (img image, left i64, top i64, w i64, h i64) (out image) {
+    {
+        left < 0 -> left = 0
+        top < 0 -> top = 0
+        left >= img.width -> left = img.width - 1
+        top >= img.height -> top = img.height - 1
+        left + w > img.width -> w = img.width - left
+        top + h > img.height -> h = img.height - top
+        w <= 0 -> w = 1
+        h <= 0 -> h = 1
+    }
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+    y <- [0..h): {
+        x <- [0..w): {
+            src = ((top + y) * img.width + (left + x)) * img.bands
+            dst = (y * w + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; composite.crop-auto: auto-crop to remove borders of uniform color
+; img image: input
+; returns out image: auto-cropped image
+crop-auto = (img image) (out image) {
+
+    ; Find background color from corner pixels
+    bg = with-len(img.bands)
+    i <- [0..img.bands): {
+        bg[i] = img.data[i]
+    }
+
+    ; Find left boundary
+    left = 0
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            same = true
+            b <- [0..img.bands): {
+                img.data[(y * img.width + x) * img.bands + b] != bg[b] -> {
+                    same = false
+                }
+            }
+            same == false -> {
+                x > left -> {
+                    left = x
+                }
+            }
+        }
+    }
+
+    ; Find right boundary
+    right = img.width - 1
+    y <- [0..img.height): {
+        x <- (0..img.width): {
+            same = true
+            b <- [0..img.bands): {
+                img.data[(y * img.width + (img.width - 1 - x)) * img.bands + b] != bg[b] -> {
+                    same = false
+                }
+            }
+            same == false -> {
+                (img.width - 1 - x) < right -> {
+                    right = img.width - 1 - x
+                }
+            }
+        }
+    }
+
+    ; Find top boundary
+    top = 0
+    x <- [0..img.width): {
+        y <- [0..img.height): {
+            same = true
+            b <- [0..img.bands): {
+                img.data[(y * img.width + x) * img.bands + b] != bg[b] -> {
+                    same = false
+                }
+            }
+            same == false -> {
+                y > top -> {
+                    top = y
+                }
+            }
+        }
+    }
+
+    ; Find bottom boundary
+    bottom = img.height - 1
+    x <- [0..img.width): {
+        y <- (0..img.height): {
+            same = true
+            b <- [0..img.bands): {
+                img.data[((img.height - 1 - y) * img.width + x) * img.bands + b] != bg[b] -> {
+                    same = false
+                }
+            }
+            same == false -> {
+                (img.height - 1 - y) < bottom -> {
+                    bottom = img.height - 1 - y
+                }
+            }
+        }
+    }
+    w = right - left + 1
+    h = bottom - top + 1
+    {
+        w <= 0 || h <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    out = composite.crop(img, left, top, w, h)
+}
+
+; ── Embed / Pad ──
+
+; composite.embed: embed image in larger canvas with background color
+; img image: input
+; left i64: left offset in output
+; top i64: top offset in output
+; w i64: output width
+; h i64: output height
+; bg []byte: background color (one byte per band)
+; returns out image: padded image
+embed = (img image, left i64, top i64, w i64, h i64, bg []byte) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+
+    ; Fill with background
+    y <- [0..h): {
+        x <- [0..w): {
+            b <- [0..img.bands): {
+                out.data[(y * w + x) * img.bands + b] = bg[b]
+            }
+        }
+    }
+
+    ; Copy source image
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            dst-x = left + x
+            dst-y = top + y
+            {
+                dst-x >= 0 && dst-x < w && dst-y >= 0 && dst-y < h -> {
+                    src = (y * img.width + x) * img.bands
+                    dst = (dst-y * w + dst-x) * img.bands
+                    b <- [0..img.bands): {
+                        out.data[dst + b] = img.data[src + b]
+                    }
+                }
+            }
+        }
+    }
+}
+
+; composite.pad: add uniform border around image
+; img image: input
+; border i64: border width in pixels
+; bg []byte: background color
+; returns out image: padded image
+pad = (img image, border i64, bg []byte) (out image) {
+    w = img.width + border * 2
+    h = img.height + border * 2
+    out = composite.embed(img, border, border, w, h, bg)
+}
+
+; ── Composite / Blend ──
+
+; composite.blend: blend two images
+; base image: base (bottom) image
+; overlay image: overlay (top) image
+; x i64: x offset of overlay
+; y i64: y offset of overlay
+; mode i64: blend mode
+; alpha i64: overlay opacity (0-255)
+; returns out image: composited image
+blend = (base image, overlay image, x i64, y i64, mode i64, alpha i64) (out image) {
+    out = image.copy(base)
+    oy <- [0..overlay.height): {
+        ox <- [0..overlay.width): {
+            dx = x + ox
+            dy = y + oy
+            {
+                dx >= 0 && dx < out.width && dy >= 0 && dy < out.height -> {
+                    b <- [0..out.bands): {
+                        bv = out.data[(dy * out.width + dx) * out.bands + b]
+                        {
+                            b < overlay.bands -> {
+                                ov = overlay.data[(oy * overlay.width + ox) * overlay.bands + b]
+
+                                ; Apply alpha
+                                ov = ov * alpha / 255
+                                bv2 = bv * (255 - alpha) / 255
+                                blended = 0
+                                {
+                                    mode == 0 -> {
+                                        blended = bv2 + ov
+                                    }
+                                    mode == 4 -> {
+                                        blended = bv + ov
+                                    }
+                                    mode == 5 -> {
+                                        blended = bv - ov
+                                    }
+                                    mode == 6 -> {
+                                        diff = bv - ov
+                                        diff < 0 -> diff = -diff
+                                        blended = diff
+                                    }
+                                    mode == 1 -> {
+                                        blended = bv * ov / 255
+                                    }
+                                    mode == 2 -> {
+                                        blended = 255 - ((255 - bv) * (255 - ov) / 255)
+                                    }
+                                    mode == 7 -> {
+                                        blended = bv
+                                        ov > blended -> blended = ov
+                                    }
+                                    mode == 8 -> {
+                                        blended = bv
+                                        ov < blended -> blended = ov
+                                    }
+                                    mode == 9 -> {
+                                        blended = ov
+                                    }
+                                    -> {
+                                        blended = bv2 + ov
+                                    }
+                                }
+                                blended > 255 -> blended = 255
+                                blended < 0 -> blended = 0
+                                out.data[(dy * out.width + dx) * out.bands + b] = blended
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; composite.composite: composite overlay onto base at position
+; Alias for blend with normal mode and full alpha
+; base image: base
+; overlay image: overlay
+; x i64: x position
+; y i64: y position
+; returns out image: composited
+composite = (base image, overlay image, x i64, y i64) (out image) {
+    out = composite.blend(base, overlay, x, y, 0, 255)
+}
+
+; ── Band operations ──
+
+; composite.bandjoin: join images band-by-band (must be same width/height)
+; imgs []image: array of images
+; returns out image: combined image
+bandjoin = (imgs []image) (out image) {
+    n = imgs.len
+    {
+        n == 0 -> {
+            out = image.new(1, 1, 1)
+            return
+        }
+    }
+    total-bands = 0
+    i <- [0..n): {
+        total-bands = total-bands + imgs[i].bands
+    }
+    w = imgs[0].width
+    h = imgs[0].height
+    _d str = with-len(w * h * total-bands)
+    out = image.new-from-data(w, h, total-bands, _d)
+    band-offset = 0
+    k <- [0..n): {
+        npix = w * h
+        i <- [0..npix): {
+            b <- [0..imgs[k].bands): {
+                src = i * imgs[k].bands + b
+                dst = i * total-bands + band-offset + b
+                out.data[dst] = imgs[k].data[src]
+            }
+        }
+        band-offset = band-offset + imgs[k].bands
+    }
+}
+
+; composite.band-extract: extract a single band from image
+; img image: input
+; band i64: band index to extract
+; returns out image: single-band image
+band-extract = (img image, band i64) (out image) {
+    {
+        band < 0 || band >= img.bands -> {
+            out = image.new(img.width, img.height, 1)
+            return
+        }
+    }
+    npix = img.width * img.height
+    _d str = with-len(npix)
+    out = image.new-from-data(img.width, img.height, 1, _d)
+    i <- [0..npix): {
+        out.data[i] = img.data[i * img.bands + band]
+    }
+}
+
+; composite.band-select: select multiple bands
+; img image: input
+; bands []i64: band indices to select
+; returns out image: selected bands
+band-select = (img image, bands []i64) (out image) {
+    n = bands.len
+    {
+        n == 0 -> {
+            out = image.new(img.width, img.height, 1)
+            return
+        }
+    }
+    npix = img.width * img.height
+    _d str = with-len(npix * n)
+    out = image.new-from-data(img.width, img.height, n, _d)
+    i <- [0..npix): {
+        b <- [0..n): {
+            out.data[i * n + b] = img.data[i * img.bands + bands[b]]
+        }
+    }
+}
+
+; ── Replicate / Tile ──
+
+; composite.replicate: tile image to fill larger area
+; img image: input tile
+; w i64: output width
+; h i64: output height
+; returns out image: tiled image
+replicate = (img image, w i64, h i64) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+    y <- [0..h): {
+        sy = y % img.height
+        x <- [0..w): {
+            sx = x % img.width
+            src = (sy * img.width + sx) * img.bands
+            dst = (y * w + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}

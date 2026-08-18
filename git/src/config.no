@@ -16,6 +16,7 @@
 
 ; trim leading/trailing whitespace
 trim-ws = (s str) (out str) {
+
     ; find start
     start = 0
     {
@@ -24,6 +25,7 @@ trim-ws = (s str) (out str) {
         c == 32 || c == 9 -> start = start + 1
         c != 32 && c != 9 -> break
     } (true)
+
     ; find end
     end = s.len
     {
@@ -40,17 +42,17 @@ to-lower-local = (s str) (out str) {
     i <- [0..s.len): {
         c = s[i]
         {
-        c >= 65 && c <= 90 -> {
-            lc = c + 32
-            cs str = with-len(1)
-            cs[0] = lc
-            out = out - cs
-        }
-        -> {
-            cs str = with-len(1)
-            cs[0] = c
-            out = out - cs
-        }
+            c >= 65 && c <= 90 -> {
+                lc = c + 32
+                cs str = with-len(1)
+                cs[0] = lc
+                out = out - cs
+            }
+            -> {
+                cs str = with-len(1)
+                cs[0] = c
+                out = out - cs
+            }
         }
     }
 }
@@ -69,13 +71,16 @@ to-lower-local = (s str) (out str) {
 config-get = (git-dir str, section str, key str) (value str, ok bool) {
     ok = false
     p = git-dir - '/config'
+
     ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
     isf = fs.is-file(p)
     isf == false -> return
     content = fs.read-file(p)
+
     ; parse section name and optional subsection from `section` param
     ; if section contains '.', split into section + subsection
     sect-upper = to-lower-local(section)
+
     ; scan lines
     pos = 0
     in-section = false
@@ -88,69 +93,76 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
         line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
         {
-        trimmed.len == 0 -> {}
-        -> {
-            ; section header: [section] or [section "subsection"]
-            {
-            trimmed.starts-with('[') -> {
-                ; extract section content between [ and ]
-                rb = util.find-byte-str(trimmed, 93, 0) ; ]
-                rb >= 0 -> {
-                    inner = util.str-range(trimmed, 1, rb)
-                    ; check for subsection: section "subsection"
-                    dq = util.find-byte-str(inner, 34, 0) ; "
-                    {
-                    dq >= 0 -> {
-                        sname = util.str-range(inner, 0, dq)
-                        sname = trim-ws(sname)
-                        sname-upper = to-lower-local(sname)
-                        dq2 = util.find-byte-str(inner, 34, dq + 1)
-                        dq2 >= 0 -> {
-                            subsec = util.str-range(inner, dq + 1, dq2)
-                            dot str = '.'
-                            current-section = sname-upper - dot - subsec
+            trimmed.len == 0 ->
+            -> {
+
+                ; section header: [section] or [section "subsection"]
+                {
+                    trimmed.starts-with('[') -> {
+
+                        ; extract section content between [ and ]
+                        rb = util.find-byte-str(trimmed, 93, 0); ]
+                        rb >= 0 -> {
+                            inner = util.str-range(trimmed, 1, rb)
+
+                            ; check for subsection: section "subsection"
+                            dq = util.find-byte-str(inner, 34, 0); "
+                            {
+                                dq >= 0 -> {
+                                    sname = util.str-range(inner, 0, dq)
+                                    sname = trim-ws(sname)
+                                    sname-upper = to-lower-local(sname)
+                                    dq2 = util.find-byte-str(inner, 34, dq + 1)
+                                    dq2 >= 0 -> {
+                                        subsec = util.str-range(inner, dq + 1, dq2)
+                                        dot str = '.'
+                                        current-section = sname-upper - dot - subsec
+                                    }
+                                }
+                                -> {
+                                    inner = trim-ws(inner)
+                                    inner-upper = to-lower-local(inner)
+                                    current-section = inner-upper
+                                }
+                            }
+
+                            ; check if this matches our target section
+                            same = util.str-eq(current-section, sect-upper)
+                            in-section = same
                         }
                     }
                     -> {
-                        inner = trim-ws(inner)
-                        inner-upper = to-lower-local(inner)
-                        current-section = inner-upper
-                    }
-                    }
-                    ; check if this matches our target section
-                    same = util.str-eq(current-section, sect-upper)
-                    in-section = same
-                }
-            }
-            -> {
-                ; key = value line
-                in-section == true -> {
-                    eq = util.find-byte-str(trimmed, 61, 0) ; =
-                    eq >= 0 -> {
-                        k = util.str-range(trimmed, 0, eq)
-                        k = trim-ws(k)
-                        k-upper = to-lower-local(k)
-                        target-key-upper = to-lower-local(key)
-                        key-same = util.str-eq(k-upper, target-key-upper)
-                        key-same == true -> {
-                            v = util.str-range(trimmed, eq + 1, trimmed.len)
-                            v = trim-ws(v)
-                            ; strip surrounding quotes if present
-                            v.len >= 2 -> {
-                                v[0] == 34 -> {
-                                    v2 = util.str-range(v, 1, v.len - 1)
-                                    v = v2
+                        in-section == true -> {
+
+                            ; key = value line
+
+                            eq = util.find-byte-str(trimmed, 61, 0); =
+                            eq >= 0 -> {
+                                k = util.str-range(trimmed, 0, eq)
+                                k = trim-ws(k)
+                                k-upper = to-lower-local(k)
+                                target-key-upper = to-lower-local(key)
+                                key-same = util.str-eq(k-upper, target-key-upper)
+                                key-same == true -> {
+                                    v = util.str-range(trimmed, eq + 1, trimmed.len)
+                                    v = trim-ws(v)
+
+                                    ; strip surrounding quotes if present
+                                    v.len >= 2 -> {
+                                        v[0] == 34 -> {
+                                            v2 = util.str-range(v, 1, v.len - 1)
+                                            v = v2
+                                        }
+                                    }
+                                    value = v
+                                    ok = true
+                                    break
                                 }
                             }
-                            value = v
-                            ok = true
-                            break
                         }
                     }
-            }
                 }
             }
-        }
         }
         pos = nl + 1
         nl < 0 -> break
@@ -168,12 +180,14 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
 config-set = (git-dir str, section str, key str, value str) (ok bool) {
     ok = false
     p = git-dir - '/config'
+
     ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
     isf = fs.is-file(p)
     content = ''
     isf == true -> content = fs.read-file(p)
     sect-upper = to-lower-local(section)
     target-key-upper = to-lower-local(key)
+
     ; Pass 1: find section start/end and key position
     sec-start = -1
     sec-end = content.len
@@ -188,6 +202,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         nl >= 0 -> end = nl
         line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
+
         ; Section header: starts with '['
         has-bracket = util.find-byte-str(trimmed, 91, 0)
         has-bracket == 0 -> {
@@ -207,6 +222,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
                 }
             }
         }
+
         ; Key = value line (separate block)
         has-bracket != 0 -> {
             in-section -> {
@@ -223,8 +239,10 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         pos = nl + 1
         nl < 0 -> break
     } (true)
+
     ; Determine action based on findings
     key-pos >= 0 -> {
+
         ; Key exists in section: replace the line
         ; Find end of the key line
         nl2 = util.find-byte-str(content, 10, key-pos)
@@ -239,10 +257,12 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         return
     }
     sec-start >= 0 -> {
+
         ; Section exists but key doesn't: insert key at end of section
         ; sec-end is the start of the next section or content.len
         ; Find the last non-empty line before sec-end
         insert-pos = sec-end
+
         ; Insert the new key before the next section (or at end)
         before = util.str-range(content, 0, insert-pos)
         after = util.str-range(content, insert-pos, content.len)
@@ -252,6 +272,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         ok = true
         return
     }
+
     ; Section doesn't exist: append section + key at end of file
     new-content = content
     new-content.len > 0 -> {
@@ -273,6 +294,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
 get-user-name = (git-dir str) (name str, ok bool) {
     name, ok = config-get(git-dir, 'user', 'name')
     ok == true -> return
+
     ; fall back to env
     name = os.get-env('GIT_AUTHOR_NAME')
     {
@@ -293,5 +315,3 @@ get-user-email = (git-dir str) (email str, ok bool) {
         email != '' -> ok = true
     }
 }
-
-

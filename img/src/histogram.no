@@ -1,0 +1,380 @@
+; histogram.no — Histogram analysis and normalization
+; Inspired by libvips vips_hist_find / vips_hist_norm / vips_hist_equal
+
+; ── Histogram computation ──
+
+; histogram.find: compute histogram of image
+; img image: input image
+; returns hist []i64: 256-element histogram
+
+# /img/src/image.new
+# /img/src/image.new-from-data
+# /img/src/image.copy
+# /img/src/image.fill
+# /img/src/image.invert
+# /img/src/image.add-const
+# /img/src/image.avg
+# /img/src/image.min-val
+# /img/src/image.max-val
+# /img/src/image.get-pixel
+# /img/src/image.set-pixel
+
+find = (img image) (hist []i64) {
+    hist = with-len(256)
+    i <- [0..256): {
+        hist[i] = 0
+    }
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        v = img.data[i]
+        hist[v] = hist[v] + 1
+    }
+}
+
+; histogram.find-band: compute histogram for a specific band
+; img image: input image
+; band i64: band index
+; returns hist []i64: 256-element histogram
+find-band = (img image, band i64) (hist []i64) {
+    hist = with-len(256)
+    i <- [0..256): {
+        hist[i] = 0
+    }
+    npix = img.width * img.height
+    i <- [0..npix): {
+        v = img.data[i * img.bands + band]
+        hist[v] = hist[v] + 1
+    }
+}
+
+; histogram.find-cumulative: compute cumulative histogram
+; img image: input image
+; returns hist []i64: cumulative histogram (256 elements)
+find-cumulative = (img image) (hist []i64) {
+    hist = histogram.find(img)
+
+    ; Convert to cumulative
+    i <- [1..256): {
+        hist[i] = hist[i] + hist[i - 1]
+    }
+}
+
+; histogram.print: print histogram (text output)
+; hist []i64: histogram array
+; name str: label
+hist-print = (hist []i64, name str) {
+    print('Histogram: {name}')
+    max-val = 0
+    i <- [0..256): {
+        hist[i] > max-val -> max-val = hist[i]
+    }
+    {
+        max-val == 0 -> max-val = 1
+    }
+    i <- [0..256): {
+        bar-len = hist[i] * 60 / max-val
+        bar = ''
+        j <- [0..bar-len): {
+            bar = bar - '#'
+        }
+        print('{i}: {hist[i]} {bar}')
+    }
+}
+
+; ── Histogram normalization ──
+
+; histogram.norm: normalize image to full dynamic range
+; img image: input image
+; returns out image: normalized image
+norm = (img image) (out image) {
+
+    ; Find min and max
+    mn = 255
+    mx = 0
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        v = img.data[i]
+        v < mn -> mn = v
+        v > mx -> mx = v
+    }
+    {
+        mx <= mn -> {
+            out = image.copy(img)
+            return
+        }
+    }
+
+    ; Build lookup table
+    lut = with-len(256)
+    range = mx - mn
+    i <- [0..256): {
+        {
+            i < mn -> {
+                lut[i] = 0
+            }
+            i > mx -> {
+                lut[i] = 255
+            }
+            -> {
+                lut[i] = (i - mn) * 255 / range
+            }
+        }
+    }
+    _d str = with-len(n)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    i <- [0..n): {
+        out.data[i] = lut[img.data[i]]
+    }
+}
+
+; ── Histogram equalization ──
+
+; histogram.equalize: equalize histogram for better contrast
+; img image: input image
+; returns out image: equalized image
+equalize = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+
+    ; For each band, compute equalization
+    b <- [0..img.bands): {
+
+        ; Compute histogram for this band
+        hist = with-len(256)
+        i <- [0..256): {
+            hist[i] = 0
+        }
+        npix = img.width * img.height
+        i <- [0..npix): {
+            v = img.data[i * img.bands + b]
+            hist[v] = hist[v] + 1
+        }
+
+        ; Compute CDF
+        cdf = with-len(256)
+        cdf[0] = hist[0]
+        i <- [1..256): {
+            cdf[i] = cdf[i - 1] + hist[i]
+        }
+
+        ; Find cdf min (first non-zero)
+        cdf-min = 0
+        i <- [0..256): {
+            cdf[i] > 0 -> {
+                cdf-min = cdf[i]
+                break
+            }
+        }
+
+        ; Total pixels
+        total = npix
+        {
+            total - cdf-min == 0 -> {
+                lut = with-len(256)
+                i <- [0..256): {
+                    lut[i] = i
+                }
+            }
+            -> {
+
+                ; Build lookup table
+                lut = with-len(256)
+                i <- [0..256): {
+                    val = (cdf[i] - cdf-min) * 255 / (total - cdf-min)
+                    val > 255 -> val = 255
+                    val < 0 -> val = 0
+                    lut[i] = val
+                }
+            }
+        }
+
+        ; Apply lookup table to this band
+        i <- [0..npix): {
+            out.data[i * img.bands + b] = lut[img.data[i * img.bands + b]]
+        }
+    }
+}
+
+; ── Histogram stretch (contrast stretch) ──
+
+; histogram.stretch: contrast stretch with clip percentage
+; img image: input image
+; clip i64: clip percentage (0-50, e.g. 1 = clip 1%)
+; returns out image: stretched image
+stretch = (img image, clip i64) (out image) {
+    n = img.width * img.height * img.bands
+    {
+        n == 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+
+    ; Build full histogram
+    hist = histogram.find(img)
+
+    ; Compute clip counts
+    clip-count = n * clip / 100
+
+    ; Find low clip
+    low = 0
+    acc = 0
+    i <- [0..256): {
+        acc = acc + hist[i]
+        acc > clip-count -> {
+            low = i
+            break
+        }
+    }
+
+    ; Find high clip
+    high = 255
+    acc = 0
+    i <- (0..256): {
+        acc = acc + hist[255 - i]
+        acc > clip-count -> {
+            high = 255 - i
+            break
+        }
+    }
+    {
+        high <= low -> {
+            out = image.copy(img)
+            return
+        }
+    }
+
+    ; Build lookup table
+    lut = with-len(256)
+    range = high - low
+    i <- [0..256): {
+        {
+            i < low -> {
+                lut[i] = 0
+            }
+            i > high -> {
+                lut[i] = 255
+            }
+            -> {
+                lut[i] = (i - low) * 255 / range
+            }
+        }
+    }
+    _d str = with-len(n)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    i <- [0..n): {
+        out.data[i] = lut[img.data[i]]
+    }
+}
+
+; ── Lookup table application ──
+
+; histogram.apply-lut: apply a lookup table to image
+; img image: input image
+; lut []byte: 256-byte lookup table
+; returns out image: mapped image
+apply-lut = (img image, lut []byte) (out image) {
+    out = image.copy(img)
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        out.data[i] = lut[img.data[i]]
+    }
+}
+
+; ── Statistics ──
+
+; histogram.mean: compute mean pixel value
+; img image: input image
+; returns mean i64: mean value
+mean = (img image) (mean i64) {
+    n = img.width * img.height * img.bands
+    {
+        n == 0 -> return
+    }
+    sum = 0
+    i <- [0..n): {
+        sum = sum + img.data[i]
+    }
+    mean = sum / n
+}
+
+; histogram.variance: compute pixel value variance
+; img image: input image
+; returns var-val i64: variance value
+variance = (img image, var-val i64) {
+    n = img.width * img.height * img.bands
+    {
+        n == 0 -> return
+    }
+    mean = histogram.mean(img)
+    sum-sq = 0
+    i <- [0..n): {
+        diff = img.data[i] - mean
+        sum-sq = sum-sq + diff * diff
+    }
+    var-val = sum-sq / n
+}
+
+; histogram.stddev: compute standard deviation
+; img image: input image
+; returns sd i64: standard deviation (integer approximation)
+stddev = (img image, sd i64) {
+    var-val = histogram.variance(img)
+
+    ; sqrt approximation
+    {
+        var-val == 0 -> {
+            sd = 0
+            return
+        }
+    }
+    x = var-val
+    {
+        x < 0 -> {
+            sd = 0
+            return
+        }
+    }
+
+    ; Newton's method
+    r = x
+    i <- [0..20): {
+        r2 = (r + x / r) / 2
+        diff = r - r2
+        diff < 0 -> diff = -diff
+        r = r2
+        diff < 2 -> break
+    }
+    sd = r
+}
+
+; ── Posterize using histogram ──
+
+; histogram.posterize: reduce number of intensity levels
+; img image: input image
+; levels i64: target levels per channel (2-256)
+; returns out image: posterized image
+posterize = (img image, levels i64) (out image) {
+    {
+        levels <= 0 -> levels = 2
+        levels > 256 -> levels = 256
+    }
+    step = 256 / levels
+    lut = with-len(256)
+    i <- [0..256): {
+        lut[i] = (i / step) * step + step / 2
+        lut[i] > 255 -> lut[i] = 255
+    }
+    out = histogram.apply-lut(img, lut)
+}
+
+; ── Auto-level (auto contrast) ──
+
+; histogram.auto-level: automatically adjust levels based on histogram percentile
+; img image: input image
+; returns out image: auto-leveled image
+auto-level = (img image) (out image) {
+
+    ; Use 0.5% clip on each side
+    out = histogram.stretch(img, 0)
+}

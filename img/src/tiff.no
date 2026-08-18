@@ -1,0 +1,368 @@
+; tiff.no — TIFF (Tagged Image File Format) read/write
+; Supports:
+;   - Little-endian (II) byte order
+;   - Baseline RGB (photometric=2), Grayscale (photometric=1)
+;   - 8-bit and 16-bit samples
+;   - Strip-based layout (no tiles)
+;   - No compression (compression=1)
+;   - Single strip per image (rows-per-strip = height)
+;
+; TIFF file layout:
+;   Header (8 bytes): byte-order(II/MM), magic(42), IFD-offset(4)
+;   IFD: count(2), entries(count*12), next-IFD(4)
+;   Each entry: tag(2), type(2), count(4), value/offset(4)
+
+; TIFF tag constants
+; Note: values are used as literal constants in code to avoid compiler bug with global variables
+
+# /img/src/image.new
+# /img/src/image.new-from-data
+# /img/src/image.copy
+# /img/src/image.fill
+# /img/src/image.invert
+# /img/src/image.add-const
+# /img/src/image.avg
+# /img/src/image.min-val
+# /img/src/image.max-val
+# /img/src/image.get-pixel
+# /img/src/image.set-pixel
+
+; ── Load ──
+
+; tiff.load: load a TIFF file
+; path str: file path
+; returns img ?image: loaded image, nil on error
+load = (path str) (img ?image) {
+    data = fs.read-file(path)
+    data.len < 8 -> {
+        img = nil
+        return
+    }
+
+    ; Check byte order
+    little-endian = true
+    (data[0] & 255) == 73 && (data[1] & 255) == 73 -> {
+        little-endian = true
+    }
+    (data[0] & 255) == 77 && (data[1] & 255) == 77 -> {
+        little-endian = false
+    }
+    -> {
+        img = nil
+        return
+    }
+
+    ; Read magic number (42)
+    magic = tiff-read-u16(data, 2, little-endian)
+    magic != 42 -> {
+        img = nil
+        return
+    }
+
+    ; Read IFD offset
+    ifd-offset = tiff-read-u32(data, 4, little-endian)
+    ifd-offset + 2 > data.len -> {
+        img = nil
+        return
+    }
+
+    ; Parse IFD
+    num-entries = tiff-read-u16(data, ifd-offset, little-endian)
+
+    ; Initialize tag values
+    w = 0
+    h = 0
+    bits-per-sample = 8
+    samples-per-pixel = 1
+    compression = 1
+    photometric = 0
+    strip-offset = 0
+    strip-bytes = 0
+    rows-per-strip = 0
+    planar = 1
+    i <- [0..num-entries): {
+        entry-pos = ifd-offset + 2 + i * 12
+        tag = tiff-read-u16(data, entry-pos, little-endian)
+        type = tiff-read-u16(data, entry-pos + 2, little-endian)
+        count = tiff-read-u32(data, entry-pos + 4, little-endian)
+        val = tiff-read-u32(data, entry-pos + 8, little-endian)
+        {
+            tag == 256 -> w = val
+            tag == 257 -> h = val
+            tag == 258 -> bits-per-sample = val
+            tag == 277 -> samples-per-pixel = val
+            tag == 259 -> compression = val
+            tag == 262 -> photometric = val
+            tag == 273 -> strip-offset = val
+            tag == 279 -> strip-bytes = val
+            tag == 278 -> rows-per-strip = val
+            tag == 284 -> planar = val
+        }
+    }
+}
+{
+    w <= 0 || h <= 0 -> {
+        img = nil
+        return
+    }
+    compression != 1 -> {
+        img = nil
+        return
+    }
+    bits-per-sample != 8 -> {
+        img = nil
+        return
+    }
+}
+{
+    samples-per-pixel == 0 -> samples-per-pixel = 1
+}
+bands = samples-per-pixel
+{
+    bands > 4 -> bands = 4
+}
+n = w * h * bands
+_d str = with-len(n)
+tmp = image.new-from-data(w, h, bands, _d)
+
+; Copy pixel data from strip
+{
+    strip-offset + n <= data.len -> {
+
+        ; TIFF stores RGB, we store RGB
+        {
+            bands == samples-per-pixel -> {
+                i <- [0..n): {
+                    tmp.data[i] = data[strip-offset + i] & 255
+                }
+            }
+            -> {
+
+                ; Need to truncate channels
+                npix = w * h
+                i <- [0..npix): {
+                    b <- [0..bands): {
+                        tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b] & 255
+                    }
+                }
+            }
+        }
+    }
+}
+img = tmp
+
+; tiff-read-u16: read 16-bit value
+; data str: file content
+; offset i64: byte offset
+; little-endian bool: byte order
+; returns val i64
+tiff-read-u16 = (data str, offset i64, little-endian bool) (val i64) {
+    {
+        little-endian == true -> {
+            val = (data[offset] & 255) | ((data[offset + 1] & 255) << 8)
+        }
+        -> {
+            val = ((data[offset] & 255) << 8) | (data[offset + 1] & 255)
+        }
+    }
+}
+
+; tiff-read-u32: read 32-bit value
+; data str: file content
+; offset i64: byte offset
+; little-endian bool: byte order
+; returns val i64
+tiff-read-u32 = (data str, offset i64, little-endian bool) (val i64) {
+    {
+        little-endian == true -> {
+            val = (data[offset] & 255) | ((data[offset + 1] & 255) << 8) | ((data[offset + 2] & 255) << 16) | ((data[offset + 3] & 255) << 24)
+        }
+        -> {
+            val = ((data[offset] & 255) << 24) | ((data[offset + 1] & 255) << 16) | ((data[offset + 2] & 255) << 8) | (data[offset + 3] & 255)
+        }
+    }
+}
+
+; ── Save ──
+
+; tiff.save: save image as baseline TIFF (uncompressed, little-endian)
+; path str: output path
+; img image: image
+; returns ok bool
+save = (path str, img image) (ok bool) {
+    w = img.width
+    h = img.height
+    bands = img.bands
+    {
+        bands > 4 -> bands = 4
+    }
+    bits-per-sample = 8
+    photometric = 2
+    {
+        bands == 1 -> photometric = 1
+        bands >= 3 -> photometric = 2
+        bands == 4 -> photometric = 2
+    }
+
+    ; Build pixel data (ensure RGB for bands>=3)
+    pixel-data = with-len(w * h * bands)
+    {
+        img.bands == bands -> {
+            i <- [0..w * h * bands): {
+                pixel-data[i] = img.data[i]
+            }
+        }
+        -> {
+            npix = w * h
+            i <- [0..npix): {
+                {
+                    bands == 1 -> {
+                        img.bands >= 3 -> {
+                            r = img.data[i * img.bands]
+                            g = img.data[i * img.bands + 1]
+                            b = img.data[i * img.bands + 2]
+                            pixel-data[i] = (r * 299 + g * 587 + b * 114) / 1000
+                        }
+                        -> {
+                            pixel-data[i] = img.data[i * img.bands]
+                        }
+                    }
+                    bands == 3 -> {
+                        img.bands >= 3 -> {
+                            pixel-data[i * 3] = img.data[i * img.bands]
+                            pixel-data[i * 3 + 1] = img.data[i * img.bands + 1]
+                            pixel-data[i * 3 + 2] = img.data[i * img.bands + 2]
+                        }
+                        img.bands == 1 -> {
+                            v = img.data[i]
+                            pixel-data[i * 3] = v
+                            pixel-data[i * 3 + 1] = v
+                            pixel-data[i * 3 + 2] = v
+                        }
+                    }
+                    bands == 4 -> {
+                        b <- [0..4): {
+                            {
+                                b < img.bands -> {
+                                    pixel-data[i * 4 + b] = img.data[i * img.bands + b]
+                                }
+                                -> {
+                                    pixel-data[i * 4 + b] = 255
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; Build TIFF file
+    ; Header: 8 bytes
+    ; IFD: 2 + 10*12 + 4 = 126 bytes
+    num-tags = 10
+    ifd-offset = 8
+    pixel-offset = 8 + 2 + num-tags * 12 + 4
+
+    ; Write header
+    buf = with-cap(pixel-offset + pixel-data.len)
+
+    ; Byte order: little-endian (II)
+    buf.push(73)
+    buf.push(73)
+
+    ; Magic
+    buf.push(42)
+    buf.push(0)
+
+    ; IFD offset
+    buf.push(ifd-offset & 255)
+    buf.push((ifd-offset >> 8) & 255)
+    buf.push((ifd-offset >> 16) & 255)
+    buf.push((ifd-offset >> 24) & 255)
+
+    ; IFD entry count
+    buf.push(num-tags & 255)
+    buf.push(0)
+
+    ; IFD entries (12 bytes each: tag(2), type(2), count(4), value(4))
+    ; Tag 256: ImageWidth
+    tiff-write-entry(buf, 256, 3, 1, w)
+
+    ; Tag 257: ImageLength
+    tiff-write-entry(buf, 257, 3, 1, h)
+
+    ; Tag 258: BitsPerSample
+    tiff-write-entry(buf, 258, 3, 1, 8)
+
+    ; Tag 259: Compression (1 = none)
+    tiff-write-entry(buf, 259, 3, 1, 1)
+
+    ; Tag 262: PhotometricInterpretation
+    tiff-write-entry(buf, 262, 3, 1, photometric)
+
+    ; Tag 273: StripOffsets
+    tiff-write-entry(buf, 273, 4, 1, pixel-offset)
+
+    ; Tag 277: SamplesPerPixel
+    tiff-write-entry(buf, 277, 3, 1, bands)
+
+    ; Tag 278: RowsPerStrip
+    tiff-write-entry(buf, 278, 3, 1, h)
+
+    ; Tag 279: StripByteCounts
+    tiff-write-entry(buf, 279, 4, 1, pixel-data.len)
+
+    ; Tag 284: PlanarConfiguration (1 = chunky)
+    tiff-write-entry(buf, 284, 3, 1, 1)
+
+    ; Next IFD offset (0 = no more)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; Pixel data
+    i <- [0..pixel-data.len): {
+        buf.push(pixel-data[i])
+    }
+
+    ; Write file
+    wfd = fs.open-write(path)
+    wfd < 0 -> {
+        ok = false
+        return
+    }
+    fs.write(wfd, buf, buf.len)
+    fs.close(wfd)
+    ok = true
+}
+
+; tiff-write-entry: write a 12-byte IFD entry (little-endian)
+; out []byte: output buffer
+; tag i64: tag number
+; type i64: data type
+; count i64: value count
+; value i64: value
+tiff-write-entry = (out []byte, tag i64, type i64, count i64, value i64) {
+
+    ; Tag (LE 16-bit)
+    out.push(tag & 255)
+    out.push((tag >> 8) & 255)
+
+    ; Type (LE 16-bit)
+    out.push(type & 255)
+    out.push((type >> 8) & 255)
+
+    ; Count (LE 32-bit)
+    out.push(count & 255)
+    out.push((count >> 8) & 255)
+    out.push((count >> 16) & 255)
+    out.push((count >> 24) & 255)
+
+    ; Value (LE 32-bit)
+    out.push(value & 255)
+    out.push((value >> 8) & 255)
+    out.push((value >> 16) & 255)
+    out.push((value >> 24) & 255)
+}

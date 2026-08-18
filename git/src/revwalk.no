@@ -26,6 +26,7 @@
 ; returns oid oid, ok bool
 resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ok = false
+
     ; try HEAD first (most common short name)
     {
         ref == 'HEAD' -> {
@@ -33,18 +34,23 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
             ok == true -> return
         }
     }
+
     ; try as full ref name (refs/heads/..., refs/tags/...)
     o, ok = read-ref-from-module(git-dir, ref)
     ok == true -> return
+
     ; try as refs/heads/<ref>
     o, ok = read-ref-from-module(git-dir, 'refs/heads/' - ref)
     ok == true -> return
+
     ; try as refs/tags/<ref>
     o, ok = read-ref-from-module(git-dir, 'refs/tags/' - ref)
     {
         ok == true -> return
-        ; try as 40-char hex oid (must be exactly 40 chars)
         ref.len == 40 -> {
+
+            ; try as 40-char hex oid (must be exactly 40 chars)
+
             o, ok = oid.oid-from-hex(ref)
         }
     }
@@ -54,6 +60,7 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
 ; We inline a minimal ref reader here to avoid the dependency cycle.
 read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
     ok = false
+
     ; build path: git-dir/name
     sl str = '/'
     p = git-dir - sl - name
@@ -62,6 +69,7 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
         isf == true -> {
             raw = fs.read-file(p)
             content = raw
+
             ; trim newline
             L = content.len
             L > 0 -> {
@@ -69,12 +77,14 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
                     content = util.str-range(content, 0, L - 1)
                 }
             }
+
             ; check symbolic ref
             content.starts-with('ref: ') -> {
                 target = util.str-range(content, 5, content.len)
                 o, ok = read-ref-from-module(git-dir, target)
                 return
             }
+
             ; parse as hex
             content.len >= 40 -> {
                 o, ok = oid.oid-from-hex(util.str-range(content, 0, 40))
@@ -82,6 +92,7 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
             }
         }
     }
+
     ; try packed-refs
     pr-path = git-dir - '/packed-refs'
     isf2 = fs.is-file(pr-path)
@@ -89,6 +100,7 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
         isf2 == true -> {
             raw2 = fs.read-file(pr-path)
             content2 = raw2
+
             ; scan lines: "<hex> <refname>"
             pos = 0
             {
@@ -98,26 +110,24 @@ read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
                 nl >= 0 -> end = nl
                 line = util.str-range(content2, pos, end)
                 {
-                line.starts-with('#') -> {}
-                -> {
-                    {
-                    line.starts-with('^') -> {}
+                    line.starts-with('#') ->
                     -> {
-                        sp = util.find-byte-str(line, 32, 0)
-                        sp >= 0 -> {
-                            hx = util.str-range(line, 0, sp)
-                            refname = util.str-range(line, sp + 1, line.len)
-                            same = util.str-eq(refname, name)
-                            same == true -> {
-                                hx.len >= 40 -> {
-                                    o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
-                                    ok == true -> break
+                        line.starts-with('^') ->
+                        -> {
+                            sp = util.find-byte-str(line, 32, 0)
+                            sp >= 0 -> {
+                                hx = util.str-range(line, 0, sp)
+                                refname = util.str-range(line, sp + 1, line.len)
+                                same = util.str-eq(refname, name)
+                                same == true -> {
+                                    hx.len >= 40 -> {
+                                        o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
+                                        ok == true -> break
+                                    }
                                 }
                             }
                         }
                     }
-                    }
-                }
                 }
                 pos = nl + 1
                 nl < 0 -> break
@@ -166,8 +176,10 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
             parent-hex = parent-hex - hx
             nparents = nparents + 1
         }
+
         ; stop at blank line (message starts)
         line.len == 0 -> break
+
         ; stop at author/committer lines
         line.starts-with('author ') -> break
         line.starts-with('committer ') -> break
@@ -212,14 +224,14 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
         np i64 = ph.len / 40
         np == 0 -> break
         {
-        ph.len >= 40 -> {
-            first-parent-hex = util.str-range(ph, 0, 40)
-            cur, cok = oid.oid-from-hex(first-parent-hex)
-            cok == false -> break
-        }
-        -> {
-            break
-        }
+            ph.len >= 40 -> {
+                first-parent-hex = util.str-range(ph, 0, 40)
+                cur, cok = oid.oid-from-hex(first-parent-hex)
+                cok == false -> break
+            }
+            -> {
+                break
+            }
         }
     } (true)
     ok = true
@@ -252,14 +264,14 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
         np i64 = ph.len / 40
         np == 0 -> break
         {
-        ph.len >= 40 -> {
-            first-parent-hex = ph[0..40)
-            cur, cok = oid.oid-from-hex(first-parent-hex)
-            cok == false -> break
-        }
-        -> {
-            break
-        }
+            ph.len >= 40 -> {
+                first-parent-hex = ph[0..40)
+                cur, cok = oid.oid-from-hex(first-parent-hex)
+                cok == false -> break
+            }
+            -> {
+                break
+            }
         }
     } (true)
     ok = true
@@ -273,6 +285,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
     ok = false
     commit-hex = ''
     count = 0
+
     ; simple queue: we store visited oids as concatenated hex
     visited-hex = ''
     queue-hex = oid.oid-hex-str(start-oid)
@@ -282,13 +295,16 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
         max-count > 0 -> {
             count >= max-count -> break
         }
+
         ; dequeue first
         cur-hex = util.str-range(queue-hex, 0, 40)
         queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
         queue-n = queue-n - 1
+
         ; parse oid
         cur, cur-ok = oid.oid-from-hex(cur-hex)
         cur-ok == false -> break
+
         ; check if already visited
         is-visited = false
         vpos = 0
@@ -303,24 +319,27 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
             vpos = vpos + 40
         } (true)
         {
-        is-visited == true -> {}
-        -> {
-            ; mark as visited
-            visited-hex = visited-hex - cur-hex
-            ; read commit
-            t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
-            cok == true -> {
-                commit-hex = commit-hex - cur-hex - '\n'
-                count = count + 1
-                ; enqueue parents
-                np i64 = ph.len / 40
-                i <- [0..np): {
-                    parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
-                    queue-hex = queue-hex - parent-hex
-                    queue-n = queue-n + 1
+            is-visited == true ->
+            -> {
+
+                ; mark as visited
+                visited-hex = visited-hex - cur-hex
+
+                ; read commit
+                t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
+                cok == true -> {
+                    commit-hex = commit-hex - cur-hex - '\n'
+                    count = count + 1
+
+                    ; enqueue parents
+                    np i64 = ph.len / 40
+                    i <- [0..np): {
+                        parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        queue-hex = queue-hex - parent-hex
+                        queue-n = queue-n + 1
+                    }
                 }
             }
-        }
         }
     } (true)
     ok = true
@@ -335,6 +354,7 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
 ; returns yes bool
 is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
     yes = false
+
     ; walk all parents of descendant, check if ancestor is among them
     visited-hex = ''
     queue-hex = oid.oid-hex-str(descendant)
@@ -345,12 +365,14 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         cur-hex = util.str-range(queue-hex, 0, 40)
         queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
         queue-n = queue-n - 1
+
         ; check if this is the ancestor
         same = util.str-eq(cur-hex, ancestor-hex)
         same == true -> {
             yes = true
             break
         }
+
         ; check visited
         is-visited = false
         vpos = 0
@@ -365,24 +387,22 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
             vpos = vpos + 40
         } (true)
         {
-        is-visited == true -> {}
-        -> {
-            visited-hex = visited-hex - cur-hex
-            cur, cur-ok = oid.oid-from-hex(cur-hex)
-            cur-ok == true -> {
-                t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
-                cok == true -> {
-                    np i64 = ph.len / 40
-                    i <- [0..np): {
-                        parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
-                        queue-hex = queue-hex - parent-hex
-                        queue-n = queue-n + 1
+            is-visited == true ->
+            -> {
+                visited-hex = visited-hex - cur-hex
+                cur, cur-ok = oid.oid-from-hex(cur-hex)
+                cur-ok == true -> {
+                    t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
+                    cok == true -> {
+                        np i64 = ph.len / 40
+                        i <- [0..np): {
+                            parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                            queue-hex = queue-hex - parent-hex
+                            queue-n = queue-n + 1
+                        }
                     }
                 }
             }
         }
-        }
     } (true)
 }
-
-

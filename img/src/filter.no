@@ -1,0 +1,406 @@
+; filter.no — Convolution filters: blur, sharpen, edge detect, emboss
+; Inspired by libvips vips_conv / vips_gaussblur / vips_sharpen
+
+; ── Generic convolution ──
+
+; filter.convolve: apply a convolution kernel to image
+; img image: input image
+; kernel []i64: convolution kernel (square, ksize * ksize)
+; ksize i64: kernel size (odd, e.g. 3, 5, 7)
+; divisor i64: normalization divisor (sum of kernel elements, or 0 for auto)
+; offset i64: value to add after normalization
+; returns out image: filtered image
+
+# /img/src/image.new
+# /img/src/image.new-from-data
+# /img/src/image.copy
+# /img/src/image.fill
+# /img/src/image.invert
+# /img/src/image.add-const
+# /img/src/image.avg
+# /img/src/image.min-val
+# /img/src/image.max-val
+# /img/src/image.get-pixel
+# /img/src/image.set-pixel
+
+convolve = (img image, kernel []i64, ksize i64, divisor i64, offset i64) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    {
+        ksize < 1 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    half = ksize / 2
+    div = divisor
+    {
+        div == 0 -> {
+            div = 0
+            i <- [0..ksize * ksize): {
+                div = div + kernel[i]
+            }
+        }
+    }
+    div == 0 -> div = 1
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                sum = 0
+                ky <- [0..ksize): {
+                    kx <- [0..ksize): {
+                        sx = x + kx - half
+                        sy = y + ky - half
+                        {
+                            sx < 0 -> sx = 0
+                            sx >= img.width -> sx = img.width - 1
+                        }
+                        {
+                            sy < 0 -> sy = 0
+                            sy >= img.height -> sy = img.height - 1
+                        }
+                        px = img.data[(sy * img.width + sx) * img.bands + b]
+                        sum = sum + px * kernel[ky * ksize + kx]
+                    }
+                }
+                val = sum / div + offset
+                val > 255 -> val = 255
+                val < 0 -> val = 0
+                out.data[(y * img.width + x) * img.bands + b] = val
+            }
+        }
+    }
+}
+
+; ── Gaussian blur ──
+
+; filter.gauss-blur: gaussian blur with adjustable sigma
+; img image: input image
+; sigma i64: blur radius (sigma * 10, e.g. 15 = 1.5)
+; returns out image: blurred image
+gauss-blur = (img image, sigma i64) (out image) {
+    {
+        sigma <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+
+    ; Compute kernel size from sigma
+    ; ksize = 2 * ceil(3 * sigma) + 1
+    ; sigma is sigma/10, so 3 * sigma/10 = 3*sigma/10
+    radius = 3 * sigma / 10
+    radius < 1 -> radius = 1
+    ksize = radius * 2 + 1
+    {
+        ksize > 31 -> {
+            ksize = 31
+            radius = 15
+        }
+    }
+
+    ; Build gaussian kernel
+    kernel = with-len(ksize * ksize)
+    two-sigma2 = 2 * sigma * sigma / 100
+    two-sigma2 == 0 -> two-sigma2 = 1
+    sum = 0
+    ky <- [0..ksize): {
+        kx <- [0..ksize): {
+            dx = kx - radius
+            dy = ky - radius
+
+            ; g = exp(-(dx^2 + dy^2) / (2 * sigma^2))
+            ; Use integer approximation: exp(-r2 / two_sigma2) * 256
+            r2 = dx * dx + dy * dy
+
+            ; exp approximation using Taylor series: e^(-x) ~ 1 - x + x^2/2 - ...
+            x = r2 * 100 / (two-sigma2 * 100)
+            {
+                x > 50 -> {
+                    val = 0
+                }
+                -> {
+                    val = 256
+                    term = 256
+                    j <- [1..20): {
+                        term = term * (-x) / (j * 100)
+                        val = val + term
+                        term < 0 && term > -2 -> break
+                        term > 0 && term < 2 -> break
+                    }
+                    val < 0 -> val = 0
+                }
+            }
+            kernel[ky * ksize + kx] = val
+            sum = sum + val
+        }
+    }
+    out = filter.convolve(img, kernel, ksize, sum, 0)
+}
+
+; ── Box blur (fast) ──
+
+; filter.box-blur: fast box blur (mean filter)
+; img image: input image
+; radius i64: blur radius
+; returns out image: blurred image
+box-blur = (img image, radius i64) (out image) {
+    {
+        radius <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    ksize = radius * 2 + 1
+    kernel = with-len(ksize * ksize)
+    n = ksize * ksize
+    i <- [0..n): {
+        kernel[i] = 1
+    }
+    out = filter.convolve(img, kernel, ksize, n, 0)
+}
+
+; ── Sharpen ──
+
+; filter.sharpen: sharpen image using unsharp mask
+; img image: input image
+; sigma i64: blur sigma * 10
+; amount i64: sharpen amount * 100
+; returns out image: sharpened image
+sharpen = (img image, sigma i64, amount i64) (out image) {
+
+    ; Create blurred version
+    blurred = filter.gauss-blur(img, sigma)
+
+    ; Unsharp mask: out = img + amount * (img - blurred)
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        diff = img.data[i] - blurred.data[i]
+        val = img.data[i] + (diff * amount) / 100
+        val > 255 -> val = 255
+        val < 0 -> val = 0
+        out.data[i] = val
+    }
+}
+
+; filter.sharpen-simple: simple Laplacian sharpen
+; img image: input image
+; returns out image: sharpened image
+sharpen-simple = (img image) (out image) {
+
+    ; Laplacian kernel:
+    ;  0 -1  0
+    ; -1  5 -1
+    ;  0 -1  0
+    kernel = [
+        0, -1, 0, -1, 5, -1, 0, -1,
+        0,
+    ]
+    out = filter.convolve(img, kernel, 3, 1, 0)
+}
+
+; ── Edge detection ──
+
+; filter.sobel: Sobel edge detection
+; img image: input image
+; returns out image: edge image
+sobel = (img image) (out image) {
+
+    ; Sobel X kernel
+    kx = [
+        -1, 0, 1, -2, 0, 2, -1, 0,
+        1,
+    ]
+    ky = [
+        -1, -2, -1, 0, 0, 0, 1, 2,
+        1,
+    ]
+    gx = filter.convolve(img, kx, 3, 1, 0)
+    gy = filter.convolve(img, ky, 3, 1, 0)
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+
+        ; magnitude = sqrt(gx^2 + gy^2)
+        ax = gx.data[i]
+        ay = gy.data[i]
+        ax2 = ax * ax
+        ay2 = ay * ay
+        sum = ax2 + ay2
+
+        ; sqrt approximation: sum >> 1 is good enough for edge detection
+        val = sum / 4
+        val > 255 -> val = 255
+        out.data[i] = val
+    }
+}
+
+; filter.laplacian: Laplacian edge detection
+; img image: input image
+; returns out image: edge image
+laplacian = (img image) (out image) {
+    kernel = [
+        0, 1, 0, 1, -4, 1, 0, 1,
+        0,
+    ]
+    out = filter.convolve(img, kernel, 3, 1, 128)
+}
+
+; ── Emboss ──
+
+; filter.emboss: emboss filter
+; img image: input image
+; returns out image: embossed image
+emboss = (img image) (out image) {
+    kernel = [
+        -2, -1, 0, -1, 1, 1, 0, 1,
+        2,
+    ]
+    out = filter.convolve(img, kernel, 3, 1, 0)
+}
+
+; ── Median filter ──
+
+; filter.median: median filter (noise removal)
+; img image: input image
+; radius i64: filter radius (1 = 3x3, 2 = 5x5)
+; returns out image: filtered image
+median = (img image, radius i64) (out image) {
+    {
+        radius <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    ksize = radius * 2 + 1
+    buf-len = ksize * ksize
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                buf = with-len(buf-len)
+                cnt = 0
+                ky <- [0..ksize): {
+                    kx <- [0..ksize): {
+                        sx = x + kx - radius
+                        sy = y + ky - radius
+                        {
+                            sx < 0 -> sx = 0
+                            sx >= img.width -> sx = img.width - 1
+                        }
+                        {
+                            sy < 0 -> sy = 0
+                            sy >= img.height -> sy = img.height - 1
+                        }
+                        buf[cnt] = img.data[(sy * img.width + sx) * img.bands + b]
+                        cnt = cnt + 1
+                    }
+                }
+
+                ; Sort buf (simple insertion sort)
+                i <- [1..buf-len): {
+                    key = buf[i]
+                    j = i - 1
+                    {
+                        j >= 0 && buf[j] > key -> {
+                            buf[j + 1] = buf[j]
+                            j = j - 1
+                        }
+                    } (j >= 0 && buf[j] > key)
+                    buf[j + 1] = key
+                }
+                out.data[(y * img.width + x) * img.bands + b] = buf[buf-len / 2]
+            }
+        }
+    }
+}
+
+; ── Noise ──
+
+; filter.add-noise: add random noise to image
+; img image: input image
+; amount i64: noise amount (0-255)
+; returns out image: noisy image
+add-noise = (img image, amount i64) (out image) {
+    out = image.copy(img)
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+
+        ; Simple LCG random
+        seed = os.now-ns() + i * 6364136223846793005
+        r = (seed >> 16) & 255
+        noise = (r * amount) / 255 - amount / 2
+        val = img.data[i] + noise
+        val > 255 -> val = 255
+        val < 0 -> val = 0
+        out.data[i] = val
+    }
+}
+
+; ── Oil painting ──
+
+; filter.oil-paint: oil painting effect
+; img image: input image
+; radius i64: filter radius
+; levels i64: number of intensity levels
+; returns out image: stylized image
+oil-paint = (img image, radius i64, levels i64) (out image) {
+    {
+        radius <= 0 -> radius = 1
+        levels <= 0 -> levels = 32
+        levels > 256 -> levels = 256
+    }
+    ksize = radius * 2 + 1
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    hist = with-len(256)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+
+                ; Clear histogram
+                i <- [0..256): {
+                    hist[i] = 0
+                }
+
+                ; Compute intensity histogram
+                ky <- [0..ksize): {
+                    kx <- [0..ksize): {
+                        sx = x + kx - radius
+                        sy = y + ky - radius
+                        {
+                            sx < 0 -> sx = 0
+                            sx >= img.width -> sx = img.width - 1
+                        }
+                        {
+                            sy < 0 -> sy = 0
+                            sy >= img.height -> sy = img.height - 1
+                        }
+                        v = img.data[(sy * img.width + sx) * img.bands + b]
+                        lvl = v * levels / 256
+                        hist[lvl] = hist[lvl] + 1
+                    }
+                }
+
+                ; Find most frequent level
+                max-count = 0
+                max-lvl = 0
+                i <- [0..levels): {
+                    hist[i] > max-count -> {
+                        max-count = hist[i]
+                        max-lvl = i
+                    }
+                }
+
+                ; Output the max level value
+                val = max-lvl * 256 / levels + 256 / levels / 2
+                val > 255 -> val = 255
+                out.data[(y * img.width + x) * img.bands + b] = val
+            }
+        }
+    }
+}

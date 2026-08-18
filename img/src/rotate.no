@@ -1,0 +1,276 @@
+; rotate.no — Image rotation and flip operations
+; Inspired by libvips vips_rot90 / vips_flip / vips_flipd
+
+; Rotation angles
+
+# /img/src/image.new
+# /img/src/image.new-from-data
+# /img/src/image.copy
+# /img/src/image.fill
+# /img/src/image.invert
+# /img/src/image.add-const
+# /img/src/image.avg
+# /img/src/image.min-val
+# /img/src/image.max-val
+# /img/src/image.get-pixel
+# /img/src/image.set-pixel
+
+ROT-90 = 90
+ROT-180 = 180
+ROT-270 = 270
+
+; Flip directions
+; FLIP-H  = 0   ; horizontal (left-right) (inlined)
+; FLIP-V  = 1   ; vertical (top-bottom) (inlined)
+; FLIP-BOTH = 2 ; both axes (inlined to avoid compiler global var bug)
+
+; ── Rotation ──
+
+; rotate.rot: rotate image by 90, 180, or 270 degrees
+; img image: input image
+; angle i64: rotation angle (90, 180, 270)
+; returns out image: rotated image
+rot = (img image, angle i64) (out image) {
+    {
+        angle == 90 -> {
+            out = rot90(img)
+        }
+        angle == 180 -> {
+            out = rot180(img)
+        }
+        angle == 270 -> {
+            out = rot270(img)
+        }
+        -> {
+            out = image.copy(img)
+        }
+    }
+}
+
+; rotate.rot90: rotate 90 degrees clockwise
+; img image: input
+; returns out image: rotated 90 CW
+rot90 = (img image) (out image) {
+
+    ; new dimensions: width=old height, height=old width
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.height, img.width, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+
+            ; (x, y) -> (img.height-1-y, x) for CW
+            src = (y * img.width + x) * img.bands
+            dst = (x * img.height + (img.height - 1 - y)) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; rotate.rot180: rotate 180 degrees
+; img image: input
+; returns out image: rotated 180
+rot180 = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            sx = img.width - 1 - x
+            sy = img.height - 1 - y
+            src = (sy * img.width + sx) * img.bands
+            dst = (y * img.width + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; rotate.rot270: rotate 270 degrees clockwise (= 90 CCW)
+; img image: input
+; returns out image: rotated 270 CW
+rot270 = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.height, img.width, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+
+            ; (x, y) -> (y, img.width-1-x) for CCW
+            src = (y * img.width + x) * img.bands
+            dst = ((img.width - 1 - x) * img.height + y) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; rotate.rot-free: rotate by arbitrary angle using nearest-neighbor
+; img image: input
+; angle f64: angle in degrees (0-360)
+; returns out image: rotated image (dimensions may grow)
+rot-free = (img image, angle f64) (out image) {
+
+    ; Convert to radians
+    rad = angle * 31415 / 1800000
+    cos-a = math.cos(rad)
+    sin-a = math.sin(rad)
+
+    ; Compute bounding box of rotated image
+    w = img.width
+    h = img.height
+
+    ; Four corners
+    x1 = w * cos-a
+    y1 = w * sin-a
+    x2 = w * cos-a - h * sin-a
+    y2 = w * sin-a + h * cos-a
+    x3 = -h * sin-a
+    y3 = h * cos-a
+
+    ; Bounding box
+    min-x = 0
+    max-x = x1
+    x2 < min-x -> min-x = x2
+    x3 < min-x -> min-x = x3
+    x2 > max-x -> max-x = x2
+    x3 > max-x -> max-x = x3
+    min-y = 0
+    max-y = y1
+    y2 < min-y -> min-y = y2
+    y3 < min-y -> min-y = y3
+    y2 > max-y -> max-y = y2
+    y3 > max-y -> max-y = y2
+    new-w = number.f64-to-i64(max-x - min-x + 1)
+    new-h = number.f64-to-i64(max-y - min-y + 1)
+    _d str = with-len(new-w * new-h * img.bands)
+    out = image.new-from-data(new-w, new-h, img.bands, _d)
+
+    ; Fill with black
+    image.fill(out, 0)
+
+    ; Center offsets
+    cx = w / 2
+    cy = h / 2
+    ncx = new-w / 2
+    ncy = new-h / 2
+    y <- [0..new-h): {
+        x <- [0..new-w): {
+
+            ; Map dest pixel to source
+            dx = x - ncx
+            dy = y - ncy
+            src-x = (dx * cos-a + dy * sin-a) + cx
+            src-y = (-dx * sin-a + dy * cos-a) + cy
+            {
+                src-x >= 0 && src-x < w && src-y >= 0 && src-y < h -> {
+                    sx = number.f64-to-i64(src-x)
+                    sy = number.f64-to-i64(src-y)
+                    src = (sy * w + sx) * img.bands
+                    dst = (y * new-w + x) * img.bands
+                    b <- [0..img.bands): {
+                        out.data[dst + b] = img.data[src + b]
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ── Flip ──
+
+; rotate.flip: flip image horizontally, vertically, or both
+; img image: input
+; dir i64: FLIP-H, FLIP-V, or FLIP-BOTH
+; returns out image: flipped image
+flip = (img image, dir i64) (out image) {
+    {
+        dir == 0 -> {
+            out = flip-h(img)
+        }
+        dir == 1 -> {
+            out = flip-v(img)
+        }
+        dir == 2 -> {
+            out = rot180(img)
+        }
+        -> {
+            out = image.copy(img)
+        }
+    }
+}
+
+; flip-h: horizontal flip (mirror left-right)
+; img image: input
+; returns out image: flipped
+flip-h = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            sx = img.width - 1 - x
+            src = (y * img.width + sx) * img.bands
+            dst = (y * img.width + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; flip-v: vertical flip (mirror top-bottom)
+; img image: input
+; returns out image: flipped
+flip-v = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            sy = img.height - 1 - y
+            src = (sy * img.width + x) * img.bands
+            dst = (y * img.width + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; ── Transpose / Transverse ──
+
+; rotate.transpose: transpose (flip along main diagonal)
+; img image: input
+; returns out image: transposed
+transpose = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.height, img.width, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            src = (y * img.width + x) * img.bands
+            dst = (x * img.height + y) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}
+
+; rotate.transverse: transverse (flip along anti-diagonal)
+; img image: input
+; returns out image: transversed
+transverse = (img image) (out image) {
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.height, img.width, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            sx = img.width - 1 - x
+            sy = img.height - 1 - y
+            src = (sy * img.width + sx) * img.bands
+            dst = (x * img.height + y) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst + b] = img.data[src + b]
+            }
+        }
+    }
+}

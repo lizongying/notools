@@ -39,12 +39,14 @@ person-info {
 
 commit-info {
     tree-oid oid
-    parenthex str      ; concatenated 40-char hex of each parent (no []oid)
+    parenthex str
     nparents i64
     author person-info
     committer person-info
     message str
 }
+
+; concatenated 40-char hex of each parent (no []oid)
 
 tag-info {
     object oid
@@ -72,6 +74,7 @@ i64-to-octal = (n i64) (out str) {
         x = x / 8
         x == 0 -> break
     } (true)
+
     ; Concat-return so the result is safe wherever it is used.
     out = ''
     L = tmp.len
@@ -96,7 +99,6 @@ mode-is-dir = (m i64) (yes bool) {
 ; ═══════════════════════════════════════════════
 ; tree builder + base_name_compare
 ; ═══════════════════════════════════════════════
-
 
 ; id-bytes: build a 20-byte string from an oid's raw bytes. Concat-return.
 id-bytes = (id oid) (out str) {
@@ -156,8 +158,9 @@ tree-insert-offset = (raw str, mode i64, name str) (off i64) {
         sp < 0 -> break
         nl = util.find-byte-str(raw, 0, sp + 1)
         nl < 0 -> break
-        emode = octal-to-i64(raw[pos .. sp))
-        ename = raw[sp + 1 .. nl)
+        emode = octal-to-i64(raw[pos..sp))
+        name-start = sp + 1
+        ename = raw[name-start..nl)
         bdir = emode == 16384
         c = name-cmp(name, adir, ename, bdir)
         c <= 0 -> {
@@ -167,7 +170,6 @@ tree-insert-offset = (raw str, mode i64, name str) (off i64) {
         pos = nl + 21
     } (true)
 }
-
 
 ; tree-entry-at: locate entry i in raw, returning its start/space/nul offsets.
 tree-entry-at = (raw str, i i64) (off i64, sp i64, nl i64) {
@@ -241,10 +243,10 @@ tree-count-raw = (raw str) (n i64) {
 
 ; tree-add-raw: append an entry to a raw tree string; returns the new raw str.
 tree-add-raw = (raw str, mode i64, name str, id oid) (out str) {
-oct = i64-to-octal(mode)
-ib = id-bytes(id)
-nul str = '\0'
-e = oct - ' ' - name - nul - ib
+    oct = i64-to-octal(mode)
+    ib = id-bytes(id)
+    nul str = '\0'
+    e = oct - ' ' - name - nul - ib
     curlen = raw.len
     {
         curlen == 0 -> {
@@ -365,18 +367,31 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     lt i64 = s.index('<')
     gt i64 = s.index('>')
     nm str = util.str-range(s, 0, lt)
-    nm.len > 0 -> nm[nm.len - 1] == 32 -> nm = util.str-range(nm, 0, nm.len - 1)
+    {
+        nm.len > 0 -> {
+            nm[nm.len - 1] == 32 -> nm = util.str-range(nm, 0, nm.len - 1)
+        }
+    }
     name = nm
     email = util.str-range(s, lt + 1, gt)
     rest str = util.str-range(s, gt + 1, s.len)
+    ; skip leading space(s) in rest
+    rpos i64 = 0
+    {
+        rpos < rest.len -> {
+            rest[rpos] == 32 -> rpos = rpos + 1
+            -> break
+        }
+    } (true)
+    rest = util.str-range(rest, rpos, rest.len)
     sp i64 = util.find-byte-str(rest, 32, 0)
     sp < 0 -> sp = rest.len
     ts str = util.str-range(rest, 0, sp)
     ti ?i64 = ts.to-i64()
     ti: {
         ok -> time = it
-        nil -> {}
-        err -> {}
+        nil ->
+        err ->
     }
     tz = util.str-range(rest, sp + 1, rest.len)
 }
@@ -390,17 +405,21 @@ commit-encode = (c commit-info) (out str) {
     th str = oid.oid-hex-str(tid)
     nl str = '\n'
     s = 'tree ' - th - nl
-    i <- [0..c.nparents): {
-        ph str = util.str-range(c.parenthex, i * 40, i * 40 + 40)
+    ; copy parenthex to local var to avoid struct field access bug in loops
+    phx str = c.parenthex
+    off i64 = 0
+    {
+        off >= phx.len -> break
+        ph str = util.str-range(phx, off, off + 40)
         s = s - 'parent ' - ph - nl
-    }
+        off = off + 40
+    } (true)
     al str = person-line('author', c.author)
     s = s - al - nl
     cl str = person-line('committer', c.committer)
     s = s - cl - nl - nl - c.message
     out = s
 }
-
 
 ; ═══════════════════════════════════════════════
 ; tag encode / decode
@@ -417,7 +436,6 @@ tag-encode = (t tag-info) (out str) {
     s = s - tl - nl - nl - t.message
     out = s
 }
-
 
 ; ═══════════════════════════════════════════════
 ; loose object write / read
@@ -446,7 +464,9 @@ object-path = (git-dir str, o oid) (out str) {
     out = out - hex-char(o.id[0])
     sl str = '/'
     out = out - sl
-    i <- [1..20): { out = out - hex-char(o.id[i]) }
+    i <- [1..20): {
+        out = out - hex-char(o.id[i])
+    }
 }
 
 ; object-dir: <git-dir>/objects/<aa> — parent dir passed to util.mkdir-all.
@@ -471,6 +491,7 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
         full[hdr.len + i] = data[i]
     }
     comp str = zlib.zlib-compress(full)
+
     ; Write the compressed object to file.
     fd = fs.open-write(f)
     fs.write(fd, comp, comp.len)
@@ -554,24 +575,30 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 ; ═══════════════════════════════════════════════
 
 ; write-commit-full: encode + store a commit from its parts; returns its oid
-write-commit-full = (git-dir str, tree-oid oid, parenthex str,
-    a-name str, a-email str, a-time i64, a-tz str,
-    c-name str, c-email str, c-time i64, c-tz str, message str) (o oid) {
+write-commit-full = (git-dir str, tree-oid oid, parenthex str, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str) (o oid) {
     c = commit-info {
         tree-oid: tree-oid
         parenthex: parenthex
         nparents: parenthex.len / 40
-        author: person-info { name: a-name, email: a-email, time: a-time, tz: a-tz }
-        committer: person-info { name: c-name, email: c-email, time: c-time, tz: c-tz }
+        author: person-info {
+            name: a-name
+            email: a-email
+            time: a-time
+            tz: a-tz
+        }
+        committer: person-info {
+            name: c-name
+            email: c-email
+            time: c-time
+            tz: c-tz
+        }
         message: message
     }
     o = write-commit(git-dir, c)
 }
 
 ; read-commit-full: read + decode a commit; returns its parts individually.
-read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str,
-    a-name str, a-email str, a-time i64, a-tz str,
-c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
+read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
     k str
     d str
     ok2 bool
@@ -618,7 +645,7 @@ c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
             a-name, a-email, a-time, a-tz = parse-person-fields(ap)
         }
         line.starts-with('committer ') -> {
-            cp str = util.str-range(line, 11, line.len)
+            cp str = util.str-range(line, 10, line.len)
             c-name, c-email, c-time, c-tz = parse-person-fields(cp)
         }
         pos = nl + 1
@@ -627,21 +654,24 @@ c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
 }
 
 ; write-tag-full: encode + store an annotated tag from its parts; returns oid
-write-tag-full = (git-dir str, obj oid, obj-type str, tag str,
-    t-name str, t-email str, t-time i64, t-tz str, message str) (o oid) {
+write-tag-full = (git-dir str, obj oid, obj-type str, tag str, t-name str, t-email str, t-time i64, t-tz str, message str) (o oid) {
     tg = tag-info {
         object: obj
         obj-type: obj-type
         tag: tag
-        tagger: person-info { name: t-name, email: t-email, time: t-time, tz: t-tz }
+        tagger: person-info {
+            name: t-name
+            email: t-email
+            time: t-time
+            tz: t-tz
+        }
         message: message
     }
     o = write-tag(git-dir, tg)
 }
 
 ; read-tag-full: read + decode a tag; returns its parts individually.
-read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str,
-t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
+read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str, t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
     k str
     d str
     ok2 bool
@@ -695,6 +725,7 @@ t-name str, t-email str, t-time i64, t-tz str, message str, ok bool) {
 ; tag. Validation uses oid.eq (struct compare) and util.str-eq (byte compare).
 ; Returns true only if every round trip reproduces the original bytes.
 object-roundtrip-test = (git-dir str) (ok bool) {
+
     ; --- blob round trip ---
     b = write-blob(git-dir, 'hello')
     bk str
@@ -706,6 +737,7 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && util.str-eq(bk, 'blob')
     ob i64 = 0
     ok == true -> ob = 1
+
     ; --- tree round trip ---
     traw = tree-add-raw('', 33188, 'hello.txt', b)
     tid = tree-write-raw(git-dir, traw)
@@ -719,12 +751,14 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && util.str-eq(nm, 'hello.txt')
     id0 = tree-id-raw(back, 0)
     ok = ok && oid.eq(id0, b)
+
     ; --- commit round trip ---
     oc = write-commit-full(git-dir, tid, '', 'An', 'ae', 1112911993, '+0000', 'Cn', 'ce', 1112911993, '+0000', 'msg')
     ct, cph, can, cae, cat, caz, ccn, cce, cct, ccz, cm, cok = read-commit-full(git-dir, oc)
     ok = ok && cok
     ok = ok && util.str-eq(can, 'An')
     ok = ok && util.str-eq(cm, 'msg')
+
     ; --- tag round trip ---
     otg = write-tag-full(git-dir, b, 'blob', 'v0', 'Tn', 'te', 1112911993, '+0000', 'tm')
     to, tty, tt, tnm, tem, ttm, ttz, tmsg, tag-ok = read-tag-full(git-dir, otg)
@@ -732,4 +766,3 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && util.str-eq(tt, 'v0')
     ok = ok && util.str-eq(tmsg, 'tm')
 }
-
