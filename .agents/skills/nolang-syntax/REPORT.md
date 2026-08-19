@@ -1,6 +1,6 @@
 # Nolang Language Gaps — Unix Utilities Implementation Report
 
-This report documents language gaps, compiler bugs, and standard-library limitations discovered while implementing a set of Unix utilities (`echo`, `cat`, `ls`, `rm`, `tree`, `mv`, `touch`) in Nolang. The utilities live under `/Users/lizongying/IdeaProjects/notools/src/`, with a dispatcher in `/Users/lizongying/IdeaProjects/notools/main.no`.
+This report documents language gaps, compiler bugs, and standard-library limitations discovered while implementing a set of Unix utilities (`echo`, `cat`, `ls`, `rm`, `tree`, `mv`, `touch`) in Nolang. The utilities live under `src/`, with a dispatcher in `main.no`.
 
 The initial approach used FFI (`#{c}` annotations) to call C library functions directly. Per the user's requirement, the approach was changed to **extend the Nolang standard library** instead of using FFI. The Nolang compiler itself was modified to add native built-in functions for directory iteration, file metadata, and timestamp updates.
 
@@ -123,7 +123,7 @@ This was the most subtle bug. `ls -l` showed hidden files because `str.contains(
 
 **Resolution: Fixed in compiler**
 
-Modified `resolveModuleConstants`, `resolveModuleConstantsInStmt`, and `resolveModuleConstantsInExpr` in `/Users/lizongying/IdeaProjects/no/src/build/transpiler.go` to track local variables via a new `collectLocalNames` function. Local variables now shadow module constants during constant propagation.
+Modified `resolveModuleConstants`, `resolveModuleConstantsInStmt`, and `resolveModuleConstantsInExpr` in `src/build/transpiler.go` to track local variables via a new `collectLocalNames` function. Local variables now shadow module constants during constant propagation.
 
 ```go
 func resolveModuleConstantsInExpr(expr, constants, locals) {
@@ -230,7 +230,7 @@ Every consumer of `fs.list-dir` repeats `name == '.' || name == '..'` filtering.
 
 ## Compiler Files Modified
 
-All modifications were made to the Nolang compiler at `/Users/lizongying/IdeaProjects/no/`:
+All modifications were made to the Nolang compiler:
 
 - **`src/build/llvm/expr.go`** — `!` operator implementation; `i1`→`i64` conversion in `intExprLLVMType` (3 locations)
 - **`src/build/llvm/stmt.go`** — `i1`→`i64` conversion in `varLLVMType` (4 locations)
@@ -242,5 +242,5 @@ All modifications were made to the Nolang compiler at `/Users/lizongying/IdeaPro
 
 ## Related Files
 
-- Dispatcher: `/Users/lizongying/IdeaProjects/notools/main.no`
-- Utilities: `/Users/lizongying/IdeaProjects/notools/src/{echo,cat,ls,rm,tree,mv,touch}.no`
+- Dispatcher: `main.no`
+- Utilities: `src/{echo,cat,ls,rm,tree,mv,touch}.no`

@@ -12,11 +12,13 @@ compress-cmd = () {
     has-file = false
 
     i = 2
-    for i < argc {
+    {
         a = arg(i)
         {
             a == '-c' -> to-stdout = true
+
             a == '-f' -> *
+
             a.starts-with('-b') -> {
                 bs = a.slice(2, a.len)
                 max-bits = 0
@@ -26,6 +28,7 @@ compress-cmd = () {
                 max-bits < 9 -> max-bits = 16
                 max-bits > 16 -> max-bits = 16
             }
+
             a.starts-with('-') == false -> {
                 has-file = true
                 f = a
@@ -40,21 +43,22 @@ compress-cmd = () {
                 out = lzw-compress(data, max-bits)
 
                 {
-                to-stdout -> {
-                    s = out.to-str()
-                    io.out(s)
-                }
-                -> {
-                    out-name = f - '.Z'
-                    fs.write-file(out-name, out)
-                    fs.remove(f)
-                }
+                    to-stdout -> {
+                        s = out.to-str()
+                        io.out(s)
+                    }
+
+                    -> {
+                        out-name = f - '.Z'
+                        fs.write-file(out-name, out)
+                        fs.remove(f)
+                    }
                 }
             }
         }
 
         i = i + 1
-    }
+    } (i < argc)
 
     {
         has-file == false -> {
@@ -78,6 +82,7 @@ compress-cmd = () {
 ; max-bits i64: maximum code width (9-16)
 ; returns out []byte: compressed data with header
 lzw-compress = (data []byte, max-bits i64) (out []byte) {
+
     ; Magic header: 0x1f 0x9d (max-bits<<5 | block_mode<<4)
     out.push(31)
     out.push(157)
@@ -88,7 +93,9 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
 
     ; Calculate max-codes = 2^max-bits
     max-codes = 1
-    j <- [0..max-bits): { max-codes = max-codes * 2 }
+    j <- [0..max-bits): {
+        max-codes = max-codes * 2
+    }
 
     ; Dictionary: prefix[code], suffix[code]
     prefix []i64 = with-len(max-codes)
@@ -101,7 +108,9 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
     ; Hash table for forward lookup: (prefix, byte) -> code
     ht-size = max-codes * 2
     ht []i64 = with-len(ht-size)
-    j <- [0..ht-size): { ht[j] = -1 }
+    j <- [0..ht-size): {
+        ht[j] = -1
+    }
     ht-mask = ht-size - 1
 
     clear-code = 256
@@ -119,13 +128,13 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
     cur-prefix = (data[0] & 255)
 
     pos = 1
-    for pos < data-len {
+    {
         b = (data[pos] & 255)
 
         ; Hash lookup for (cur-prefix, b)
         hkey = ((cur-prefix * 256) + b) & ht-mask
         found = -1
-        for ht[hkey] != -1 {
+        {
             c = ht[hkey]
             {
                 prefix[c] == cur-prefix && suffix[c] == b -> {
@@ -134,22 +143,24 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                 }
             }
             hkey = (hkey + 1) & ht-mask
-        }
+        } (ht[hkey] != -1)
 
         {
             found >= 0 -> {
                 cur-prefix = found
             }
+
             -> {
+
                 ; Output cur-prefix code (bit packing, LSB first)
                 bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
                 bit-count = bit-count + cur-bits
                 codes-at-width = codes-at-width + 1
-                for bit-count >= 8 {
+                {
                     out.push(bit-buf & 255)
                     bit-buf = bit-buf >> 8
                     bit-count = bit-count - 8
-                }
+                } (bit-count >= 8)
 
                 ; Add (cur-prefix, b) to dictionary
                 prefix[next-code] = cur-prefix
@@ -160,15 +171,16 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                 ; Check code width increase
                 next-code == (1 << cur-bits) -> {
                     cur-bits < max-bits -> {
+
                         ; Alignment: pad to complete group of 8 codes
                         pad = 8 - (codes-at-width % 8)
                         pad < 8 -> {
                             bit-count = bit-count + pad * cur-bits
-                            for bit-count >= 8 {
+                            {
                                 out.push(bit-buf & 255)
                                 bit-buf = bit-buf >> 8
                                 bit-count = bit-count - 8
-                            }
+                            } (bit-count >= 8)
                         }
                         cur-bits = cur-bits + 1
                         codes-at-width = 0
@@ -177,32 +189,35 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
 
                 ; Check dictionary full
                 next-code >= max-codes -> {
+
                     ; Output CLEAR code
                     bit-buf = bit-buf | ((clear-code & ((1 << cur-bits) - 1)) << bit-count)
                     bit-count = bit-count + cur-bits
                     codes-at-width = codes-at-width + 1
-                    for bit-count >= 8 {
+                    {
                         out.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
                         bit-count = bit-count - 8
-                    }
+                    } (bit-count >= 8)
 
                     ; Alignment padding after CLEAR
                     pad = 8 - (codes-at-width % 8)
                     pad < 8 -> {
                         bit-count = bit-count + pad * cur-bits
-                        for bit-count >= 8 {
+                        {
                             out.push(bit-buf & 255)
                             bit-buf = bit-buf >> 8
                             bit-count = bit-count - 8
-                        }
+                        } (bit-count >= 8)
                     }
 
                     ; Reset dictionary
                     next-code = 257
                     cur-bits = 9
                     codes-at-width = 0
-                    j <- [0..ht-size): { ht[j] = -1 }
+                    j <- [0..ht-size): {
+                        ht[j] = -1
+                    }
                 }
 
                 cur-prefix = b
@@ -210,16 +225,16 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
         }
 
         pos = pos + 1
-    }
+    } (pos < data-len)
 
     ; Output last code
     bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
     bit-count = bit-count + cur-bits
-    for bit-count >= 8 {
+    {
         out.push(bit-buf & 255)
         bit-buf = bit-buf >> 8
         bit-count = bit-count - 8
-    }
+    } (bit-count >= 8)
 
     ; Flush remaining bits
     bit-count > 0 -> out.push(bit-buf & 255)
