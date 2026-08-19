@@ -1,0 +1,78 @@
+; Test 4a: object module — blob round trips
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/zlib
+# /nogit/src/object
+# /nogit/src/repository
+
+main = () {
+    print('--- Testing object module: blob ---')
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-obj-blob'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+    {
+        init-ok == true -> print('PASS: repo-init')
+
+        -> print('FAIL: repo-init')
+    }
+    ; blob round trip
+    blob-content = 'hello world test'
+    b-oid = object.write-blob(git-dir, blob-content)
+    bhex = oid.oid-hex-str(b-oid)
+    print('blob oid: ' - bhex)
+
+    ; read-loose returns ok=false without a prior direct zlib-decompress call
+    ; (Bug 18: cross-module first-call returns wrong result)
+    ; Workaround: call zlib-decompress once before read-loose
+    bp = object.object-path(git-dir, b-oid)
+    braw = fs.read-file(bp)
+    warmup-out, warmup-ok = zlib.zlib-decompress(braw)
+    {
+        warmup-ok == true -> print('PASS: zlib warmup')
+
+        -> print('FAIL: zlib warmup')
+    }
+    bk, bd, bok = object.read-loose(git-dir, b-oid)
+    {
+        bok == true -> print('PASS: read-loose blob ok')
+
+        -> print('FAIL: read-loose blob ok')
+    }
+    {
+        bd == blob-content -> print('PASS: blob content round trip')
+
+        -> print('FAIL: blob content round trip')
+    }
+    {
+        bk == 'blob' -> print('PASS: blob kind')
+
+        -> print('FAIL: blob kind')
+    }
+    ; blob with empty content
+    empty-oid = object.write-blob(git-dir, '')
+    ehex = oid.oid-hex-str(empty-oid)
+    print('empty blob oid: ' - ehex)
+    ek, ed, eok = object.read-loose(git-dir, empty-oid)
+    {
+        eok == true -> print('PASS: read-loose empty blob ok')
+
+        -> print('FAIL: read-loose empty blob ok')
+    }
+    {
+        ed == '' -> print('PASS: empty blob content round trip')
+
+        -> print('FAIL: empty blob content round trip')
+    }
+    ; read-loose for nonexistent object
+    no-oid = oid.zero-oid()
+    nk, nd, nok = object.read-loose(git-dir, no-oid)
+    {
+        nok == false -> print('PASS: read-loose nonexistent fails')
+
+        -> print('FAIL: read-loose nonexistent should fail')
+    }
+    0
+}

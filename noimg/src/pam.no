@@ -1,0 +1,205 @@
+; pam.no — PAM (Portable Arbitrary Map) format read/write
+; PAM is the generalization of PBM/PGM/PPM with arbitrary channels
+;
+; Header format (ASCII):
+;   P7
+;   WIDTH <w>
+;   HEIGHT <h>
+;   DEPTH <bands>
+;   MAXVAL <max>
+;   TUPLTYPE <type>   (optional: BLACKANDWHITE, GRAYSCALE, RGB, etc.)
+;   ENDHDR
+; Followed by binary pixel data (row-major, top to bottom)
+;
+; Supports 8-bit and 16-bit maxval
+
+; ── Load ──
+
+; pam.load: load a PAM file
+; path str: file path
+; returns img ?image: loaded image, nil on error
+
+# /noimg/src/image.new
+# /noimg/src/image.new-from-data
+# /noimg/src/image.copy
+# /noimg/src/image.fill
+# /noimg/src/image.invert
+# /noimg/src/image.add-const
+# /noimg/src/image.avg
+# /noimg/src/image.min-val
+# /noimg/src/image.max-val
+# /noimg/src/image.get-pixel
+# /noimg/src/image.set-pixel
+
+load = (path str) (img ?image) {
+    data = fs.read-file(path)
+    data.len < 15 -> {
+        img = nil
+        return
+    }
+
+    ; Check magic P7
+    {
+        (data[0] & 255) == 80 && (data[1] & 255) == 55 -> {}
+
+        -> {
+            img = nil
+            return
+        }
+    }
+    w = 0
+    h = 0
+    depth = 0
+    maxval = 0
+    pos = 3
+
+    ; Parse header fields
+    for pos < data.len {
+        line, pos = pam-read-line(data, pos)
+        {
+            line.starts-with('WIDTH') -> {
+                r = line.slice(6, line.len).to-i64()
+                r: {
+                    ok -> w = it
+                    -> w = 0
+                }
+            }
+
+            line.starts-with('HEIGHT') -> {
+                r = line.slice(7, line.len).to-i64()
+                r: {
+                    ok -> h = it
+                    -> h = 0
+                }
+            }
+
+            line.starts-with('DEPTH') -> {
+                r = line.slice(6, line.len).to-i64()
+                r: {
+                    ok -> depth = it
+                    -> depth = 0
+                }
+            }
+
+            line.starts-with('MAXVAL') -> {
+                r = line.slice(7, line.len).to-i64()
+                r: {
+                    ok -> maxval = it
+                    -> maxval = 0
+                }
+            }
+
+            line == 'ENDHDR' -> {
+                ; pam-read-line already skipped the newline
+                break
+            }
+        }
+    }
+    {
+        w <= 0 || h <= 0 || depth <= 0 || maxval <= 0 -> {
+            img = nil
+            return
+        }
+    }
+    n = w * h * depth
+    _d str = with-len(n)
+    tmp = image.new-from-data(w, h, depth, _d)
+    {
+        maxval <= 255 -> {
+
+            ; 8-bit per sample
+            i <- [0..n): {
+                tmp.data[i] = data[pos + i] & 255
+            }
+        }
+
+        -> {
+
+            ; 16-bit per sample, take MSB (truncate to 8-bit)
+            i <- [0..n): {
+                tmp.data[i] = data[pos + i * 2] & 255
+            }
+        }
+    }
+
+    img = tmp
+}
+
+; pam-read-line: read one line from data
+; data str: file content
+; pos i64: starting position (updated in-place)
+; returns line str, new-pos i64
+pam-read-line = (data str, pos i64) (line str, new-pos i64) {
+    new-pos = pos
+    end = new-pos
+    for end < data.len {
+        c = data[end] & 255
+        c == 10 || c == 13 -> break
+        end = end + 1
+    }
+    line = data.slice(new-pos, end)
+
+    ; Skip line ending
+    new-pos = end
+    {
+        new-pos < data.len -> {
+            c = data[new-pos] & 255
+            c == 13 -> new-pos = new-pos + 1
+        }
+    }
+    {
+        new-pos < data.len -> {
+            c = data[new-pos] & 255
+            c == 10 -> new-pos = new-pos + 1
+        }
+    }
+}
+
+; ── Save ──
+
+; pam.save: save an image as PAM (binary, 8-bit)
+; path str: output path
+; img image: image to save
+; returns ok bool
+save = (path str, img image) (ok bool) {
+
+    ; Determine tuple type
+    tupl = 'RGB'
+    {
+        img.bands == 1 -> tupl = 'GRAYSCALE'
+
+        img.bands == 3 -> tupl = 'RGB'
+
+        img.bands == 4 -> tupl = 'RGB_ALPHA'
+
+        -> tupl = 'MULTIBAND'
+    }
+
+    ; Build header
+    hdr = 'P7\n' - 'WIDTH ' - img.width.to-str() - '\n' - 'HEIGHT ' - img.height.to-str() - '\n' - 'DEPTH ' - img.bands.to-str() - '\n' - 'MAXVAL 255\n' - 'TUPLTYPE ' - tupl - '\n' - 'ENDHDR\n'
+
+    ; Build complete output buffer using []byte + push
+    n = img.width * img.height * img.bands
+    hdr-bytes = hdr.to-bytes()
+    buf []byte = with-cap(hdr-bytes.len + n)
+
+    ; Write header bytes
+    i <- [0..hdr-bytes.len): {
+        buf.push(hdr-bytes[i])
+    }
+
+    ; Write pixel data bytes
+    i <- [0..n): {
+        buf.push(img.data[i])
+    }
+
+    ; Write to file
+    wfd = fs.open-write(path)
+    wfd < 0 -> {
+        ok = false
+        return
+    }
+    fs.write(wfd, buf, buf.len)
+    fs.close(wfd)
+    ok = true
+}

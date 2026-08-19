@@ -1,0 +1,433 @@
+; refs — Git reference management: HEAD, branches, tags, packed-refs
+;
+; Supports:
+;   * Loose refs: refs/heads/*, refs/tags/*, refs/remotes/*
+;   * Symbolic refs: HEAD -> "ref: refs/heads/main"
+;   * Packed-refs: .git/packed-refs (compact storage)
+;   * Reflog: .git/logs/HEAD, .git/logs/refs/heads/<name>
+;
+; Cross-module safety: all return values are individual scalars/strings/oids.
+; Return strings are built by concatenation.
+
+# /nogit/src/util
+# /nogit/src/oid
+
+; ═══════════════════════════════════════════════
+; local helpers (intra-module safe)
+; ═══════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════
+; loose ref read / write
+; ═══════════════════════════════════════════════
+
+; read-loose-ref: read a loose ref file
+; git-dir str, name str (e.g. "refs/heads/main")
+; returns content str, ok bool
+read-loose-ref = (git-dir str, name str) (content str, ok bool) {
+    sl str = '/'
+    p = git-dir - sl - name
+    content, ok = util.read-file-str(p)
+}
+
+; read-ref: read a reference (symbolic, loose, or packed)
+; git-dir str, name str (e.g. "HEAD", "refs/heads/main")
+; returns oid oid, ok bool
+;
+; Resolution order:
+;   1. If the ref content starts with "ref:", follow the symbolic ref recursively
+;   2. Otherwise, parse as 40-char hex oid
+;   3. If the loose ref is absent, check packed-refs
+read-ref = (git-dir str, name str) (o oid, ok bool) {
+    ok = false
+
+    ; try loose ref first
+    content str
+    loose-ok bool
+    content, loose-ok = read-loose-ref(git-dir, name)
+    {
+        loose-ok == true -> {
+            content = util.trim-newline(content)
+
+            ; check if symbolic: "ref: <target>"
+            content.starts-with('ref: ') -> {
+                target = util.str-range(content, 5, content.len)
+                target = util.trim-newline(target)
+                o, ok = read-ref(git-dir, target)
+                return
+            }
+
+            ; parse as hex oid
+            content.len >= 40 -> {
+                hx = util.str-range(content, 0, 40)
+                o, ok = oid.oid-from-hex(hx)
+                return
+            }
+        }
+    }
+
+    ; try packed-refs
+    o, ok = read-packed-ref(git-dir, name)
+}
+
+; read-symbolic-ref: read a symbolic ref (e.g. HEAD) and return the target name
+; git-dir str, name str (e.g. "HEAD")
+; returns target str, ok bool (ok=false if not a symbolic ref)
+read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
+    ok = false
+    content str
+    loose-ok bool
+    content, loose-ok = read-loose-ref(git-dir, name)
+    loose-ok == false -> return
+    content = util.trim-newline(content)
+    {
+        content.starts-with('ref: ') -> {
+            target = util.str-range(content, 5, content.len)
+            target = util.trim-newline(target)
+            ok = true
+        }
+    }
+}
+
+; write-ref: write a loose ref (oid value)
+; git-dir str, name str (e.g. "refs/heads/main"), o oid
+write-ref = (git-dir str, name str, o oid) (ok bool) {
+    ok = false
+    sl str = '/'
+    p = git-dir - sl - name
+
+    ; ensure parent dir exists (recursive, like mkdir -p)
+    idx = p.rindex('/')
+    {
+        idx >= 0 -> {
+            parent = util.str-range(p, 0, idx)
+            {
+                fs.is-dir(parent) ->
+
+                -> {
+                    util.mkdir-all(parent)
+                }
+            }
+        }
+    }
+    hx = oid.oid-hex-str(o)
+    content = hx - '\n'
+    util.write-file-simple(p, content)
+    ok = true
+}
+
+; write-symbolic-ref: write a symbolic ref (e.g. HEAD -> refs/heads/main)
+; git-dir str, name str (e.g. "HEAD"), target str (e.g. "refs/heads/main")
+write-symbolic-ref = (git-dir str, name str, target str) (ok bool) {
+    ok = false
+    sl str = '/'
+    p = git-dir - sl - name
+    content = 'ref: ' - target - '\n'
+    util.write-file-simple(p, content)
+    ok = true
+}
+
+; update-head: set HEAD to point to a branch (symbolic)
+; git-dir str, branch str (e.g. "refs/heads/main")
+update-head = (git-dir str, branch str) (ok bool) {
+    ok = write-symbolic-ref(git-dir, 'HEAD', branch)
+}
+
+; set-head-detached: set HEAD to a specific oid (detached HEAD)
+; git-dir str, o oid
+set-head-detached = (git-dir str, o oid) (ok bool) {
+    p = git-dir - '/HEAD'
+    hx = oid.oid-hex-str(o)
+    content = hx - '\n'
+    util.write-file-simple(p, content)
+    ok = true
+}
+
+; current-branch: read HEAD and return the branch name it points to
+; git-dir str
+; returns branch str, detached bool, ok bool
+;   detached=true means HEAD is at a specific oid (not on a branch)
+;   detached=false means HEAD -> refs/heads/<branch>
+current-branch = (git-dir str) (branch str, detached bool, ok bool) {
+    ok = false
+    target str
+    sym-ok bool
+    target, sym-ok = read-symbolic-ref(git-dir, 'HEAD')
+    {
+        sym-ok == true -> {
+            target.starts-with('refs/heads/') -> {
+                branch = util.str-range(target, 11, target.len)
+                detached = false
+                ok = true
+                return
+            }
+        }
+    }
+
+    ; detached HEAD
+    o oid
+    ref-ok bool
+    o, ref-ok = read-ref(git-dir, 'HEAD')
+    {
+        ref-ok == true -> {
+            branch = ''
+            detached = true
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; branch management
+; ═══════════════════════════════════════════════
+
+; create-branch: create a new branch ref pointing to an oid
+; git-dir str, name str, o oid
+; returns ok bool (false if already exists)
+create-branch = (git-dir str, name str, o oid) (ok bool) {
+    ref-name = 'refs/heads/' - name
+    sl str = '/'
+    p = git-dir - sl - ref-name
+
+    ; check if already exists
+    exists = fs.is-file(p)
+    {
+        exists == true -> return
+    }
+    ok = write-ref(git-dir, ref-name, o)
+}
+
+; delete-branch: delete a branch ref
+; git-dir str, name str
+; returns ok bool
+delete-branch = (git-dir str, name str) (ok bool) {
+    ref-name = 'refs/heads/' - name
+    sl str = '/'
+    p = git-dir - sl - ref-name
+    ok = fs.remove(p)
+}
+
+; list-branches: list all branch names (loose refs only)
+; git-dir str
+; returns names str (newline-separated), count i64
+list-branches = (git-dir str) (names str, count i64) {
+    names = ''
+    count = 0
+    heads-dir = git-dir - '/refs/heads'
+    isd = fs.is-dir(heads-dir)
+    {
+        isd == false -> return
+    }
+    dirp = fs.open-dir(heads-dir)
+    {
+        dirp == 0 -> return
+    }
+    br-entry str
+    br-ok bool = true
+    {
+        br-ok == false -> break
+        br-entry, br-ok = fs.read-dir(dirp)
+        {
+            br-ok == true -> {
+
+                ; skip . and .. entries
+                is-dot = util.str-eq(br-entry, '.')
+                is-dotdot = util.str-eq(br-entry, '..')
+                is-dot == false && is-dotdot == false -> {
+                    br-entry.len > 0 -> {
+                        names = names - br-entry - '\n'
+                        count = count + 1
+                    }
+                }
+            }
+        }
+    } (true)
+    fs.close-dir(dirp)
+}
+
+; ═══════════════════════════════════════════════
+; tag management
+; ═══════════════════════════════════════════════
+
+; create-tag: create a lightweight tag ref
+; git-dir str, name str, o oid
+; returns ok bool (false if already exists)
+create-tag = (git-dir str, name str, o oid) (ok bool) {
+    ref-name = 'refs/tags/' - name
+    sl str = '/'
+    p = git-dir - sl - ref-name
+    exists = fs.is-file(p)
+    {
+        exists == true -> return
+    }
+    ok = write-ref(git-dir, ref-name, o)
+}
+
+; delete-tag: delete a tag ref
+; git-dir str, name str
+; returns ok bool
+delete-tag = (git-dir str, name str) (ok bool) {
+    ref-name = 'refs/tags/' - name
+    sl str = '/'
+    p = git-dir - sl - ref-name
+    ok = fs.remove(p)
+}
+
+; list-tags: list all tag names (loose refs only)
+; git-dir str
+; returns names str (newline-separated), count i64
+list-tags = (git-dir str) (names str, count i64) {
+    names = ''
+    count = 0
+    tags-dir = git-dir - '/refs/tags'
+    isd = fs.is-dir(tags-dir)
+    {
+        isd == false -> return
+    }
+    dirp = fs.open-dir(tags-dir)
+    {
+        dirp == 0 -> return
+    }
+    tg-entry str
+    tg-ok bool = true
+    {
+        tg-ok == false -> break
+        tg-entry, tg-ok = fs.read-dir(dirp)
+        {
+            tg-ok == true -> {
+
+                ; skip . and .. entries
+                is-dot = util.str-eq(tg-entry, '.')
+                is-dotdot = util.str-eq(tg-entry, '..')
+                is-dot == false && is-dotdot == false -> {
+                    tg-entry.len > 0 -> {
+                        names = names - tg-entry - '\n'
+                        count = count + 1
+                    }
+                }
+            }
+        }
+    } (true)
+    fs.close-dir(dirp)
+}
+
+; ═══════════════════════════════════════════════
+; packed-refs support
+; ═══════════════════════════════════════════════
+
+; read-packed-refs: read .git/packed-refs file
+; git-dir str
+; returns lines str (raw content), ok bool
+read-packed-refs-file = (git-dir str) (content str, ok bool) {
+    p = git-dir - '/packed-refs'
+    content, ok = util.read-file-str(p)
+}
+
+; read-packed-ref: look up a specific ref in packed-refs
+; git-dir str, name str
+; returns oid oid, ok bool
+read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
+    ok = false
+    content str
+    packed-ok bool
+    content, packed-ok = read-packed-refs-file(git-dir)
+    packed-ok == false -> return
+
+    ; scan lines: "<40-hex> <refname>"
+    pos = 0
+    {
+        pos >= content.len -> break
+        nl = util.find-byte-str(content, 10, pos)
+        end = content.len
+        nl >= 0 -> end = nl
+        line = util.str-range(content, pos, end)
+
+        ; skip comment lines (start with #)
+        {
+            line.starts-with('#') ->
+
+            -> {
+
+                ; skip peeled lines (^...)
+                {
+                    line.starts-with('^') ->
+
+                    -> {
+
+                        ; line format: "<hex> <refname>"
+                        sp = util.find-byte-str(line, 32, 0)
+                        sp >= 0 -> {
+                            hx = util.str-range(line, 0, sp)
+                            refname = util.str-range(line, sp + 1, line.len)
+                            refname = util.trim-newline(refname)
+
+                            ; compare refname with name
+                            same = util.str-eq(refname, name)
+                            same == true -> {
+                                hx.len >= 40 -> {
+                                    o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
+                                    ok == true -> break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+; ═══════════════════════════════════════════════
+; reflog support
+; ═══════════════════════════════════════════════
+
+; write-reflog: append a reflog entry to .git/logs/<refname>
+; git-dir str, refname str (e.g. "HEAD" or "refs/heads/main"),
+; old-oid oid, new-oid oid, committer-name str, committer-email str,
+; time i64, tz str, message str
+; returns ok bool
+write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, email str, time i64, tz str, message str) (ok bool) {
+    ok = false
+    log-path = git-dir - '/logs/' - refname
+
+    ; ensure parent dir exists (recursive)
+    idx = log-path.rindex('/')
+    {
+        idx >= 0 -> {
+            parent = util.str-range(log-path, 0, idx)
+            {
+                fs.is-dir(parent) ->
+
+                -> {
+                    util.mkdir-all(parent)
+                }
+            }
+        }
+    }
+
+    ; build entry: "<old-hex> <new-hex> <name> <<email>> <time> <tz>\t<message>\n"
+    old-hex = oid.oid-hex-str(old-oid)
+    new-hex = oid.oid-hex-str(new-oid)
+    ts = util.i64-to-str(time)
+    tab str = '\t'
+    nl str = '\n'
+    log-entry = old-hex - ' ' - new-hex - ' ' - name - ' <' - email - '> ' - ts - ' ' - tz - tab - message - nl
+
+    ; append to file (read existing, append, write back)
+    existing str
+    ignore-ok bool
+    existing, ignore-ok = util.read-file-str(log-path)
+    full = existing - log-entry
+    util.write-file-simple(log-path, full)
+    ok = true
+}
+
+; read-reflog: read reflog entries
+; git-dir str, refname str
+; returns content str, ok bool
+read-reflog = (git-dir str, refname str) (content str, ok bool) {
+    log-path = git-dir - '/logs/' - refname
+    content, ok = util.read-file-str(log-path)
+}

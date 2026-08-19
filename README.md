@@ -8,7 +8,8 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 单一可执行文件，子命令分发（193 个命令）
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
-- 内含纯 Nolang Git 实现（`git/` 子项目），不依赖系统 `git` 二进制
+- 内含纯 Nolang Git 实现（`nogit/` 子项目），不依赖系统 `git` 二进制
+- 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 30+ 种图像操作
 
 ## 安装
 
@@ -16,38 +17,62 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 直接从 [GitHub Releases](https://github.com/lizongying/notools/releases) 下载对应平台的已编译好二进制文件，无需安装编译器。
 
+三个独立工具各自构建，可按需下载：
+
+| 工具 | 说明 |
+|------|------|
+| `notools` | Unix 常用命令行工具集（193 个命令） |
+| `nogit` | 纯 Nolang Git 实现（不依赖系统 `git`） |
+| `noimg` | 纯 Nolang 图像处理工具库（9 种格式、30+ 种操作） |
+
 支持的平台：
 
-| 平台 | 文件 |
-|------|------|
-| Linux amd64 | `notools-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` |
+| 平台 | notools | nogit | noimg |
+|------|---------|-------|-------|
+| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` |
 
 ```bash
-# Linux amd64 示例
+# Linux amd64 示例 — 按需安装
+# notools
 curl -fsSL -o notools https://github.com/lizongying/notools/releases/latest/download/notools-linux-amd64
-chmod +x notools
-sudo mv notools /usr/local/bin/
+chmod +x notools && sudo mv notools /usr/local/bin/
+
+# nogit
+curl -fsSL -o nogit https://github.com/lizongying/notools/releases/latest/download/nogit-linux-amd64
+chmod +x nogit && sudo mv nogit /usr/local/bin/
+
+# noimg
+curl -fsSL -o noimg https://github.com/lizongying/notools/releases/latest/download/noimg-linux-amd64
+chmod +x noimg && sudo mv noimg /usr/local/bin/
 ```
 
 下载后可使用同目录下的 `checksums-sha256.txt` 进行校验。
 
 ### 方式二：从源码构建
 
+三个子项目各自独立构建：
+
 ```bash
 # 克隆项目
 git clone git@github.com:lizongying/notools.git notools
 cd notools
 
-# 构建（需先安装 Nolang）
-no build
+# 构建 notools（需先安装 Nolang）
+cd notools && no build && cd ..
+cp notools/dist/notools /usr/local/bin/notools
 
-# 产物位于 dist/main，可重命名为 notools
-cp dist/notools /usr/local/bin/notools
+# 构建 nogit
+cd nogit && no build && cd ..
+cp nogit/dist/nogit /usr/local/bin/nogit
+
+# 构建 noimg
+cd noimg && no build && cd ..
+cp noimg/dist/noimg /usr/local/bin/noimg
 ```
 
 ## 工具列表
@@ -287,32 +312,32 @@ cp dist/notools /usr/local/bin/notools
 | `getopt` | 解析命令行选项 | `notools getopt -o ab: -- -a -b x` |
 | `xargs` | 从 stdin 构建并执行命令 | `find . -name '*.txt' \| notools xargs rm` |
 
-## Git 实现
+## nogit（纯 Nolang Git 实现）
 
-notools 仓库内含一个**纯 Nolang 实现的 Git**（`git/` 目录），不依赖系统 `git` 二进制，从底层数据结构到 CLI 命令全部使用 Nolang 编写。
+notools 仓库内含一个**纯 Nolang 实现的 Git**（`nogit/` 目录），不依赖系统 `git` 二进制，从底层数据结构到 CLI 命令全部使用 Nolang 编写。
 
 ### 支持的命令
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `init [path]` | 初始化新仓库（含 `.git` 目录结构） | `git init myrepo` |
-| `add <path>` | 将文件写入 blob 对象并加入暂存区 | `git add file.txt` |
-| `commit -m <msg>` | 从暂存区创建 tree 和 commit 对象 | `git commit -m 'initial'` |
-| `log [count]` | 沿 first-parent 遍历提交历史 | `git log -n 10` |
-| `status` | 显示当前分支与已暂存文件 | `git status` |
-| `branch [name]` | 列出或创建分支 | `git branch dev` |
-| `checkout <name>` | 切换分支 | `git checkout dev` |
-| `tag <name>` | 创建标签 | `git v1.0` |
-| `show <ref>` | 显示对象类型与内容 | `git show HEAD` |
-| `cat-file <opt> <ref>` | 按类型/引用查看对象（`-t`/`-s`/`-p`） | `git cat-file -p HEAD` |
-| `hash-object [-w] <file>` | 计算文件 SHA-1（`-w` 写入对象库） | `git hash-object -w file` |
-| `ls-tree <ref>` | 列出 tree 内容 | `git ls-tree HEAD` |
-| `ls-files` | 列出暂存区文件 | `git ls-files` |
-| `rev-parse <ref>` | 将引用解析为 OID | `git rev-parse HEAD` |
-| `write-tree` | 从暂存区写入 tree 对象 | `git write-tree` |
-| `update-ref <ref> <oid>` | 更新引用 | `git update-ref refs/heads/x <oid>` |
-| `config <key> [val]` | 读取或设置配置项 | `git config user.name 'Alice'` |
-| `reflog` | 显示 HEAD reflog | `git reflog` |
+| `init [path]` | 初始化新仓库（含 `.git` 目录结构） | `nogit init myrepo` |
+| `add <path>` | 将文件写入 blob 对象并加入暂存区 | `nogit add file.txt` |
+| `commit -m <msg>` | 从暂存区创建 tree 和 commit 对象 | `nogit commit -m 'initial'` |
+| `log [count]` | 沿 first-parent 遍历提交历史 | `nogit log -n 10` |
+| `status` | 显示当前分支与已暂存文件 | `nogit status` |
+| `branch [name]` | 列出或创建分支 | `nogit branch dev` |
+| `checkout <name>` | 切换分支 | `nogit checkout dev` |
+| `tag <name>` | 创建标签 | `nogit v1.0` |
+| `show <ref>` | 显示对象类型与内容 | `nogit show HEAD` |
+| `cat-file <opt> <ref>` | 按类型/引用查看对象（`-t`/`-s`/`-p`） | `nogit cat-file -p HEAD` |
+| `hash-object [-w] <file>` | 计算文件 SHA-1（`-w` 写入对象库） | `nogit hash-object -w file` |
+| `ls-tree <ref>` | 列出 tree 内容 | `nogit ls-tree HEAD` |
+| `ls-files` | 列出暂存区文件 | `nogit ls-files` |
+| `rev-parse <ref>` | 将引用解析为 OID | `nogit rev-parse HEAD` |
+| `write-tree` | 从暂存区写入 tree 对象 | `nogit write-tree` |
+| `update-ref <ref> <oid>` | 更新引用 | `nogit update-ref refs/heads/x <oid>` |
+| `config <key> [val]` | 读取或设置配置项 | `nogit config user.name 'Alice'` |
+| `reflog` | 显示 HEAD reflog | `nogit reflog` |
 
 ### 底层模块
 
@@ -342,26 +367,25 @@ notools 仓库内含一个**纯 Nolang 实现的 Git**（`git/` 目录），不�
 ### 构建与运行
 
 ```bash
-cd git
+cd nogit
 no build
-; 产物位于 git/dist/main
+; 产物位于 nogit/dist/main
 
 ; 示例工作流
 cd my-project
-no run /path/to/git/dist/main init
-no run /path/to/git/dist/main config user.name 'Alice'
-no run /path/to/git/dist/main config user.email 'alice@example.com'
-no run /path/to/git/dist/main add file.txt
-no run /path/to/git/dist/main commit -m 'initial commit'
-no run /path/to/git/dist/main log
+no run /path/to/nogit/dist/main init
+no run /path/to/nogit/dist/main config user.name 'Alice'
+no run /path/to/nogit/dist/main config user.email 'alice@example.com'
+no run /path/to/nogit/dist/main add file.txt
+no run /path/to/nogit/dist/main commit -m 'initial commit'
+no run /path/to/nogit/dist/main log
 ```
 
 ### 项目结构
 
 ```
-git/
+nogit/
 ├── main.no              ; CLI 入口与命令分发
-├── lib.no               ; 跨模块导出声明
 ├── src/
 │   ├── util.no          ; 通用工具
 │   ├── oid.no           ; SHA-1 对象标识
@@ -375,6 +399,123 @@ git/
 │   └── pack.no          ; Packfile v2 读取
 ├── tests/
 │   └── test.no          ; 测试
+└── package.jsonc        ; 项目配置
+```
+
+## noimg（纯 Nolang 图像处理工具库）
+
+notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg/` 目录），类似 libvips 的设计思路，支持多格式读写与丰富的图像操作。
+
+### 支持的格式
+
+| 格式 | 扩展名 | 读取 | 写入 | 说明 |
+|------|--------|------|------|------|
+| PPM/PGM/PNM | `.ppm` `.pgm` `.pnm` | ✅ | ✅ | Portable Pixmap/Graymap（ASCII 与 Binary） |
+| BMP | `.bmp` | ✅ | ✅ | Windows Bitmap（24/32 位） |
+| TGA | `.tga` | ✅ | ✅ | Targa（含 RLE 压缩） |
+| PAM | `.pam` | ✅ | ✅ | Portable Arbitrary Map |
+| PNG | `.png` | ✅ | ✅ | Portable Network Graphics（8 位，zlib 压缩，CRC32 校验） |
+| TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format |
+| GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（含 LZW 编解码） |
+| JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG（Huffman 编码，RIFF 容器解析） |
+| WebP | `.webp` | ✅ | ✅ | RIFF 容器解析（VP8/VP8L 头部解析） |
+
+### CLI 命令
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `info` | 显示图像属性 | `noimg info photo.png` |
+| `convert` | 格式转换 | `noimg convert input.png output.jpg` |
+| `resize` | 调整大小（双线性） | `noimg resize in.png out.png 800 600` |
+| `thumbnail` | 缩略图（最大边长） | `noimg thumbnail in.png out.png 128` |
+| `rotate` | 旋转（90/180/270） | `noimg rotate in.png out.png 90` |
+| `flip` | 翻转（h/v/both） | `noimg flip in.png out.png h` |
+| `crop` | 裁剪区域 | `noimg crop in.png out.png 10 10 100 100` |
+| `grayscale` | 灰度转换 | `noimg grayscale in.png out.png` |
+| `invert` | 反色 | `noimg invert in.png out.png` |
+| `blur` | 高斯模糊 | `noimg blur in.png out.png 15` |
+| `sharpen` | 锐化 | `noimg sharpen in.png out.png 150` |
+| `edge` | 边缘检测（Sobel） | `noimg edge in.png out.png` |
+| `emboss` | 浮雕效果 | `noimg emboss in.png out.png` |
+| `oil` | 油画效果 | `noimg oil in.png out.png 3 32` |
+| `median` | 中值滤波 | `noimg median in.png out.png 3` |
+| `brightness` | 亮度调整 | `noimg brightness in.png out.png 20` |
+| `contrast` | 对比度调整 | `noimg contrast in.png out.png 50` |
+| `gamma` | Gamma 校正 | `noimg gamma in.png out.png 120` |
+| `threshold` | 二值化 | `noimg threshold in.png out.png 128` |
+| `posterize` | 色阶缩减 | `noimg posterize in.png out.png 4` |
+| `solarize` | 日晒效果 | `noimg solarize in.png out.png 128` |
+| `hist-eq` | 直方图均衡化 | `noimg hist-eq in.png out.png` |
+| `hist-norm` | 直方图归一化 | `noimg hist-norm in.png out.png` |
+| `histogram` | 打印直方图 | `noimg histogram in.png` |
+| `stats` | 图像统计信息 | `noimg stats in.png` |
+| `composite` | 图像合成 | `noimg composite base.png overlay.png out.png 10 10` |
+| `pad` | 添加边框 | `noimg pad in.png out.png 10` |
+| `band` | 提取单通道 | `noimg band in.png out.png 0` |
+| `noise` | 添加噪声 | `noimg noise in.png out.png 30` |
+
+### 库 API
+
+noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
+
+| 模块 | 职责 |
+|------|------|
+| `image` | 图像创建、复制、填充、像素读写、统计 |
+| `pnm` | PPM/PGM/PNM 读写 |
+| `bmp` | BMP 读写 |
+| `tga` | TGA 读写（含 RLE） |
+| `pam` | PAM 读写 |
+| `gif` | GIF 读写（含 LZW 编解码） |
+| `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜） |
+| `tiff` | TIFF 读写 |
+| `jpeg` | JPEG 读写（baseline Huffman 编码） |
+| `webp` | WebP 读写（RIFF 容器、VP8/VP8L 解析） |
+| `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr）、亮度/对比度/Gamma/阈值/色调分离/日晒 |
+| `resize` | 双线性缩放、缩略图、缩放 |
+| `rotate` | 旋转（90/180/270/任意角度）、翻转、转置 |
+| `composite` | 裁剪、合成、边框、通道合并/提取/选择 |
+| `filter` | 卷积、高斯模糊、锐化、Sobel/Laplacian 边缘检测、浮雕、中值滤波、油画、噪声 |
+| `histogram` | 直方图查找/累积/打印、均衡化/归一化/拉伸、LUT 应用、均值/方差/标准差 |
+
+### 构建与运行
+
+```bash
+cd noimg
+no build
+# 产物位于 noimg/dist/noimg
+
+# 示例：格式转换
+noimg/dist/noimg convert input.png output.jpg
+
+# 示例：图像处理
+noimg/dist/noimg blur input.png blurred.png 15
+noimg/dist/noimg grayscale input.png gray.png
+noimg/dist/noimg resize input.png small.png 200 200
+```
+
+### 项目结构
+
+```
+noimg/
+├── main.no              ; CLI 入口与命令分发
+├── lib.no               ; 库导出声明
+├── src/
+│   ├── image.no         ; 图像核心结构与操作
+│   ├── pnm.no           ; PPM/PGM/PNM
+│   ├── bmp.no           ; BMP
+│   ├── tga.no           ; TGA
+│   ├── pam.no           ; PAM
+│   ├── png.no           ; PNG（CRC32 位运算、zlib）
+│   ├── tiff.no          ; TIFF
+│   ├── gif.no           ; GIF（LZW 编解码）
+│   ├── jpeg.no          ; JPEG（DCT、Huffman 编码）
+│   ├── webp.no          ; WebP（RIFF/VP8 解析）
+│   ├── colour.no        ; 色彩空间转换
+│   ├── resize.no        ; 缩放
+│   ├── rotate.no        ; 旋转与翻转
+│   ├── composite.no     ; 合成与裁剪
+│   ├── filter.no        ; 滤镜（模糊/锐化/边缘/浮雕/油画/中值/噪声）
+│   └── histogram.no     ; 直方图与统计
 └── package.jsonc        ; 项目配置
 ```
 
@@ -435,10 +576,13 @@ notools/
 │   ├── sha512x.no       # SHA-512（64 位字运算）
 │   ├── md5x.no          # MD5
 │   └── ...              # 其余 190+ 个工具
-├── git/                 # 纯 Nolang Git 实现（独立子项目）
-│   ├── main.no          # Git CLI 入口与命令分发
-│   ├── lib.no           # 跨模块导出声明
+├── nogit/               # 纯 Nolang Git 实现（独立子项目）
+│   ├── main.no          # nogit CLI 入口与命令分发
 │   └── src/             # 底层模块（object/refs/index/pack/...）
+├── noimg/               # 纯 Nolang 图像处理工具库（独立子项目）
+│   ├── main.no          # noimg CLI 入口与命令分发
+│   ├── lib.no           # 库导出声明
+│   └── src/             # 格式编解码与图像操作模块
 └── package.jsonc        # 项目配置
 ```
 
@@ -446,9 +590,26 @@ notools/
 
 ### 构建
 
+三个子项目各自独立构建：
+
 ```bash
-no build ./notools/main.no
-# 产物位于 dist/main
+# 构建 notools
+cd notools
+no build
+cd ..
+# 产物位于 notools/dist/notools
+
+# 构建 nogit
+cd nogit
+no build
+cd ..
+# 产物位于 nogit/dist/nogit
+
+# 构建 noimg
+cd noimg
+no build
+cd ..
+# 产物位于 noimg/dist/noimg
 ```
 
 ### 测试

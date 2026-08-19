@@ -4,7 +4,7 @@ name: Build
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. 测试 setup-nolang 逻辑（下载编译器 + 标准库源码）
 #   2. 测试工具链安装（LLVM opt/llc + Zig 交叉编译器）
-#   3. 测试 no build 交叉编译 6 个目标平台
+#   3. no build 交叉编译 6 个目标平台（notools / nogit / noimg 三个独立构建）
 #   4. 对产物运行 smoke test 验证正确性
 #   5. tag 推送时发布 GitHub Release
 #
@@ -18,17 +18,17 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ── 构建 notools ──────────────────────────────────────────────────
+  build-notools:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # ── 1a. 构建 notools：调用 build-nolang action ──────────────────
       - name: Build notools for multiple platforms
         id: build
-        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.23
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.24
         with:
-          version: "0.2.23"
+          version: "0.2.24"
           entry: notools/main.no
           name: notools
           targets: >-
@@ -39,75 +39,35 @@ jobs:
             windows/amd64,
             windows/arm64
           cc: zig
-          # 构建失败立即报错，不继续后续步骤
           fail-on-error: "true"
 
-      # ── 1b. 构建 git：纯 Nolang Git 实现 ───────────────────────────
-      - name: Build git for multiple platforms
-        id: build-git
-        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.23
-        with:
-          version: "0.2.23"
-          entry: git/main.no
-          name: git
-          targets: >-
-            linux/amd64,
-            linux/arm64,
-            darwin/amd64,
-            darwin/arm64,
-            windows/amd64,
-            windows/arm64
-          cc: zig
-          fail-on-error: "true"
-
-      # ── 2. 构建结果报告 ───────────────────────────────────────────────
       - name: Build report
         if: always()
         shell: bash
         env:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
-          GIT_BINARIES: ${{ steps.build-git.outputs.binaries }}
-          GIT_FAILED: ${{ steps.build-git.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
         run: |
           echo "============================================"
-          echo "  Nolang Build Test Report"
+          echo "  notools Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
           echo ""
-          echo "--- notools: Built successfully ---"
+          echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
             printf '  %s\n' $BINARIES
           else
             echo "  (none)"
           fi
           echo ""
-          echo "--- notools: Failed targets ---"
+          echo "--- Failed targets ---"
           if [ -n "$FAILED" ]; then
             printf '  %s\n' $FAILED
           else
             echo "  (none)"
           fi
-          echo ""
-          echo "--- git: Built successfully ---"
-          if [ -n "$GIT_BINARIES" ]; then
-            printf '  %s\n' $GIT_BINARIES
-          else
-            echo "  (none)"
-          fi
-          echo ""
-          echo "--- git: Failed targets ---"
-          if [ -n "$GIT_FAILED" ]; then
-            printf '  %s\n' $GIT_FAILED
-          else
-            echo "  (none)"
-          fi
-          echo ""
-          echo "--- dist/ contents ---"
-          ls -lh dist/ 2>/dev/null || echo "  dist/ not found"
 
-      # ── 3a. Smoke test：验证 notools linux/amd64 产物功能正确 ─────────
       - name: Smoke test notools (linux/amd64)
         run: |
           set -e
@@ -176,13 +136,69 @@ jobs:
           echo "============================================"
           [ "$FAIL" -eq 0 ] || exit 1
 
-      # ── 3b. Smoke test：验证 git linux/amd64 产物功能正确 ─────────────
-      - name: Smoke test git (linux/amd64)
+      - name: Upload notools artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: notools-binaries
+          path: dist/notools-*
+          if-no-files-found: warn
+
+  # ── 构建 nogit ───────────────────────────────────────────────────
+  build-nogit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build nogit for multiple platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.24
+        with:
+          version: "0.2.24"
+          entry: nogit/main.no
+          name: nogit
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          cc: zig
+          fail-on-error: "true"
+
+      - name: Build report
+        if: always()
+        shell: bash
+        env:
+          BINARIES: ${{ steps.build.outputs.binaries }}
+          FAILED: ${{ steps.build.outputs.failed }}
+          NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+        run: |
+          echo "============================================"
+          echo "  nogit Build Report"
+          echo "============================================"
+          echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo ""
+          echo "--- Built successfully ---"
+          if [ -n "$BINARIES" ]; then
+            printf '  %s\n' $BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- Failed targets ---"
+          if [ -n "$FAILED" ]; then
+            printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+
+      - name: Smoke test nogit (linux/amd64)
         run: |
           set -e
-          BIN="$(pwd)/dist/git-linux-amd64"
+          BIN="dist/nogit-linux-amd64"
           if [ ! -f "$BIN" ]; then
-            echo "::warning::git linux/amd64 binary not found — skipping git smoke test"
+            echo "::warning::nogit linux/amd64 binary not found — skipping nogit smoke test"
             exit 0
           fi
           chmod +x "$BIN"
@@ -202,52 +218,52 @@ jobs:
             fi
           }
 
-          echo "=== git version ==="
+          echo "=== nogit version ==="
           out=$("$BIN" version)
           check "version" "$out" "nolang-git v0.1.0 (pure nolang)"
 
-          echo "=== git init ==="
-          rm -rf /tmp/git-smoke-test
-          out=$("$BIN" init /tmp/git-smoke-test 2>&1)
+          echo "=== nogit init ==="
+          rm -rf /tmp/nogit-smoke-test
+          out=$("$BIN" init /tmp/nogit-smoke-test 2>&1)
           echo "  init output: $out"
-          if [ -d /tmp/git-smoke-test/.git ]; then
+          if [ -d /tmp/nogit-smoke-test/.git ]; then
             echo "  PASS: .git dir created"; PASS=$((PASS+1))
           else
             echo "  FAIL: .git dir missing"; FAIL=$((FAIL+1))
           fi
-          if [ -f /tmp/git-smoke-test/.git/HEAD ]; then
+          if [ -f /tmp/nogit-smoke-test/.git/HEAD ]; then
             echo "  PASS: HEAD file exists"; PASS=$((PASS+1))
           else
             echo "  FAIL: HEAD file missing"; FAIL=$((FAIL+1))
           fi
-          if [ -d /tmp/git-smoke-test/.git/objects ]; then
+          if [ -d /tmp/nogit-smoke-test/.git/objects ]; then
             echo "  PASS: objects dir exists"; PASS=$((PASS+1))
           else
             echo "  FAIL: objects dir missing"; FAIL=$((FAIL+1))
           fi
-          if [ -d /tmp/git-smoke-test/.git/refs/heads ]; then
+          if [ -d /tmp/nogit-smoke-test/.git/refs/heads ]; then
             echo "  PASS: refs/heads dir exists"; PASS=$((PASS+1))
           else
             echo "  FAIL: refs/heads dir missing"; FAIL=$((FAIL+1))
           fi
 
-          echo "=== git add + commit ==="
-          echo "hello git" > /tmp/git-smoke-test/readme.txt
-          cd /tmp/git-smoke-test
+          echo "=== nogit add + commit ==="
+          echo "hello nogit" > /tmp/nogit-smoke-test/readme.txt
+          cd /tmp/nogit-smoke-test
           if "$BIN" add readme.txt 2>&1; then
-            echo "  PASS: git add succeeded"; PASS=$((PASS+1))
+            echo "  PASS: nogit add succeeded"; PASS=$((PASS+1))
           else
-            echo "  FAIL: git add failed"; FAIL=$((FAIL+1))
+            echo "  FAIL: nogit add failed"; FAIL=$((FAIL+1))
           fi
           out=$("$BIN" commit -m "initial commit" 2>&1)
           echo "  commit output: $out"
-          if [ -f /tmp/git-smoke-test/.git/refs/heads/main ]; then
+          if [ -f /tmp/nogit-smoke-test/.git/refs/heads/main ]; then
             echo "  PASS: main branch created"; PASS=$((PASS+1))
           else
             echo "  FAIL: main branch missing"; FAIL=$((FAIL+1))
           fi
 
-          echo "=== git log ==="
+          echo "=== nogit log ==="
           out=$("$BIN" log 2>&1)
           echo "  log output: $out"
           if echo "$out" | grep -q "initial commit"; then
@@ -258,27 +274,189 @@ jobs:
 
           echo ""
           echo "============================================"
-          echo "  git Smoke test: $PASS passed, $FAIL failed"
+          echo "  nogit Smoke test: $PASS passed, $FAIL failed"
           echo "============================================"
           [ "$FAIL" -eq 0 ] || exit 1
 
-      # ── 4. 上传产物 ─────────────────────────────────────────────────
-      - name: Upload build artifacts
+      - name: Upload nogit artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: notools-binaries
-          path: dist/*
+          name: nogit-binaries
+          path: dist/nogit-*
           if-no-files-found: warn
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+  # ── 构建 noimg ───────────────────────────────────────────────────
+  build-noimg:
     runs-on: ubuntu-latest
     steps:
-      - name: Download build artifacts
+      - uses: actions/checkout@v7
+
+      - name: Build noimg for multiple platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.24
+        with:
+          version: "0.2.24"
+          entry: noimg/main.no
+          name: noimg
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          cc: zig
+          fail-on-error: "true"
+
+      - name: Build report
+        if: always()
+        shell: bash
+        env:
+          BINARIES: ${{ steps.build.outputs.binaries }}
+          FAILED: ${{ steps.build.outputs.failed }}
+          NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+        run: |
+          echo "============================================"
+          echo "  noimg Build Report"
+          echo "============================================"
+          echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo ""
+          echo "--- Built successfully ---"
+          if [ -n "$BINARIES" ]; then
+            printf '  %s\n' $BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- Failed targets ---"
+          if [ -n "$FAILED" ]; then
+            printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+
+      - name: Smoke test noimg (linux/amd64)
+        run: |
+          set -e
+          BIN="dist/noimg-linux-amd64"
+          if [ ! -f "$BIN" ]; then
+            echo "::warning::noimg linux/amd64 binary not found — skipping noimg smoke test"
+            exit 0
+          fi
+          chmod +x "$BIN"
+
+          PASS=0; FAIL=0
+
+          check() {
+            local desc="$1" actual="$2" expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "  PASS: $desc"
+              PASS=$((PASS+1))
+            else
+              echo "  FAIL: $desc"
+              echo "    expected: '$expected'"
+              echo "    actual:   '$actual'"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          echo "=== noimg convert (PPM -> BMP) ==="
+          printf 'P3\n2 2\n255\n255 0 0 0 255 0 0 0 255 255 255 0\n' > /tmp/test.ppm
+          "$BIN" convert /tmp/test.ppm /tmp/test_out.bmp 2>&1
+          if [ -f /tmp/test_out.bmp ]; then
+            echo "  PASS: BMP output created"; PASS=$((PASS+1))
+            SIZE=$(wc -c < /tmp/test_out.bmp)
+            if [ "$SIZE" -gt 50 ]; then
+              echo "  PASS: BMP file size reasonable ($SIZE bytes)"; PASS=$((PASS+1))
+            else
+              echo "  FAIL: BMP file too small ($SIZE bytes)"; FAIL=$((FAIL+1))
+            fi
+          else
+            echo "  FAIL: BMP output not created"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== noimg convert (PPM -> PNG) ==="
+          "$BIN" convert /tmp/test.ppm /tmp/test_out.png 2>&1
+          if [ -f /tmp/test_out.png ]; then
+            echo "  PASS: PNG output created"; PASS=$((PASS+1))
+            # 检查 PNG 签名
+            SIG=$(xxd -l 8 -p /tmp/test_out.png)
+            if [ "$SIG" = "89504e470d0a1a0a" ]; then
+              echo "  PASS: PNG signature correct"; PASS=$((PASS+1))
+            else
+              echo "  FAIL: PNG signature wrong: $SIG"; FAIL=$((FAIL+1))
+            fi
+          else
+            echo "  FAIL: PNG output not created"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== noimg convert (PPM -> TGA) ==="
+          "$BIN" convert /tmp/test.ppm /tmp/test_out.tga 2>&1
+          if [ -f /tmp/test_out.tga ]; then
+            echo "  PASS: TGA output created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: TGA output not created"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== noimg info ==="
+          out=$("$BIN" info /tmp/test.ppm 2>&1)
+          if echo "$out" | grep -qi "width\|height\|2\b"; then
+            echo "  PASS: info shows image properties"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: info output unexpected: $out"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== noimg grayscale ==="
+          "$BIN" grayscale /tmp/test.ppm /tmp/gray_out.ppm 2>&1
+          if [ -f /tmp/gray_out.ppm ]; then
+            echo "  PASS: grayscale output created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: grayscale output not created"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== noimg invert ==="
+          "$BIN" invert /tmp/test.ppm /tmp/inv_out.ppm 2>&1
+          if [ -f /tmp/inv_out.ppm ]; then
+            echo "  PASS: invert output created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: invert output not created"; FAIL=$((FAIL+1))
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "  noimg Smoke test: $PASS passed, $FAIL failed"
+          echo "============================================"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      - name: Upload noimg artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: noimg-binaries
+          path: dist/noimg-*
+          if-no-files-found: warn
+
+  # ── 发布 Release ─────────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-notools, build-nogit, build-noimg]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download notools artifacts
         uses: actions/download-artifact@v4
         with:
           name: notools-binaries
+          path: artifacts
+
+      - name: Download nogit artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nogit-binaries
+          path: artifacts
+
+      - name: Download noimg artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: noimg-binaries
           path: artifacts
 
       - name: Generate checksums
@@ -301,30 +479,41 @@ jobs:
             artifacts/notools-darwin-arm64
             artifacts/notools-windows-amd64.exe
             artifacts/notools-windows-arm64.exe
-            artifacts/git-linux-amd64
-            artifacts/git-linux-arm64
-            artifacts/git-darwin-amd64
-            artifacts/git-darwin-arm64
-            artifacts/git-windows-amd64.exe
-            artifacts/git-windows-arm64.exe
+            artifacts/nogit-linux-amd64
+            artifacts/nogit-linux-arm64
+            artifacts/nogit-darwin-amd64
+            artifacts/nogit-darwin-arm64
+            artifacts/nogit-windows-amd64.exe
+            artifacts/nogit-windows-arm64.exe
+            artifacts/noimg-linux-amd64
+            artifacts/noimg-linux-arm64
+            artifacts/noimg-darwin-amd64
+            artifacts/noimg-darwin-arm64
+            artifacts/noimg-windows-amd64.exe
+            artifacts/noimg-windows-arm64.exe
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
             ```bash
-            # Linux amd64 示例
+            # notools (Linux amd64 示例)
             curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/notools-linux-amd64
             chmod +x notools
             sudo mv notools /usr/local/bin/
 
-            # git (纯 Nolang 实现)
-            curl -fsSL -o git https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/git-linux-amd64
-            chmod +x git
-            sudo mv git /usr/local/bin/nolang-git
+            # nogit (纯 Nolang Git 实现)
+            curl -fsSL -o nogit https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nogit-linux-amd64
+            chmod +x nogit
+            sudo mv nogit /usr/local/bin/nogit
+
+            # noimg (纯 Nolang 图像处理工具)
+            curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noimg-linux-amd64
+            chmod +x noimg
+            sudo mv noimg /usr/local/bin/noimg
             ```
 
             ### 校验

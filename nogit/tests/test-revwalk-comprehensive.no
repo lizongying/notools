@@ -1,0 +1,437 @@
+; Comprehensive test: revwalk — resolve-ref, commit chain walk, ancestry, log
+;
+; Tests: resolve-ref (HEAD, branch name, tag, hex), revwalk-first-parent,
+;        revwalk-all, revwalk-format-log, is-ancestor, max-count limiting,
+;        commit-tree-oid, commit-parents, multi-parent merge commit.
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/zlib
+# /nogit/src/object
+# /nogit/src/refs
+# /nogit/src/repository
+# /nogit/src/revwalk
+
+main = () {
+    print('--- Comprehensive Revwalk Test ---')
+
+    passed = 0
+    failed = 0
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-rw-comp'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+    {
+        init-ok == true -> print('repo-init ok')
+
+        -> print('repo-init FAIL')
+    }
+
+    ; create a commit chain: c1 -> c2 -> c3
+    blob = object.write-blob(git-dir, 'rw test')
+    traw = object.tree-add-raw('', 33188, 'test.txt', blob)
+    tree-oid = object.tree-write-raw(git-dir, traw)
+
+    c1 = object.write-commit-full(git-dir, tree-oid, '', 'A', 'a@b.com', 1000, '+0000', 'C', 'c@b.com', 1000, '+0000', 'first')
+    c1-hex = oid.oid-hex-str(c1)
+
+    c2 = object.write-commit-full(git-dir, tree-oid, c1-hex, 'A', 'a@b.com', 2000, '+0000', 'C', 'c@b.com', 2000, '+0000', 'second')
+    c2-hex = oid.oid-hex-str(c2)
+
+    c3 = object.write-commit-full(git-dir, tree-oid, c2-hex, 'A', 'a@b.com', 3000, '+0000', 'C', 'c@b.com', 3000, '+0000', 'third')
+
+    ; set up refs
+    refs.write-ref(git-dir, 'refs/heads/main', c3)
+    refs.update-head(git-dir, 'refs/heads/main')
+    refs.create-tag(git-dir, 'v3.0', c3)
+
+    ; 1. resolve-ref variants
+    ; HEAD
+    r-head, r-head-ok = revwalk.resolve-ref(git-dir, 'HEAD')
+    {
+        r-head-ok == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref HEAD ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref HEAD ok')
+        }
+    }
+    {
+        r-head.eq(c3) == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref HEAD = c3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref HEAD = c3')
+        }
+    }
+
+    ; branch name
+    r-main, r-main-ok = revwalk.resolve-ref(git-dir, 'main')
+    {
+        r-main.eq(c3) == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref main = c3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref main = c3')
+        }
+    }
+
+    ; full ref name
+    r-full, r-full-ok = revwalk.resolve-ref(git-dir, 'refs/heads/main')
+    {
+        r-full.eq(c3) == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref full ref = c3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref full ref = c3')
+        }
+    }
+
+    ; tag name
+    r-tag, r-tag-ok = revwalk.resolve-ref(git-dir, 'v3.0')
+    {
+        r-tag.eq(c3) == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref tag = c3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref tag = c3')
+        }
+    }
+
+    ; hex oid
+    r-hex, r-hex-ok = revwalk.resolve-ref(git-dir, c1-hex)
+    {
+        r-hex.eq(c1) == true -> {
+            passed = passed + 1
+            print('PASS: resolve-ref hex = c1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref hex = c1')
+        }
+    }
+
+    ; nonexistent ref
+    junk-r oid
+    junk-r, r-missing-ok = revwalk.resolve-ref(git-dir, 'nonexistent')
+    {
+        r-missing-ok == false -> {
+            passed = passed + 1
+            print('PASS: resolve-ref nonexistent fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: resolve-ref nonexistent fails')
+        }
+    }
+
+    ; 2. commit-tree-oid
+    t-oid, t-ok = revwalk.commit-tree-oid(git-dir, c2)
+    {
+        t-ok == true -> {
+            passed = passed + 1
+            print('PASS: commit-tree-oid ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: commit-tree-oid ok')
+        }
+    }
+    {
+        t-oid.eq(tree-oid) == true -> {
+            passed = passed + 1
+            print('PASS: commit-tree-oid match')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: commit-tree-oid match')
+        }
+    }
+
+    ; 3. commit-parents
+    p-hex, np, p-ok = revwalk.commit-parents(git-dir, c2)
+    {
+        p-ok == true -> {
+            passed = passed + 1
+            print('PASS: commit-parents ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: commit-parents ok')
+        }
+    }
+    {
+        np == 1 -> {
+            passed = passed + 1
+            print('PASS: nparents = 1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: nparents = 1')
+        }
+    }
+    {
+        p-hex == c1-hex -> {
+            passed = passed + 1
+            print('PASS: parent hex match')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: parent hex match')
+        }
+    }
+
+    ; c1 has no parents
+    p-hex0, np0, p-ok0 = revwalk.commit-parents(git-dir, c1)
+    {
+        np0 == 0 -> {
+            passed = passed + 1
+            print('PASS: c1 has 0 parents')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: c1 has 0 parents')
+        }
+    }
+
+    ; 4. revwalk-first-parent
+    walk-hex, walk-count, walk-ok = revwalk.revwalk-first-parent(git-dir, c3, 0)
+    {
+        walk-ok == true -> {
+            passed = passed + 1
+            print('PASS: revwalk-first-parent ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: revwalk-first-parent ok')
+        }
+    }
+    {
+        walk-count == 3 -> {
+            passed = passed + 1
+            print('PASS: walk count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: walk count = 3')
+        }
+    }
+
+    ; with max-count
+    walk-hex2, walk-count2, walk-ok2 = revwalk.revwalk-first-parent(git-dir, c3, 2)
+    {
+        walk-count2 == 2 -> {
+            passed = passed + 1
+            print('PASS: walk max count = 2')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: walk max count = 2')
+        }
+    }
+
+    ; with max-count = 1
+    walk-hex3, walk-count3, walk-ok3 = revwalk.revwalk-first-parent(git-dir, c3, 1)
+    {
+        walk-count3 == 1 -> {
+            passed = passed + 1
+            print('PASS: walk max count = 1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: walk max count = 1')
+        }
+    }
+
+    ; 5. revwalk-all
+    all-hex, all-count, all-ok = revwalk.revwalk-all(git-dir, c3, 0)
+    {
+        all-ok == true -> {
+            passed = passed + 1
+            print('PASS: revwalk-all ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: revwalk-all ok')
+        }
+    }
+    {
+        all-count == 3 -> {
+            passed = passed + 1
+            print('PASS: revwalk-all count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: revwalk-all count = 3')
+        }
+    }
+
+    ; 6. revwalk-format-log
+    log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', 0)
+    {
+        log-ok == true -> {
+            passed = passed + 1
+            print('PASS: format-log ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: format-log ok')
+        }
+    }
+    {
+        log-output.len > 0 -> {
+            passed = passed + 1
+            print('PASS: log output not empty')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: log output not empty')
+        }
+    }
+
+    ; format-log with max-count
+    log-output2, log-ok2 = revwalk.revwalk-format-log(git-dir, 'HEAD', 1)
+    {
+        log-ok2 == true -> {
+            passed = passed + 1
+            print('PASS: format-log max ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: format-log max ok')
+        }
+    }
+
+    ; 7. is-ancestor
+    is-anc1 = revwalk.is-ancestor(git-dir, c1, c3)
+    {
+        is-anc1 == true -> {
+            passed = passed + 1
+            print('PASS: c1 is ancestor of c3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: c1 is ancestor of c3')
+        }
+    }
+
+    is-anc2 = revwalk.is-ancestor(git-dir, c3, c1)
+    {
+        is-anc2 == false -> {
+            passed = passed + 1
+            print('PASS: c3 not ancestor of c1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: c3 not ancestor of c1')
+        }
+    }
+
+    ; self is ancestor of self
+    is-self = revwalk.is-ancestor(git-dir, c2, c2)
+    {
+        is-self == true -> {
+            passed = passed + 1
+            print('PASS: c2 is ancestor of c2 (self)')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: c2 is ancestor of c2 (self)')
+        }
+    }
+
+    ; 8. Merge commit (multi-parent)
+    ; create a divergent branch from c2
+    c4 = object.write-commit-full(git-dir, tree-oid, c2-hex, 'A', 'a@b.com', 4000, '+0000', 'C', 'c@b.com', 4000, '+0000', 'fourth (divergent)')
+
+    ; merge commit with two parents (c3 and c4)
+    c3-hex = oid.oid-hex-str(c3)
+    c4-hex = oid.oid-hex-str(c4)
+    merge-hex = c3-hex - c4-hex
+    c5 = object.write-commit-full(git-dir, tree-oid, merge-hex, 'A', 'a@b.com', 5000, '+0000', 'C', 'c@b.com', 5000, '+0000', 'merge commit')
+
+    ; verify merge commit has 2 parents
+    mp-hex, mnp, mp-ok = revwalk.commit-parents(git-dir, c5)
+    {
+        mnp == 2 -> {
+            passed = passed + 1
+            print('PASS: merge commit has 2 parents')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: merge commit has 2 parents')
+        }
+    }
+
+    ; c1 is ancestor of merge commit
+    is-anc-merge = revwalk.is-ancestor(git-dir, c1, c5)
+    {
+        is-anc-merge == true -> {
+            passed = passed + 1
+            print('PASS: c1 is ancestor of merge')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: c1 is ancestor of merge')
+        }
+    }
+
+    ; revwalk-all from merge should visit 5 commits
+    all-merge-hex, all-merge-count, all-merge-ok = revwalk.revwalk-all(git-dir, c5, 0)
+    {
+        all-merge-count == 5 -> {
+            passed = passed + 1
+            print('PASS: revwalk-all merge = 5')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: revwalk-all merge = 5')
+        }
+    }
+
+    tp = util.i64-to-str(passed)
+    tf = util.i64-to-str(failed)
+    print('')
+    print('Passed: ' - tp - ', Failed: ' - tf)
+    failed > 0 -> 1
+    0
+}

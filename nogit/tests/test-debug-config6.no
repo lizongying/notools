@@ -1,0 +1,97 @@
+; Debug test for config-set crash - section header parsing
+
+# /nogit/src/util
+# /nogit/src/config
+# /nogit/src/repository
+
+main = () {
+    print('--- Debug config-set section parse ---')
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-debug-cfg6'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+
+    p = git-dir - '/config'
+    content, file-ok = util.read-file-str(p)
+
+    sect-upper = config.to-lower-local('user')
+    target-key-upper = config.to-lower-local('name')
+
+    new-content = ''
+    pos = 0
+    in-section = false
+    current-section str = ''
+    found-and-replaced = false
+    section-found = false
+
+    {
+        pos >= content.len -> break
+        nl = util.find-byte-str(content, 10, pos)
+        end = content.len
+        nl >= 0 -> end = nl
+        line = util.str-range(content, pos, end)
+        trimmed = config.trim-ws(line)
+
+        {
+            trimmed.len == 0 -> {
+                new-content = new-content - line - '\n'
+            }
+
+            -> {
+                trimmed.starts-with('[') -> {
+                    rb = util.find-byte-str(trimmed, 93, 0)
+                    print('rb=')
+                    print(rb)
+                    rb >= 0 -> {
+                        inner = util.str-range(trimmed, 1, rb)
+                        print('inner=')
+                        print(inner)
+                        dq = util.find-byte-str(inner, 34, 0)
+                        print('dq=')
+                        print(dq)
+                        {
+                            dq >= 0 -> {
+                                print('ERROR: should not have subsection')
+                            }
+
+                            -> {
+                                inner2 = config.trim-ws(inner)
+                                inner-upper = config.to-lower-local(inner2)
+                                current-section = inner-upper
+                                print('current-section=')
+                                print(current-section)
+                            }
+                        }
+                        same = util.str-eq(current-section, sect-upper)
+                        print('same=')
+                        print(same)
+                        in-section = same
+                        same == true -> section-found = true
+                    }
+                    new-content = new-content - line - '\n'
+                }
+
+                -> {
+                    in-section == true -> {
+                        new-content = new-content - line - '\n'
+                    }
+
+                    -> {
+                        new-content = new-content - line - '\n'
+                    }
+                }
+            }
+        }
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+
+    print('loop done')
+    print('new-content:')
+    print(new-content)
+    print('section-found=')
+    print(section-found)
+
+    0
+}

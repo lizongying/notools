@@ -1,0 +1,276 @@
+; resize.no — Image resizing / resampling
+; Implements nearest-neighbor, bilinear, and bicubic interpolation
+; Inspired by libvips vips_resize() / vips_thumbnail_image()
+
+; Interpolation method constants
+
+# /noimg/src/image.new
+# /noimg/src/image.new-from-data
+# /noimg/src/image.copy
+# /noimg/src/image.fill
+# /noimg/src/image.invert
+# /noimg/src/image.add-const
+# /noimg/src/image.avg
+# /noimg/src/image.min-val
+# /noimg/src/image.max-val
+# /noimg/src/image.get-pixel
+# /noimg/src/image.set-pixel
+
+; NEAREST   = 0 (inlined)
+; BILINEAR  = 1 (inlined)
+; BICUBIC   = 2 (inlined)
+; AREA-AVG  = 3 (inlined)
+
+; resize.resize: resize image to new dimensions
+; img image: input image
+; w i64: target width
+; h i64: target height
+; method i64: interpolation method (NEAREST, BILINEAR, BICUBIC)
+; returns out image: resized image
+resize = (img image, w i64, h i64, method i64) (out image) {
+    {
+        w <= 0 || h <= 0 -> {
+            out = image.new(1, 1, img.bands)
+            return
+        }
+
+        w == img.width && h == img.height -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    {
+        method == 0 -> {
+            out = resize-nearest(img, w, h)
+        }
+
+        method == 1 -> {
+            out = resize-bilinear(img, w, h)
+        }
+
+        method == 2 -> {
+            out = resize-bicubic(img, w, h)
+        }
+
+        method == 3 -> {
+            out = resize-area-avg(img, w, h)
+        }
+
+        -> {
+            out = resize-bilinear(img, w, h)
+        }
+    }
+}
+
+; resize.thumbnail: create thumbnail maintaining aspect ratio
+; img image: input image
+; max-w i64: max width
+; max-h i64: max height
+; returns out image: thumbnail
+thumbnail = (img image, max-w i64, max-h i64) (out image) {
+    ratio-w = max-w * 1000 / img.width
+    ratio-h = max-h * 1000 / img.height
+    ratio = ratio-w
+    ratio-h < ratio -> ratio = ratio-h
+    new-w = img.width * ratio / 1000
+    new-h = img.height * ratio / 1000
+    new-w < 1 -> new-w = 1
+    new-h < 1 -> new-h = 1
+    out = resize-bilinear(img, new-w, new-h)
+}
+
+; resize.scale: scale image by factor
+; img image: input image
+; sx f64: x scale factor
+; sy f64: y scale factor
+; method i64: interpolation method
+; returns out image: scaled image
+scale = (img image, sx f64, sy f64, method i64) (out image) {
+    w = img.width * sx
+    h = img.height * sy
+    w < 1 -> w = 1
+    h < 1 -> h = 1
+    out = resize.resize(img, w, h, method)
+}
+
+; ── Nearest neighbor ──
+
+; resize-nearest: nearest neighbor interpolation
+; img image: input
+; w i64: target width
+; h i64: target height
+; returns out image: resized
+resize-nearest = (img image, w i64, h i64) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+    x-ratio = img.width * 1000 / w
+    y-ratio = img.height * 1000 / h
+    y <- [0..h): {
+        src-y = y * y-ratio / 1000
+        src-y >= img.height -> src-y = img.height - 1
+        x <- [0..w): {
+            src-x = x * x-ratio / 1000
+            src-x >= img.width -> src-x = img.width - 1
+            src-idx = (src-y * img.width + src-x) * img.bands
+            dst-idx = (y * w + x) * img.bands
+            b <- [0..img.bands): {
+                out.data[dst-idx + b] = img.data[src-idx + b]
+            }
+        }
+    }
+}
+
+; ── Bilinear interpolation ──
+
+; resize-bilinear: bilinear interpolation
+; img image: input
+; w i64: target width
+; h i64: target height
+; returns out image: resized
+resize-bilinear = (img image, w i64, h i64) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+
+    ; Use fixed-point math (scale * 4096 = 12 bits fractional)
+    x-ratio = (img.width - 1) * 4096 / w
+    y-ratio = (img.height - 1) * 4096 / h
+    y <- [0..h): {
+        src-y-f = y * y-ratio
+        y0 = src-y-f >> 12
+        y1 = y0 + 1
+        y1 >= img.height -> y1 = img.height - 1
+        fy = src-y-f - (y0 << 12)
+        x <- [0..w): {
+            src-x-f = x * x-ratio
+            x0 = src-x-f >> 12
+            x1 = x0 + 1
+            x1 >= img.width -> x1 = img.width - 1
+            fx = src-x-f - (x0 << 12)
+            b <- [0..img.bands): {
+                p00 = img.data[(y0 * img.width + x0) * img.bands + b]
+                p01 = img.data[(y0 * img.width + x1) * img.bands + b]
+                p10 = img.data[(y1 * img.width + x0) * img.bands + b]
+                p11 = img.data[(y1 * img.width + x1) * img.bands + b]
+
+                ; top row interpolation
+                top = p00 + ((p01 - p00) * fx) / 4096
+
+                ; bottom row interpolation
+                bot = p10 + ((p11 - p10) * fx) / 4096
+
+                ; vertical interpolation
+                val = top + ((bot - top) * fy) / 4096
+                val > 255 -> val = 255
+                val < 0 -> val = 0
+                out.data[(y * w + x) * img.bands + b] = val
+            }
+        }
+    }
+}
+
+; ── Bicubic interpolation (Catmull-Rom) ──
+
+; resize-bicubic: bicubic interpolation using Catmull-Rom kernel
+; img image: input
+; w i64: target width
+; h i64: target height
+; returns out image: resized
+resize-bicubic = (img image, w i64, h i64) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+    x-ratio = img.width * 4096 / w
+    y-ratio = img.height * 4096 / h
+    y <- [0..h): {
+        src-y-f = y * y-ratio - 2048
+        src-y-f < 0 -> src-y-f = 0
+        y0 = src-y-f >> 12
+        fy = src-y-f - (y0 << 12)
+
+        ; Catmull-Rom weights for y
+        wy str = with-len(4)
+        fy-n = fy
+        fy2 = fy-n * fy-n / 4096
+        fy3 = fy2 * fy-n / 4096
+        wy[0] = -fy3 + 2 * fy2 - fy-n
+        wy[1] = fy3 - 2 * fy2 + 4096
+        wy[2] = -fy3 + fy2 + fy-n
+        wy[3] = fy3 - fy2
+
+        ; Normalize weights
+        wsum = wy[0] + wy[1] + wy[2] + wy[3]
+        x <- [0..w): {
+            src-x-f = x * x-ratio - 2048
+            src-x-f < 0 -> src-x-f = 0
+            x0 = src-x-f >> 12
+            fx = src-x-f - (x0 << 12)
+
+            ; Catmull-Rom weights for x
+            fx-n = fx
+            fx2 = fx-n * fx-n / 4096
+            fx3 = fx2 * fx-n / 4096
+            wx str = with-len(4)
+            wx[0] = -fx3 + 2 * fx2 - fx-n
+            wx[1] = fx3 - 2 * fx2 + 4096
+            wx[2] = -fx3 + fx2 + fx-n
+            wx[3] = fx3 - fx2
+            wsum-x = wx[0] + wx[1] + wx[2] + wx[3]
+            b <- [0..img.bands): {
+                val = 0
+                j <- [0..4): {
+                    sy = y0 + j - 1
+                    sy < 0 -> sy = 0
+                    sy >= img.height -> sy = img.height - 1
+                    row-val = 0
+                    k <- [0..4): {
+                        sx = x0 + k - 1
+                        sx < 0 -> sx = 0
+                        sx >= img.width -> sx = img.width - 1
+                        px = img.data[(sy * img.width + sx) * img.bands + b]
+                        row-val = row-val + px * wx[k]
+                    }
+                    val = val + (row-val / wsum-x) * wy[j]
+                }
+                val = val / wsum
+                val > 255 -> val = 255
+                val < 0 -> val = 0
+                out.data[(y * w + x) * img.bands + b] = val
+            }
+        }
+    }
+}
+
+; ── Area average (for downscaling) ──
+
+; resize-area-avg: area average resampling
+; Good for downscaling — averages all source pixels that map to each dest pixel
+; img image: input
+; w i64: target width
+; h i64: target height
+; returns out image: resized
+resize-area-avg = (img image, w i64, h i64) (out image) {
+    _d str = with-len(w * h * img.bands)
+    out = image.new-from-data(w, h, img.bands, _d)
+    x-ratio = img.width * 1000 / w
+    y-ratio = img.height * 1000 / h
+    y <- [0..h): {
+        y-start = y * y-ratio / 1000
+        y-end = (y + 1) * y-ratio / 1000
+        y-end > img.height -> y-end = img.height
+        x <- [0..w): {
+            x-start = x * x-ratio / 1000
+            x-end = (x + 1) * x-ratio / 1000
+            x-end > img.width -> x-end = img.width
+            count = (y-end - y-start) * (x-end - x-start)
+            count == 0 -> count = 1
+            b <- [0..img.bands): {
+                sum = 0
+                sy <- [y-start..y-end): {
+                    sx <- [x-start..x-end): {
+                        sum = sum + img.data[(sy * img.width + sx) * img.bands + b]
+                    }
+                }
+                out.data[(y * w + x) * img.bands + b] = sum / count
+            }
+        }
+    }
+}

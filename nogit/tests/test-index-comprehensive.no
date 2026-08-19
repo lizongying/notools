@@ -1,0 +1,308 @@
+; Comprehensive test: index module — add, read, replace, remove, multiple files
+;
+; Tests: empty index, add single file, add multiple files, replace existing,
+;        remove file, index-entry-at, round-trip integrity.
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/zlib
+# /nogit/src/object
+# /nogit/src/index
+# /nogit/src/repository
+
+main = () {
+    print('--- Comprehensive Index Test ---')
+
+    passed = 0
+    failed = 0
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-index-comp'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+    {
+        init-ok == true -> print('repo-init ok')
+
+        -> print('repo-init FAIL')
+    }
+
+    ; 1. Empty index
+    jn str
+    jh str
+    jm str
+    jn, jh, jm, jc, jok = index.read-index(git-dir)
+    {
+        jok == false -> {
+            passed = passed + 1
+            print('PASS: empty index fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: empty index fails')
+        }
+    }
+
+    ; 2. Add single file
+    blob1 = object.write-blob(git-dir, 'file1 content')
+    add-ok1 = index.index-add(git-dir, 'file1.txt', blob1, 33188)
+    {
+        add-ok1 == true -> {
+            passed = passed + 1
+            print('PASS: index-add file1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: index-add file1')
+        }
+    }
+
+    names1, hexoids1, modes1, count1, ok1 = index.read-index(git-dir)
+    {
+        ok1 == true -> {
+            passed = passed + 1
+            print('PASS: read-index ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: read-index ok')
+        }
+    }
+    {
+        count1 == 1 -> {
+            passed = passed + 1
+            print('PASS: count = 1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: count = 1')
+        }
+    }
+
+    ; verify entry name
+    nl1 = util.find-byte-str(names1, 10, 0)
+    nm1 = util.str-range(names1, 0, nl1)
+    {
+        nm1 == 'file1.txt' -> {
+            passed = passed + 1
+            print('PASS: entry name file1.txt')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry name file1.txt')
+        }
+    }
+
+    ; verify oid hex
+    hx1 = util.str-range(hexoids1, 0, 40)
+    expected-hx1 = oid.oid-hex-str(blob1)
+    {
+        hx1 == expected-hx1 -> {
+            passed = passed + 1
+            print('PASS: entry oid hex')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry oid hex')
+        }
+    }
+
+    ; verify mode
+    mnl1 = util.find-byte-str(modes1, 10, 0)
+    ms1 = util.str-range(modes1, 0, mnl1)
+    {
+        ms1 == '33188' -> {
+            passed = passed + 1
+            print('PASS: entry mode')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry mode')
+        }
+    }
+
+    ; 3. Add multiple files
+    blob2 = object.write-blob(git-dir, 'file2 content')
+    blob3 = object.write-blob(git-dir, 'file3 content')
+    index.index-add(git-dir, 'file2.txt', blob2, 33188)
+    index.index-add(git-dir, 'file3.txt', blob3, 33188)
+
+    names3, hexoids3, modes3, count3, ok3 = index.read-index(git-dir)
+    {
+        count3 == 3 -> {
+            passed = passed + 1
+            print('PASS: count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: count = 3')
+        }
+    }
+
+    ; 4. Replace existing entry
+    blob1-new = object.write-blob(git-dir, 'file1 updated content')
+    index.index-add(git-dir, 'file1.txt', blob1-new, 33188)
+
+    names4, hexoids4, modes4, count4, ok4 = index.read-index(git-dir)
+    {
+        count4 == 3 -> {
+            passed = passed + 1
+            print('PASS: replace keeps count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: replace keeps count = 3')
+        }
+    }
+
+    ; verify the replaced oid
+    hx1-new = util.str-range(hexoids4, 0, 40)
+    expected-hx1-new = oid.oid-hex-str(blob1-new)
+    {
+        hx1-new == expected-hx1-new -> {
+            passed = passed + 1
+            print('PASS: replaced oid')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: replaced oid')
+        }
+    }
+
+    ; 5. read-index-entry-at
+    entry-name, entry-oid, entry-mode, entry-ok = index.read-index-entry-at(git-dir, 1)
+    {
+        entry-ok == true -> {
+            passed = passed + 1
+            print('PASS: read-index-entry-at ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: read-index-entry-at ok')
+        }
+    }
+    {
+        entry-name == 'file2.txt' -> {
+            passed = passed + 1
+            print('PASS: entry-at name')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry-at name')
+        }
+    }
+    {
+        entry-oid.eq(blob2) == true -> {
+            passed = passed + 1
+            print('PASS: entry-at oid')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry-at oid')
+        }
+    }
+    {
+        entry-mode == 33188 -> {
+            passed = passed + 1
+            print('PASS: entry-at mode')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: entry-at mode')
+        }
+    }
+
+    ; 6. Remove file
+    rm-ok = index.index-remove(git-dir, 'file2.txt')
+    {
+        rm-ok == true -> {
+            passed = passed + 1
+            print('PASS: index-remove')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: index-remove')
+        }
+    }
+
+    names5, hexoids5, modes5, count5, ok5 = index.read-index(git-dir)
+    {
+        count5 == 2 -> {
+            passed = passed + 1
+            print('PASS: count after remove = 2')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: count after remove = 2')
+        }
+    }
+
+    ; verify file2 is gone (entries should be file1.txt and file3.txt)
+    nl5a = util.find-byte-str(names5, 10, 0)
+    nm5a = util.str-range(names5, 0, nl5a)
+    {
+        nm5a == 'file1.txt' -> {
+            passed = passed + 1
+            print('PASS: first entry is file1.txt')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: first entry is file1.txt')
+        }
+    }
+    nl5b = util.find-byte-str(names5, 10, nl5a + 1)
+    nm5b-end = names5.len
+    nl5b >= 0 -> nm5b-end = nl5b
+    nm5b = util.str-range(names5, nl5a + 1, nm5b-end)
+    {
+        nm5b == 'file3.txt' -> {
+            passed = passed + 1
+            print('PASS: second entry is file3.txt')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: second entry is file3.txt')
+        }
+    }
+
+    ; 7. Long filename
+    long-name = 'this/is/a/very/long/path/to/a/file/that/tests/boundary/handling/in/the/index/format.txt'
+    blob-long = object.write-blob(git-dir, 'long name content')
+    index.index-add(git-dir, long-name, blob-long, 33188)
+    names6, hexoids6, modes6, count6, ok6 = index.read-index(git-dir)
+    {
+        count6 == 3 -> {
+            passed = passed + 1
+            print('PASS: long filename count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: long filename count = 3')
+        }
+    }
+
+    tp = util.i64-to-str(passed)
+    tf = util.i64-to-str(failed)
+    print('')
+    print('Passed: ' - tp - ', Failed: ' - tf)
+    failed > 0 -> 1
+    0
+}

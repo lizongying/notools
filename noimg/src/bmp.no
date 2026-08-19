@@ -1,0 +1,255 @@
+; bmp.no — BMP (Windows Bitmap) format read/write
+; Supports:
+;   24-bit BMP (BGR, no compression)
+;   32-bit BMP (BGRA, no compression)
+;
+; BMP file layout:
+;   File header (14 bytes): 'BM', file-size, reserved, data-offset
+;   DIB header (40 bytes BITMAPINFOHEADER): header-size, width, height,
+;     planes, bpp, compression, image-size, x/y-ppm, colors-used, colors-important
+;   Pixel data (bottom-up, BGR, 4-byte aligned rows)
+
+; bmp.load: load a BMP file
+; path str: file path
+; returns img ?image: loaded image, nil on error
+
+# /noimg/src/image.new
+# /noimg/src/image.new-from-data
+# /noimg/src/image.copy
+# /noimg/src/image.fill
+# /noimg/src/image.invert
+# /noimg/src/image.add-const
+# /noimg/src/image.avg
+# /noimg/src/image.min-val
+# /noimg/src/image.max-val
+# /noimg/src/image.get-pixel
+# /noimg/src/image.set-pixel
+
+load = (path str) (img ?image) {
+    data = fs.read-file(path)
+    data.len < 54 -> {
+        img = nil
+        return
+    }
+
+    ; Check BMP signature
+    (data[0] & 255) == 66 && (data[1] & 255) == 77 -> {}
+
+    -> {
+        img = nil
+        return
+    }
+
+    ; Read DIB header offset
+    data-offset = (data[10] & 255) | ((data[11] & 255) << 8) | ((data[12] & 255) << 16) | ((data[13] & 255) << 24)
+
+    ; Read BITMAPINFOHEADER
+    hdr-size = (data[14] & 255) | ((data[15] & 255) << 8) | ((data[16] & 255) << 16) | ((data[17] & 255) << 24)
+
+    ; Width (signed 32-bit, little-endian)
+    w = (data[18] & 255) | ((data[19] & 255) << 8) | ((data[20] & 255) << 16) | ((data[21] & 255) << 24)
+
+    ; Height (signed 32-bit, little-endian)
+    h = (data[22] & 255) | ((data[23] & 255) << 8) | ((data[24] & 255) << 16) | ((data[25] & 255) << 24)
+
+    ; Top-down if height is negative
+    top-down = false
+    h > 2147483647 -> {
+
+        ; negative value in 32-bit — flip
+        h = 4294967296 - h
+        top-down = true
+    }
+    bpp = (data[28] & 255) | ((data[29] & 255) << 8)
+    compression = (data[30] & 255) | ((data[31] & 255) << 8) | ((data[32] & 255) << 16) | ((data[33] & 255) << 24)
+    {
+        compression != 0 -> {
+            img = nil
+            return
+        }
+
+        bpp != 24 && bpp != 32 -> {
+            img = nil
+            return
+        }
+
+        w <= 0 || h <= 0 -> {
+            img = nil
+            return
+        }
+    }
+    bands = 3
+    bpp == 32 -> bands = 4
+    _d str = with-len(w * h * bands)
+    tmp = image.new-from-data(w, h, bands, _d)
+
+    ; Row size is padded to 4-byte boundary
+    row-bytes = w * (bpp / 8)
+    row-padded = (row-bytes + 3) & ~3
+
+    ; row-padded aligned to 4
+    pad = row-padded - row-bytes
+    y <- [0..h): {
+        src-y = y
+        top-down == false -> src-y = h - 1 - y
+        row-start = data-offset + src-y * row-padded
+        x <- [0..w): {
+            b = data[row-start + x * (bpp / 8)] & 255
+            g = data[row-start + x * (bpp / 8) + 1] & 255
+            r = data[row-start + x * (bpp / 8) + 2] & 255
+            dst = (y * w + x) * bands
+            tmp.data[dst] = r
+            tmp.data[dst + 1] = g
+            tmp.data[dst + 2] = b
+            bands == 4 -> {
+                tmp.data[dst + 3] = data[row-start + x * 4 + 3] & 255
+            }
+        }
+    }
+    img = tmp
+}
+
+; bmp.save: save an image as 24-bit BMP
+; path str: output path
+; img image: image to save
+; returns ok bool
+save = (path str, img image) (ok bool) {
+    w = img.width
+    h = img.height
+    bpp = 24
+    src-bands = 3
+    img.bands >= 4 -> {
+        bpp = 32
+        src-bands = 4
+    }
+    row-bytes = w * (bpp / 8)
+    row-padded = (row-bytes + 3) & ~3
+    pad = row-padded - row-bytes
+    image-size = row-padded * h
+    file-size = 14 + 40 + image-size
+
+    ; Build output buffer using with-cap + push
+    buf []byte = with-cap(file-size)
+
+    ; --- File header (14 bytes) ---
+    buf.push(66)
+    buf.push(77)
+
+    ; File size (little-endian 32-bit)
+    buf.push(file-size & 255)
+    buf.push((file-size >> 8) & 255)
+    buf.push((file-size >> 16) & 255)
+    buf.push((file-size >> 24) & 255)
+
+    ; Reserved
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; Data offset
+    buf.push(54)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; --- DIB header (40 bytes, BITMAPINFOHEADER) ---
+    buf.push(40)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; Width
+    buf.push(w & 255)
+    buf.push((w >> 8) & 255)
+    buf.push((w >> 16) & 255)
+    buf.push((w >> 24) & 255)
+
+    ; Height
+    buf.push(h & 255)
+    buf.push((h >> 8) & 255)
+    buf.push((h >> 16) & 255)
+    buf.push((h >> 24) & 255)
+
+    ; Planes
+    buf.push(1)
+    buf.push(0)
+
+    ; BPP
+    buf.push(bpp & 255)
+    buf.push((bpp >> 8) & 255)
+
+    ; Compression (0 = none)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; Image size
+    buf.push(image-size & 255)
+    buf.push((image-size >> 8) & 255)
+    buf.push((image-size >> 16) & 255)
+    buf.push((image-size >> 24) & 255)
+
+    ; X ppm (2835 = 72 DPI)
+    buf.push(99)
+    buf.push(11)
+    buf.push(0)
+    buf.push(0)
+
+    ; Y ppm
+    buf.push(99)
+    buf.push(11)
+    buf.push(0)
+    buf.push(0)
+
+    ; Colors used
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; Colors important
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+
+    ; --- Pixel data (bottom-up, BGR) ---
+    y <- [0..h): {
+        src-y = h - 1 - y
+        x <- [0..w): {
+            src-idx = (src-y * w + x) * img.bands
+            r = img.data[src-idx]
+            g = img.data[src-idx + 1]
+            b = img.data[src-idx + 2]
+            buf.push(b)
+            buf.push(g)
+            buf.push(r)
+            bpp == 32 -> {
+                img.bands >= 4 -> {
+                    buf.push(img.data[src-idx + 3])
+                }
+
+                -> {
+                    buf.push(255)
+                }
+            }
+        }
+
+        ; Padding bytes
+        p <- [0..pad): {
+            buf.push(0)
+        }
+    }
+
+    ; Write to file
+    wfd = fs.open-write(path)
+    wfd < 0 -> {
+        ok = false
+        return
+    }
+    fs.write(wfd, buf, buf.len)
+    fs.close(wfd)
+    ok = true
+}

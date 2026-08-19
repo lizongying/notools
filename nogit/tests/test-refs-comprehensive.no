@@ -1,0 +1,383 @@
+; Comprehensive test: refs module — branches, tags, detached HEAD, reflog
+;
+; Tests: write-ref, read-ref, symbolic refs, create/delete branches,
+;        create/delete tags, list branches/tags, detached HEAD,
+;        reflog write/read, duplicate prevention.
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/refs
+# /nogit/src/repository
+
+main = () {
+    print('--- Comprehensive Refs Test ---')
+
+    passed = 0
+    failed = 0
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-refs-comp'
+    git-dir = test-dir - '/.git'
+    gd, init-ok = repository.repo-init(test-dir, false)
+    {
+        init-ok == true -> print('repo-init ok')
+
+        -> print('repo-init FAIL')
+    }
+
+    ; create test oids
+    oid-a = oid.hash-object('blob', 'content a')
+    oid-b = oid.hash-object('blob', 'content b')
+
+    ; 1. write-ref / read-ref
+    w-ok = refs.write-ref(git-dir, 'refs/heads/main', oid-a)
+    {
+        w-ok == true -> {
+            passed = passed + 1
+            print('PASS: write-ref')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: write-ref')
+        }
+    }
+
+    read-oid, r-ok = refs.read-ref(git-dir, 'refs/heads/main')
+    {
+        r-ok == true -> {
+            passed = passed + 1
+            print('PASS: read-ref ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: read-ref ok')
+        }
+    }
+    {
+        read-oid.eq(oid-a) == true -> {
+            passed = passed + 1
+            print('PASS: read-ref oid match')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: read-ref oid match')
+        }
+    }
+
+    ; 2. symbolic ref (HEAD)
+    refs.update-head(git-dir, 'refs/heads/main')
+    target, sym-ok = refs.read-symbolic-ref(git-dir, 'HEAD')
+    {
+        sym-ok == true -> {
+            passed = passed + 1
+            print('PASS: read-symbolic-ref ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: read-symbolic-ref ok')
+        }
+    }
+    {
+        target == 'refs/heads/main' -> {
+            passed = passed + 1
+            print('PASS: HEAD target')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: HEAD target')
+        }
+    }
+
+    ; HEAD resolves through symbolic ref
+    head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+    {
+        head-oid.eq(oid-a) == true -> {
+            passed = passed + 1
+            print('PASS: HEAD resolves')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: HEAD resolves')
+        }
+    }
+
+    ; 3. current-branch
+    branch, detached, cb-ok = refs.current-branch(git-dir)
+    {
+        cb-ok == true -> {
+            passed = passed + 1
+            print('PASS: current-branch ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: current-branch ok')
+        }
+    }
+    {
+        branch == 'main' -> {
+            passed = passed + 1
+            print('PASS: current-branch = main')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: current-branch = main')
+        }
+    }
+    {
+        detached == false -> {
+            passed = passed + 1
+            print('PASS: not detached')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: not detached')
+        }
+    }
+
+    ; 4. branch management
+    cb-ok2 = refs.create-branch(git-dir, 'feature', oid-a)
+    {
+        cb-ok2 == true -> {
+            passed = passed + 1
+            print('PASS: create-branch feature')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: create-branch feature')
+        }
+    }
+
+    refs.create-branch(git-dir, 'develop', oid-b)
+
+    bnames, bcount = refs.list-branches(git-dir)
+    {
+        bcount == 3 -> {
+            passed = passed + 1
+            print('PASS: branch count = 3')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: branch count = 3')
+        }
+    }
+
+    ; duplicate branch should fail
+    dup-ok = refs.create-branch(git-dir, 'feature', oid-b)
+    {
+        dup-ok == false -> {
+            passed = passed + 1
+            print('PASS: duplicate branch fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: duplicate branch fails')
+        }
+    }
+
+    ; delete branch
+    del-ok = refs.delete-branch(git-dir, 'feature')
+    {
+        del-ok == true -> {
+            passed = passed + 1
+            print('PASS: delete-branch')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: delete-branch')
+        }
+    }
+
+    bnames2, bcount2 = refs.list-branches(git-dir)
+    {
+        bcount2 == 2 -> {
+            passed = passed + 1
+            print('PASS: branch count after delete = 2')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: branch count after delete = 2')
+        }
+    }
+
+    ; 5. tag management
+    ct-ok = refs.create-tag(git-dir, 'v1.0', oid-a)
+    {
+        ct-ok == true -> {
+            passed = passed + 1
+            print('PASS: create-tag v1.0')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: create-tag v1.0')
+        }
+    }
+    refs.create-tag(git-dir, 'v2.0', oid-b)
+
+    tnames, tcount = refs.list-tags(git-dir)
+    {
+        tcount == 2 -> {
+            passed = passed + 1
+            print('PASS: tag count = 2')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: tag count = 2')
+        }
+    }
+
+    ; duplicate tag should fail
+    dup-tag-ok = refs.create-tag(git-dir, 'v1.0', oid-b)
+    {
+        dup-tag-ok == false -> {
+            passed = passed + 1
+            print('PASS: duplicate tag fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: duplicate tag fails')
+        }
+    }
+
+    ; delete tag
+    dt-ok = refs.delete-tag(git-dir, 'v1.0')
+    {
+        dt-ok == true -> {
+            passed = passed + 1
+            print('PASS: delete-tag')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: delete-tag')
+        }
+    }
+    tnames2, tcount2 = refs.list-tags(git-dir)
+    {
+        tcount2 == 1 -> {
+            passed = passed + 1
+            print('PASS: tag count after delete = 1')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: tag count after delete = 1')
+        }
+    }
+
+    ; 6. detached HEAD
+    refs.set-head-detached(git-dir, oid-a)
+    det-branch, det-detached, det-ok2 = refs.current-branch(git-dir)
+    {
+        det-detached == true -> {
+            passed = passed + 1
+            print('PASS: detached HEAD')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: detached HEAD')
+        }
+    }
+
+    ; restore HEAD
+    refs.update-head(git-dir, 'refs/heads/main')
+    branch2, detached2, cb-ok3 = refs.current-branch(git-dir)
+    {
+        detached2 == false -> {
+            passed = passed + 1
+            print('PASS: HEAD restored from detached')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: HEAD restored from detached')
+        }
+    }
+
+    ; 7. reflog
+    now = os.now()
+    refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), oid-a, 'Test User', 'test@test.com', now, '+0000', 'commit (initial): test')
+    refs.write-reflog(git-dir, 'HEAD', oid-a, oid-b, 'Test User', 'test@test.com', now + 100, '+0000', 'commit: second')
+
+    rl-content, rl-ok = refs.read-reflog(git-dir, 'HEAD')
+    {
+        rl-ok == true -> {
+            passed = passed + 1
+            print('PASS: reflog read ok')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: reflog read ok')
+        }
+    }
+    {
+        rl-content.len > 0 -> {
+            passed = passed + 1
+            print('PASS: reflog has content')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: reflog has content')
+        }
+    }
+
+    ; 8. nonexistent ref
+    junk-ro oid
+    junk-ro, missing-ok = refs.read-ref(git-dir, 'refs/heads/nonexistent')
+    {
+        missing-ok == false -> {
+            passed = passed + 1
+            print('PASS: nonexistent ref fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: nonexistent ref fails')
+        }
+    }
+
+    ; 9. read-symbolic-ref on non-symbolic (detached)
+    refs.set-head-detached(git-dir, oid-b)
+    junk-target str
+    junk-target, det-sym-ok = refs.read-symbolic-ref(git-dir, 'HEAD')
+    {
+        det-sym-ok == false -> {
+            passed = passed + 1
+            print('PASS: symbolic-ref on detached fails')
+        }
+
+        -> {
+            failed = failed + 1
+            print('FAIL: symbolic-ref on detached fails')
+        }
+    }
+
+    ; restore
+    refs.update-head(git-dir, 'refs/heads/main')
+
+    tp = util.i64-to-str(passed)
+    tf = util.i64-to-str(failed)
+    print('')
+    print('Passed: ' - tp - ', Failed: ' - tf)
+    failed > 0 -> 1
+    0
+}

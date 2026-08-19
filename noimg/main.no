@@ -1,0 +1,916 @@
+; main.no — noimg CLI dispatcher
+; Entry point: routes subcommands to image processing operations
+; Usage: no run main.no <command> [args...]
+;
+; Commands:
+;   info        Display image properties
+;   convert     Convert between formats (PPM, PGM, BMP, TGA, PNG, TIFF, GIF, PAM, JPEG, WebP)
+;   resize      Resize image
+;   thumbnail   Create thumbnail
+;   rotate      Rotate image (90, 180, 270)
+;   flip        Flip image (h, v, both)
+;   crop        Crop region
+;   grayscale   Convert to grayscale
+;   invert      Invert colors
+;   blur        Gaussian blur
+;   sharpen     Sharpen image
+;   edge        Edge detection (Sobel)
+;   emboss      Emboss filter
+;   oil         Oil painting effect
+;   brightness  Adjust brightness
+;   contrast    Adjust contrast
+;   gamma       Gamma correction
+;   threshold   Binary threshold
+;   posterize   Reduce color levels
+;   solarize    Solarize effect
+;   hist-eq     Histogram equalization
+;   hist-norm   Histogram normalization
+;   histogram   Print histogram
+;   stats       Print image statistics
+;   composite   Composite two images
+;   pad         Add border
+;   bandjoin    Extract single band
+;   median      Median filter
+;   noise       Add noise
+
+# /noimg/src/image.new
+# /noimg/src/image.new-from-data
+# /noimg/src/image.copy
+# /noimg/src/image.fill
+# /noimg/src/image.invert
+# /noimg/src/image.avg
+# /noimg/src/image.min-val
+# /noimg/src/image.max-val
+# /noimg/src/pnm.load
+# /noimg/src/pnm.save
+# /noimg/src/bmp.load
+# /noimg/src/bmp.save
+# /noimg/src/tga.load
+# /noimg/src/tga.save
+# /noimg/src/pam.load
+# /noimg/src/pam.save
+# /noimg/src/gif.load
+# /noimg/src/gif.save
+# /noimg/src/png.load
+# /noimg/src/png.save
+# /noimg/src/tiff.load
+# /noimg/src/tiff.save
+# /noimg/src/jpeg.load
+# /noimg/src/jpeg.save
+# /noimg/src/webp.load
+# /noimg/src/webp.save
+# /noimg/src/colour.rgb2gray
+# /noimg/src/colour.brightness
+# /noimg/src/colour.contrast
+# /noimg/src/colour.gamma
+# /noimg/src/colour.threshold
+# /noimg/src/colour.posterize
+# /noimg/src/colour.solarize
+# /noimg/src/resize.resize
+# /noimg/src/resize.thumbnail
+# /noimg/src/rotate.rot
+# /noimg/src/rotate.flip
+# /noimg/src/composite.crop
+# /noimg/src/composite.composite
+# /noimg/src/composite.pad
+# /noimg/src/composite.band-extract
+# /noimg/src/filter.gauss-blur
+# /noimg/src/filter.sharpen
+# /noimg/src/filter.sobel
+# /noimg/src/filter.emboss
+# /noimg/src/filter.oil-paint
+# /noimg/src/filter.median
+# /noimg/src/filter.add-noise
+# /noimg/src/histogram.equalize
+# /noimg/src/histogram.norm
+# /noimg/src/histogram.find
+# /noimg/src/histogram.mean
+# /noimg/src/histogram.stddev
+# /noimg/src/histogram.hist-print
+
+; parse-i64: parse a string argument to i64 (returns 0 on failure)
+; s str: string to parse
+; returns val i64: parsed value
+parse-i64 = (s str) (val i64) {
+    val = 0
+    r = s.to-i64()
+    r: {
+        nil -> val = 0
+        err -> val = 0
+        ok -> val = it
+    }
+}
+
+print-usage = () {
+    print('img — pure Nolang image processing (libvips-style)')
+    print('')
+    print('Usage: img <command> [args]')
+    print('')
+    print('Commands:')
+    print('  info <file>                  Display image properties')
+    print('  convert <in> <out>           Convert between PPM/PGM/BMP/TGA/PNG/TIFF/GIF/PAM/JPEG/WebP')
+    print('  resize <in> <out> <w> <h>    Resize (bilinear)')
+    print('  thumbnail <in> <out> <sz>    Create thumbnail (max dimension)')
+    print('  rotate <in> <out> <90|180|270>  Rotate image')
+    print('  flip <in> <out> <h|v|both>  Flip image')
+    print('  crop <in> <out> <x> <y> <w> <h>  Crop region')
+    print('  grayscale <in> <out>        Convert to grayscale')
+    print('  invert <in> <out>            Invert colors')
+    print('  blur <in> <out> <sigma>      Gaussian blur')
+    print('  sharpen <in> <out> <amount>  Sharpen image')
+    print('  edge <in> <out>              Sobel edge detection')
+    print('  emboss <in> <out>            Emboss filter')
+    print('  oil <in> <out> <r> <levels>  Oil painting effect')
+    print('  median <in> <out> <r>        Median filter')
+    print('  brightness <in> <out> <val>  Adjust brightness')
+    print('  contrast <in> <out> <val>    Adjust contrast')
+    print('  gamma <in> <out> <val*100>  Gamma correction')
+    print('  threshold <in> <out> <t>     Binary threshold')
+    print('  posterize <in> <out> <levels>  Reduce color levels')
+    print('  solarize <in> <out> <t>      Solarize effect')
+    print('  hist-eq <in> <out>          Histogram equalization')
+    print('  hist-norm <in> <out>         Histogram normalization')
+    print('  histogram <in>                Print histogram')
+    print('  stats <in>                   Print image statistics')
+    print('  composite <base> <overlay> <out> <x> <y>  Composite images')
+    print('  pad <in> <out> <border>      Add black border')
+    print('  band <in> <out> <idx>        Extract single band')
+    print('  noise <in> <out> <amount>    Add noise')
+    print('  version                      Print version')
+}
+
+; ── Helper: detect format and load ──
+
+load-image = (path str) (img image, ok bool) {
+    ok = false
+
+    ; Check extension
+    ext = ''
+    dot = -1
+    i <- [0..path.len): {
+        c = path[i] & 255
+        c == 46 -> dot = i
+    }
+    dot >= 0 -> {
+        ext = path.slice(dot + 1, path.len)
+    }
+    {
+        ext == 'ppm' || ext == 'pgm' || ext == 'pnm' || ext == 'PPM' || ext == 'PGM' || ext == 'PNM' -> {
+            result = pnm.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'bmp' || ext == 'BMP' -> {
+            result = bmp.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'tga' || ext == 'TGA' || ext == 'targa' -> {
+            result = tga.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'pam' || ext == 'PAM' -> {
+            result = pam.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'gif' || ext == 'GIF' -> {
+            result = gif.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'png' || ext == 'PNG' -> {
+            result = png.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'tif' || ext == 'tiff' || ext == 'TIF' || ext == 'TIFF' -> {
+            result = tiff.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'jpg' || ext == 'jpeg' || ext == 'JPG' || ext == 'JPEG' -> {
+            result = jpeg.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        ext == 'webp' || ext == 'WEBP' || ext == 'WebP' -> {
+            result = webp.load(path)
+            result: {
+                nil -> return
+                err -> return
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+        -> {
+
+            ; Try all formats in order of commonality
+            ; PNM first, then BMP, TGA, PNG, TIFF, GIF, PAM, JPEG, WebP
+            result = pnm.load(path)
+            result: {
+                nil -> result2 = bmp.load(path)
+                err -> result2 = bmp.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result2: {
+                nil -> result3 = tga.load(path)
+                err -> result3 = tga.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result3: {
+                nil -> result4 = png.load(path)
+                err -> result4 = png.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result4: {
+                nil -> result5 = tiff.load(path)
+                err -> result5 = tiff.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result5: {
+                nil -> result6 = gif.load(path)
+                err -> result6 = gif.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result6: {
+                nil -> result7 = pam.load(path)
+                err -> result7 = pam.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result7: {
+                nil -> result8 = jpeg.load(path)
+                err -> result8 = jpeg.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+            ok == false -> result8: {
+                nil -> result9 = webp.load(path)
+                err -> result9 = webp.load(path)
+                ok -> {
+                    img = it
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ── Helper: save image with format detection ──
+
+save-image = (path str, img image) (ok bool) {
+    ok = false
+    ext = ''
+    dot = -1
+    i <- [0..path.len): {
+        c = path[i] & 255
+        c == 46 -> dot = i
+    }
+    dot >= 0 -> {
+        ext = path.slice(dot + 1, path.len)
+    }
+    {
+        ext == 'bmp' || ext == 'BMP' -> {
+            ok = bmp.save(path, img)
+        }
+        ext == 'tga' || ext == 'TGA' || ext == 'targa' -> {
+            ok = tga.save(path, img)
+        }
+        ext == 'pam' || ext == 'PAM' -> {
+            ok = pam.save(path, img)
+        }
+        ext == 'gif' || ext == 'GIF' -> {
+            ok = gif.save(path, img)
+        }
+        ext == 'png' || ext == 'PNG' -> {
+            ok = png.save(path, img)
+        }
+        ext == 'tif' || ext == 'tiff' || ext == 'TIF' || ext == 'TIFF' -> {
+            ok = tiff.save(path, img)
+        }
+        ext == 'jpg' || ext == 'jpeg' || ext == 'JPG' || ext == 'JPEG' -> {
+            ok = jpeg.save(path, img)
+        }
+        ext == 'webp' || ext == 'WEBP' || ext == 'WebP' -> {
+            ok = webp.save(path, img)
+        }
+        -> {
+
+            ; Default to PNM (PPM/PGM)
+            ok = pnm.save(path, img)
+        }
+    }
+}
+
+; ── Entry point ──
+
+argc = args()
+
+{
+    argc < 2 -> {
+        print-usage()
+        os.exit(1)
+    }
+}
+cmd = arg(1)
+
+{
+    cmd == 'version' -> {
+        print('img v0.1.0 (pure Nolang image processing)')
+    }
+    cmd == 'help' -> {
+        print-usage()
+    }
+    cmd == 'info' -> {
+        argc < 3 -> {
+            print('Usage: img info <file>')
+            os.exit(1)
+        }
+        path = arg(2)
+        img, ok = load-image(path)
+        ok == false -> {
+            print('error: could not load {path}')
+            os.exit(1)
+        }
+        print('File: {path}')
+        print('Width: {img.width}')
+        print('Height: {img.height}')
+        print('Bands: {img.bands}')
+        print('Format: {img.format}')
+        print('Interpretation: {img.interpretation}')
+        mn = image.min-val(img)
+        mx = image.max-val(img)
+        avg = image.avg(img)
+        print('Min: {mn}')
+        print('Max: {mx}')
+        print('Avg: {avg}')
+    }
+    cmd == 'convert' -> {
+        argc < 4 -> {
+            print('Usage: img convert <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        save-image(out-path, img)
+        print('Converted: {in-path} -> {out-path}')
+    }
+    cmd == 'resize' -> {
+        argc < 6 -> {
+            print('Usage: img resize <in> <out> <width> <height>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        w = parse-i64(arg(4))
+        h = parse-i64(arg(5))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = resize.resize(img, w, h, 1)
+        save-image(out-path, out)
+        print('Resized: {in-path} -> {out-path} ({w}x{h})')
+    }
+    cmd == 'thumbnail' -> {
+        argc < 5 -> {
+            print('Usage: img thumbnail <in> <out> <max-size>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        sz = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = resize.thumbnail(img, sz, sz)
+        save-image(out-path, out)
+        print('Thumbnail: {in-path} -> {out-path}')
+    }
+    cmd == 'rotate' -> {
+        argc < 5 -> {
+            print('Usage: img rotate <in> <out> <90|180|270>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        angle = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = rotate.rot(img, angle)
+        save-image(out-path, out)
+        print('Rotated {angle}°: {in-path} -> {out-path}')
+    }
+    cmd == 'flip' -> {
+        argc < 5 -> {
+            print('Usage: img flip <in> <out> <h|v|both>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        dir-s = arg(4)
+        dir = 0
+        dir-s == 'h' -> dir = 0
+        dir-s == 'v' -> dir = 1
+        dir-s == 'both' -> dir = 2
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = rotate.flip(img, dir)
+        save-image(out-path, out)
+        print('Flipped {dir-s}: {in-path} -> {out-path}')
+    }
+    cmd == 'crop' -> {
+        argc < 8 -> {
+            print('Usage: img crop <in> <out> <x> <y> <w> <h>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        cx = parse-i64(arg(4))
+        cy = parse-i64(arg(5))
+        cw = parse-i64(arg(6))
+        ch = parse-i64(arg(7))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = composite.crop(img, cx, cy, cw, ch)
+        save-image(out-path, out)
+        print('Cropped: {in-path} -> {out-path}')
+    }
+    cmd == 'grayscale' -> {
+        argc < 4 -> {
+            print('Usage: img grayscale <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.rgb2gray(img)
+        save-image(out-path, out)
+        print('Grayscale: {in-path} -> {out-path}')
+    }
+    cmd == 'invert' -> {
+        argc < 4 -> {
+            print('Usage: img invert <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        image.invert(img)
+        save-image(out-path, img)
+        print('Inverted: {in-path} -> {out-path}')
+    }
+    cmd == 'blur' -> {
+        argc < 5 -> {
+            print('Usage: img blur <in> <out> <sigma*10>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        sigma = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.gauss-blur(img, sigma)
+        save-image(out-path, out)
+        print('Blurred: {in-path} -> {out-path}')
+    }
+    cmd == 'sharpen' -> {
+        argc < 4 -> {
+            print('Usage: img sharpen <in> <out> [amount*100]')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        amount = 150
+        argc >= 5 -> amount = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.sharpen(img, 15, amount)
+        save-image(out-path, out)
+        print('Sharpened: {in-path} -> {out-path}')
+    }
+    cmd == 'edge' -> {
+        argc < 4 -> {
+            print('Usage: img edge <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.sobel(img)
+        save-image(out-path, out)
+        print('Edge detected: {in-path} -> {out-path}')
+    }
+    cmd == 'emboss' -> {
+        argc < 4 -> {
+            print('Usage: img emboss <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.emboss(img)
+        save-image(out-path, out)
+        print('Embossed: {in-path} -> {out-path}')
+    }
+    cmd == 'oil' -> {
+        argc < 5 -> {
+            print('Usage: img oil <in> <out> <radius> [levels]')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        levels = 32
+        argc >= 6 -> levels = parse-i64(arg(5))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.oil-paint(img, radius, levels)
+        save-image(out-path, out)
+        print('Oil painted: {in-path} -> {out-path}')
+    }
+    cmd == 'median' -> {
+        argc < 5 -> {
+            print('Usage: img median <in> <out> <radius>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.median(img, radius)
+        save-image(out-path, out)
+        print('Median filtered: {in-path} -> {out-path}')
+    }
+    cmd == 'brightness' -> {
+        argc < 5 -> {
+            print('Usage: img brightness <in> <out> <value>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        b = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.brightness(img, b)
+        save-image(out-path, out)
+        print('Brightness adjusted: {in-path} -> {out-path}')
+    }
+    cmd == 'contrast' -> {
+        argc < 5 -> {
+            print('Usage: img contrast <in> <out> <value>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        c = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.contrast(img, c)
+        save-image(out-path, out)
+        print('Contrast adjusted: {in-path} -> {out-path}')
+    }
+    cmd == 'gamma' -> {
+        argc < 5 -> {
+            print('Usage: img gamma <in> <out> <value*100>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        g = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.gamma(img, g)
+        save-image(out-path, out)
+        print('Gamma corrected: {in-path} -> {out-path}')
+    }
+    cmd == 'threshold' -> {
+        argc < 5 -> {
+            print('Usage: img threshold <in> <out> <t>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        t = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.threshold(img, t)
+        save-image(out-path, out)
+        print('Thresholded: {in-path} -> {out-path}')
+    }
+    cmd == 'posterize' -> {
+        argc < 5 -> {
+            print('Usage: img posterize <in> <out> <levels>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        levels = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.posterize(img, levels)
+        save-image(out-path, out)
+        print('Posterized: {in-path} -> {out-path}')
+    }
+    cmd == 'solarize' -> {
+        argc < 5 -> {
+            print('Usage: img solarize <in> <out> <t>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        t = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.solarize(img, t)
+        save-image(out-path, out)
+        print('Solarized: {in-path} -> {out-path}')
+    }
+    cmd == 'hist-eq' -> {
+        argc < 4 -> {
+            print('Usage: img hist-eq <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = histogram.equalize(img)
+        save-image(out-path, out)
+        print('Histogram equalized: {in-path} -> {out-path}')
+    }
+    cmd == 'hist-norm' -> {
+        argc < 4 -> {
+            print('Usage: img hist-norm <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = histogram.norm(img)
+        save-image(out-path, out)
+        print('Histogram normalized: {in-path} -> {out-path}')
+    }
+    cmd == 'histogram' -> {
+        argc < 3 -> {
+            print('Usage: img histogram <file>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        hist = histogram.find(img)
+        histogram.hist-print(hist, in-path)
+    }
+    cmd == 'stats' -> {
+        argc < 3 -> {
+            print('Usage: img stats <file>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        mn = image.min-val(img)
+        mx = image.max-val(img)
+        avg = image.avg(img)
+        mean = histogram.mean(img)
+        sd = histogram.stddev(img)
+        print('Image: {in-path}')
+        print('Dimensions: {img.width}x{img.height}x{img.bands}')
+        print('Min: {mn}')
+        print('Max: {mx}')
+        print('Avg: {avg}')
+        print('Mean: {mean}')
+        print('StdDev: {sd}')
+    }
+    cmd == 'composite' -> {
+        argc < 7 -> {
+            print('Usage: img composite <base> <overlay> <out> <x> <y>')
+            os.exit(1)
+        }
+        base-path = arg(2)
+        overlay-path = arg(3)
+        out-path = arg(4)
+        x = parse-i64(arg(5))
+        y = parse-i64(arg(6))
+        base, ok1 = load-image(base-path)
+        overlay, ok2 = load-image(overlay-path)
+        {
+            ok1 == false || ok2 == false -> {
+                print('error: could not load images')
+                os.exit(1)
+            }
+        }
+        out = composite.composite(base, overlay, x, y)
+        save-image(out-path, out)
+        print('Composited: {overlay-path} onto {base-path} -> {out-path}')
+    }
+    cmd == 'pad' -> {
+        argc < 5 -> {
+            print('Usage: img pad <in> <out> <border>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        border = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        bg []byte = with-len(img.bands)
+        i <- [0..img.bands): {
+            bg[i] = 0
+        }
+        out = composite.pad(img, border, bg)
+        save-image(out-path, out)
+        print('Padded: {in-path} -> {out-path}')
+    }
+    cmd == 'band' -> {
+        argc < 5 -> {
+            print('Usage: img band <in> <out> <index>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        band = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = composite.band-extract(img, band)
+        save-image(out-path, out)
+        print('Band {band} extracted: {in-path} -> {out-path}')
+    }
+    cmd == 'noise' -> {
+        argc < 5 -> {
+            print('Usage: img noise <in> <out> <amount>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        amount = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.add-noise(img, amount)
+        save-image(out-path, out)
+        print('Noise added: {in-path} -> {out-path}')
+    }
+    -> {
+        print('Unknown command: {cmd}')
+        print-usage()
+        os.exit(1)
+    }
+}

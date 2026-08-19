@@ -1,0 +1,262 @@
+; repository — Git repository discovery, initialization, and path helpers
+;
+; Handles:
+;   * `git init` — create a new .git directory tree with HEAD, config, etc.
+;   * Repository discovery — walk up from CWD to find a .git directory
+;   * Path helpers — git-dir, objects-dir, refs-dir, HEAD path, etc.
+;
+; Cross-module safety: all return values are individual scalars/strings/oids.
+; Return strings are built by concatenation so they survive the boundary.
+
+# /nogit/src/util
+# /nogit/src/oid
+
+; ═══════════════════════════════════════════════
+; path helpers (return concat strings, boundary-safe)
+; ═══════════════════════════════════════════════
+
+; git-objects-dir: <git-dir>/objects/
+git-objects-dir = (git-dir str) (out str) {
+    out = git-dir - '/objects/'
+}
+
+; git-refs-dir: <git-dir>/refs/
+git-refs-dir = (git-dir str) (out str) {
+    out = git-dir - '/refs/'
+}
+
+; git-heads-dir: <git-dir>/refs/heads/
+git-heads-dir = (git-dir str) (out str) {
+    out = git-dir - '/refs/heads/'
+}
+
+; git-tags-dir: <git-dir>/refs/tags/
+git-tags-dir = (git-dir str) (out str) {
+    out = git-dir - '/refs/tags/'
+}
+
+; git-head-path: <git-dir>/HEAD
+git-head-path = (git-dir str) (out str) {
+    out = git-dir - '/HEAD'
+}
+
+; git-config-path: <git-dir>/config
+git-config-path = (git-dir str) (out str) {
+    out = git-dir - '/config'
+}
+
+; git-index-path: <git-dir>/index
+git-index-path = (git-dir str) (out str) {
+    out = git-dir - '/index'
+}
+
+; git-description-path: <git-dir>/description
+git-description-path = (git-dir str) (out str) {
+    out = git-dir - '/description'
+}
+
+; git-hooks-dir: <git-dir>/hooks/
+git-hooks-dir = (git-dir str) (out str) {
+    out = git-dir - '/hooks/'
+}
+
+; git-info-dir: <git-dir>/info/
+git-info-dir = (git-dir str) (out str) {
+    out = git-dir - '/info/'
+}
+
+; git-objects-pack-dir: <git-dir>/objects/pack/
+git-objects-pack-dir = (git-dir str) (out str) {
+    out = git-dir - '/objects/pack/'
+}
+
+; git-objects-info-dir: <git-dir>/objects/info/
+git-objects-info-dir = (git-dir str) (out str) {
+    out = git-dir - '/objects/info/'
+}
+
+; git-reflog-dir: <git-dir>/logs/
+git-reflog-dir = (git-dir str) (out str) {
+    out = git-dir - '/logs/'
+}
+
+; ═══════════════════════════════════════════════
+; repository initialization (git init)
+; ═══════════════════════════════════════════════
+
+; repo-init: create a new git repository (like `git init`)
+; base-dir str: directory to initialize in (created if absent)
+; bare bool: true for bare repo (git-dir = base-dir itself)
+; returns git-dir str, ok bool
+;
+; Creates the standard .git directory tree:
+;   .git/
+;     HEAD          -> "ref: refs/heads/main\n"
+;     config        -> [core] section
+;     description   -> placeholder
+;     objects/      (dir)
+;     objects/info/ (dir)
+;     objects/pack/ (dir)
+;     refs/         (dir)
+;     refs/heads/   (dir)
+;     refs/tags/    (dir)
+;     info/         (dir)
+;     info/exclude  -> placeholder
+repo-init = (base-dir str, bare bool) (git-dir str, ok bool) {
+    ok = false
+    git-dir = base-dir
+    bare == false -> git-dir = base-dir - '/.git'
+    ; create base dir if it does not exist
+    {
+        fs.is-dir(base-dir) -> {
+        }
+
+        -> {
+            os.mkdir(base-dir, 493) -> {
+            }
+
+            -> return; 493 = 0755
+        }
+    }
+    ; create git-dir root (skip if bare, git-dir == base-dir already created above)
+    bare == false -> {
+        os.mkdir(git-dir, 493) -> {}
+
+        -> return; 493 = 0755
+    }
+    ; create directory tree (parent dirs already exist at this point)
+    os.mkdir(git-dir - '/objects', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/objects/info', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/objects/pack', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/refs', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/refs/heads', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/refs/tags', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/info', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/hooks', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/logs', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/logs/refs', 493) -> {}
+
+    -> return
+    os.mkdir(git-dir - '/logs/refs/heads', 493) -> {}
+
+    -> return
+    ; write HEAD: "ref: refs/heads/main\n"
+    hp = git-head-path(git-dir)
+    fd = fs.open-write(hp)
+    head-content = 'ref: refs/heads/main\n'
+    fs.write(fd, head-content, head-content.len)
+    fs.close(fd)
+    ; write config
+    cp = git-config-path(git-dir)
+    fd2 = fs.open-write(cp)
+    {
+        bare == true -> {
+            cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tfilemode = true\n'
+            fs.write(fd2, cfg, cfg.len)
+        }
+
+        -> {
+            cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfilemode = true\n'
+            fs.write(fd2, cfg, cfg.len)
+        }
+    }
+    fs.close(fd2)
+    ; write description
+    dp = git-description-path(git-dir)
+    fd3 = fs.open-write(dp)
+    desc = 'Unnamed repository; edit this file to name it for gitweb.\n'
+    fs.write(fd3, desc, desc.len)
+    fs.close(fd3)
+    ; write info/exclude
+    ep = git-dir - '/info/exclude'
+    fd4 = fs.open-write(ep)
+    exc = '# git ls-files --others --exclude-from=.git/info/exclude\n'
+    fs.write(fd4, exc, exc.len)
+    fs.close(fd4)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; repository discovery
+; ═══════════════════════════════════════════════
+
+; repo-discover: find the .git directory by walking up from a starting path
+; start str: starting directory (e.g. CWD)
+; returns git-dir str, work-tree str, ok bool
+;
+; Walks up from `start` looking for a .git/ directory (non-bare) or a Git
+; directory (bare: has HEAD, objects/, refs/). Returns the git-dir and the
+; work-tree root (empty for bare repos).
+repo-discover = (start str) (git-dir str, work-tree str, ok bool) {
+    ok = false
+    git-dir = ''
+    work-tree = ''
+    cur = start
+    {
+
+        ; check for .git/ subdirectory (non-bare)
+        candidate = cur - '/.git'
+        isg = fs.is-dir(candidate)
+        isg == true -> {
+
+            ; verify it looks like a git dir (has HEAD and objects/)
+            head-ok = fs.is-file(candidate - '/HEAD')
+            obj-ok = fs.is-dir(candidate - '/objects')
+            head-ok == true -> {
+                obj-ok == true -> {
+                    git-dir = candidate
+                    work-tree = cur
+                    ok = true
+                    break
+                }
+            }
+        }
+        ; check if cur itself is a bare git dir
+        head-ok2 = fs.is-file(cur - '/HEAD')
+        obj-ok2 = fs.is-dir(cur - '/objects')
+        refs-ok2 = fs.is-dir(cur - '/refs')
+        head-ok2 == true -> {
+            obj-ok2 == true -> {
+                refs-ok2 == true -> {
+                    git-dir = cur
+                    work-tree = ''
+                    ok = true
+                    break
+                }
+            }
+        }
+        ; walk up
+        idx = cur.rindex('/')
+        idx < 0 -> break
+        cur = util.str-range(cur, 0, idx)
+        cur == '' -> break
+    } (true)
+}
+
+; repo-discover-cwd: discover repo from current working directory
+; returns git-dir str, work-tree str, ok bool
+repo-discover-cwd = () (git-dir str, work-tree str, ok bool) {
+    cwd = os.get-wd()
+    git-dir, work-tree, ok = repo-discover(cwd)
+}
+; ═══════════════════════════════════════════════
+; local helpers (intra-module safe)
+; ═══════════════════════════════════════════════

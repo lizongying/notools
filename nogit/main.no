@@ -1,0 +1,887 @@
+; main — Git CLI entry point and command dispatcher
+;
+; Implements the modern Git command set in pure Nolang (no system git binary).
+; Commands: init, add, commit, log, status, branch, checkout, tag,
+;           show, cat-file, hash-object, ls-tree, ls-files, rev-parse,
+;           write-tree, read-tree, update-ref, config, reflog
+;
+; Usage: no run nogit <command> [args...]
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/object
+# /nogit/src/refs
+# /nogit/src/config
+# /nogit/src/index
+# /nogit/src/repository
+# /nogit/src/revwalk
+# /nogit/src/zlib
+# /nogit/src/pack
+
+; os.arg(0) returns the program path (argv[0]), so we subtract 1 from
+; argc and add 1 to every arg index to skip the program name.
+main = () {
+    argc = os.args() - 1
+    argc < 1 -> {
+        print-usage()
+        return
+    }
+    cmd = os.arg(1)
+    cmd: {
+        'init' -> cmd-init(argc)
+        'add' -> cmd-add(argc)
+        'commit' -> cmd-commit(argc)
+        'log' -> cmd-log(argc)
+        'status' -> cmd-status(argc)
+        'branch' -> cmd-branch(argc)
+        'checkout' -> cmd-checkout(argc)
+        'tag' -> cmd-tag(argc)
+        'show' -> cmd-show(argc)
+        'cat-file' -> cmd-cat-file(argc)
+        'hash-object' -> cmd-hash-object(argc)
+        'ls-tree' -> cmd-ls-tree(argc)
+        'ls-files' -> cmd-ls-files(argc)
+        'rev-parse' -> cmd-rev-parse(argc)
+        'write-tree' -> cmd-write-tree(argc)
+        'update-ref' -> cmd-update-ref(argc)
+        'config' -> cmd-config(argc)
+        'reflog' -> cmd-reflog(argc)
+        'version' -> print('nolang-git v0.1.0 (pure nolang)')
+        'help' -> print-usage()
+        -> {
+            print('unknown command: {cmd}')
+            print-usage()
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; usage
+; ═══════════════════════════════════════════════
+
+print-usage = () {
+    print('nolang-git — pure Nolang Git implementation')
+    print('')
+    print('Usage: git <command> [args]')
+    print('')
+    print('Commands:')
+    print('  init [path]       Create a new repository')
+    print('  add <path>        Stage a file')
+    print('  commit -m <msg>   Create a commit')
+    print('  log [count]       Show commit history')
+    print('  status            Show working tree status')
+    print('  branch [name]     List or create branches')
+    print('  checkout <name>   Switch branches')
+    print('  tag <name>        Create a tag')
+    print('  show <ref>        Show object content')
+    print('  cat-file <t> <r>  Show object by type and ref')
+    print('  hash-object <p>   Hash a file (write to store)')
+    print('  ls-tree <ref>     List tree contents')
+    print('  ls-files          List index contents')
+    print('  rev-parse <ref>   Resolve ref to oid')
+    print('  write-tree        Write tree from index')
+    print('  update-ref <r> <v> Update a ref')
+    print('  config <s.k> [v]  Get or set config')
+    print('  reflog            Show reflog')
+    print('  version           Show version')
+}
+
+; ═══════════════════════════════════════════════
+; local helpers
+; ═══════════════════════════════════════════════
+
+read-worktree-file = (work-tree str, path str) (content str, ok bool) {
+    sl = '/'
+    full = work-tree - sl - path
+    work-tree.len > 0 -> {
+        last = work-tree[work-tree.len - 1]
+        last == 47 -> full = work-tree - path
+    }
+    content, ok = util.read-file-str(full)
+}
+
+; ═══════════════════════════════════════════════
+; git init
+; ═══════════════════════════════════════════════
+
+cmd-init = (argc i64) {
+    path = '.'
+    bare = false
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '--bare' -> bare = true
+        arg == '-q' -> {}
+        -> path = arg
+    }
+    cwd = os.get-wd()
+    full-path = path
+    {
+        path == '.' -> full-path = cwd
+        path.starts-with('/') -> full-path = path
+        path.starts-with('.') -> {
+            sl = '/'
+            {
+                path.starts-with('./') -> {
+                    full-path = cwd - sl - util.str-range(path, 2, path.len)
+                }
+                -> {
+                    full-path = cwd - sl - path
+                }
+            }
+        }
+    }
+    git-dir, ok = repository.repo-init(full-path, bare)
+    ok == false -> {
+        print('fatal: could not initialize repository')
+        return
+    }
+    print('Initialized empty Git repository in {git-dir}')
+}
+
+; ═══════════════════════════════════════════════
+; git add
+; ═══════════════════════════════════════════════
+
+cmd-add = (argc i64) {
+    argc < 2 -> {
+        print('usage: git add <path>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    i <- [1..argc): {
+        path = os.arg(i + 1)
+        content, read-ok = util.read-file-str(path)
+        read-ok == false -> {
+            print('fatal: could not read {path}')
+            return
+        }
+        blob-oid = object.write-blob(git-dir, content)
+        index-ok = index.index-add(git-dir, path, blob-oid, 33188)
+        index-ok == false -> {
+            print('fatal: could not stage {path}')
+            return
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git commit
+; ═══════════════════════════════════════════════
+
+cmd-commit = (argc i64) {
+    message = ''
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '-m' -> {
+            i < argc - 1 -> {
+                message = os.arg(i + 2)
+            }
+        }
+    }
+    message == '' -> {
+        print('usage: git commit -m <message>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    names, hexoids, modes-str, count, index-ok = index.read-index(git-dir)
+    {
+        index-ok == false -> {
+            print('nothing to commit (empty index)')
+            return
+        }
+        count == 0 -> {
+            print('nothing to commit (empty index)')
+            return
+        }
+    }
+    tree-raw = ''
+    i <- [0..count): {
+        name-pos = 0
+        j <- [0..i): {
+            nl = util.find-byte-str(names, 10, name-pos)
+            name-pos = nl + 1
+        }
+        nl = util.find-byte-str(names, 10, name-pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, name-pos, end)
+        mode-pos = 0
+        j2 <- [0..i): {
+            mnl = util.find-byte-str(modes-str, 10, mode-pos)
+            mode-pos = mnl + 1
+        }
+        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
+        mend = modes-str.len
+        mnl2 >= 0 -> mend = mnl2
+        ms = util.str-range(modes-str, mode-pos, mend)
+        mode-val = 0
+        k <- [0..ms.len): {
+            mode-val = mode-val * 10 + (ms[k] - 48)
+        }
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
+        entry-oid oid
+        k <- [0..20): {
+            c0 = hx[k * 2]
+            c1 = hx[k * 2 + 1]
+            hi = util.hexdigit(c0)
+            lo = util.hexdigit(c1)
+            entry-oid.id[k] = (hi << 4) | lo
+        }
+        tree-raw = object.tree-add-raw(tree-raw, mode-val, nm, entry-oid)
+    }
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    parent-oid, parent-ok = refs.read-ref(git-dir, 'HEAD')
+    parenthex = ''
+    parent-ok == true -> parenthex = oid.oid-hex-str(parent-oid)
+    a-name, a-ok = config.get-user-name(git-dir)
+    {
+        a-ok == false -> {
+            a-name = 'Unknown'
+            a-email = 'unknown@example.com'
+        }
+        -> {
+            a-email, a-ok = config.get-user-email(git-dir)
+            a-ok == false -> a-email = 'unknown@example.com'
+        }
+    }
+    now = os.now()
+    tz = '+0000'
+    commit-oid = object.write-commit-full(git-dir, tree-oid, parenthex, a-name, a-email, now, tz, a-name, a-email, now, tz, message)
+    branch, detached, branch-ok = refs.current-branch(git-dir)
+
+    ; Update refs
+    ref-name = 'refs/heads/' - branch
+    commit-msg = 'commit: ' - message
+    initial-msg = 'commit (initial): ' - message
+    {
+        branch-ok == true -> {
+            detached == false -> {
+                refs.write-ref(git-dir, ref-name, commit-oid)
+                refs.write-reflog(git-dir, 'HEAD', parent-oid, commit-oid, a-name, a-email, now, tz, commit-msg)
+                refs.write-reflog(git-dir, ref-name, parent-oid, commit-oid, a-name, a-email, now, tz, commit-msg)
+            }
+            -> {
+                refs.set-head-detached(git-dir, commit-oid)
+            }
+        }
+        -> {
+            refs.create-branch(git-dir, 'main', commit-oid)
+            refs.update-head(git-dir, 'refs/heads/main')
+            refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit-oid, a-name, a-email, now, tz, initial-msg)
+        }
+    }
+
+    ; Print result
+    ch = oid.oid-hex-str(commit-oid)
+    {
+        branch-ok == true -> {
+            detached == false -> {
+                line = '[' - branch
+                line = line - ' '
+                line = line - ch
+                line = line - '] '
+                line = line - message
+                print(line)
+            }
+            -> {
+                print('HEAD detached at {ch}')
+            }
+        }
+        -> {
+            print('[main {ch}] {message}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git log
+; ═══════════════════════════════════════════════
+
+cmd-log = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    max-count = 0
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '-n' -> {
+            i < argc - 1 -> {
+                nstr = os.arg(i + 2)
+                nstr.len > 0 -> {
+                    nv = 0
+                    k <- [0..nstr.len): {
+                        nv = nv * 10 + (nstr[k] - 48)
+                    }
+                    max-count = nv
+                }
+            }
+        }
+    }
+    log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
+    log-ok == false -> {
+        print('fatal: could not walk commits')
+        return
+    }
+    print(log-output)
+}
+
+; ═══════════════════════════════════════════════
+; git status
+; ═══════════════════════════════════════════════
+
+cmd-status = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    branch, detached, branch-ok = refs.current-branch(git-dir)
+    {
+        branch-ok == true -> {
+            detached == false -> print('On branch {branch}')
+            detached == true -> print('HEAD detached')
+        }
+        -> {
+            print('On branch main (no commits yet)')
+        }
+    }
+    print('')
+    names, hexoids, modes-str, count, index-ok = index.read-index(git-dir)
+    count == 0 -> {
+        print('nothing to commit')
+        return
+    }
+    print('Changes to be committed:')
+    pos = 0
+    i <- [0..count): {
+        nl = util.find-byte-str(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, pos, end)
+        line = '  new file: '
+        line = line - nm
+        print(line)
+        pos = nl + 1
+        nl < 0 -> break
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git branch
+; ═══════════════════════════════════════════════
+
+cmd-branch = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    {
+        repo-ok == false -> {
+            print('fatal: not a git repository')
+            return
+        }
+        argc >= 2 -> {
+            name = os.arg(2)
+            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-ok == false -> {
+                print('fatal: no HEAD ref')
+                return
+            }
+            ok = refs.create-branch(git-dir, name, head-oid)
+            {
+                ok == false -> {
+                    print('fatal: branch {name} already exists')
+                }
+                -> {
+                    print('Created branch {name}')
+                }
+            }
+            return
+        }
+    }
+    names, count = refs.list-branches(git-dir)
+    cur-branch, _det, cur-ok = refs.current-branch(git-dir)
+    pos = 0
+    {
+        pos >= names.len -> break
+        nl = util.find-byte-str(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, pos, end)
+        is-cur = true
+        nm.len != cur-branch.len -> is-cur = false
+        is-cur == true -> {
+            j <- [0..nm.len): {
+                nm[j] != cur-branch[j] -> {
+                    is-cur = false
+                    break
+                }
+            }
+        }
+        is-cur == true -> print('* {nm}')
+        is-cur == false -> print('  {nm}')
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+; ═══════════════════════════════════════════════
+; git checkout
+; ═══════════════════════════════════════════════
+
+cmd-checkout = (argc i64) {
+    argc < 2 -> {
+        print('usage: git checkout <branch>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    name = os.arg(2)
+    ref-name = 'refs/heads/' - name
+    o, ref-ok = refs.read-ref(git-dir, ref-name)
+    ref-ok == false -> {
+        print('error: pathspec {name} did not match any branch')
+        return
+    }
+    refs.update-head(git-dir, ref-name)
+    print('Switched to branch {name}')
+}
+
+; ═══════════════════════════════════════════════
+; git tag
+; ═══════════════════════════════════════════════
+
+cmd-tag = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    {
+        repo-ok == false -> {
+            print('fatal: not a git repository')
+            return
+        }
+        argc >= 2 -> {
+            name = os.arg(2)
+            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-ok == false -> {
+                print('fatal: no HEAD ref')
+                return
+            }
+            ok = refs.create-tag(git-dir, name, head-oid)
+            {
+                ok == false -> {
+                    print('fatal: tag {name} already exists')
+                }
+                -> {
+                    print('Created tag {name}')
+                }
+            }
+            return
+        }
+    }
+    names, count = refs.list-tags(git-dir)
+    pos = 0
+    {
+        pos >= names.len -> break
+        nl = util.find-byte-str(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, pos, end)
+        print(nm)
+        pos = nl + 1
+        nl < 0 -> break
+    } (true)
+}
+
+; ═══════════════════════════════════════════════
+; git cat-file
+; ═══════════════════════════════════════════════
+
+cmd-cat-file = (argc i64) {
+    argc < 3 -> {
+        print('usage: git cat-file <type> <ref>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    opt = os.arg(2)
+    ref = os.arg(3)
+    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    ref-ok == false -> {
+        print('fatal: could not resolve {ref}')
+        return
+    }
+    kind, data, read-ok = object.read-loose(git-dir, o)
+    if read-ok == false {
+        kind, data, read-ok = pack.read-packed-object(git-dir, o)
+    }
+    if read-ok == false {
+        print('fatal: object not found')
+        return
+    }
+    opt: {
+        '-t' -> print(kind)
+        '-s' -> {
+            sz = util.i64-to-str(data.len)
+            print(sz)
+        }
+        '-p' -> {
+            print(data)
+        }
+        kind -> print(data)
+        -> {
+            print('unknown option: {opt}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git hash-object
+; ═══════════════════════════════════════════════
+
+cmd-hash-object = (argc i64) {
+    write = false
+    path = ''
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '-w' -> write = true
+        arg != '-w' -> path = arg
+    }
+    path == '' -> {
+        print('usage: git hash-object [-w] <file>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    content, read-ok = util.read-file-str(path)
+    {
+        read-ok == false -> {
+            print('fatal: could not read {path}')
+            return
+        }
+        write == true -> {
+            o = object.write-blob(git-dir, content)
+            ch = oid.oid-hex-str(o)
+            print(ch)
+        }
+        -> {
+            o = oid.hash-object('blob', content)
+            ch = oid.oid-hex-str(o)
+            print(ch)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git ls-tree
+; ═══════════════════════════════════════════════
+
+cmd-ls-tree = (argc i64) {
+    argc < 2 -> {
+        print('usage: git ls-tree <tree-ish>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ref = os.arg(2)
+    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    ref-ok == false -> {
+        print('fatal: could not resolve {ref}')
+        return
+    }
+    kind, data, read-ok = object.read-loose(git-dir, o)
+    if read-ok == false {
+        kind, data, read-ok = pack.read-packed-object(git-dir, o)
+    }
+    if read-ok == false {
+        print('fatal: object not found')
+        return
+    }
+    kind: {
+        'commit' -> {
+            o, ref-ok = revwalk.commit-tree-oid(git-dir, o)
+            if ref-ok == false {
+                print('fatal: could not read commit tree')
+                return
+            }
+            kind, data, read-ok = object.read-loose(git-dir, o)
+        }
+        'tree' ->
+        -> {
+            print('fatal: not a tree object')
+            return
+        }
+    }
+    n = object.tree-count-raw(data)
+    i <- [0..n): {
+        mode = object.tree-mode-raw(data, i)
+        nm = object.tree-name-raw(data, i)
+        entry-oid = object.tree-id-raw(data, i)
+        type-name = 'blob'
+        mode == 16384 -> type-name = 'tree'
+        mode-str = ''
+        m = mode
+        m == 0 -> mode-str = '0'
+        m != 0 -> {
+            tmp []byte = with-cap(16)
+            {
+                tmp.push(48 + (m % 8))
+                m = m / 8
+                m == 0 -> break
+            } (true)
+            L = tmp.len
+            j <- [0..L): {
+                cs str = with-len(1)
+                cs[0] = tmp[L - 1 - j]
+                mode-str = mode-str - cs
+            }
+        }
+        mode-str.len < 6 -> {
+            pad-n = 6 - mode-str.len
+            j <- [0..pad-n): {
+                mode-str = '0' - mode-str
+            }
+        }
+        ch = oid.oid-hex-str(entry-oid)
+        print('{mode-str} {type-name} {ch}\t{nm}')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git ls-files
+; ═══════════════════════════════════════════════
+
+cmd-ls-files = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    names, hexoids, modes-str, count, index-ok = index.read-index(git-dir)
+    index-ok == false -> return
+    pos = 0
+    i <- [0..count): {
+        nl = util.find-byte-str(names, 10, pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, pos, end)
+        print(nm)
+        pos = nl + 1
+        nl < 0 -> break
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git rev-parse
+; ═══════════════════════════════════════════════
+
+cmd-rev-parse = (argc i64) {
+    argc < 2 -> {
+        print('usage: git rev-parse <ref>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ref = os.arg(2)
+    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    ref-ok == false -> {
+        print('fatal: could not resolve {ref}')
+        return
+    }
+    ch = oid.oid-hex-str(o)
+    print(ch)
+}
+
+; ═══════════════════════════════════════════════
+; git write-tree
+; ═══════════════════════════════════════════════
+
+cmd-write-tree = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    names, hexoids, modes-str, count, index-ok = index.read-index(git-dir)
+    index-ok == false -> {
+        print('fatal: could not read index')
+        return
+    }
+    tree-raw = ''
+    i <- [0..count): {
+        name-pos = 0
+        j <- [0..i): {
+            nl = util.find-byte-str(names, 10, name-pos)
+            name-pos = nl + 1
+        }
+        nl = util.find-byte-str(names, 10, name-pos)
+        end = names.len
+        nl >= 0 -> end = nl
+        nm = util.str-range(names, name-pos, end)
+        mode-pos = 0
+        j2 <- [0..i): {
+            mnl = util.find-byte-str(modes-str, 10, mode-pos)
+            mode-pos = mnl + 1
+        }
+        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
+        mend = modes-str.len
+        mnl2 >= 0 -> mend = mnl2
+        ms = util.str-range(modes-str, mode-pos, mend)
+        mode-val = 0
+        k <- [0..ms.len): {
+            mode-val = mode-val * 10 + (ms[k] - 48)
+        }
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
+        entry-oid oid
+        k <- [0..20): {
+            c0 = hx[k * 2]
+            c1 = hx[k * 2 + 1]
+            hi = util.hexdigit(c0)
+            lo = util.hexdigit(c1)
+            entry-oid.id[k] = (hi << 4) | lo
+        }
+        tree-raw = object.tree-add-raw(tree-raw, mode-val, nm, entry-oid)
+    }
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    ch = oid.oid-hex-str(tree-oid)
+    print(ch)
+}
+
+; ═══════════════════════════════════════════════
+; git update-ref
+; ═══════════════════════════════════════════════
+
+cmd-update-ref = (argc i64) {
+    argc < 3 -> {
+        print('usage: git update-ref <ref> <oid>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ref = os.arg(2)
+    val = os.arg(3)
+    o, ref-ok = revwalk.resolve-ref(git-dir, val)
+    {
+        ref-ok == false -> {
+            o, ref-ok = oid.oid-from-hex(val)
+            ref-ok == false -> {
+                print('fatal: could not resolve {val}')
+                return
+            }
+        }
+    }
+    refs.write-ref(git-dir, ref, o)
+}
+
+; ═══════════════════════════════════════════════
+; git config
+; ═══════════════════════════════════════════════
+
+cmd-config = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    {
+        repo-ok == false -> {
+            print('fatal: not a git repository')
+            return
+        }
+        argc < 2 -> {
+            print('usage: git config <section.key> [value]')
+            return
+        }
+    }
+    key = os.arg(2)
+    dot = util.find-byte-str(key, 46, 0)
+    dot < 0 -> {
+        print('invalid key format, use section.key')
+        return
+    }
+    section = util.str-range(key, 0, dot)
+    skey = util.str-range(key, dot + 1, key.len)
+    {
+        argc >= 3 -> {
+            val = os.arg(3)
+            config.config-set(git-dir, section, skey, val)
+        }
+        -> {
+            val, get-ok = config.config-get(git-dir, section, skey)
+            get-ok == true -> print(val)
+            get-ok == false -> print('')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; git reflog
+; ═══════════════════════════════════════════════
+
+cmd-reflog = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    content, read-ok = refs.read-reflog(git-dir, 'HEAD')
+    read-ok == false -> {
+        print('no reflog')
+        return
+    }
+    print(content)
+}
+
+; ═══════════════════════════════════════════════
+; git show
+; ═══════════════════════════════════════════════
+
+cmd-show = (argc i64) {
+    argc < 2 -> {
+        print('usage: git show <ref>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ref = os.arg(2)
+    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    ref-ok == false -> {
+        print('fatal: could not resolve {ref}')
+        return
+    }
+    kind, data, read-ok = object.read-loose(git-dir, o)
+    if read-ok == false {
+        kind, data, read-ok = pack.read-packed-object(git-dir, o)
+    }
+    if read-ok == false {
+        print('fatal: object not found')
+        return
+    }
+    print('type: {kind}')
+    ch = oid.oid-hex-str(o)
+    print('oid: {ch}')
+    print('')
+    print(data)
+}
