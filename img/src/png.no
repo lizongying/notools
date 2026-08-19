@@ -25,31 +25,10 @@
 # /img/src/image.set-pixel
 
 ; ── CRC32 ──
+; CRC-32 (IEEE 802.3) using bitwise computation (no lookup table needed)
+; Polynomial: 0xEDB88320 (reflected)
 
-; CRC-32 lookup table (initialized in png-init-crc)
-CRC-TABLE str = ''
-
-; Initialize CRC table (called once)
-png-init-crc = () {
-    CRC-TABLE = with-len(256)
-    n <- [0..256): {
-        c = n
-        k <- [0..8): {
-            {
-                c & 1 != 0 -> {
-                    c = (c >> 1) ^ 0xedb88320
-                }
-
-                -> {
-                    c = c >> 1
-                }
-            }
-        }
-        CRC-TABLE[n] = c & 4294967295
-    }
-}
-
-; png-crc32: compute CRC32 of data
+; png-crc32: compute CRC32 of data (bitwise, no table)
 ; data str: input
 ; start i64: starting position
 ; len i64: length
@@ -58,8 +37,18 @@ png-crc32 = (data str, start i64, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
         b = data[start + i] & 255
-        idx = (crc ^ b) & 255
-        crc = (crc >> 8) ^ CRC-TABLE[idx]
+        crc = crc ^ b
+        j <- [0..8): {
+            {
+                crc & 1 != 0 -> {
+                    crc = (crc >> 1) ^ 3988292384
+                }
+
+                -> {
+                    crc = crc >> 1
+                }
+            }
+        }
     }
     crc = crc ^ 4294967295
 }
@@ -70,7 +59,7 @@ png-crc32 = (data str, start i64, len i64) (crc i64) {
 ; path str: file path
 ; returns img ?image: loaded image, nil on error
 load = (path str) (img ?image) {
-    png-init-crc()
+    ; CRC32 uses bitwise computation, no table init needed
     data = fs.read-file(path)
     data.len < 24 -> {
         img = nil
@@ -92,9 +81,9 @@ load = (path str) (img ?image) {
     compression = 0
     filter = 0
     interlace = 0
-    idat-data = with-cap(0)
-    trns = with-len(0)
-    palette = with-len(0)
+    idat-data []byte = with-cap(0)
+    trns []byte = with-cap(0)
+    palette []byte = with-cap(0)
     has-trns = false
     has-palette = false
 
@@ -181,7 +170,7 @@ load = (path str) (img ?image) {
     }
 
     ; Decompress IDAT using zlib
-    raw = gzip.inflate-decompress(idat-data, w * h * (bands + 1))
+    raw = gzip.gzip-decompress(idat-data)
 
     ; Raw data has filter bytes: 1 byte per row + pixel data
     bytes-per-pixel = bands
@@ -194,7 +183,7 @@ load = (path str) (img ?image) {
     tmp = image.new-from-data(w, h, bands, _d)
 
     ; Allocate filtered row buffers
-    prev-row = with-len(stride)
+    prev-row str = with-len(stride)
     i <- [0..stride): {
         prev-row[i] = 0
     }
@@ -206,7 +195,7 @@ load = (path str) (img ?image) {
         filter-type = raw[row-start]
 
         ; Copy current row
-        cur-row = with-len(stride)
+        cur-row str = with-len(stride)
         i <- [0..stride): {
             cur-row[i] = raw[row-start + 1 + i]
         }
@@ -347,7 +336,7 @@ load = (path str) (img ?image) {
 ; img image: image to save
 ; returns ok bool
 save = (path str, img image) (ok bool) {
-    png-init-crc()
+    ; CRC32 uses bitwise computation, no table init needed
     color-type = 2
     bands = 3
     {
@@ -365,7 +354,7 @@ save = (path str, img image) (ok bool) {
     ; Build raw data with filter bytes (filter=0 for all rows)
     stride = img.width * bands
     row-len = stride + 1
-    raw = with-len(row-len * img.height)
+    raw str = with-len(row-len * img.height)
     y <- [0..img.height): {
         raw[y * row-len] = 0
         {
@@ -411,42 +400,43 @@ save = (path str, img image) (ok bool) {
             }
         }
     }
+
+    ; Compress with zlib
+    compressed = gzip.gzip-compress(raw)
+
+    ; Build PNG file
+    buf []byte = with-cap(8 + 25 + 12 + compressed.len + 12 + 12)
+
+    ; PNG signature
+    buf.push(137)
+    buf.push(80)
+    buf.push(78)
+    buf.push(71)
+    buf.push(13)
+    buf.push(10)
+    buf.push(26)
+    buf.push(10)
+
+    ; IHDR chunk (13 bytes data)
+    png-write-chunk(buf, 'IHDR', png-build-ihdr(img.width, img.height, 8, color-type))
+
+    ; IDAT chunk
+    png-write-chunk-raw(buf, 'IDAT', compressed)
+
+    ; IEND chunk (0 bytes data)
+    iend-data []byte = with-cap(0)
+    png-write-chunk(buf, 'IEND', iend-data)
+
+    ; Write file
+    wfd = fs.open-write(path)
+    wfd < 0 -> {
+        ok = false
+        return
+    }
+    fs.write(wfd, buf, buf.len)
+    fs.close(wfd)
+    ok = true
 }
-
-; Compress with zlib
-compressed = gzip.gzip-compress(raw)
-
-; Build PNG file
-buf = with-cap(8 + 25 + 12 + compressed.len + 12 + 12)
-
-; PNG signature
-buf.push(137)
-buf.push(80)
-buf.push(78)
-buf.push(71)
-buf.push(13)
-buf.push(10)
-buf.push(26)
-buf.push(10)
-
-; IHDR chunk (13 bytes data)
-png-write-chunk(buf, 'IHDR', png-build-ihdr(img.width, img.height, 8, color-type))
-
-; IDAT chunk
-png-write-chunk-raw(buf, 'IDAT', compressed)
-
-; IEND chunk (0 bytes data)
-png-write-chunk(buf, 'IEND', with-len(0))
-
-; Write file
-wfd = fs.open-write(path)
-wfd < 0 -> {
-    ok = false
-    return
-}
-fs.write(wfd, buf, buf.len)
-fs.close(wfd)
-ok = true
 
 ; png-build-ihdr: build IHDR chunk data (13 bytes)
 ; w i64: width
@@ -455,7 +445,7 @@ ok = true
 ; color-type i64: color type
 ; returns data []byte
 png-build-ihdr = (w i64, h i64, bit-depth i64, color-type i64) (data []byte) {
-    data = with-len(13)
+    data []byte = with-len(13)
     data[0] = (w >> 24) & 255
     data[1] = (w >> 16) & 255
     data[2] = (w >> 8) & 255
@@ -499,7 +489,7 @@ png-write-chunk = (out []byte, type-str str, data []byte) {
     crc-data = type-str.to-bytes()
 
     ; Build a combined buffer for CRC
-    combined = with-cap(4 + data.len)
+    combined []byte = with-cap(4 + data.len)
     i <- [0..4): {
         combined.push(type-bytes[i])
     }
@@ -532,7 +522,7 @@ png-write-chunk-raw = (out []byte, type-str str, data []byte) {
     }
 
     ; CRC
-    combined = with-cap(4 + data.len)
+    combined []byte = with-cap(4 + data.len)
     i <- [0..4): {
         combined.push(type-bytes[i])
     }
@@ -546,7 +536,7 @@ png-write-chunk-raw = (out []byte, type-str str, data []byte) {
     out.push(crc & 255)
 }
 
-; png-crc32-combined: compute CRC32 from a []byte buffer
+; png-crc32-combined: compute CRC32 from a []byte buffer (bitwise, no table)
 ; data []byte: input data
 ; len i64: data length
 ; returns crc i64
@@ -554,8 +544,18 @@ png-crc32-combined = (data []byte, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
         b = data[i]
-        idx = (crc ^ b) & 255
-        crc = (crc >> 8) ^ CRC-TABLE[idx]
+        crc = crc ^ b
+        j <- [0..8): {
+            {
+                crc & 1 != 0 -> {
+                    crc = (crc >> 1) ^ 3988292384
+                }
+
+                -> {
+                    crc = crc >> 1
+                }
+            }
+        }
     }
     crc = crc ^ 4294967295
 }

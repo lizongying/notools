@@ -39,11 +39,13 @@ load = (path str) (img ?image) {
     }
 
     ; Check magic P7
-    (data[0] & 255) == 80 && (data[1] & 255) == 55 -> {}
+    {
+        (data[0] & 255) == 80 && (data[1] & 255) == 55 -> {}
 
-    -> {
-        img = nil
-        return
+        -> {
+            img = nil
+            return
+        }
     }
     w = 0
     h = 0
@@ -52,71 +54,47 @@ load = (path str) (img ?image) {
     pos = 3
 
     ; Parse header fields
-    {
-        pos < data.len -> {
-            line, pos = pam-read-line(data, pos)
-            {
-                line.starts-with('WIDTH') -> {
-                    w = line.slice(6, line.len).to-i64()
-                    w: {
-                        nil -> w = 0
-
-                        err -> w = 0
-
-                        ok -> {
-                            w = it
-                        }
-                    }
-                }
-
-                line.starts-with('HEIGHT') -> {
-                    h = line.slice(7, line.len).to-i64()
-                    h: {
-                        nil -> h = 0
-
-                        err -> h = 0
-
-                        ok -> {
-                            h = it
-                        }
-                    }
-                }
-
-                line.starts-with('DEPTH') -> {
-                    depth = line.slice(6, line.len).to-i64()
-                    depth: {
-                        nil -> depth = 0
-
-                        err -> depth = 0
-
-                        ok -> {
-                            depth = it
-                        }
-                    }
-                }
-
-                line.starts-with('MAXVAL') -> {
-                    maxval = line.slice(7, line.len).to-i64()
-                    maxval: {
-                        nil -> maxval = 0
-
-                        err -> maxval = 0
-
-                        ok -> {
-                            maxval = it
-                        }
-                    }
-                }
-
-                line == 'ENDHDR' -> {
-
-                    ; Skip the newline after ENDHDR
-                    pos = pos + 1
-                    break
+    for pos < data.len {
+        line, pos = pam-read-line(data, pos)
+        {
+            line.starts-with('WIDTH') -> {
+                r = line.slice(6, line.len).to-i64()
+                r: {
+                    ok -> w = it
+                    -> w = 0
                 }
             }
+
+            line.starts-with('HEIGHT') -> {
+                r = line.slice(7, line.len).to-i64()
+                r: {
+                    ok -> h = it
+                    -> h = 0
+                }
+            }
+
+            line.starts-with('DEPTH') -> {
+                r = line.slice(6, line.len).to-i64()
+                r: {
+                    ok -> depth = it
+                    -> depth = 0
+                }
+            }
+
+            line.starts-with('MAXVAL') -> {
+                r = line.slice(7, line.len).to-i64()
+                r: {
+                    ok -> maxval = it
+                    -> maxval = 0
+                }
+            }
+
+            line == 'ENDHDR' -> {
+                ; pam-read-line already skipped the newline
+                break
+            }
         }
-    } (pos < data.len)
+    }
     {
         w <= 0 || h <= 0 || depth <= 0 || maxval <= 0 -> {
             img = nil
@@ -154,13 +132,11 @@ load = (path str) (img ?image) {
 pam-read-line = (data str, pos i64) (line str, new-pos i64) {
     new-pos = pos
     end = new-pos
-    {
-        end < data.len -> {
-            c = data[end] & 255
-            c == 10 || c == 13 -> break
-            end = end + 1
-        }
-    } (end < data.len && (data[end] & 255) != 10 && (data[end] & 255) != 13)
+    for end < data.len {
+        c = data[end] & 255
+        c == 10 || c == 13 -> break
+        end = end + 1
+    }
     line = data.slice(new-pos, end)
 
     ; Skip line ending
@@ -201,17 +177,29 @@ save = (path str, img image) (ok bool) {
 
     ; Build header
     hdr = 'P7\n' - 'WIDTH ' - img.width.to-str() - '\n' - 'HEIGHT ' - img.height.to-str() - '\n' - 'DEPTH ' - img.bands.to-str() - '\n' - 'MAXVAL 255\n' - 'TUPLTYPE ' - tupl - '\n' - 'ENDHDR\n'
+
+    ; Build complete output buffer using []byte + push
+    n = img.width * img.height * img.bands
+    hdr-bytes = hdr.to-bytes()
+    buf []byte = with-cap(hdr-bytes.len + n)
+
+    ; Write header bytes
+    i <- [0..hdr-bytes.len): {
+        buf.push(hdr-bytes[i])
+    }
+
+    ; Write pixel data bytes
+    i <- [0..n): {
+        buf.push(img.data[i])
+    }
+
+    ; Write to file
     wfd = fs.open-write(path)
     wfd < 0 -> {
         ok = false
         return
     }
-    hdr-bytes = hdr
-    fs.write(wfd, hdr-bytes, hdr-bytes.len)
-
-    ; Write raw pixel data
-    n = img.width * img.height * img.bands
-    fs.write(wfd, img.data, n)
+    fs.write(wfd, buf, buf.len)
     fs.close(wfd)
     ok = true
 }

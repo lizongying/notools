@@ -41,16 +41,19 @@ load = (path str) (img ?image) {
 
     ; Check byte order
     little-endian = true
-    (data[0] & 255) == 73 && (data[1] & 255) == 73 -> {
-        little-endian = true
-    }
-    (data[0] & 255) == 77 && (data[1] & 255) == 77 -> {
-        little-endian = false
-    }
+    {
+        (data[0] & 255) == 73 && (data[1] & 255) == 73 -> {
+            little-endian = true
+        }
 
-    -> {
-        img = nil
-        return
+        (data[0] & 255) == 77 && (data[1] & 255) == 77 -> {
+            little-endian = false
+        }
+
+        -> {
+            img = nil
+            return
+        }
     }
 
     ; Read magic number (42)
@@ -109,60 +112,60 @@ load = (path str) (img ?image) {
             tag == 284 -> planar = val
         }
     }
-}
-{
-    w <= 0 || h <= 0 -> {
-        img = nil
-        return
+    {
+        w <= 0 || h <= 0 -> {
+            img = nil
+            return
+        }
+
+        compression != 1 -> {
+            img = nil
+            return
+        }
+
+        bits-per-sample != 8 -> {
+            img = nil
+            return
+        }
     }
-
-    compression != 1 -> {
-        img = nil
-        return
+    {
+        samples-per-pixel == 0 -> samples-per-pixel = 1
     }
-
-    bits-per-sample != 8 -> {
-        img = nil
-        return
+    bands = samples-per-pixel
+    {
+        bands > 4 -> bands = 4
     }
-}
-{
-    samples-per-pixel == 0 -> samples-per-pixel = 1
-}
-bands = samples-per-pixel
-{
-    bands > 4 -> bands = 4
-}
-n = w * h * bands
-_d str = with-len(n)
-tmp = image.new-from-data(w, h, bands, _d)
+    n = w * h * bands
+    _d str = with-len(n)
+    tmp = image.new-from-data(w, h, bands, _d)
 
-; Copy pixel data from strip
-{
-    strip-offset + n <= data.len -> {
+    ; Copy pixel data from strip
+    {
+        strip-offset + n <= data.len -> {
 
-        ; TIFF stores RGB, we store RGB
-        {
-            bands == samples-per-pixel -> {
-                i <- [0..n): {
-                    tmp.data[i] = data[strip-offset + i] & 255
+            ; TIFF stores RGB, we store RGB
+            {
+                bands == samples-per-pixel -> {
+                    i <- [0..n): {
+                        tmp.data[i] = data[strip-offset + i] & 255
+                    }
                 }
-            }
 
-            -> {
+                -> {
 
-                ; Need to truncate channels
-                npix = w * h
-                i <- [0..npix): {
-                    b <- [0..bands): {
-                        tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b] & 255
+                    ; Need to truncate channels
+                    npix = w * h
+                    i <- [0..npix): {
+                        b <- [0..bands): {
+                            tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b] & 255
+                        }
                     }
                 }
             }
         }
     }
+    img = tmp
 }
-img = tmp
 
 ; tiff-read-u16: read 16-bit value
 ; data str: file content
@@ -222,7 +225,7 @@ save = (path str, img image) (ok bool) {
     }
 
     ; Build pixel data (ensure RGB for bands>=3)
-    pixel-data = with-len(w * h * bands)
+    pixel-data []byte = with-len(w * h * bands)
     {
         img.bands == bands -> {
             i <- [0..w * h * bands): {
@@ -288,7 +291,7 @@ save = (path str, img image) (ok bool) {
     pixel-offset = 8 + 2 + num-tags * 12 + 4
 
     ; Write header
-    buf = with-cap(pixel-offset + pixel-data.len)
+    buf []byte = with-cap(pixel-offset + pixel-data.len)
 
     ; Byte order: little-endian (II)
     buf.push(73)

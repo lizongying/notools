@@ -277,59 +277,57 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
     bands = depth / 8
     data-size = w * h * bands
     total-size = 18 + data-size
-    buf = with-len(total-size)
+    buf []byte = with-cap(total-size)
 
     ; --- Header (18 bytes) ---
-    buf[0] = 0; ID length
-    buf[1] = 0; Color map type (none)
-    buf[2] = image-type & 255
+    buf.push(0)
+    buf.push(0)
+    buf.push(image-type & 255)
 
     ; Color map spec (5 bytes, all zero)
-    buf[3] = 0
-    buf[4] = 0
-    buf[5] = 0
-    buf[6] = 0
-    buf[7] = 0
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
+    buf.push(0)
 
     ; X origin (2 bytes LE)
-    buf[8] = 0
-    buf[9] = 0
+    buf.push(0)
+    buf.push(0)
 
     ; Y origin (2 bytes LE)
-    buf[10] = 0
-    buf[11] = 0
+    buf.push(0)
+    buf.push(0)
 
     ; Width (2 bytes LE)
-    buf[12] = w & 255
-    buf[13] = (w >> 8) & 255
+    buf.push(w & 255)
+    buf.push((w >> 8) & 255)
 
     ; Height (2 bytes LE)
-    buf[14] = h & 255
-    buf[15] = (h >> 8) & 255
+    buf.push(h & 255)
+    buf.push((h >> 8) & 255)
 
     ; Pixel depth
-    buf[16] = depth & 255
+    buf.push(depth & 255)
 
     ; Image descriptor: bit 5 = top-down (0x20)
-    buf[17] = 32
+    buf.push(32)
 
-    ; --- Pixel data (bottom-up in our buffer, but descriptor says top-down) ---
-    ; Since we set top-down, pixel order is top to bottom
+    ; --- Pixel data (top-down) ---
     y <- [0..h): {
         x <- [0..w): {
             src = (y * w + x) * img.bands
-            dst = 18 + (y * w + x) * bands
             {
                 bands == 1 -> {
                     img.bands == 1 -> {
-                        buf[dst] = img.data[src]
+                        buf.push(img.data[src])
                     }
 
                     -> {
                         r = img.data[src]
                         g = img.data[src + 1]
                         b = img.data[src + 2]
-                        buf[dst] = (r * 299 + g * 587 + b * 114) / 1000
+                        buf.push((r * 299 + g * 587 + b * 114) / 1000)
                     }
                 }
 
@@ -338,45 +336,36 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
                     ; TGA stores BGR
                     {
                         img.bands >= 3 -> {
-                            buf[dst] = img.data[src + 2]
-                            buf[dst + 1] = img.data[src + 1]
-                            buf[dst + 2] = img.data[src]
+                            buf.push(img.data[src + 2])
+                            buf.push(img.data[src + 1])
+                            buf.push(img.data[src])
                         }
 
                         img.bands == 1 -> {
                             v = img.data[src]
-                            buf[dst] = v
-                            buf[dst + 1] = v
-                            buf[dst + 2] = v
+                            buf.push(v)
+                            buf.push(v)
+                            buf.push(v)
                         }
                     }
                 }
 
                 bands == 4 -> {
+                    img.bands >= 4 -> {
+                        buf.push(img.data[src + 2])
+                        buf.push(img.data[src + 1])
+                        buf.push(img.data[src])
+                        buf.push(img.data[src + 3])
+                    }
 
-                    ; TGA stores BGRA
-                    {
-                        img.bands >= 4 -> {
-                            buf[dst] = img.data[src + 2]
-                            buf[dst + 1] = img.data[src + 1]
-                            buf[dst + 2] = img.data[src]
-                            buf[dst + 3] = img.data[src + 3]
-                        }
-
-                        img.bands == 3 -> {
-                            buf[dst] = img.data[src + 2]
-                            buf[dst + 1] = img.data[src + 1]
-                            buf[dst + 2] = img.data[src]
-                            buf[dst + 3] = 255
-                        }
-
-                        img.bands == 1 -> {
-                            v = img.data[src]
-                            buf[dst] = v
-                            buf[dst + 1] = v
-                            buf[dst + 2] = v
-                            buf[dst + 3] = 255
-                        }
+                    -> {
+                        r = img.data[src]
+                        g = img.data[src + 1]
+                        b = img.data[src + 2]
+                        buf.push(b)
+                        buf.push(g)
+                        buf.push(r)
+                        buf.push(255)
                     }
                 }
             }
@@ -389,7 +378,7 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
         ok = false
         return
     }
-    fs.write(wfd, buf, total-size)
+    fs.write(wfd, buf, buf.len)
     fs.close(wfd)
     ok = true
 }
