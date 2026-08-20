@@ -397,3 +397,75 @@ replicate = (img image, w i64, h i64) (out image) {
         }
     }
 }
+
+; ── Convenience bandjoin for two images ──
+
+; composite.bandjoin2: join two images band-by-band (convenience wrapper)
+; img1 image: first image
+; img2 image: second image (must be same width/height as img1)
+; returns out image: combined image with bands = img1.bands + img2.bands
+bandjoin2 = (img1 image, img2 image) (out image) {
+    total-bands = img1.bands + img2.bands
+    w = img1.width
+    h = img1.height
+    _d str = with-len(w * h * total-bands)
+    out = image.new-from-data(w, h, total-bands, _d)
+    npix = w * h
+    i <- [0..npix): {
+        b <- [0..img1.bands): {
+            out.data[i * total-bands + b] = img1.data[i * img1.bands + b]
+        }
+        b <- [0..img2.bands): {
+            out.data[i * total-bands + img1.bands + b] = img2.data[i * img2.bands + b]
+        }
+    }
+}
+
+; ── Flatten (merge visible layers) ──
+
+; composite.flatten: flatten a 4-band RGBA image onto a background color
+; img image: RGBA image
+; bg []byte: background color (3 bytes: R, G, B)
+; returns out image: 3-band RGB image
+flatten = (img image, bg []byte) (out image) {
+    {
+        img.bands != 4 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    npix = img.width * img.height
+    _d str = with-len(npix * 3)
+    out = image.new-from-data(img.width, img.height, 3, _d)
+    i <- [0..npix): {
+        a = img.data[i * 4 + 3]
+        r = img.data[i * 4]
+        g = img.data[i * 4 + 1]
+        b = img.data[i * 4 + 2]
+        bgr = 0
+        bgg = 0
+        bgb = 0
+        bg.len >= 3 -> {
+            bgr = bg[0]
+            bgg = bg[1]
+            bgb = bg[2]
+        }
+        out.data[i * 3] = (r * a + bgr * (255 - a)) / 255
+        out.data[i * 3 + 1] = (g * a + bgg * (255 - a)) / 255
+        out.data[i * 3 + 2] = (b * a + bgb * (255 - a)) / 255
+    }
+}
+
+; ── Region of Interest (ROI) overlay ──
+
+; composite.roi-blend: blend overlay onto base at ROI with alpha and blend mode
+; base image: base (bottom) image
+; overlay image: overlay (top) image
+; x i64: x offset of overlay
+; y i64: y offset of overlay
+; mode i64: blend mode (0=normal, 1=multiply, 2=screen, 3=overlay, etc.)
+; alpha i64: overlay opacity (0-255)
+; returns out image: composited image
+roi-blend = (base image, overlay image, x i64, y i64, mode i64, alpha i64) (out image) {
+    out = composite.blend(base, overlay, x, y, mode, alpha)
+}

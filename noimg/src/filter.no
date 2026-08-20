@@ -415,3 +415,273 @@ oil-paint = (img image, radius i64, levels i64) (out image) {
         }
     }
 }
+
+; ── Separable Gaussian blur (optimized: O(n*r) instead of O(n*r^2)) ──
+
+; filter.gauss-blur-separable: fast Gaussian blur using separable kernel
+; Applies a 1D horizontal blur, then a 1D vertical blur for O(2*r) per pixel.
+; img image: input image
+; sigma i64: blur radius (sigma * 10, e.g. 15 = 1.5)
+; returns out image: blurred image
+gauss-blur-separable = (img image, sigma i64) (out image) {
+    {
+        sigma <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+
+    ; Compute kernel size from sigma
+    radius = 3 * sigma / 10
+    radius < 1 -> radius = 1
+    {
+        radius > 31 -> {
+            radius = 31
+        }
+    }
+    ksize = radius * 2 + 1
+
+    ; Build 1D Gaussian kernel
+    kernel str = with-len(ksize)
+    two-sigma2 = 2 * sigma * sigma / 100
+    two-sigma2 == 0 -> two-sigma2 = 1
+    sum = 0
+    i <- [0..ksize): {
+        dx = i - radius
+        r2 = dx * dx
+        x = r2 * 100 / (two-sigma2 * 100)
+        {
+            x > 50 -> {
+                kernel[i] = 0
+            }
+
+            -> {
+                val = 256
+                term = 256
+                j <- [1..20): {
+                    term = term * (-x) / (j * 100)
+                    val = val + term
+                    term < 0 && term > -2 -> break
+                    term > 0 && term < 2 -> break
+                }
+                val < 0 -> val = 0
+                kernel[i] = val
+            }
+        }
+        sum = sum + kernel[i]
+    }
+    sum == 0 -> sum = 1
+
+    ; Horizontal blur pass
+    npix = img.width * img.height
+    _tmp str = with-len(npix * img.bands)
+    tmp = image.new-from-data(img.width, img.height, img.bands, _tmp)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                acc = 0
+                k <- [0..ksize): {
+                    sx = x + k - radius
+                    {
+                        sx < 0 -> sx = 0
+                        sx >= img.width -> sx = img.width - 1
+                    }
+                    acc = acc + img.data[(y * img.width + sx) * img.bands + b] * kernel[k]
+                }
+                v = acc / sum
+                v > 255 -> v = 255
+                v < 0 -> v = 0
+                tmp.data[(y * img.width + x) * img.bands + b] = v
+            }
+        }
+    }
+
+    ; Vertical blur pass
+    _d str = with-len(npix * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                acc = 0
+                k <- [0..ksize): {
+                    sy = y + k - radius
+                    {
+                        sy < 0 -> sy = 0
+                        sy >= img.height -> sy = img.height - 1
+                    }
+                    acc = acc + tmp.data[(sy * img.width + x) * img.bands + b] * kernel[k]
+                }
+                v = acc / sum
+                v > 255 -> v = 255
+                v < 0 -> v = 0
+                out.data[(y * img.width + x) * img.bands + b] = v
+            }
+        }
+    }
+}
+
+; ── Morphological operations ──
+
+; filter.dilate: morphological dilation (max filter)
+; Expands bright regions — good for thickening edges/features
+; img image: input image
+; radius i64: filter radius (1 = 3x3, 2 = 5x5)
+; returns out image: dilated image
+dilate = (img image, radius i64) (out image) {
+    {
+        radius <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    ksize = radius * 2 + 1
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                mx = 0
+                ky <- [0..ksize): {
+                    kx <- [0..ksize): {
+                        sx = x + kx - radius
+                        sy = y + ky - radius
+                        {
+                            sx < 0 -> sx = 0
+                            sx >= img.width -> sx = img.width - 1
+                        }
+                        {
+                            sy < 0 -> sy = 0
+                            sy >= img.height -> sy = img.height - 1
+                        }
+                        v = img.data[(sy * img.width + sx) * img.bands + b]
+                        v > mx -> mx = v
+                    }
+                }
+                out.data[(y * img.width + x) * img.bands + b] = mx
+            }
+        }
+    }
+}
+
+; filter.erode: morphological erosion (min filter)
+; Shrinks bright regions — good for thinning features
+; img image: input image
+; radius i64: filter radius (1 = 3x3, 2 = 5x5)
+; returns out image: eroded image
+erode = (img image, radius i64) (out image) {
+    {
+        radius <= 0 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    ksize = radius * 2 + 1
+    _d str = with-len(img.width * img.height * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                mn = 255
+                ky <- [0..ksize): {
+                    kx <- [0..ksize): {
+                        sx = x + kx - radius
+                        sy = y + ky - radius
+                        {
+                            sx < 0 -> sx = 0
+                            sx >= img.width -> sx = img.width - 1
+                        }
+                        {
+                            sy < 0 -> sy = 0
+                            sy >= img.height -> sy = img.height - 1
+                        }
+                        v = img.data[(sy * img.width + sx) * img.bands + b]
+                        v < mn -> mn = v
+                    }
+                }
+                out.data[(y * img.width + x) * img.bands + b] = mn
+            }
+        }
+    }
+}
+
+; filter.gradient: morphological gradient (dilate - erode)
+; Highlights edges by computing the difference between dilation and erosion
+; img image: input image
+; radius i64: filter radius
+; returns out image: gradient image
+gradient = (img image, radius i64) (out image) {
+    d = filter.dilate(img, radius)
+    e = filter.erode(img, radius)
+    n = img.width * img.height * img.bands
+    _d str = with-len(n)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    i <- [0..n): {
+        v = d.data[i] - e.data[i]
+        v < 0 -> v = 0
+        out.data[i] = v
+    }
+}
+
+; ── Unsharp mask (improved sharpen) ──
+
+; filter.unsharp-mask: unsharp mask sharpening with explicit sigma and amount
+; img image: input image
+; sigma i64: blur sigma * 10
+; amount i64: sharpen amount * 100
+; threshold i64: threshold for applying sharpening (0 = all pixels)
+; returns out image: sharpened image
+unsharp-mask = (img image, sigma i64, amount i64, threshold i64) (out image) {
+    blurred = filter.gauss-blur-separable(img, sigma)
+    n = img.width * img.height * img.bands
+    _d str = with-len(n)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    i <- [0..n): {
+        diff = img.data[i] - blurred.data[i]
+        {
+            diff < 0 -> diff = -diff
+        }
+        {
+            diff >= threshold -> {
+                val = img.data[i] + (img.data[i] - blurred.data[i]) * amount / 100
+            }
+
+            -> {
+                val = img.data[i]
+            }
+        }
+        val > 255 -> val = 255
+        val < 0 -> val = 0
+        out.data[i] = val
+    }
+}
+
+; ── Vignette ──
+
+; filter.vignette: apply a vignette effect (darken corners)
+; img image: input image
+; strength i64: vignette strength (0-100, percentage)
+; returns out image: vignetted image
+vignette = (img image, strength i64) (out image) {
+    out = image.copy(img)
+    npix = img.width * img.height
+    cx = img.width / 2
+    cy = img.height / 2
+    max-dist = cx * cx + cy * cy
+    max-dist == 0 -> max-dist = 1
+    s = strength
+    s > 100 -> s = 100
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        dx = px - cx
+        dy = py - cy
+        dist2 = dx * dx + dy * dy
+        factor = 255 - dist2 * s / (max-dist * 100 / 255)
+        factor < 0 -> factor = 0
+        b <- [0..img.bands): {
+            v = img.data[i * img.bands + b] * factor / 255
+            v > 255 -> v = 255
+            out.data[i * img.bands + b] = v
+        }
+    }
+}

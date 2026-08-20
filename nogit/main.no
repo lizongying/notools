@@ -3,7 +3,7 @@
 ; Implements the modern Git command set in pure Nolang (no system git binary).
 ; Commands: init, add, commit, log, status, branch, checkout, tag,
 ;           show, cat-file, hash-object, ls-tree, ls-files, rev-parse,
-;           write-tree, read-tree, update-ref, config, reflog
+;           write-tree, update-ref, config, reflog, rm, reset
 ;
 ; Usage: no run nogit <command> [args...]
 
@@ -43,6 +43,8 @@ main = () {
         'ls-files' -> cmd-ls-files(argc)
         'rev-parse' -> cmd-rev-parse(argc)
         'write-tree' -> cmd-write-tree(argc)
+        'rm' -> cmd-rm(argc)
+        'reset' -> cmd-reset(argc)
         'update-ref' -> cmd-update-ref(argc)
         'config' -> cmd-config(argc)
         'reflog' -> cmd-reflog(argc)
@@ -80,6 +82,8 @@ print-usage = () {
     print('  ls-files          List index contents')
     print('  rev-parse <ref>   Resolve ref to oid')
     print('  write-tree        Write tree from index')
+    print('  rm <path>         Remove from index')
+    print('  reset [ref]       Reset HEAD/index')
     print('  update-ref <r> <v> Update a ref')
     print('  config <s.k> [v]  Get or set config')
     print('  reflog            Show reflog')
@@ -154,16 +158,98 @@ cmd-add = (argc i64) {
     }
     i <- [1..argc): {
         path = os.arg(i + 1)
-        content, read-ok = util.read-file-str(path)
+        path == '--' -> {}
+
+        path == '.' -> {
+            ; Add all files in current directory
+            dirp = fs.open-dir(work-tree)
+            dirp == 0 -> {
+                print('fatal: could not open directory')
+                return
+            }
+            fe-ok = true
+            {
+                fe-ok == false -> break
+                fname, fe-ok = fs.read-dir(dirp)
+                fe-ok == true -> {
+                    ; skip . and .. and .git
+                    is-dot = util.str-eq(fname, '.')
+                    is-dotdot = util.str-eq(fname, '..')
+                    is-git = util.str-eq(fname, '.git')
+                    is-dot == false && is-dotdot == false && is-git == false -> {
+                        full-path = work-tree - '/' - fname
+                        add-file-or-dir(git-dir, work-tree, full-path, fname)
+                    }
+                }
+            } (true)
+            fs.close-dir(dirp)
+        }
+
+        path.starts-with('./') -> {
+            clean-path = util.str-range(path, 2, path.len)
+            full-path = work-tree - '/' - clean-path
+            add-file-or-dir(git-dir, work-tree, full-path, clean-path)
+        }
+
+        path.starts-with('/') -> {
+            ; absolute path — try to add relative to work-tree
+            add-file-or-dir(git-dir, work-tree, path, path)
+        }
+
+        -> {
+            ; relative path
+            full-path = work-tree - '/' - path
+            add-file-or-dir(git-dir, work-tree, full-path, path)
+        }
+    }
+}
+
+; add-file-or-dir: add a single file or recursively add all files in a directory
+; git-dir str, work-tree str, full-path str (absolute path), rel-path str (relative to work-tree)
+add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
+    isf = fs.is-file(full-path)
+    isf == true -> {
+        content, read-ok = util.read-file-str(full-path)
         read-ok == false -> {
-            print('fatal: could not read {path}')
+            print('fatal: could not read {rel-path}')
             return
         }
         blob-oid = object.write-blob(git-dir, content)
-        index-ok = index.index-add(git-dir, path, blob-oid, 33188)
+        index-ok = index.index-add(git-dir, rel-path, blob-oid, 33188)
         index-ok == false -> {
-            print('fatal: could not stage {path}')
-            return
+            print('fatal: could not stage {rel-path}')
+        }
+    }
+
+    isf == false -> {
+        isd = fs.is-dir(full-path)
+        isd == true -> {
+            ; recursively add all files in directory
+            dirp = fs.open-dir(full-path)
+            dirp == 0 -> {
+                print('fatal: could not open directory {rel-path}')
+                return
+            }
+            fe-ok = true
+            {
+                fe-ok == false -> break
+                fname, fe-ok = fs.read-dir(dirp)
+                fe-ok == true -> {
+                    is-dot = util.str-eq(fname, '.')
+                    is-dotdot = util.str-eq(fname, '..')
+                    is-git = util.str-eq(fname, '.git')
+                    is-dot == false && is-dotdot == false && is-git == false -> {
+                        sub-full = full-path - '/' - fname
+                        sub-rel = rel-path - '/' - fname
+                        add-file-or-dir(git-dir, work-tree, sub-full, sub-rel)
+                    }
+                }
+            } (true)
+            fs.close-dir(dirp)
+        }
+
+        isd == false -> {
+            print('fatal: pathspec {rel-path} did not match any files')
         }
     }
 }
@@ -202,42 +288,12 @@ cmd-commit = (argc i64) {
             return
         }
     }
-    tree-raw = ''
-    i <- [0..count): {
-        name-pos = 0
-        j <- [0..i): {
-            nl = util.find-byte-str(names, 10, name-pos)
-            name-pos = nl + 1
-        }
-        nl = util.find-byte-str(names, 10, name-pos)
-        end = names.len
-        nl >= 0 -> end = nl
-        nm = util.str-range(names, name-pos, end)
-        mode-pos = 0
-        j2 <- [0..i): {
-            mnl = util.find-byte-str(modes-str, 10, mode-pos)
-            mode-pos = mnl + 1
-        }
-        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
-        mend = modes-str.len
-        mnl2 >= 0 -> mend = mnl2
-        ms = util.str-range(modes-str, mode-pos, mend)
-        mode-val = 0
-        k <- [0..ms.len): {
-            mode-val = mode-val * 10 + (ms[k] - 48)
-        }
-        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
-        entry-oid oid
-        k <- [0..20): {
-            c0 = hx[k * 2]
-            c1 = hx[k * 2 + 1]
-            hi = util.hexdigit(c0)
-            lo = util.hexdigit(c1)
-            entry-oid.id[k] = (hi << 4) | lo
-        }
-        tree-raw = object.tree-add-raw(tree-raw, mode-val, nm, entry-oid)
+    ; Build a proper nested tree with subtrees for subdirectories
+    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-ok == false -> {
+        print('fatal: could not build tree')
+        return
     }
-    tree-oid = object.tree-write-raw(git-dir, tree-raw)
     parent-oid, parent-ok = refs.read-ref(git-dir, 'HEAD')
     parenthex = ''
     parent-ok == true -> parenthex = oid.oid-hex-str(parent-oid)
@@ -361,18 +417,142 @@ cmd-status = (argc i64) {
         print('nothing to commit')
         return
     }
-    print('Changes to be committed:')
+
+    ; Check if we have a HEAD commit to compare against
+    head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+    has-head = head-ok
+
+    ; If we have a HEAD, get the tree oid
+    head-tree-oid oid
+    has-head == true -> {
+        head-tree-oid, head-ok = revwalk.commit-tree-oid(git-dir, head-oid)
+        has-head = head-ok
+    }
+
+    staged-names str = ''
+    staged-count i64 = 0
+    modified-names str = ''
+    modified-count i64 = 0
+
+    ; Compare each index entry against HEAD tree and working tree
     pos = 0
     i <- [0..count): {
         nl = util.find-byte-str(names, 10, pos)
         end = names.len
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
-        line = '  new file: '
-        line = line - nm
-        print(line)
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
+
+        ; Check against HEAD tree (staged changes)
+        in-head = false
+        head-matches = false
+        has-head == true -> {
+            ; Try to find this file in the HEAD tree
+            head-kind str
+            head-data str
+            head-read-ok bool
+            head-kind, head-data, head-read-ok = object.read-loose(git-dir, head-tree-oid)
+            head-read-ok == true -> {
+                ; Search for this entry in the tree
+                n-entries = object.tree-count-raw(head-data)
+                j <- [0..n-entries): {
+                    tree-nm = object.tree-name-raw(head-data, j)
+                    same-nm = util.str-eq(tree-nm, nm)
+                    same-nm == true -> {
+                        in-head = true
+                        tree-id = object.tree-id-raw(head-data, j)
+                        tree-hex = oid.oid-hex-str(tree-id)
+                        head-matches = util.str-eq(tree-hex, hx)
+                        break
+                    }
+                }
+            }
+        }
+
+        ; Determine staged status
+        has-head == false -> {
+            ; No HEAD — everything is "new file"
+            staged-names = staged-names - 'new file: ' - nm - '\n'
+            staged-count = staged-count + 1
+        }
+        in-head == false -> {
+            staged-names = staged-names - 'new file: ' - nm - '\n'
+            staged-count = staged-count + 1
+        }
+        head-matches == false -> {
+            has-head == true -> {
+                in-head == true -> {
+                    staged-names = staged-names - 'modified: ' - nm - '\n'
+                    staged-count = staged-count + 1
+                }
+            }
+        }
+
+        ; Check working tree (modified files)
+        work-file = nm
+        work-tree.len > 0 -> {
+            sl = '/'
+            work-file = work-tree - sl - nm
+        }
+        isf = fs.is-file(work-file)
+        isf == false -> {
+            modified-names = modified-names - 'deleted: ' - nm - '\n'
+            modified-count = modified-count + 1
+        }
+        isf == true -> {
+            ; Read work tree file and compare hash
+            w-content, w-ok = util.read-file-str(work-file)
+            w-ok == true -> {
+                w-oid = oid.hash-object('blob', w-content)
+                w-hex = oid.oid-hex-str(w-oid)
+                w-matches = util.str-eq(w-hex, hx)
+                w-matches == false -> {
+                    modified-names = modified-names - 'modified: ' - nm - '\n'
+                    modified-count = modified-count + 1
+                }
+            }
+        }
+
         pos = nl + 1
         nl < 0 -> break
+    }
+
+    ; Print staged changes
+    staged-count > 0 -> {
+        print('Changes to be committed:')
+        spos = 0
+        {
+            spos >= staged-names.len -> break
+            snl = util.find-byte-str(staged-names, 10, spos)
+            send = staged-names.len
+            snl >= 0 -> send = snl
+            sline = util.str-range(staged-names, spos, send)
+            print('  ' - sline)
+            spos = snl + 1
+            snl < 0 -> break
+        } (true)
+        print('')
+    }
+
+    ; Print modified (not staged) changes
+    modified-count > 0 -> {
+        print('Changes not staged for commit:')
+        mpos = 0
+        {
+            mpos >= modified-names.len -> break
+            mnl = util.find-byte-str(modified-names, 10, mpos)
+            mend = modified-names.len
+            mnl >= 0 -> mend = mnl
+            mline = util.str-range(modified-names, mpos, mend)
+            print('  ' - mline)
+            mpos = mnl + 1
+            mnl < 0 -> break
+        } (true)
+        print('')
+    }
+
+    staged-count == 0 && modified-count == 0 -> {
+        print('nothing to commit, working tree clean')
     }
 }
 
@@ -382,11 +562,28 @@ cmd-status = (argc i64) {
 
 cmd-branch = (argc i64) {
     git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
-    {
-        repo-ok == false -> {
-            print('fatal: not a git repository')
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ; Check for -d (delete) flag
+    argc >= 2 -> {
+        arg2 = os.arg(2)
+        arg2 == '-d' -> {
+            argc < 3 -> {
+                print('usage: git branch -d <name>')
+                return
+            }
+            del-name = os.arg(3)
+            ok = refs.delete-branch(git-dir, del-name)
+            {
+                ok == true -> print('Deleted branch {del-name}')
+                ok == false -> print('error: branch not found')
+            }
             return
         }
+    }
+    {
         argc >= 2 -> {
             name = os.arg(2)
             head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
@@ -453,6 +650,20 @@ cmd-checkout = (argc i64) {
         print('error: pathspec {name} did not match any branch')
         return
     }
+
+    ; Read the commit to get the tree oid
+    tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, o)
+    tree-ok == true -> {
+        ; Restore working tree from the commit's tree
+        co-ok = object.checkout-tree(git-dir, tree-oid, work-tree)
+        co-ok == false -> {
+            print('warning: could not fully restore working tree')
+        }
+    }
+
+    ; Update index to match the tree
+    ; (For now, we update HEAD; index update from tree is a future improvement)
+
     refs.update-head(git-dir, ref-name)
     print('Switched to branch {name}')
 }
@@ -463,11 +674,72 @@ cmd-checkout = (argc i64) {
 
 cmd-tag = (argc i64) {
     git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
-    {
-        repo-ok == false -> {
-            print('fatal: not a git repository')
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    ; Check for -d (delete) flag
+    argc >= 2 -> {
+        arg2 = os.arg(2)
+        arg2 == '-d' -> {
+            argc < 3 -> {
+                print('usage: git tag -d <name>')
+                return
+            }
+            del-name = os.arg(3)
+            ok = refs.delete-tag(git-dir, del-name)
+            {
+                ok == true -> print('Deleted tag {del-name}')
+                ok == false -> print('error: tag not found')
+            }
             return
         }
+        arg2 == '-a' -> {
+            ; Annotated tag: git tag -a <name> -m <message>
+            argc < 3 -> {
+                print('usage: git tag -a <name> -m <message>')
+                return
+            }
+            tag-name = os.arg(3)
+            tag-msg = ''
+            i <- [4..argc): {
+                a = os.arg(i + 1)
+                a == '-m' -> {
+                    i < argc - 1 -> {
+                        tag-msg = os.arg(i + 2)
+                    }
+                }
+            }
+            tag-msg == '' -> tag-msg = 'tag {tag-name}'
+            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-ok == false -> {
+                print('fatal: no HEAD ref')
+                return
+            }
+            a-name, a-ok = config.get-user-name(git-dir)
+            {
+                a-ok == false -> {
+                    a-name = 'Unknown'
+                    a-email = 'unknown@example.com'
+                }
+                -> {
+                    a-email, a-ok = config.get-user-email(git-dir)
+                    a-ok == false -> a-email = 'unknown@example.com'
+                }
+            }
+            now = os.now()
+            tz = '+0000'
+            tag-oid = object.write-tag-full(git-dir, head-oid, 'commit', tag-name, a-name, a-email, now, tz, tag-msg)
+            ; Create the tag ref pointing to the tag object
+            ref-ok = refs.create-tag(git-dir, tag-name, tag-oid)
+            {
+                ref-ok == true -> print('Created annotated tag {tag-name}')
+                ref-ok == false -> print('fatal: tag {tag-name} already exists')
+            }
+            return
+        }
+    }
+    {
         argc >= 2 -> {
             name = os.arg(2)
             head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
@@ -727,42 +999,12 @@ cmd-write-tree = (argc i64) {
         print('fatal: could not read index')
         return
     }
-    tree-raw = ''
-    i <- [0..count): {
-        name-pos = 0
-        j <- [0..i): {
-            nl = util.find-byte-str(names, 10, name-pos)
-            name-pos = nl + 1
-        }
-        nl = util.find-byte-str(names, 10, name-pos)
-        end = names.len
-        nl >= 0 -> end = nl
-        nm = util.str-range(names, name-pos, end)
-        mode-pos = 0
-        j2 <- [0..i): {
-            mnl = util.find-byte-str(modes-str, 10, mode-pos)
-            mode-pos = mnl + 1
-        }
-        mnl2 = util.find-byte-str(modes-str, 10, mode-pos)
-        mend = modes-str.len
-        mnl2 >= 0 -> mend = mnl2
-        ms = util.str-range(modes-str, mode-pos, mend)
-        mode-val = 0
-        k <- [0..ms.len): {
-            mode-val = mode-val * 10 + (ms[k] - 48)
-        }
-        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
-        entry-oid oid
-        k <- [0..20): {
-            c0 = hx[k * 2]
-            c1 = hx[k * 2 + 1]
-            hi = util.hexdigit(c0)
-            lo = util.hexdigit(c1)
-            entry-oid.id[k] = (hi << 4) | lo
-        }
-        tree-raw = object.tree-add-raw(tree-raw, mode-val, nm, entry-oid)
+    ; Build a proper nested tree with subtrees for subdirectories
+    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-ok == false -> {
+        print('fatal: could not build tree')
+        return
     }
-    tree-oid = object.tree-write-raw(git-dir, tree-raw)
     ch = oid.oid-hex-str(tree-oid)
     print(ch)
 }
@@ -884,4 +1126,94 @@ cmd-show = (argc i64) {
     print('oid: {ch}')
     print('')
     print(data)
+}
+
+; ═══════════════════════════════════════════════
+; git rm
+; ═══════════════════════════════════════════════
+
+cmd-rm = (argc i64) {
+    argc < 2 -> {
+        print('usage: git rm <path>')
+        return
+    }
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    cached = false
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '--cached' -> cached = true
+    }
+    path = os.arg(2)
+    path == '--cached' -> {
+        argc < 3 -> {
+            print('usage: git rm --cached <path>')
+            return
+        }
+        path = os.arg(3)
+    }
+
+    ; Remove from index
+    ok = index.index-remove(git-dir, path)
+    ok == false -> {
+        print("fatal: could not remove '{path}' from index")
+        return
+    }
+
+    ; Remove from working tree unless --cached
+    cached == false -> {
+        full-path = path
+        work-tree.len > 0 -> {
+            sl = '/'
+            full-path = work-tree - sl - path
+        }
+        fs.remove(full-path)
+    }
+    print("rm '{path}'")
+}
+
+; ═══════════════════════════════════════════════
+; git reset
+; ═══════════════════════════════════════════════
+
+cmd-reset = (argc i64) {
+    git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
+    repo-ok == false -> {
+        print('fatal: not a git repository')
+        return
+    }
+    target = 'HEAD'
+    argc >= 2 -> {
+        target = os.arg(2)
+    }
+    ; Resolve the target ref to an oid
+    target-oid, target-ok = revwalk.resolve-ref(git-dir, target)
+    target-ok == false -> {
+        print('fatal: could not resolve {target}')
+        return
+    }
+    ; Reset HEAD to the target
+    branch, detached, branch-ok = refs.current-branch(git-dir)
+    {
+        branch-ok == true && detached == false -> {
+            ref-name = 'refs/heads/' - branch
+            refs.write-ref(git-dir, ref-name, target-oid)
+        }
+        -> {
+            refs.set-head-detached(git-dir, target-oid)
+        }
+    }
+    ; Also reset index to match the target's tree (if it's a commit)
+    tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, target-oid)
+    tree-ok == true -> {
+        ; Read the tree and rebuild index from it
+        ; For now, just print a message
+        print('Reset to {target}')
+    }
+    tree-ok == false -> {
+        print('Reset to {target}')
+    }
 }

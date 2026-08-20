@@ -384,3 +384,132 @@ auto-level = (img image) (out image) {
     ; Use 0.5% clip on each side
     out = histogram.stretch(img, 0)
 }
+
+; ── Auto-contrast (percentile-based) ──
+
+; histogram.auto-contrast: automatically adjust contrast using percentile clipping
+; Similar to auto-level but with configurable clip percentage
+; img image: input image
+; clip-percent i64: clip percentage (0-10, e.g. 1 = clip 1% from each side)
+; returns out image: contrast-adjusted image
+auto-contrast = (img image, clip-percent i64) (out image) {
+    out = histogram.stretch(img, clip-percent)
+}
+
+; ── CDF (cumulative distribution function) ──
+
+; histogram.cdf: compute CDF from histogram
+; hist str: 256-element histogram
+; returns cdf str: 256-element CDF (cumulative counts)
+cdf = (hist str) (cdf-str str) {
+    cdf-str str = with-len(256)
+    cdf-str[0] = hist[0]
+    i <- [1..256): {
+        cdf-str[i] = cdf-str[i - 1] + hist[i]
+    }
+}
+
+; histogram.cdf-normalize: normalize CDF to 0-255 range
+; cdf-str str: CDF array (256 elements)
+; returns lut str: 256-element lookup table mapping to 0-255
+cdf-normalize = (cdf-str str) (lut str) {
+    lut str = with-len(256)
+    total = cdf-str[255]
+    {
+        total == 0 -> {
+            i <- [0..256): {
+                lut[i] = i
+            }
+            return
+        }
+    }
+    cdf-min = 0
+    i <- [0..256): {
+        cdf-str[i] > 0 -> {
+            cdf-min = cdf-str[i]
+            break
+        }
+    }
+    denom = total - cdf-min
+    denom == 0 -> denom = 1
+    i <- [0..256): {
+        val = (cdf-str[i] - cdf-min) * 255 / denom
+        val > 255 -> val = 255
+        val < 0 -> val = 0
+        lut[i] = val
+    }
+}
+
+; ── Entropy ──
+
+; histogram.entropy: compute Shannon entropy of the image
+; img image: input image
+; returns ent i64: entropy value * 1000 (e.g. 7500 = 7.5 bits)
+entropy = (img image) (ent i64) {
+    hist = histogram.find(img)
+    n = img.width * img.height * img.bands
+    {
+        n == 0 -> return
+    }
+    ent = 0
+    i <- [0..256): {
+        cnt = hist[i]
+        cnt > 0 -> {
+            p = cnt * 1000 / n
+            ; log2(p/1000) = ln(p/1000) / ln(2)
+            ; Approximate: use a simple log2 lookup
+            ; For integer math: log2(x) ~= (x > 0) ? floor(log2(x)) + fractional
+            ; Simplified: ent += p * log2(1000/p)
+            ; = p * (ln(1000) - ln(p)) / ln(2)
+            ; Use: log2(x) ~ approx via bit shifts
+            log-val = 0
+            tmp = p
+            tmp > 0 -> {
+                {
+                    tmp >= 512 -> log-val = 9
+                    tmp >= 256 -> log-val = 8
+                    tmp >= 128 -> log-val = 7
+                    tmp >= 64 -> log-val = 6
+                    tmp >= 32 -> log-val = 5
+                    tmp >= 16 -> log-val = 4
+                    tmp >= 8 -> log-val = 3
+                    tmp >= 4 -> log-val = 2
+                    tmp >= 2 -> log-val = 1
+                    -> log-val = 0
+                }
+            }
+            ; ent -= p * log-val (in units of 1/1000 bits)
+            ent = ent + p * log-val
+        }
+    }
+    ; Convert to bits: divide by 1000
+    ent = ent / 1000
+}
+
+; ─── Percentile ──
+
+; histogram.percentile: find the pixel value at a given percentile
+; img image: input image
+; pct i64: percentile (0-100, e.g. 50 = median)
+; returns val i64: pixel value at the given percentile
+percentile = (img image, pct i64) (val i64) {
+    hist = histogram.find(img)
+    n = img.width * img.height * img.bands
+    {
+        n == 0 -> {
+            val = 0
+            return
+        }
+    }
+    target = n * pct / 100
+    acc = 0
+    val = 0
+    i <- [0..256): {
+        acc = acc + hist[i]
+        acc >= target -> {
+            val = i
+            return
+        }
+    }
+    val = 255
+}

@@ -9,7 +9,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 支持 stdin 管道与文件输入
 - 友好的错误处理
 - 内含纯 Nolang Git 实现（`nogit/` 子项目），不依赖系统 `git` 二进制
-- 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 30+ 种图像操作
+- 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 55+ 种图像操作
 
 ## 安装
 
@@ -23,7 +23,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 |------|------|
 | `notools` | Unix 常用命令行工具集（193 个命令） |
 | `nogit` | 纯 Nolang Git 实现（不依赖系统 `git`） |
-| `noimg` | 纯 Nolang 图像处理工具库（9 种格式、30+ 种操作） |
+| `noimg` | 纯 Nolang 图像处理工具库（9 种格式、55+ 种操作） |
 
 支持的平台：
 
@@ -411,14 +411,14 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | 格式 | 扩展名 | 读取 | 写入 | 说明 |
 |------|--------|------|------|------|
 | PPM/PGM/PNM | `.ppm` `.pgm` `.pnm` | ✅ | ✅ | Portable Pixmap/Graymap（ASCII 与 Binary） |
-| BMP | `.bmp` | ✅ | ✅ | Windows Bitmap（24/32 位） |
+| BMP | `.bmp` | ✅ | ✅ | Windows Bitmap（仅 24/32 位未压缩） |
 | TGA | `.tga` | ✅ | ✅ | Targa（含 RLE 压缩） |
 | PAM | `.pam` | ✅ | ✅ | Portable Arbitrary Map |
-| PNG | `.png` | ✅ | ✅ | Portable Network Graphics（8 位，zlib 压缩，CRC32 校验） |
-| TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format |
-| GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（含 LZW 编解码） |
-| JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG（Huffman 编码，RIFF 容器解析） |
-| WebP | `.webp` | ✅ | ✅ | RIFF 容器解析（VP8/VP8L 头部解析） |
+| PNG | `.png` | ✅ | ✅ | Portable Network Graphics（仅 8 位，zlib 压缩，CRC32 校验，5 种扫描线滤镜；不支持隔行 Adam7） |
+| TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
+| GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；写入用 3-3-2 量化，单帧） |
+| JPEG | `.jpg` `.jpeg` | ⚠️ | ✅ | baseline JPEG 写入（DCT+Huffman 编码）；读取仅解析元数据返回占位灰图，不支持 progressive |
+| WebP | `.webp` | ⚠️ | ⚠️ | RIFF 容器+VP8/VP8L 头部解析；读取返回占位图、写入为结构合法的占位文件 |
 
 ### CLI 命令
 
@@ -432,6 +432,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | `flip` | 翻转（h/v/both） | `noimg flip in.png out.png h` |
 | `crop` | 裁剪区域 | `noimg crop in.png out.png 10 10 100 100` |
 | `grayscale` | 灰度转换 | `noimg grayscale in.png out.png` |
+| `sepia` | 棕褐色调复古效果 | `noimg sepia in.png out.png` |
 | `invert` | 反色 | `noimg invert in.png out.png` |
 | `blur` | 高斯模糊 | `noimg blur in.png out.png 15` |
 | `sharpen` | 锐化 | `noimg sharpen in.png out.png 150` |
@@ -439,6 +440,10 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | `emboss` | 浮雕效果 | `noimg emboss in.png out.png` |
 | `oil` | 油画效果 | `noimg oil in.png out.png 3 32` |
 | `median` | 中值滤波 | `noimg median in.png out.png 3` |
+| `dilate` | 形态学膨胀 | `noimg dilate in.png out.png 2` |
+| `erode` | 形态学腐蚀 | `noimg erode in.png out.png 2` |
+| `gradient` | 形态学梯度 | `noimg gradient in.png out.png 2` |
+| `vignette` | 暗角效果 | `noimg vignette in.png out.png 40` |
 | `brightness` | 亮度调整 | `noimg brightness in.png out.png 20` |
 | `contrast` | 对比度调整 | `noimg contrast in.png out.png 50` |
 | `gamma` | Gamma 校正 | `noimg gamma in.png out.png 120` |
@@ -447,12 +452,28 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | `solarize` | 日晒效果 | `noimg solarize in.png out.png 128` |
 | `hist-eq` | 直方图均衡化 | `noimg hist-eq in.png out.png` |
 | `hist-norm` | 直方图归一化 | `noimg hist-norm in.png out.png` |
+| `hist-stretch` | 直方图拉伸 | `noimg hist-stretch in.png out.png 1` |
+| `auto-level` | 自动色阶 | `noimg auto-level in.png out.png` |
+| `auto-contrast` | 自动对比度 | `noimg auto-contrast in.png out.png 1` |
 | `histogram` | 打印直方图 | `noimg histogram in.png` |
 | `stats` | 图像统计信息 | `noimg stats in.png` |
+| `entropy` | 图像香农熵 | `noimg entropy in.png` |
 | `composite` | 图像合成 | `noimg composite base.png overlay.png out.png 10 10` |
 | `pad` | 添加边框 | `noimg pad in.png out.png 10` |
 | `band` | 提取单通道 | `noimg band in.png out.png 0` |
+| `add-alpha` | 添加 Alpha 通道 | `noimg add-alpha in.png out.png` |
+| `flatten` | Alpha 混平（RGBA→RGB） | `noimg flatten in.png out.png` |
 | `noise` | 添加噪声 | `noimg noise in.png out.png 30` |
+| `unsharp-mask` | USM 锐化（带阈值） | `noimg unsharp-mask in.png out.png 15 150 0` |
+| `box-blur` | 方框模糊 | `noimg box-blur in.png out.png 3` |
+| `laplacian` | Laplacian 边缘检测 | `noimg laplacian in.png out.png` |
+| `otsu` | Otsu 自动阈值二值化 | `noimg otsu in.png out.png` |
+| `adjust-hsv` | HSV 色彩调整 | `noimg adjust-hsv in.png out.png 10 0 0` |
+| `transpose` | 矩阵转置 | `noimg transpose in.png out.png` |
+| `scale` | 独立 x/y 缩放 | `noimg scale in.png out.png 50 100` |
+| `embed` | 嵌入大画布 | `noimg embed in.png out.png 10 10 200 200` |
+| `bandjoin2` | 两图通道拼接 | `noimg bandjoin2 r.png g.png out.png` |
+| `roi-blend` | 区域混合 | `noimg roi-blend base.png overlay.png out.png 10 10 0 255` |
 
 ### 库 API
 
@@ -460,22 +481,22 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 
 | 模块 | 职责 |
 |------|------|
-| `image` | 图像创建、复制、填充、像素读写、统计 |
+| `image` | 图像创建、复制、填充、像素读写、统计、常量运算、Alpha 通道管理、属性检查 |
 | `pnm` | PPM/PGM/PNM 读写 |
-| `bmp` | BMP 读写 |
+| `bmp` | BMP 读写（24/32 位未压缩） |
 | `tga` | TGA 读写（含 RLE） |
 | `pam` | PAM 读写 |
-| `gif` | GIF 读写（含 LZW 编解码） |
-| `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜） |
-| `tiff` | TIFF 读写 |
-| `jpeg` | JPEG 读写（baseline Huffman 编码） |
-| `webp` | WebP 读写（RIFF 容器、VP8/VP8L 解析） |
-| `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr）、亮度/对比度/Gamma/阈值/色调分离/日晒 |
-| `resize` | 双线性缩放、缩略图、缩放 |
-| `rotate` | 旋转（90/180/270/任意角度）、翻转、转置 |
-| `composite` | 裁剪、合成、边框、通道合并/提取/选择 |
-| `filter` | 卷积、高斯模糊、锐化、Sobel/Laplacian 边缘检测、浮雕、中值滤波、油画、噪声 |
-| `histogram` | 直方图查找/累积/打印、均衡化/归一化/拉伸、LUT 应用、均值/方差/标准差 |
+| `gif` | GIF 读取（LZW 解码+隔行+透明）、写入（3-3-2 量化、单帧） |
+| `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜；仅 8 位、不支持 Adam7） |
+| `tiff` | TIFF 读写（仅未压缩、8 位、单 strip） |
+| `jpeg` | JPEG 写入（DCT+Huffman 编码）；读取仅解析元数据 |
+| `webp` | WebP RIFF 容器+VP8/VP8L 头部解析（读写均为占位） |
+| `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
+| `resize` | 双线性缩放、缩略图、缩放、最近邻/双三次/面积平均 |
+| `rotate` | 旋转（90/180/270/任意角度）、翻转、转置/反对角转置 |
+| `composite` | 裁剪、自动裁剪、合成、边框、嵌入、通道合并/提取/选择、Alpha 混平、ROI 混合、多模式混合（Normal/Multiply/Screen/Add/Subtract/Diff/Lighten/Darken/Copy）、平铺 |
+| `filter` | 卷积、高斯模糊（含可分离优化）、方框模糊、锐化（含 USM）、Sobel/Laplacian 边缘检测、浮雕、中值滤波、油画、噪声、形态学（膨胀/腐蚀/梯度）、暗角 |
+| `histogram` | 直方图查找/累积/打印、均衡化/归一化/拉伸、自动色阶/对比度、LUT 应用、均值/方差/标准差/熵/百分位/CDF |
 
 ### 构建与运行
 
@@ -508,14 +529,22 @@ noimg/
 │   ├── png.no           ; PNG（CRC32 位运算、zlib）
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 编解码）
-│   ├── jpeg.no          ; JPEG（DCT、Huffman 编码）
-│   ├── webp.no          ; WebP（RIFF/VP8 解析）
+│   ├── jpeg.no          ; JPEG 写入（DCT、Huffman 编码），读取仅解析元数据
+│   ├── webp.no          ; WebP RIFF 解析（读写均为占位）
 │   ├── colour.no        ; 色彩空间转换
 │   ├── resize.no        ; 缩放
 │   ├── rotate.no        ; 旋转与翻转
 │   ├── composite.no     ; 合成与裁剪
-│   ├── filter.no        ; 滤镜（模糊/锐化/边缘/浮雕/油画/中值/噪声）
+│   ├── filter.no        ; 滤镜（模糊/锐化/边缘/浮雕/油画/中值/噪声/形态学/暗角）
 │   └── histogram.no     ; 直方图与统计
+├── tests/
+│   ├── test-core.no       ; 核心图像操作测试
+│   ├── test-pnm.no        ; PNM 格式往返测试
+│   ├── test-colour.no     ; 色彩空间转换测试
+│   ├── test-filter.no     ; 滤镜操作测试
+│   ├── test-composite.no  ; 合成操作测试
+│   ├── test-histogram.no  ; 直方图操作测试
+│   └── test-resize-rotate.no ; 缩放与旋转测试
 └── package.jsonc        ; 项目配置
 ```
 

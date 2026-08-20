@@ -278,6 +278,178 @@ tree-write-raw = (git-dir str, raw str) (o oid) {
     o = write-loose(git-dir, 'tree', raw)
 }
 
+; build-tree-from-flat: build a proper nested tree from flat index entries.
+; Index entries have full paths like "dir/sub/file.txt". We need to create
+; subtree objects for each directory level.
+;
+; git-dir str, paths str (newline-separated), hexoids str (40-char each),
+; modes-str str (newline-separated decimal mode strings), count i64
+; returns root-oid oid, ok bool
+build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, count i64) (root-oid oid, ok bool) {
+    ok = false
+
+    ; We build the tree recursively. For the root level, we collect all
+    ; entries that have no '/' (files at root) and all entries that start
+    ; with a directory prefix (first segment before '/').
+    ;
+    ; For each directory, we recursively build its subtree.
+
+    ; Collect the root-level entries
+    root-raw str = ''
+    name-pos = 0
+    mode-pos = 0
+
+    ; First pass: add all root-level files (no '/' in path)
+    i <- [0..count): {
+        ; extract name i
+        nl = util.find-byte-str(paths, 10, name-pos)
+        nl-end = paths.len
+        nl >= 0 -> nl-end = nl
+        nm = util.str-range(paths, name-pos, nl-end)
+
+        ; extract mode i
+        mnl = util.find-byte-str(modes-str, 10, mode-pos)
+        mnl-end = modes-str.len
+        mnl >= 0 -> mnl-end = mnl
+        ms = util.str-range(modes-str, mode-pos, mnl-end)
+
+        ; parse mode
+        mode-val i64 = 0
+        k <- [0..ms.len): {
+            mode-val = mode-val * 10 + (ms[k] - 48)
+        }
+
+        ; extract oid i
+        hx = util.str-range(hexoids, i * 40, i * 40 + 40)
+        entry-oid oid
+        k <- [0..20): {
+            c0 = hx[k * 2]
+            c1 = hx[k * 2 + 1]
+            hi = util.hexdigit(c0)
+            lo = util.hexdigit(c1)
+            entry-oid.id[k] = (hi << 4) | lo
+        }
+
+        ; check if this is a root-level file (no '/')
+        slash-pos = util.find-byte-str(nm, 47, 0)
+        slash-pos < 0 -> {
+            ; root-level file — add directly
+            root-raw = tree-add-raw(root-raw, mode-val, nm, entry-oid)
+        }
+
+        name-pos = nl + 1
+        mode-pos = mnl + 1
+    }
+
+    ; Second pass: collect directory prefixes and build subtrees
+    ; We need to find unique directory prefixes (first segment before '/')
+    ; and for each, recursively build the subtree from entries under that prefix.
+    ;
+    ; To avoid duplicates, we track seen directory names.
+    seen-dirs str = ''
+
+    name-pos = 0
+    mode-pos = 0
+    i2 <- [0..count): {
+        ; extract name i2
+        nl = util.find-byte-str(paths, 10, name-pos)
+        nl-end = paths.len
+        nl >= 0 -> nl-end = nl
+        nm = util.str-range(paths, name-pos, nl-end)
+
+        ; check if this path has a '/'
+        slash-pos = util.find-byte-str(nm, 47, 0)
+        slash-pos >= 0 -> {
+            ; extract directory prefix (first segment)
+            dir-name = util.str-range(nm, 0, slash-pos)
+
+            ; check if we've already processed this directory
+            already-seen = false
+            seen-pos = 0
+            {
+                seen-pos >= seen-dirs.len -> break
+                seen-nl = util.find-byte-str(seen-dirs, 10, seen-pos)
+                seen-end = seen-dirs.len
+                seen-nl >= 0 -> seen-end = seen-nl
+                seen-name = util.str-range(seen-dirs, seen-pos, seen-end)
+                same = util.str-eq(seen-name, dir-name)
+                same == true -> {
+                    already-seen = true
+                    break
+                }
+                seen-pos = seen-nl + 1
+                seen-nl < 0 -> break
+            } (true)
+
+            already-seen == false -> {
+                ; mark as seen
+                seen-dirs = seen-dirs - dir-name - '\n'
+
+                ; collect all entries under this directory
+                sub-paths = ''
+                sub-hexoids = ''
+                sub-modes = ''
+                sub-count i64 = 0
+
+                sub-name-pos = 0
+                sub-mode-pos = 0
+                j <- [0..count): {
+                    ; extract name j
+                    snl = util.find-byte-str(paths, 10, sub-name-pos)
+                    snl-end = paths.len
+                    snl >= 0 -> snl-end = snl
+                    snm = util.str-range(paths, sub-name-pos, snl-end)
+
+                    ; extract mode j
+                    smnl = util.find-byte-str(modes-str, 10, sub-mode-pos)
+                    smnl-end = modes-str.len
+                    smnl >= 0 -> smnl-end = smnl
+                    sms = util.str-range(modes-str, sub-mode-pos, smnl-end)
+
+                    ; check if this path starts with dir-name + '/'
+                    prefix = dir-name - '/'
+                    snm.starts-with(prefix) -> {
+                        ; extract the sub-path (strip dir-name + '/' prefix)
+                        sub-path = util.str-range(snm, slash-pos + 1, snm.len)
+
+                        sub-paths = sub-paths - sub-path - '\n'
+
+                        ; extract oid j
+                        shx = util.str-range(hexoids, j * 40, j * 40 + 40)
+                        sub-hexoids = sub-hexoids - shx
+
+                        sub-modes = sub-modes - sms - '\n'
+                        sub-count = sub-count + 1
+                    }
+
+                    sub-name-pos = snl + 1
+                    sub-mode-pos = smnl + 1
+                    snl < 0 -> break
+                }
+
+                ; recursively build subtree
+                sub-oid, sub-ok = build-tree-from-flat(git-dir, sub-paths, sub-hexoids, sub-modes, sub-count)
+                sub-ok == true -> {
+                    ; add the subtree entry to root-raw
+                    root-raw = tree-add-raw(root-raw, 16384, dir-name, sub-oid)
+                }
+            }
+        }
+
+        name-pos = nl + 1
+        mode-pos = 0
+        ; re-scan mode-pos for i2 (since we're using a separate loop)
+        k2 <- [0..i2): {
+            kmnl = util.find-byte-str(modes-str, 10, mode-pos)
+            mode-pos = kmnl + 1
+        }
+    }
+
+    ; store the root tree
+    root-oid = tree-write-raw(git-dir, root-raw)
+    ok = true
+}
+
 ; tree-read-raw: read a tree object's raw bytes (top-level str)
 tree-read-raw = (git-dir str, o oid) (raw str, ok bool) {
     k str
@@ -552,6 +724,11 @@ read-file-bytes = (p str) (content str, ok bool) {
 ; `rf` is a proper str from fs.read-file; zlib.zlib-decompress handles
 ; decompression. The returned kind/data are concat strings that survive
 ; any module boundary.
+;
+; Bug 18 workaround: the first cross-module call to zlib.zlib-decompress
+; can return wrong results due to a Nolang compiler bug. We perform a
+; warmup call with a tiny known zlib stream to prime the function before
+; doing the real decompression.
 read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
     ok = false
     f str = object-path(git-dir, o)
@@ -563,6 +740,23 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 
         rf.len < 6 -> return
     }
+
+    ; Bug 18 warmup: prime zlib.zlib-decompress with a known-good stream
+    ; This is a zlib-compressed empty string: 0x78 0x9c 0x01 0x00 0x00 0xff 0xff + adler32(1)
+    ; Building it as a str to avoid any cross-module issues
+    warmup-data str = with-len(8)
+    warmup-data[0] = 0x78
+    warmup-data[1] = 0x9c
+    warmup-data[2] = 0x01
+    warmup-data[3] = 0x00
+    warmup-data[4] = 0x00
+    warmup-data[5] = 0xff
+    warmup-data[6] = 0xff
+    warmup-data[7] = 0x01
+    _w-out str
+    _w-ok bool
+    _w-out, _w-ok = zlib.zlib-decompress(warmup-data)
+
     out str
     dec-ok bool
     out, dec-ok = zlib.zlib-decompress(rf)
@@ -775,4 +969,62 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && tag-ok
     ok = ok && util.str-eq(tt, 'v0')
     ok = ok && util.str-eq(tmsg, 'tm')
+}
+
+; checkout-tree: recursively write tree contents to the working directory.
+; This reads a tree object, and for each entry:
+;   - if it's a blob (mode != 16384), write the blob content to a file
+;   - if it's a subtree (mode == 16384), recursively checkout the subtree
+;
+; git-dir str, tree-oid oid, dest-dir str (path to write files into)
+; returns ok bool
+checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
+    ok = false
+
+    ; read tree object
+    kind str
+    raw str
+    read-ok bool
+    kind, raw, read-ok = read-loose(git-dir, tree-oid)
+    read-ok == false -> return
+
+    ; parse tree entries
+    n = tree-count-raw(raw)
+    i <- [0..n): {
+        mode = tree-mode-raw(raw, i)
+        nm = tree-name-raw(raw, i)
+        entry-oid = tree-id-raw(raw, i)
+
+        ; build full path: dest-dir/nm
+        full-path = dest-dir
+        dest-dir.len > 0 -> {
+            last = dest-dir[dest-dir.len - 1]
+            last != 47 -> full-path = dest-dir - '/' - nm
+        }
+        dest-dir.len == 0 -> full-path = nm
+
+        mode == 16384 -> {
+            ; subtree — create directory and recurse
+            util.mkdir-all(full-path)
+            sub-ok = checkout-tree(git-dir, entry-oid, full-path)
+        }
+
+        -> {
+            ; blob — read object and write to file
+            b-kind str
+            b-data str
+            b-ok bool
+            b-kind, b-data, b-ok = read-loose(git-dir, entry-oid)
+            b-ok == true -> {
+                ; ensure parent directory exists
+                slash = full-path.rindex('/')
+                slash >= 0 -> {
+                    parent = util.str-range(full-path, 0, slash)
+                    util.mkdir-all(parent)
+                }
+                util.write-file-simple(full-path, b-data)
+            }
+        }
+    }
+    ok = true
 }

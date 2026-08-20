@@ -1,0 +1,728 @@
+; test.no — unified test runner for nogit
+;
+; Runs all core test suites and reports a summary.
+; Individual test functions return (ok bool, name str).
+;
+; Usage: no run nogit/tests/test
+
+# /nogit/src/util
+# /nogit/src/oid
+# /nogit/src/zlib
+# /nogit/src/object
+# /nogit/src/config
+# /nogit/src/refs
+# /nogit/src/index
+# /nogit/src/repository
+# /nogit/src/revwalk
+
+; ═══════════════════════════════════════════════
+; test counters (global state)
+; ═══════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════
+; helper: assert-eq for strings
+; ═══════════════════════════════════════════════
+
+; test-repo-init: init creates valid .git directory tree
+test-repo-init = () (ok bool, name str) {
+    name = 'repo-init creates .git tree'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-init'
+    git-dir = test-dir - '/.git'
+
+    ; clean up if exists
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    ; verify key directories exist
+    is-heads = fs.is-dir(git-dir - '/refs/heads')
+    is-tags = fs.is-dir(git-dir - '/refs/tags')
+    is-obj = fs.is-dir(git-dir - '/objects')
+    is-pack = fs.is-dir(git-dir - '/objects/pack')
+    is-head = fs.is-file(git-dir - '/HEAD')
+    is-config = fs.is-file(git-dir - '/config')
+
+    {
+        is-heads == false -> return
+        is-tags == false -> return
+        is-obj == false -> return
+        is-pack == false -> return
+        is-head == false -> return
+        is-config == false -> return
+    }
+
+    ; test idempotency — second init should not fail
+    gd2, init-ok2 = repository.repo-init(test-dir, false)
+    init-ok2 == false -> return
+
+    ok = true
+}
+
+; test-config: set and get config values
+test-config = () (ok bool, name str) {
+    name = 'config set/get roundtrip'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-config'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    config.config-set(git-dir, 'user', 'name', 'Test User')
+    config.config-set(git-dir, 'user', 'email', 'test@example.com')
+
+    cfg-name, name-ok = config.config-get(git-dir, 'user', 'name')
+    cfg-email, email-ok = config.config-get(git-dir, 'user', 'email')
+
+    {
+        name-ok == false -> return
+        email-ok == false -> return
+        cfg-name == 'Test User' -> {}
+        -> return
+        cfg-email == 'test@example.com' -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-blob-write-read: write a blob and read it back
+test-blob-roundtrip = () (ok bool, name str) {
+    name = 'blob write + read roundtrip'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-blob'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    content = 'hello nogit blob test'
+    blob-oid = object.write-blob(git-dir, content)
+
+    kind, data, read-ok = object.read-loose(git-dir, blob-oid)
+    {
+        read-ok == false -> return
+        kind == 'blob' -> {}
+        -> return
+        util.str-eq(data, content) -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-tree-build: build tree from flat index with subdirectories
+test-tree-build = () (ok bool, name str) {
+    name = 'build-tree-from-flat with subdirs'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-tree'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    ; add files at root and in a subdirectory
+    blob1 = object.write-blob(git-dir, 'root file')
+    blob2 = object.write-blob(git-dir, 'sub file')
+    index.index-add(git-dir, 'root.txt', blob1, 33188)
+    index.index-add(git-dir, 'sub/sub.txt', blob2, 33188)
+
+    names, hexoids, modes, count, idx-ok = index.read-index(git-dir)
+    {
+        idx-ok == false -> return
+        count == 2 -> {}
+        -> return
+    }
+
+    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes, count)
+    tree-ok == false -> return
+
+    ; read the tree back and verify it has 2 entries (root.txt + sub/)
+    kind, raw, read-ok = object.read-loose(git-dir, tree-oid)
+    {
+        read-ok == false -> return
+        kind == 'tree' -> {}
+        -> return
+    }
+
+    n-entries = object.tree-count-raw(raw)
+    {
+        n-entries == 2 -> {}
+        -> return
+    }
+
+    ; verify that one entry is a subtree (mode 16384)
+    has-subtree = false
+    i <- [0..n-entries): {
+        m = object.tree-mode-raw(raw, i)
+        m == 16384 -> {
+            has-subtree = true
+        }
+    }
+    has-subtree == false -> return
+
+    ok = true
+}
+
+; test-commit-create: create a commit and verify it
+test-commit = () (ok bool, name str) {
+    name = 'commit create + read'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-commit'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    config.config-set(git-dir, 'user', 'name', 'Committer')
+    config.config-set(git-dir, 'user', 'email', 'committer@test.com')
+
+    blob-oid = object.write-blob(git-dir, 'commit test content')
+    index.index-add(git-dir, 'test.txt', blob-oid, 33188)
+
+    names, hexoids, modes, count, idx-ok = index.read-index(git-dir)
+    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes, count)
+    tree-ok == false -> return
+
+    now = os.now()
+    commit-oid = object.write-commit-full(git-dir, tree-oid, '', 'Committer', 'committer@test.com', now, '+0000', 'Committer', 'committer@test.com', now, '+0000', 'test commit message')
+
+    t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, commit-oid)
+    {
+        cok == false -> return
+        util.str-eq(an, 'Committer') -> {}
+        -> return
+        util.str-eq(msg, 'test commit message') -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-refs-branch: create, list, and resolve branches
+test-refs-branch = () (ok bool, name str) {
+    name = 'branch create + list + resolve'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-refs'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    ; create a dummy commit to point branch at
+    blob-oid = object.write-blob(git-dir, 'ref test')
+    tree-raw = object.tree-add-raw('', 33188, 'file.txt', blob-oid)
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    now = os.now()
+    commit-oid = object.write-commit-full(git-dir, tree-oid, '', 'Test', 'test@test.com', now, '+0000', 'Test', 'test@test.com', now, '+0000', 'msg')
+
+    ; create main branch
+    refs.write-ref(git-dir, 'refs/heads/main', commit-oid)
+    refs.update-head(git-dir, 'refs/heads/main')
+
+    ; create feature branch
+    refs.create-branch(git-dir, 'feature', commit-oid)
+    bnames, bcount = refs.list-branches(git-dir)
+    {
+        bcount == 2 -> {}
+        -> return
+    }
+
+    ; resolve HEAD
+    head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+    {
+        head-ok == false -> return
+        head-oid.eq(commit-oid) -> {}
+        -> return
+    }
+
+    ; current-branch
+    cur, detached, cb-ok = refs.current-branch(git-dir)
+    {
+        cb-ok == false -> return
+        util.str-eq(cur, 'main') -> {}
+        -> return
+    }
+
+    ; delete branch
+    del-ok = refs.delete-branch(git-dir, 'feature')
+    del-ok == false -> return
+
+    bnames2, bcount2 = refs.list-branches(git-dir)
+    {
+        bcount2 == 1 -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-tag-create: create and resolve tags
+test-tag = () (ok bool, name str) {
+    name = 'tag create + resolve + delete'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-tag'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    blob-oid = object.write-blob(git-dir, 'tag test')
+    tree-raw = object.tree-add-raw('', 33188, 'file.txt', blob-oid)
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    now = os.now()
+    commit-oid = object.write-commit-full(git-dir, tree-oid, '', 'Test', 'test@test.com', now, '+0000', 'Test', 'test@test.com', now, '+0000', 'msg')
+
+    refs.write-ref(git-dir, 'refs/heads/main', commit-oid)
+    refs.update-head(git-dir, 'refs/heads/main')
+
+    ; create lightweight tag
+    refs.create-tag(git-dir, 'v1.0', commit-oid)
+    tnames, tcount = refs.list-tags(git-dir)
+    {
+        tcount == 1 -> {}
+        -> return
+    }
+
+    ; resolve tag
+    tag-oid, tag-ok = revwalk.resolve-ref(git-dir, 'v1.0')
+    {
+        tag-ok == false -> return
+        tag-oid.eq(commit-oid) -> {}
+        -> return
+    }
+
+    ; create annotated tag
+    a-tag-oid = object.write-tag-full(git-dir, commit-oid, 'commit', 'v2.0', 'Test', 'test@test.com', now, '+0000', 'annotated tag')
+    refs.create-tag(git-dir, 'v2.0', a-tag-oid)
+    tnames2, tcount2 = refs.list-tags(git-dir)
+    {
+        tcount2 == 2 -> {}
+        -> return
+    }
+
+    ; delete tag
+    del-ok = refs.delete-tag(git-dir, 'v1.0')
+    del-ok == false -> return
+
+    tnames3, tcount3 = refs.list-tags(git-dir)
+    {
+        tcount3 == 1 -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-index-add-remove: add and remove files from index
+test-index-add-remove = () (ok bool, name str) {
+    name = 'index add + remove'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-index'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    blob1 = object.write-blob(git-dir, 'file1 content')
+    blob2 = object.write-blob(git-dir, 'file2 content')
+
+    index.index-add(git-dir, 'file1.txt', blob1, 33188)
+    index.index-add(git-dir, 'file2.txt', blob2, 33188)
+
+    n, h, m, c, iok = index.read-index(git-dir)
+    {
+        iok == false -> return
+        c == 2 -> {}
+        -> return
+    }
+
+    ; remove file1
+    rm-ok = index.index-remove(git-dir, 'file1.txt')
+    rm-ok == false -> return
+
+    n2, h2, m2, c2, iok2 = index.read-index(git-dir)
+    {
+        c2 == 1 -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-checkout-tree: checkout a tree to working directory
+test-checkout = () (ok bool, name str) {
+    name = 'checkout-tree restores files'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-checkout'
+    git-dir = test-dir - '/.git'
+    work-dir = cwd - '/tests/tmp-runner-worktree'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+    fs.is-dir(work-dir) -> {
+        fs.remove-all(work-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    content = 'checkout test content'
+    blob-oid = object.write-blob(git-dir, content)
+    tree-raw = object.tree-add-raw('', 33188, 'file.txt', blob-oid)
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+
+    ; checkout the tree to work-dir
+    co-ok = object.checkout-tree(git-dir, tree-oid, work-dir)
+    co-ok == false -> return
+
+    ; verify file was written
+    file-path = work-dir - '/file.txt'
+    isf = fs.is-file(file-path)
+    isf == false -> return
+
+    read-content, read-ok = util.read-file-str(file-path)
+    {
+        read-ok == false -> return
+        util.str-eq(read-content, content) -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-repo-discover: discover a .git directory by walking up
+test-repo-discover = () (ok bool, name str) {
+    name = 'repo-discover finds .git'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-discover'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    ; discover from a subdirectory of test-dir
+    sub-dir = test-dir - '/subdir'
+    util.mkdir-all(sub-dir)
+
+    found-gd, found-wt, found-ok = repository.repo-discover(sub-dir)
+    {
+        found-ok == false -> return
+        found-gd == git-dir -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-reflog: verify reflog write and read
+test-reflog = () (ok bool, name str) {
+    name = 'reflog write + read'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-reflog'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    blob-oid = object.write-blob(git-dir, 'reflog test')
+    tree-raw = object.tree-add-raw('', 33188, 'file.txt', blob-oid)
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    now = os.now()
+    commit1 = object.write-commit-full(git-dir, tree-oid, '', 'Test', 'test@test.com', now, '+0000', 'Test', 'test@test.com', now, '+0000', 'first')
+    commit2 = object.write-commit-full(git-dir, tree-oid, oid.oid-hex-str(commit1), 'Test', 'test@test.com', now + 100, '+0000', 'Test', 'test@test.com', now + 100, '+0000', 'second')
+
+    refs.write-ref(git-dir, 'refs/heads/main', commit1)
+    refs.update-head(git-dir, 'refs/heads/main')
+    refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit1, 'Test', 'test@test.com', now, '+0000', 'commit (initial): first')
+    refs.write-ref(git-dir, 'refs/heads/main', commit2)
+    refs.write-reflog(git-dir, 'HEAD', commit1, commit2, 'Test', 'test@test.com', now + 100, '+0000', 'commit: second')
+
+    rl-content, rl-ok = refs.read-reflog(git-dir, 'HEAD')
+    {
+        rl-ok == false -> return
+        rl-content.len > 0 -> {}
+        -> return
+    }
+
+    ok = true
+}
+
+; test-is-ancestor: verify ancestry checking
+test-ancestor = () (ok bool, name str) {
+    name = 'is-ancestor detects ancestry'
+    ok = false
+
+    cwd = os.get-wd()
+    test-dir = cwd - '/tests/tmp-runner-ancestor'
+    git-dir = test-dir - '/.git'
+
+    fs.is-dir(test-dir) -> {
+        fs.remove-all(test-dir)
+    }
+
+    gd, init-ok = repository.repo-init(test-dir, false)
+    init-ok == false -> return
+
+    blob-oid = object.write-blob(git-dir, 'ancestor test')
+    tree-raw = object.tree-add-raw('', 33188, 'file.txt', blob-oid)
+    tree-oid = object.tree-write-raw(git-dir, tree-raw)
+    now = os.now()
+    commit1 = object.write-commit-full(git-dir, tree-oid, '', 'Test', 'test@test.com', now, '+0000', 'Test', 'test@test.com', now, '+0000', 'first')
+    commit2 = object.write-commit-full(git-dir, tree-oid, oid.oid-hex-str(commit1), 'Test', 'test@test.com', now + 100, '+0000', 'Test', 'test@test.com', now + 100, '+0000', 'second')
+    commit3 = object.write-commit-full(git-dir, tree-oid, oid.oid-hex-str(commit2), 'Test', 'test@test.com', now + 200, '+0000', 'Test', 'test@test.com', now + 200, '+0000', 'third')
+
+    ; commit1 is ancestor of commit2
+    is-anc1 = revwalk.is-ancestor(git-dir, commit1, commit2)
+    is-anc1 == false -> return
+
+    ; commit1 is ancestor of commit3
+    is-anc2 = revwalk.is-ancestor(git-dir, commit1, commit3)
+    is-anc2 == false -> return
+
+    ; commit3 is NOT ancestor of commit1
+    is-anc3 = revwalk.is-ancestor(git-dir, commit3, commit1)
+    is-anc3 == true -> return
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; main test runner
+; ═══════════════════════════════════════════════
+
+main = () {
+    print('════════════════════════════════════════')
+    print('       nogit unified test runner')
+    print('════════════════════════════════════════')
+    print('')
+
+    passed i64 = 0
+    failed i64 = 0
+
+    ; --- run each test ---
+
+    ok1, name1 = test-repo-init()
+    {
+        ok1 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name1)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name1)
+        }
+    }
+
+    ok2, name2 = test-config()
+    {
+        ok2 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name2)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name2)
+        }
+    }
+
+    ok3, name3 = test-blob-roundtrip()
+    {
+        ok3 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name3)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name3)
+        }
+    }
+
+    ok4, name4 = test-tree-build()
+    {
+        ok4 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name4)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name4)
+        }
+    }
+
+    ok5, name5 = test-commit()
+    {
+        ok5 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name5)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name5)
+        }
+    }
+
+    ok6, name6 = test-refs-branch()
+    {
+        ok6 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name6)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name6)
+        }
+    }
+
+    ok7, name7 = test-tag()
+    {
+        ok7 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name7)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name7)
+        }
+    }
+
+    ok8, name8 = test-index-add-remove()
+    {
+        ok8 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name8)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name8)
+        }
+    }
+
+    ok9, name9 = test-checkout()
+    {
+        ok9 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name9)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name9)
+        }
+    }
+
+    ok10, name10 = test-repo-discover()
+    {
+        ok10 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name10)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name10)
+        }
+    }
+
+    ok11, name11 = test-reflog()
+    {
+        ok11 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name11)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name11)
+        }
+    }
+
+    ok12, name12 = test-ancestor()
+    {
+        ok12 == true -> {
+            passed = passed + 1
+            print('PASS: ' - name12)
+        }
+        -> {
+            failed = failed + 1
+            print('FAIL: ' - name12)
+        }
+    }
+
+    print('')
+    print('──────────────────────────────────────────')
+    tp = util.i64-to-str(passed)
+    tf = util.i64-to-str(failed)
+    total = passed + failed
+    tt = util.i64-to-str(total)
+    print('Total: ' - tt - '  Passed: ' - tp - '  Failed: ' - tf)
+    print('──────────────────────────────────────────')
+
+    ; exit code: 0 = all passed, 1 = some failed
+    failed > 0 -> {
+        print('TESTS FAILED')
+        1
+    }
+    print('ALL TESTS PASSED')
+    0
+}

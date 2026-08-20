@@ -177,3 +177,142 @@ max-val = (img image) (mx i64) {
         img.data[i] > mx -> mx = img.data[i]
     }
 }
+
+; ── Additional utility operations ──
+
+; sub-const: subtract a constant from all pixels
+; img image: image (modified in place)
+; c i64: constant to subtract
+sub-const = (img image, c i64) {
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        v = img.data[i] - c
+        v < 0 -> v = 0
+        img.data[i] = v
+    }
+}
+
+; mul-const: multiply all pixels by a factor (factor * 1000 for fixed-point)
+; img image: image (modified in place)
+; factor i64: multiplication factor * 1000 (e.g. 1500 = 1.5x)
+mul-const = (img image, factor i64) {
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        v = img.data[i] * factor / 1000
+        v > 255 -> v = 255
+        v < 0 -> v = 0
+        img.data[i] = v
+    }
+}
+
+; clamp: clamp all pixel values to [min, max]
+; img image: image (modified in place)
+; mn i64: minimum value
+; mx i64: maximum value
+clamp = (img image, mn i64, mx i64) {
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        v = img.data[i]
+        v < mn -> v = mn
+        v > mx -> v = mx
+        img.data[i] = v
+    }
+}
+
+; has-alpha: check if image has an alpha channel
+; img image: image
+; returns ok bool: true if 4-band (RGBA)
+has-alpha = (img image) (ok bool) {
+    ok = img.bands == 4
+}
+
+; is-rgba: check if image is RGBA
+; img image: image
+; returns ok bool: true if RGBA
+is-rgba = (img image) (ok bool) {
+    ok = img.bands == 4
+}
+
+; is-gray: check if image is grayscale
+; img image: image
+; returns ok bool: true if 1-band
+is-gray = (img image) (ok bool) {
+    ok = img.bands == 1
+}
+
+; is-rgb: check if image is RGB
+; img image: image
+; returns ok bool: true if 3-band
+is-rgb = (img image) (ok bool) {
+    ok = img.bands == 3
+}
+
+; add-alpha: add a fully opaque alpha channel to an image
+; img image: input image
+; returns out image: image with alpha channel added
+add-alpha = (img image) (out image) {
+    {
+        img.bands == 4 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    npix = img.width * img.height
+    _d str = with-len(npix * 4)
+    out = image.new-from-data(img.width, img.height, 4, _d)
+    i <- [0..npix): {
+        {
+            img.bands >= 3 -> {
+                out.data[i * 4] = img.data[i * img.bands]
+                out.data[i * 4 + 1] = img.data[i * img.bands + 1]
+                out.data[i * 4 + 2] = img.data[i * img.bands + 2]
+            }
+
+            -> {
+                out.data[i * 4] = img.data[i * img.bands]
+                out.data[i * 4 + 1] = img.data[i * img.bands]
+                out.data[i * 4 + 2] = img.data[i * img.bands]
+            }
+        }
+        out.data[i * 4 + 3] = 255
+    }
+}
+
+; remove-alpha: remove alpha channel (flatten onto white background)
+; img image: input RGBA image
+; returns out image: RGB image
+remove-alpha = (img image) (out image) {
+    {
+        img.bands != 4 -> {
+            out = image.copy(img)
+            return
+        }
+    }
+    npix = img.width * img.height
+    _d str = with-len(npix * 3)
+    out = image.new-from-data(img.width, img.height, 3, _d)
+    i <- [0..npix): {
+        a = img.data[i * 4 + 3]
+        r = img.data[i * 4]
+        g = img.data[i * 4 + 1]
+        b = img.data[i * 4 + 2]
+        ; Alpha blend onto white: out = src * alpha + 255 * (1 - alpha)
+        out.data[i * 3] = (r * a + 255 * (255 - a)) / 255
+        out.data[i * 3 + 1] = (g * a + 255 * (255 - a)) / 255
+        out.data[i * 3 + 2] = (b * a + 255 * (255 - a)) / 255
+    }
+}
+
+; n-pixels: return total number of pixels
+; img image: image
+; returns n i64: number of pixels (width * height)
+n-pixels = (img image) (n i64) {
+    n = img.width * img.height
+}
+
+; n-bytes: return total data byte count
+; img image: image
+; returns n i64: total bytes (width * height * bands)
+n-bytes = (img image) (n i64) {
+    n = img.width * img.height * img.bands
+}

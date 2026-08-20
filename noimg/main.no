@@ -11,12 +11,18 @@
 ;   flip        Flip image (h, v, both)
 ;   crop        Crop region
 ;   grayscale   Convert to grayscale
+;   sepia       Sepia tone effect
 ;   invert      Invert colors
 ;   blur        Gaussian blur
 ;   sharpen     Sharpen image
 ;   edge        Edge detection (Sobel)
 ;   emboss      Emboss filter
 ;   oil         Oil painting effect
+;   median      Median filter
+;   dilate      Morphological dilation
+;   erode       Morphological erosion
+;   gradient    Morphological gradient
+;   vignette    Vignette effect
 ;   brightness  Adjust brightness
 ;   contrast    Adjust contrast
 ;   gamma       Gamma correction
@@ -25,13 +31,28 @@
 ;   solarize    Solarize effect
 ;   hist-eq     Histogram equalization
 ;   hist-norm   Histogram normalization
+;   hist-stretch Histogram stretch (contrast stretch)
+;   auto-level  Auto level adjustment
+;   auto-contrast Auto contrast adjustment
 ;   histogram   Print histogram
 ;   stats       Print image statistics
+;   entropy     Print image entropy
 ;   composite   Composite two images
 ;   pad         Add border
-;   bandjoin    Extract single band
-;   median      Median filter
+;   band        Extract single band
+;   flatten     Flatten alpha onto background
+;   add-alpha   Add alpha channel
 ;   noise       Add noise
+;   unsharp-mask  Unsharp mask sharpening (with threshold)
+;   box-blur    Box blur (mean filter)
+;   laplacian   Laplacian edge detection
+;   otsu        Otsu auto-threshold binarization
+;   adjust-hsv  Adjust hue/saturation/value
+;   transpose   Transpose (flip along main diagonal)
+;   scale       Scale by separate x/y factors
+;   embed       Embed image in larger canvas
+;   bandjoin2   Join two images band-by-band
+;   roi-blend   Region-of-interest blend with mode/alpha
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
@@ -41,6 +62,13 @@
 # /noimg/src/image.avg
 # /noimg/src/image.min-val
 # /noimg/src/image.max-val
+# /noimg/src/image.sub-const
+# /noimg/src/image.mul-const
+# /noimg/src/image.clamp
+# /noimg/src/image.add-alpha
+# /noimg/src/image.remove-alpha
+# /noimg/src/image.n-pixels
+# /noimg/src/image.n-bytes
 # /noimg/src/pnm.load
 # /noimg/src/pnm.save
 # /noimg/src/bmp.load
@@ -60,12 +88,23 @@
 # /noimg/src/webp.load
 # /noimg/src/webp.save
 # /noimg/src/colour.rgb2gray
+# /noimg/src/colour.gray2rgb
+# /noimg/src/colour.rgb2hsv
+# /noimg/src/colour.hsv2rgb
+# /noimg/src/colour.rgb2hsl
+# /noimg/src/colour.hsl2rgb
+# /noimg/src/colour.rgb2ycbcr
+# /noimg/src/colour.ycbcr2rgb
 # /noimg/src/colour.brightness
 # /noimg/src/colour.contrast
 # /noimg/src/colour.gamma
 # /noimg/src/colour.threshold
 # /noimg/src/colour.posterize
 # /noimg/src/colour.solarize
+# /noimg/src/colour.sepia
+# /noimg/src/colour.adjust-hsv
+# /noimg/src/colour.overlay-blend
+# /noimg/src/colour.otsu-threshold
 # /noimg/src/resize.resize
 # /noimg/src/resize.thumbnail
 # /noimg/src/rotate.rot
@@ -74,19 +113,40 @@
 # /noimg/src/composite.composite
 # /noimg/src/composite.pad
 # /noimg/src/composite.band-extract
+# /noimg/src/composite.bandjoin2
+# /noimg/src/composite.flatten
 # /noimg/src/filter.gauss-blur
+# /noimg/src/filter.gauss-blur-separable
 # /noimg/src/filter.sharpen
 # /noimg/src/filter.sobel
 # /noimg/src/filter.emboss
 # /noimg/src/filter.oil-paint
 # /noimg/src/filter.median
 # /noimg/src/filter.add-noise
+# /noimg/src/filter.dilate
+# /noimg/src/filter.erode
+# /noimg/src/filter.gradient
+# /noimg/src/filter.unsharp-mask
+# /noimg/src/filter.vignette
+# /noimg/src/filter.box-blur
+# /noimg/src/filter.laplacian
 # /noimg/src/histogram.equalize
 # /noimg/src/histogram.norm
 # /noimg/src/histogram.find
 # /noimg/src/histogram.mean
 # /noimg/src/histogram.stddev
 # /noimg/src/histogram.hist-print
+# /noimg/src/histogram.stretch
+# /noimg/src/histogram.auto-level
+# /noimg/src/histogram.auto-contrast
+# /noimg/src/histogram.entropy
+# /noimg/src/histogram.percentile
+# /noimg/src/rotate.rot-free
+# /noimg/src/rotate.transpose
+# /noimg/src/composite.blend
+# /noimg/src/composite.embed
+# /noimg/src/composite.roi-blend
+# /noimg/src/resize.scale
 
 ; parse-i64: parse a string argument to i64 (returns 0 on failure)
 ; s str: string to parse
@@ -115,6 +175,7 @@ print-usage = () {
     print('  flip <in> <out> <h|v|both>  Flip image')
     print('  crop <in> <out> <x> <y> <w> <h>  Crop region')
     print('  grayscale <in> <out>        Convert to grayscale')
+    print('  sepia <in> <out>            Sepia tone effect')
     print('  invert <in> <out>            Invert colors')
     print('  blur <in> <out> <sigma>      Gaussian blur')
     print('  sharpen <in> <out> <amount>  Sharpen image')
@@ -122,6 +183,10 @@ print-usage = () {
     print('  emboss <in> <out>            Emboss filter')
     print('  oil <in> <out> <r> <levels>  Oil painting effect')
     print('  median <in> <out> <r>        Median filter')
+    print('  dilate <in> <out> <r>        Morphological dilation')
+    print('  erode <in> <out> <r>         Morphological erosion')
+    print('  gradient <in> <out> <r>      Morphological gradient')
+    print('  vignette <in> <out> <str>    Vignette effect')
     print('  brightness <in> <out> <val>  Adjust brightness')
     print('  contrast <in> <out> <val>    Adjust contrast')
     print('  gamma <in> <out> <val*100>  Gamma correction')
@@ -130,12 +195,28 @@ print-usage = () {
     print('  solarize <in> <out> <t>      Solarize effect')
     print('  hist-eq <in> <out>          Histogram equalization')
     print('  hist-norm <in> <out>         Histogram normalization')
+    print('  hist-stretch <in> <out> <pct>  Histogram stretch')
+    print('  auto-level <in> <out>        Auto level adjustment')
+    print('  auto-contrast <in> <out> <pct>  Auto contrast')
     print('  histogram <in>                Print histogram')
     print('  stats <in>                   Print image statistics')
+    print('  entropy <in>                 Print image entropy')
     print('  composite <base> <overlay> <out> <x> <y>  Composite images')
     print('  pad <in> <out> <border>      Add black border')
     print('  band <in> <out> <idx>        Extract single band')
+    print('  add-alpha <in> <out>         Add alpha channel')
+    print('  flatten <in> <out>            Flatten alpha onto white')
     print('  noise <in> <out> <amount>    Add noise')
+    print('  unsharp-mask <in> <out> <sigma> <amount> <threshold>  Unsharp mask')
+    print('  box-blur <in> <out> <radius>  Box blur')
+    print('  laplacian <in> <out>        Laplacian edge detection')
+    print('  otsu <in> <out>             Otsu auto-threshold')
+    print('  adjust-hsv <in> <out> <hue> <sat> <val>  Adjust HSV')
+    print('  transpose <in> <out>        Transpose (flip along main diagonal)')
+    print('  scale <in> <out> <sx> <sy>   Scale by separate x/y factors')
+    print('  embed <in> <out> <x> <y> <w> <h>  Embed in larger canvas')
+    print('  bandjoin2 <in1> <in2> <out>  Join two images band-by-band')
+    print('  roi-blend <base> <overlay> <out> <x> <y> <mode> <alpha>  ROI blend')
     print('  version                      Print version')
 }
 
@@ -556,6 +637,22 @@ cmd = arg(1)
         save-image(out-path, img)
         print('Inverted: {in-path} -> {out-path}')
     }
+    cmd == 'sepia' -> {
+        argc < 4 -> {
+            print('Usage: img sepia <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.sepia(img)
+        save-image(out-path, out)
+        print('Sepia: {in-path} -> {out-path}')
+    }
     cmd == 'blur' -> {
         argc < 5 -> {
             print('Usage: img blur <in> <out> <sigma*10>')
@@ -658,6 +755,74 @@ cmd = arg(1)
         out = filter.median(img, radius)
         save-image(out-path, out)
         print('Median filtered: {in-path} -> {out-path}')
+    }
+    cmd == 'dilate' -> {
+        argc < 5 -> {
+            print('Usage: img dilate <in> <out> <radius>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.dilate(img, radius)
+        save-image(out-path, out)
+        print('Dilated: {in-path} -> {out-path}')
+    }
+    cmd == 'erode' -> {
+        argc < 5 -> {
+            print('Usage: img erode <in> <out> <radius>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.erode(img, radius)
+        save-image(out-path, out)
+        print('Eroded: {in-path} -> {out-path}')
+    }
+    cmd == 'gradient' -> {
+        argc < 5 -> {
+            print('Usage: img gradient <in> <out> <radius>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.gradient(img, radius)
+        save-image(out-path, out)
+        print('Gradient: {in-path} -> {out-path}')
+    }
+    cmd == 'vignette' -> {
+        argc < 5 -> {
+            print('Usage: img vignette <in> <out> <strength>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        strength = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.vignette(img, strength)
+        save-image(out-path, out)
+        print('Vignette: {in-path} -> {out-path}')
     }
     cmd == 'brightness' -> {
         argc < 5 -> {
@@ -793,6 +958,56 @@ cmd = arg(1)
         save-image(out-path, out)
         print('Histogram normalized: {in-path} -> {out-path}')
     }
+    cmd == 'hist-stretch' -> {
+        argc < 5 -> {
+            print('Usage: img hist-stretch <in> <out> <clip-percent>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        clip = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = histogram.stretch(img, clip)
+        save-image(out-path, out)
+        print('Histogram stretched: {in-path} -> {out-path}')
+    }
+    cmd == 'auto-level' -> {
+        argc < 4 -> {
+            print('Usage: img auto-level <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = histogram.auto-level(img)
+        save-image(out-path, out)
+        print('Auto-leveled: {in-path} -> {out-path}')
+    }
+    cmd == 'auto-contrast' -> {
+        argc < 5 -> {
+            print('Usage: img auto-contrast <in> <out> <clip-percent>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        clip = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = histogram.auto-contrast(img, clip)
+        save-image(out-path, out)
+        print('Auto-contrast: {in-path} -> {out-path}')
+    }
     cmd == 'histogram' -> {
         argc < 3 -> {
             print('Usage: img histogram <file>')
@@ -830,6 +1045,23 @@ cmd = arg(1)
         print('Avg: {avg}')
         print('Mean: {mean}')
         print('StdDev: {sd}')
+    }
+    cmd == 'entropy' -> {
+        argc < 3 -> {
+            print('Usage: img entropy <file>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        ent = histogram.entropy(img)
+        med = histogram.percentile(img, 50)
+        print('Image: {in-path}')
+        print('Entropy: {ent} bits')
+        print('Median: {med}')
     }
     cmd == 'composite' -> {
         argc < 7 -> {
@@ -891,6 +1123,42 @@ cmd = arg(1)
         save-image(out-path, out)
         print('Band {band} extracted: {in-path} -> {out-path}')
     }
+    cmd == 'add-alpha' -> {
+        argc < 4 -> {
+            print('Usage: img add-alpha <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = image.add-alpha(img)
+        save-image(out-path, out)
+        print('Alpha added: {in-path} -> {out-path}')
+    }
+    cmd == 'flatten' -> {
+        argc < 4 -> {
+            print('Usage: img flatten <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        bg []byte = with-len(3)
+        bg[0] = 255
+        bg[1] = 255
+        bg[2] = 255
+        out = composite.flatten(img, bg)
+        save-image(out-path, out)
+        print('Flattened: {in-path} -> {out-path}')
+    }
     cmd == 'noise' -> {
         argc < 5 -> {
             print('Usage: img noise <in> <out> <amount>')
@@ -907,6 +1175,200 @@ cmd = arg(1)
         out = filter.add-noise(img, amount)
         save-image(out-path, out)
         print('Noise added: {in-path} -> {out-path}')
+    }
+    cmd == 'unsharp-mask' -> {
+        argc < 7 -> {
+            print('Usage: img unsharp-mask <in> <out> <sigma> <amount> <threshold>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        sigma = parse-i64(arg(4))
+        amount = parse-i64(arg(5))
+        threshold = parse-i64(arg(6))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.unsharp-mask(img, sigma, amount, threshold)
+        save-image(out-path, out)
+        print('Unsharp masked: {in-path} -> {out-path}')
+    }
+    cmd == 'box-blur' -> {
+        argc < 5 -> {
+            print('Usage: img box-blur <in> <out> <radius>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        radius = parse-i64(arg(4))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.box-blur(img, radius)
+        save-image(out-path, out)
+        print('Box blurred: {in-path} -> {out-path}')
+    }
+    cmd == 'laplacian' -> {
+        argc < 4 -> {
+            print('Usage: img laplacian <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = filter.laplacian(img)
+        save-image(out-path, out)
+        print('Laplacian edge: {in-path} -> {out-path}')
+    }
+    cmd == 'otsu' -> {
+        argc < 4 -> {
+            print('Usage: img otsu <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        t = colour.otsu-threshold(img)
+        out = colour.threshold(img, t)
+        save-image(out-path, out)
+        print('Otsu threshold={t}: {in-path} -> {out-path}')
+    }
+    cmd == 'adjust-hsv' -> {
+        argc < 7 -> {
+            print('Usage: img adjust-hsv <in> <out> <hue> <sat> <val>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        hue = parse-i64(arg(4))
+        sat = parse-i64(arg(5))
+        val = parse-i64(arg(6))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = colour.adjust-hsv(img, hue, sat, val)
+        save-image(out-path, out)
+        print('HSV adjusted: {in-path} -> {out-path}')
+    }
+    cmd == 'transpose' -> {
+        argc < 4 -> {
+            print('Usage: img transpose <in> <out>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        out = rotate.transpose(img)
+        save-image(out-path, out)
+        print('Transposed: {in-path} -> {out-path}')
+    }
+    cmd == 'scale' -> {
+        argc < 6 -> {
+            print('Usage: img scale <in> <out> <sx*100> <sy*100>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        sx = parse-i64(arg(4))
+        sy = parse-i64(arg(5))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        new-w = img.width * sx / 100
+        new-h = img.height * sy / 100
+        new-w < 1 -> new-w = 1
+        new-h < 1 -> new-h = 1
+        out = resize.resize(img, new-w, new-h, 1)
+        save-image(out-path, out)
+        print('Scaled: {in-path} -> {out-path} ({new-w}x{new-h})')
+    }
+    cmd == 'embed' -> {
+        argc < 8 -> {
+            print('Usage: img embed <in> <out> <x> <y> <w> <h>')
+            os.exit(1)
+        }
+        in-path = arg(2)
+        out-path = arg(3)
+        ex = parse-i64(arg(4))
+        ey = parse-i64(arg(5))
+        ew = parse-i64(arg(6))
+        eh = parse-i64(arg(7))
+        img, ok = load-image(in-path)
+        ok == false -> {
+            print('error: could not load {in-path}')
+            os.exit(1)
+        }
+        bg []byte = with-len(img.bands)
+        i <- [0..img.bands): {
+            bg[i] = 0
+        }
+        out = composite.embed(img, ex, ey, ew, eh, bg)
+        save-image(out-path, out)
+        print('Embedded: {in-path} -> {out-path}')
+    }
+    cmd == 'bandjoin2' -> {
+        argc < 6 -> {
+            print('Usage: img bandjoin2 <in1> <in2> <out>')
+            os.exit(1)
+        }
+        in1-path = arg(2)
+        in2-path = arg(3)
+        out-path = arg(4)
+        img1, ok1 = load-image(in1-path)
+        img2, ok2 = load-image(in2-path)
+        {
+            ok1 == false || ok2 == false -> {
+                print('error: could not load images')
+                os.exit(1)
+            }
+        }
+        out = composite.bandjoin2(img1, img2)
+        save-image(out-path, out)
+        print('Band joined: {in1-path} + {in2-path} -> {out-path}')
+    }
+    cmd == 'roi-blend' -> {
+        argc < 9 -> {
+            print('Usage: img roi-blend <base> <overlay> <out> <x> <y> <mode> <alpha>')
+            os.exit(1)
+        }
+        base-path = arg(2)
+        overlay-path = arg(3)
+        out-path = arg(4)
+        x = parse-i64(arg(5))
+        y = parse-i64(arg(6))
+        mode = parse-i64(arg(7))
+        alpha = parse-i64(arg(8))
+        base, ok1 = load-image(base-path)
+        overlay, ok2 = load-image(overlay-path)
+        {
+            ok1 == false || ok2 == false -> {
+                print('error: could not load images')
+                os.exit(1)
+            }
+        }
+        out = composite.roi-blend(base, overlay, x, y, mode, alpha)
+        save-image(out-path, out)
+        print('ROI blended: {overlay-path} onto {base-path} -> {out-path}')
     }
     -> {
         print('Unknown command: {cmd}')

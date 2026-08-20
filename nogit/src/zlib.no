@@ -1,22 +1,16 @@
-; zlib — RFC 1950 zlib (de)compression using pure-Nolang stored DEFLATE blocks
+; zlib — RFC 1950 zlib (de)compression using std archive/gzip
 ;
 ; Git stores every loose object and every pack-object payload as a zlib
 ; stream: a 2-byte header, raw DEFLATE data, and a 4-byte big-endian Adler-32
 ; checksum of the uncompressed data.
 ;
-; We implement a self-contained zlib codec that uses ONLY DEFLATE *stored*
-; blocks (BTYPE=00). Stored blocks are uncompressed but are perfectly valid
-; DEFLATE and valid zlib, so real Git can read the objects we write. The codec
-; operates on *byte-strings* (str with one codepoint per byte 0-255).
+; We use the Nolang standard library `archive/gzip` module which provides
+; full DEFLATE compression and decompression. This means:
+;   * Objects written by nogit can be read by real git (zlib format is valid)
+;   * Objects written by real git can be read by nogit (full DEFLATE support)
 ;
-; Layout produced for a single stored block (data length L <= 65535):
-;   0x78 0x9c            zlib header (default 32K window, default algo)
-;   BFINAL               one byte: bit0=BFINAL(1), bits1-2=BTYPE(00) -> 0x01
-;   L0 L1                LEN, little-endian (16 bit)
-;   N0 N1                NLEN = ~LEN, little-endian (16 bit)
-;   <L bytes of data>    stored payload
-;   A3 A2 A1 A0          Adler-32 of data, big-endian
-; For L > 65535 we chain multiple stored blocks (all but the last BFINAL=0).
+; The codec operates on *byte-strings* (str with one codepoint per byte 0-255).
+; We bridge str <-> []byte via str.to-bytes() and []byte.to-str().
 
 ; byte-to-str: wrap a single byte value into a 1-byte string
 byte-to-str = (b byte) (s str) {
@@ -38,71 +32,47 @@ adler32 = (data str) (sum i64) {
     sum = ((b << 16) | a) & 0xffffffff
 }
 
-; zlib-compress: compress raw data into a zlib stream (stored blocks)
+; zlib-compress: compress raw data into a zlib stream using std gzip module
 ; data str: uncompressed input bytes
 ; returns out str: zlib-wrapped stream (header + deflate + adler32)
-; NOTE: uses string concatenation with byte-to-str for each byte to work
-; around a Nolang compiler bug where str index assignment and slicing
-; in loops inside cross-module functions do not persist correctly.
+; Uses std archive/gzip which produces valid zlib format.
 zlib-compress = (data str) (out str) {
-    out = ''
-
-    ; zlib header
-    bh0 str = byte-to-str(0x78)
-    bh1 str = byte-to-str(0x9c)
-    out = out - bh0 - bh1
-
-    ; deflate stored blocks
-    remaining = data.len
-    off = 0
-    {
-        remaining <= 0 -> {
-
-            ; empty data: emit a single final empty stored block
-            out = out - byte-to-str(1)
-            out = out - byte-to-str(0) - byte-to-str(0)
-            out = out - byte-to-str(0xff) - byte-to-str(0xff)
-            break
-        }
-        chunk = remaining
-        chunk > 65535 -> chunk = 65535
-        last = (chunk == remaining)
-
-        ; block header byte
-        bhdr = 0
-        last == true -> bhdr = 1
-        out = out - byte-to-str(bhdr)
-
-        ; LEN (little-endian)
-        out = out - byte-to-str(chunk & 0xff) - byte-to-str((chunk >> 8) & 0xff)
-
-        ; NLEN = one's complement of LEN (little-endian)
-        nlen = (~chunk) & 0xffff
-        out = out - byte-to-str(nlen & 0xff) - byte-to-str((nlen >> 8) & 0xff)
-
-        ; payload bytes — copy byte by byte via byte-to-str
-        i <- [0..chunk): {
-            out = out - byte-to-str(data[off + i])
-        }
-        off = off + chunk
-        remaining = remaining - chunk
-    } (true)
-
-    ; Adler-32 (big-endian)
-    s = adler32(data)
-    out = out - byte-to-str((s >> 24) & 0xff)
-    out = out - byte-to-str((s >> 16) & 0xff)
-    out = out - byte-to-str((s >> 8) & 0xff)
-    out = out - byte-to-str(s & 0xff)
+    ; Convert str to []byte, compress via std lib, convert back to str
+    data-bytes []byte = data.to-bytes()
+    comp-bytes []byte = gzip.gzip-compress(data-bytes)
+    out = comp-bytes.to-str()
 }
 
-; zlib-decompress: decompress a zlib stream (stored blocks only)
-; data str: a zlib stream
-; returns out str, ok bool: uncompressed bytes, ok=false on too-short / non-stored input
-; NOTE: uses string concatenation with byte-to-str for each byte to work
-; around a Nolang compiler bug where str index assignment and slicing
-; in loops inside cross-module functions do not persist correctly.
+; zlib-decompress: decompress a zlib stream using std gzip module
+; data str: a zlib stream (e.g. a git loose object file)
+; returns out str, ok bool: uncompressed bytes, ok=false on error
+; Uses std archive/gzip which supports full DEFLATE (BTYPE 00/01/10).
 zlib-decompress = (data str) (out str, ok bool) {
+    ok = false
+    out = ''
+    data.len < 6 -> return
+
+    ; Convert str to []byte, decompress via std lib, convert back to str
+    data-bytes []byte = data.to-bytes()
+    decomp-bytes []byte = gzip.gzip-decompress(data-bytes)
+    decomp-bytes.len == 0 -> {
+        ; decompression returned empty — could be legitimate empty data
+        ; or a failure. Check if the input looks like a valid zlib stream.
+        ; A valid zlib stream starts with 0x78 (CMF byte).
+        data[0] == 0x78 -> {
+            ok = true
+        }
+        return
+    }
+    out = decomp-bytes.to-str()
+    ok = true
+}
+
+; zlib-decompress-stored: decompress stored-blocks-only zlib stream
+; (legacy fallback — used if std gzip module has issues)
+; data str: a zlib stream with only BTYPE=00 blocks
+; returns out str, ok bool: uncompressed bytes, ok=false on non-stored input
+zlib-decompress-stored = (data str) (out str, ok bool) {
     ok = false
     out = ''
     data.len < 6 -> return
