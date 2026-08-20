@@ -316,3 +316,182 @@ n-pixels = (img image) (n i64) {
 n-bytes = (img image) (n i64) {
     n = img.width * img.height * img.bands
 }
+
+; ── 16-bit / HDR support ──
+; format field: 0 = U8 (8-bit unsigned), 1 = U16 (16-bit unsigned)
+; For U16, data is stored as 2 bytes per sample, little-endian
+; pixel(x,y,band) = data[((y*width+x)*bands+band)*2] | (data[...+1] << 8)
+
+; Format constants
+; U8  = 0
+; U16 = 1
+
+; image.new-u16: create a new 16-bit image filled with zeros
+; w i64: width
+; h i64: height
+; b i64: bands
+; returns img image: new 16-bit image
+new-u16 = (w i64, h i64, b i64) (img image) {
+    img.width = w
+    img.height = h
+    img.bands = b
+    img.format = 1
+    img.interpretation = 0
+    img.coding = 0
+    img.xres = 1.0
+    img.yres = 1.0
+    img.xoffset = 0
+    img.yoffset = 0
+    n = w * h * b * 2
+    _d str = with-len(n)
+    img.data = _d
+}
+
+; image.get-pixel-u16: get a 16-bit pixel value
+; img image: 16-bit image
+; x i64: x coordinate
+; y i64: y coordinate
+; band i64: band index
+; returns val i64: pixel value (0-65535)
+get-pixel-u16 = (img image, x i64, y i64, band i64) (val i64) {
+    idx = ((y * img.width + x) * img.bands + band) * 2
+    lo = img.data[idx]
+    hi = img.data[idx + 1]
+    val = lo | (hi << 8)
+}
+
+; image.set-pixel-u16: set a 16-bit pixel value
+; img image: 16-bit image (modified in place)
+; x i64: x coordinate
+; y i64: y coordinate
+; band i64: band index
+; v i64: value (0-65535)
+set-pixel-u16 = (img image, x i64, y i64, band i64, v i64) {
+    idx = ((y * img.width + x) * img.bands + band) * 2
+    {
+        v < 0 -> v = 0
+    }
+    {
+        v > 65535 -> v = 65535
+    }
+    img.data[idx] = v & 255
+    img.data[idx + 1] = (v >> 8) & 255
+}
+
+; image.u8-to-u16: convert 8-bit image to 16-bit
+; Expands 8-bit values to 16-bit by scaling: u16 = u8 * 257
+; This maps 0->0, 255->65535
+; img image: 8-bit source image
+; returns out image: 16-bit image
+u8-to-u16 = (img image) (out image) {
+    npix = img.width * img.height
+    out = new-u16(img.width, img.height, img.bands)
+    i <- [0..npix * img.bands): {
+        v = img.data[i]
+        idx = i * 2
+        u16 = v * 257
+        out.data[idx] = u16 & 255
+        out.data[idx + 1] = (u16 >> 8) & 255
+    }
+}
+
+; image.u16-to-u8: convert 16-bit image to 8-bit
+; Scales 16-bit values down: u8 = (u16 + 128) / 257
+; img image: 16-bit source image
+; returns out image: 8-bit image
+u16-to-u8 = (img image) (out image) {
+    npix = img.width * img.height
+    _d str = with-len(npix * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    i <- [0..npix * img.bands): {
+        lo = img.data[i * 2]
+        hi = img.data[i * 2 + 1]
+        u16 = lo | (hi << 8)
+        out.data[i] = (u16 + 128) / 257
+    }
+}
+
+; image.fill-u16: fill a 16-bit image with a value
+; img image: 16-bit image (modified in place)
+; v i64: value (0-65535)
+fill-u16 = (img image, v i64) {
+    {
+        v < 0 -> v = 0
+    }
+    {
+        v > 65535 -> v = 65535
+    }
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        idx = i * 2
+        img.data[idx] = v & 255
+        img.data[idx + 1] = (v >> 8) & 255
+    }
+}
+
+; image.invert-u16: invert all pixels of a 16-bit image
+; img image: 16-bit image (modified in place)
+invert-u16 = (img image) {
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        idx = i * 2
+        lo = img.data[idx]
+        hi = img.data[idx + 1]
+        val = lo | (hi << 8)
+        val = 65535 - val
+        img.data[idx] = val & 255
+        img.data[idx + 1] = (val >> 8) & 255
+    }
+}
+
+; image.avg-u16: compute average pixel value for 16-bit image
+; img image: 16-bit image
+; returns avg i64: average value
+avg-u16 = (img image) (avg i64) {
+    n = img.width * img.height * img.bands
+    sum = 0
+    i <- [0..n): {
+        idx = i * 2
+        lo = img.data[idx]
+        hi = img.data[idx + 1]
+        sum = sum + (lo | (hi << 8))
+    }
+    {
+        n == 0 -> return
+    }
+    avg = sum / n
+}
+
+; image.min-val-u16: compute minimum pixel value for 16-bit image
+; img image: 16-bit image
+; returns mn i64: minimum value
+min-val-u16 = (img image) (mn i64) {
+    mn = 65535
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        idx = i * 2
+        lo = img.data[idx]
+        hi = img.data[idx + 1]
+        val = lo | (hi << 8)
+        {
+            val < mn -> mn = val
+        }
+    }
+}
+
+; image.max-val-u16: compute maximum pixel value for 16-bit image
+; img image: 16-bit image
+; returns mx i64: maximum value
+max-val-u16 = (img image) (mx i64) {
+    mx = 0
+    n = img.width * img.height * img.bands
+    i <- [0..n): {
+        idx = i * 2
+        lo = img.data[idx]
+        hi = img.data[idx + 1]
+        val = lo | (hi << 8)
+        {
+            val > mx -> mx = val
+        }
+    }
+}

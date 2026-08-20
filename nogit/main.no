@@ -1084,12 +1084,29 @@ cmd-ls-tree = (argc i64) {
     }
     kind: {
         'commit' -> {
-            o, ref-ok = revwalk.commit-tree-oid(git-dir, o)
-            ref-ok == false -> {
-                print('fatal: could not read commit tree')
+            ; Parse tree oid directly from commit data instead of calling
+            ; revwalk.commit-tree-oid to avoid cross-module variable issues
+            sp-c = util.find-byte-str(data, 10, 0)
+            first-line-end = data.len
+            sp-c >= 0 -> first-line-end = sp-c
+            first-line = util.str-range(data, 0, first-line-end)
+            first-line.starts-with('tree ') -> {
+                tree-hex = util.str-range(first-line, 5, first-line.len)
+                o, ref-ok = oid.oid-from-hex(tree-hex)
+                ref-ok == false -> {
+                    print('fatal: could not parse tree oid')
+                    return
+                }
+                kind, data, read-ok = object.read-loose(git-dir, o)
+                read-ok == false -> {
+                    print('fatal: could not read tree object')
+                    return
+                }
+            }
+            -> {
+                print('fatal: commit has no tree line')
                 return
             }
-            kind, data, read-ok = object.read-loose(git-dir, o)
         }
         'tree' ->
         -> {

@@ -228,54 +228,79 @@ blend = (base image, overlay image, x i64, y i64, mode i64, alpha i64) (out imag
                                 ov = overlay.data[(oy * overlay.width + ox) * overlay.bands + b]
 
                                 ; Apply alpha
-                                ov = ov * alpha / 255
-                                bv2 = bv * (255 - alpha) / 255
+                                ; First compute blend mode result using raw values
+                                raw-bv = bv
+                                raw-ov = ov
                                 blended = 0
                                 {
                                     mode == 0 -> {
-                                        blended = bv2 + ov
+                                        ; Normal
+                                        blended = raw-ov
+                                    }
+
+                                    mode == 1 -> {
+                                        ; Multiply
+                                        blended = raw-bv * raw-ov / 255
+                                    }
+
+                                    mode == 2 -> {
+                                        ; Screen
+                                        blended = 255 - ((255 - raw-bv) * (255 - raw-ov) / 255)
+                                    }
+
+                                    mode == 3 -> {
+                                        ; Overlay
+                                        {
+                                            raw-bv < 128 -> {
+                                                blended = 2 * raw-bv * raw-ov / 255
+                                            }
+
+                                            -> {
+                                                blended = 255 - 2 * (255 - raw-bv) * (255 - raw-ov) / 255
+                                            }
+                                        }
                                     }
 
                                     mode == 4 -> {
-                                        blended = bv + ov
+                                        ; Add
+                                        blended = raw-bv + raw-ov
                                     }
 
                                     mode == 5 -> {
-                                        blended = bv - ov
+                                        ; Subtract
+                                        blended = raw-bv - raw-ov
                                     }
 
                                     mode == 6 -> {
-                                        diff = bv - ov
+                                        ; Difference
+                                        diff = raw-bv - raw-ov
                                         diff < 0 -> diff = -diff
                                         blended = diff
                                     }
 
-                                    mode == 1 -> {
-                                        blended = bv * ov / 255
-                                    }
-
-                                    mode == 2 -> {
-                                        blended = 255 - ((255 - bv) * (255 - ov) / 255)
-                                    }
-
                                     mode == 7 -> {
-                                        blended = bv
-                                        ov > blended -> blended = ov
+                                        ; Lighten
+                                        blended = raw-bv
+                                        raw-ov > blended -> blended = raw-ov
                                     }
 
                                     mode == 8 -> {
-                                        blended = bv
-                                        ov < blended -> blended = ov
+                                        ; Darken
+                                        blended = raw-bv
+                                        raw-ov < blended -> blended = raw-ov
                                     }
 
                                     mode == 9 -> {
-                                        blended = ov
+                                        ; Copy
+                                        blended = raw-ov
                                     }
 
                                     -> {
-                                        blended = bv2 + ov
+                                        blended = raw-ov
                                     }
                                 }
+                                ; Now apply alpha mixing: result = blended*alpha/255 + base*(255-alpha)/255
+                                blended = blended * alpha / 255 + raw-bv * (255 - alpha) / 255
                                 blended > 255 -> blended = 255
                                 blended < 0 -> blended = 0
                                 out.data[(dy * out.width + dx) * out.bands + b] = blended

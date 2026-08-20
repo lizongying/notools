@@ -714,3 +714,323 @@ sepia = (img image) (out image) {
         }
     }
 }
+
+; ── RGB <-> Lab ──
+
+; colour.rgb2lab: convert RGB image to CIE Lab color space
+; Uses sRGB -> linear RGB -> XYZ -> Lab pipeline with D65 illuminant
+; img image: input RGB image (3+ bands)
+; returns out image: Lab image (3-band, L: 0-255, a: 0-255, b: 0-255)
+rgb2lab = (img image) (out image) {
+    {
+        img.bands >= 3 -> {
+            npix = img.width * img.height
+            _d str = with-len(npix * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+            i <- [0..npix): {
+                r = img.data[i * img.bands]
+                g = img.data[i * img.bands + 1]
+                b = img.data[i * img.bands + 2]
+
+                ; sRGB to linear (inverse gamma)
+                ; if v/255 <= 0.04045 -> v/(255*12.92) else ((v/255+0.055)/1.055)^2.4
+                ; Simplified using integer math
+                rf = r * 1000 / 255
+                gf = g * 1000 / 255
+                bf = b * 1000 / 255
+
+                {
+                    rf <= 4045 -> {
+                        rl = rf * 1000 / 12920
+                    }
+                    -> {
+                        rl = rf * rf / 1000
+                        rl = rl * 1000 / 1055
+                    }
+                }
+                {
+                    gf <= 4045 -> {
+                        gl = gf * 1000 / 12920
+                    }
+                    -> {
+                        gl = gf * gf / 1000
+                        gl = gl * 1000 / 1055
+                    }
+                }
+                {
+                    bf <= 4045 -> {
+                        bl = bf * 1000 / 12920
+                    }
+                    -> {
+                        bl = bf * bf / 1000
+                        bl = bl * 1000 / 1055
+                    }
+                }
+
+                ; XYZ conversion (D65, sRGB matrix)
+                xn = (4124 * rl + 3576 * gl + 1805 * bl) / 10000000
+                yn = (2126 * rl + 7152 * gl + 722 * bl) / 10000000
+                zn = (193 * rl + 1192 * gl + 9505 * bl) / 10000000
+
+                ; Normalize by D65 white point
+                fx = xn * 1000 / 950
+                fy = yn
+                fz = zn * 1000 / 1089
+
+                ; f(t) = t^(1/3) if t > 0.008856 else 7.787*t + 16/116
+                {
+                    fx > 8856 -> {
+                        ; Cube root via Newton's method
+                        x0 = fx / 20000 + 10
+                        x1 = (2 * x0 * 1000 + fx * 1000 / x0 * 1000 / x0) / 3
+                        x1 = x1 / 1000
+                        fx = x1
+                    }
+                    -> {
+                        fx = 7787 * fx / 1000 + 4000 / 2900
+                    }
+                }
+                {
+                    fy > 8856 -> {
+                        y0 = fy / 20000 + 10
+                        y1 = (2 * y0 * 1000 + fy * 1000 / y0 * 1000 / y0) / 3
+                        y1 = y1 / 1000
+                        fy = y1
+                    }
+                    -> {
+                        fy = 7787 * fy / 1000 + 4000 / 2900
+                    }
+                }
+                {
+                    fz > 8856 -> {
+                        z0 = fz / 20000 + 10
+                        z1 = (2 * z0 * 1000 + fz * 1000 / z0 * 1000 / z0) / 3
+                        z1 = z1 / 1000
+                        fz = z1
+                    }
+                    -> {
+                        fz = 7787 * fz / 1000 + 4000 / 2900
+                    }
+                }
+
+                ; L = 116*fy - 16, a = 500*(fx-fy), b = 200*(fy-fz)
+                l = 116 * fy / 1000 - 16
+                av = 500 * (fx - fy) / 1000
+                bv = 200 * (fy - fz) / 1000
+
+                ; Scale to 0-255 range
+                l = l * 255 / 100
+                l < 0 -> l = 0
+                l > 255 -> l = 255
+                av = av + 128
+                av < 0 -> av = 0
+                av > 255 -> av = 255
+                bv = bv + 128
+                bv < 0 -> bv = 0
+                bv > 255 -> bv = 255
+
+                out.data[i * 3] = l
+                out.data[i * 3 + 1] = av
+                out.data[i * 3 + 2] = bv
+            }
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+}
+
+; colour.lab2rgb: convert Lab image to RGB
+; img image: Lab image (3-band)
+; returns out image: RGB image (3-band)
+lab2rgb = (img image) (out image) {
+    {
+        img.bands >= 3 -> {
+            npix = img.width * img.height
+            _d str = with-len(npix * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+            i <- [0..npix): {
+                l = img.data[i * img.bands] * 100 / 255
+                av = img.data[i * img.bands + 1] - 128
+                bv = img.data[i * img.bands + 2] - 128
+
+                ; fy = (l + 16) / 116
+                fy = (l + 16) * 1000 / 116
+                fx = fy + av * 1000 / 500
+                fz = fy - bv * 1000 / 200
+
+                ; Inverse f: t^3 if t > 6/29 else 3*(6/29)^2*(t - 2/29)
+                {
+                    fx > 20690 -> {
+                        xn = fx * fx / 1000000 * fx / 1000
+                        xn = xn * 950 / 1000
+                    }
+                    -> {
+                        xn = 3 * 7150 * (fx - 6900) / 10000000
+                        xn = xn * 950 / 1000
+                    }
+                }
+                {
+                    fy > 20690 -> {
+                        yn = fy * fy / 1000000 * fy / 1000
+                    }
+                    -> {
+                        yn = 3 * 7150 * (fy - 6900) / 10000000
+                    }
+                }
+                {
+                    fz > 20690 -> {
+                        zn = fz * fz / 1000000 * fz / 1000
+                        zn = zn * 1089 / 1000
+                    }
+                    -> {
+                        zn = 3 * 7150 * (fz - 6900) / 10000000
+                        zn = zn * 1089 / 1000
+                    }
+                }
+
+                ; XYZ to linear RGB (inverse matrix)
+                rl = (32406 * xn - 15372 * yn - 4986 * zn) / 10000
+                gl = (-9689 * xn + 18758 * yn + 415 * zn) / 10000
+                bl = (557 * xn - 2040 * yn + 10570 * zn) / 10000
+
+                ; Linear to sRGB (gamma)
+                {
+                    rl <= 31308 -> {
+                        r = 1292 * rl / 100000
+                    }
+                    -> {
+                        ; v^(1/2.4) ~ sqrt(v) approximation
+                        r0 = rl / 200 + 50
+                        r1 = (r0 + rl / r0) / 2
+                        r = 1055 * r1 / 1000 * r1 / 1000 - 55
+                    }
+                }
+                {
+                    gl <= 31308 -> {
+                        g = 1292 * gl / 100000
+                    }
+                    -> {
+                        g0 = gl / 200 + 50
+                        g1 = (g0 + gl / g0) / 2
+                        g = 1055 * g1 / 1000 * g1 / 1000 - 55
+                    }
+                }
+                {
+                    bl <= 31308 -> {
+                        b = 1292 * bl / 100000
+                    }
+                    -> {
+                        b0 = bl / 200 + 50
+                        b1 = (b0 + bl / b0) / 2
+                        b = 1055 * b1 / 1000 * b1 / 1000 - 55
+                    }
+                }
+
+                ; Scale to 0-255
+                r = r * 255 / 1000
+                g = g * 255 / 1000
+                b = b * 255 / 1000
+                r < 0 -> r = 0
+                r > 255 -> r = 255
+                g < 0 -> g = 0
+                g > 255 -> g = 255
+                b < 0 -> b = 0
+                b > 255 -> b = 255
+
+                out.data[i * 3] = r
+                out.data[i * 3 + 1] = g
+                out.data[i * 3 + 2] = b
+            }
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+}
+
+; ── RGB <-> CMYK ──
+
+; colour.rgb2cmyk: convert RGB to CMYK
+; Uses simple subtractive model: K = 255 - max(R,G,B)
+; img image: input RGB image
+; returns out image: CMYK image (4-band)
+rgb2cmyk = (img image) (out image) {
+    {
+        img.bands >= 3 -> {
+            npix = img.width * img.height
+            _d str = with-len(npix * 4)
+            out = image.new-from-data(img.width, img.height, 4, _d)
+            i <- [0..npix): {
+                r = img.data[i * img.bands]
+                g = img.data[i * img.bands + 1]
+                b = img.data[i * img.bands + 2]
+
+                mx = r
+                mx < g -> mx = g
+                mx < b -> mx = b
+                k = 255 - mx
+
+                {
+                    k < 255 -> {
+                        c = (255 - r - k) * 255 / (255 - k)
+                        m = (255 - g - k) * 255 / (255 - k)
+                        y = (255 - b - k) * 255 / (255 - k)
+                    }
+
+                    -> {
+                        c = 0
+                        m = 0
+                        y = 0
+                    }
+                }
+
+                out.data[i * 4] = c
+                out.data[i * 4 + 1] = m
+                out.data[i * 4 + 2] = y
+                out.data[i * 4 + 3] = k
+            }
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+}
+
+; colour.cmyk2rgb: convert CMYK to RGB
+; img image: input CMYK image (4-band)
+; returns out image: RGB image (3-band)
+cmyk2rgb = (img image) (out image) {
+    {
+        img.bands >= 4 -> {
+            npix = img.width * img.height
+            _d str = with-len(npix * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+            i <- [0..npix): {
+                c = img.data[i * img.bands]
+                m = img.data[i * img.bands + 1]
+                y = img.data[i * img.bands + 2]
+                k = img.data[i * img.bands + 3]
+
+                r = 255 - (c * (255 - k) / 255 + k)
+                g = 255 - (m * (255 - k) / 255 + k)
+                b = 255 - (y * (255 - k) / 255 + k)
+
+                r < 0 -> r = 0
+                g < 0 -> g = 0
+                b < 0 -> b = 0
+
+                out.data[i * 3] = r
+                out.data[i * 3 + 1] = g
+                out.data[i * 3 + 2] = b
+            }
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+}

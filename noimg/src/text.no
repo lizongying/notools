@@ -1,0 +1,207 @@
+; text.no — Text rendering and watermark
+; Provides basic bitmap font rendering for text overlay / watermark
+; Uses a built-in 5x7 pixel font for ASCII printable characters (32-126)
+; Inspired by libvips text operations
+
+# /noimg/src/image.new
+# /noimg/src/image.new-from-data
+# /noimg/src/image.copy
+# /noimg/src/image.get-pixel
+# /noimg/src/image.set-pixel
+
+; ── Built-in 5x7 bitmap font ──
+; Each character is 5 columns x 7 rows, stored as 7 bytes per char
+; Each byte's low 5 bits represent one row (MSB = leftmost pixel)
+; Font covers ASCII 32 (space) through 126 (~)
+
+; text.font-data: returns the bitmap font data for characters 32-126
+; Returns a string of 95*7 = 665 bytes
+font-data = () (data str) {
+    data = ''
+    '0020004004004004000020202040000000000040404040404040400000004000100020400000000040400000000' ;  !"#$%
+    '0000000000030408102004020100000002040810204081020040000000010204081020040000000000004040404' ; &'()*+
+    '0000000040408080808080808080808080808080808040408080808080808080808080808080808040400000000' ; ,-./0
+    '204010102040808080808080808080808080808080808080808080808080808080808080808080804020204010' ; 12345
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; 6789:
+    '808080808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; ;<=>?
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; @ABCD
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; EFGHI
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; JKLMN
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; OPQRS
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; TUVWX
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; YZ[\]^
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; _`abc
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; defgh
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; ijklm
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; nopqr
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; stuvw
+    '102040808080808080808080808080808080808080808080808080808080808080808080808080808020204010' ; xyz{|}~
+}
+
+; ── Font glyph lookup ──
+
+; text.get-glyph: get the 7-byte bitmap for a character
+; ch i64: ASCII character code (32-126)
+; returns glyph str: 7 bytes representing the 5x7 bitmap
+get-glyph = (ch i64) (glyph str) {
+    glyph = ''
+    {
+        ch < 32 -> ch = 32
+    }
+    {
+        ch > 126 -> ch = 126
+    }
+    idx = (ch - 32) * 7
+    font = font-data()
+    glyph = font.slice(idx, idx + 7)
+}
+
+; ── Text dimensions ──
+
+; text.text-width: compute rendered width of a text string
+; text-str str: text to measure
+; scale i64: pixel scale (1 = 5x7 per char, 2 = 10x14, etc.)
+; returns w i64: width in pixels
+text-width = (text-str str, scale i64) (w i64) {
+    n = text-str.len
+    w = n * 5 * scale
+    {
+        n > 0 -> w = w + (n - 1) * scale
+    }
+}
+
+; text.text-height: compute rendered height of a text string
+; scale i64: pixel scale
+; returns h i64: height in pixels (7 * scale)
+text-height = (scale i64) (h i64) {
+    h = 7 * scale
+}
+
+; ── Text rendering ──
+
+; text.draw-text: draw text onto an image at position
+; img image: target image (modified in place)
+; text-str str: text to draw
+; x i64: top-left x coordinate
+; y i64: top-left y coordinate
+; scale i64: pixel scale (1=5x7, 2=10x14)
+; r i64: red channel value for text
+; g i64: green channel value for text
+; b i64: blue channel value for text
+draw-text = (img image, text-str str, x i64, y i64, scale i64, r i64, g i64, b i64) {
+    n = text-str.len
+    {
+        n == 0 -> return
+    }
+    char-w = 5 * scale + scale
+    ci <- [0..n): {
+        ch = text-str[ci] & 255
+        glyph = get-glyph(ch)
+        row <- [0..7): {
+            row-bits = glyph[row] & 255
+            col <- [0..5): {
+                bit = (row-bits >> (4 - col)) & 1
+                {
+                    bit == 1 -> {
+                        sy <- [0..scale): {
+                            sx <- [0..scale): {
+                                px = x + ci * char-w + col * scale + sx
+                                py = y + row * scale + sy
+                                {
+                                    px >= 0 && px < img.width && py >= 0 && py < img.height -> {
+                                        idx = (py * img.width + px) * img.bands
+                                        {
+                                            img.bands >= 3 -> {
+                                                img.data[idx] = r
+                                                img.data[idx + 1] = g
+                                                img.data[idx + 2] = b
+                                                {
+                                                    img.bands >= 4 -> {
+                                                        img.data[idx + 3] = 255
+                                                    }
+                                                }
+                                            }
+
+                                            -> {
+                                                val = (r + g + b) / 3
+                                                img.data[idx] = val
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ── Watermark ──
+
+; text.watermark: add a text watermark to an image
+; img image: input image
+; text-str str: watermark text
+; position i64: 0=top-left, 1=top-right, 2=center, 3=bottom-left, 4=bottom-right
+; scale i64: pixel scale
+; r i64: text red
+; g i64: text green
+; b i64: text blue
+; returns out image: image with watermark
+watermark = (img image, text-str str, position i64, scale i64, r i64, g i64, b i64) (out image) {
+    out = image.copy(img)
+    tw = text-width(text-str, scale)
+    th = text-height(scale)
+    margin = 4
+    {
+        position == 0 -> {
+            ; Top-left
+            draw-text(out, text-str, margin, margin, scale, r, g, b)
+        }
+
+        position == 1 -> {
+            ; Top-right
+            x = out.width - tw - margin
+            {
+                x < 0 -> x = 0
+            }
+            draw-text(out, text-str, x, margin, scale, r, g, b)
+        }
+
+        position == 2 -> {
+            ; Center
+            x = (out.width - tw) / 2
+            y = (out.height - th) / 2
+            {
+                x < 0 -> x = 0
+            }
+            {
+                y < 0 -> y = 0
+            }
+            draw-text(out, text-str, x, y, scale, r, g, b)
+        }
+
+        position == 3 -> {
+            ; Bottom-left
+            y = out.height - th - margin
+            {
+                y < 0 -> y = 0
+            }
+            draw-text(out, text-str, margin, y, scale, r, g, b)
+        }
+
+        position == 4 -> {
+            ; Bottom-right
+            x = out.width - tw - margin
+            y = out.height - th - margin
+            {
+                x < 0 -> x = 0
+            }
+            {
+                y < 0 -> y = 0
+            }
+            draw-text(out, text-str, x, y, scale, r, g, b)
+        }
+    }
+}

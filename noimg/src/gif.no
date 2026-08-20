@@ -1107,3 +1107,201 @@ gif-lzw-encode = (data []byte, data-len i64, min-code i64) (encoded []byte) {
         }
     }
 }
+
+; ── GIF Animation (multi-frame) ──
+
+; gif.save-frames: save multiple frames as an animated GIF
+; path str: output file path
+; frames []image: array of image frames (all same size, 3+ bands)
+; delays []i64: delay per frame in centiseconds (1/100 sec)
+; returns ok bool: true on success
+save-frames = (path str, frames []image, delays []i64) (ok bool) {
+    n-frames = frames.len
+    {
+        n-frames == 0 -> {
+            ok = false
+            return
+        }
+    }
+    w = frames[0].width
+    h = frames[0].height
+    npix = w * h
+
+    ; Build a shared global palette from the first frame
+    palette, indexed0 = gif-median-cut(frames[0], 256)
+    n-colors = palette.len / 3
+
+    ; Pad palette to 256 entries
+    full-palette str = with-len(768)
+    i <- [0..n-colors * 3): {
+        full-palette[i] = palette[i]
+    }
+
+    ; Build output buffer
+    buf []byte = with-cap(13 + 768 + 32 + n-frames * (npix * 2 + 20))
+
+    ; GIF header
+    buf.push(71); G
+    buf.push(73); I
+    buf.push(50); F
+    buf.push(56); 8
+    buf.push(57); 9
+    buf.push(97); a
+
+    ; Logical screen descriptor
+    buf.push(w & 255)
+    buf.push((w >> 8) & 255)
+    buf.push(h & 255)
+    buf.push((h >> 8) & 255)
+    buf.push(247); GCT present, 256 colors
+    buf.push(0); background color index
+    buf.push(0); pixel aspect ratio
+
+    ; Global color table
+    i <- [0..768): {
+        buf.push(full-palette[i])
+    }
+
+    ; Netscape extension for animation looping
+    buf.push(33); extension
+    buf.push(255); application
+    buf.push(11); block size
+    buf.push(78); N
+    buf.push(69); E
+    buf.push(84); T
+    buf.push(83); S
+    buf.push(67); C
+    buf.push(65); A
+    buf.push(80); P
+    buf.push(69); E
+    buf.push(50); 2
+    buf.push(46); .
+    buf.push(48); 0
+    buf.push(3); sub-block size
+    buf.push(1); loop count follows
+    buf.push(0); loop count LE (0 = infinite)
+    buf.push(0)
+    buf.push(0); block terminator
+
+    ; Write each frame
+    fi <- [0..n-frames): {
+        frame = frames[fi]
+        delay = delays[fi]
+        {
+            delay < 2 -> delay = 2
+        }
+
+        ; Quantize this frame using the shared palette
+        ; (re-use global palette for consistency)
+        indexed = gif-quantize-with-palette(frame, palette, n-colors)
+
+        ; Graphic control extension
+        buf.push(33); extension
+        buf.push(249); graphic control
+        buf.push(4); block size
+        ; packed: disposal=2 (restore to background), no user input, no transparency
+        disposal = 2
+        gce-packed = (disposal << 2)
+        {
+            fi == n-frames - 1 -> {
+                gce-packed = (3 << 2)
+            }
+        }
+        buf.push(gce-packed)
+        buf.push(delay & 255)
+        buf.push((delay >> 8) & 255)
+        buf.push(0); transparent color index (none)
+        buf.push(0); block terminator
+
+        ; Image descriptor
+        buf.push(44); 0x2C
+        buf.push(0); left LE
+        buf.push(0)
+        buf.push(0); top LE
+        buf.push(0)
+        buf.push(w & 255)
+        buf.push((w >> 8) & 255)
+        buf.push(h & 255)
+        buf.push((h >> 8) & 255)
+        buf.push(0); no local color table
+
+        ; LZW minimum code size
+        buf.push(8)
+
+        ; LZW encode
+        lzw-data = gif-lzw-encode(indexed, npix, 8)
+
+        ; Write sub-blocks
+        si = 0
+        {
+            si < lzw-data.len -> {
+                block-size = lzw-data.len - si
+                block-size > 255 -> block-size = 255
+                buf.push(block-size)
+                j <- [0..block-size): {
+                    buf.push(lzw-data[si + j])
+                }
+                si = si + block-size
+            }
+        } (si < lzw-data.len)
+        buf.push(0); block terminator
+    }
+
+    ; Trailer
+    buf.push(59); 0x3B
+
+    ; Write file
+    wfd = fs.open-write(path)
+    {
+        wfd < 0 -> {
+            ok = false
+            return
+        }
+    }
+    fs.write(wfd, buf, buf.len)
+    fs.close(wfd)
+    ok = true
+}
+
+; gif-quantize-with-palette: quantize an image using a pre-existing palette
+; img image: source image
+; palette []byte: palette data (n_colors * 3 bytes)
+; n-colors i64: number of colors in palette
+; returns indexed []byte: indexed pixel data
+gif-quantize-with-palette = (img image, palette []byte, n-colors i64) (indexed []byte) {
+    npix = img.width * img.height
+    indexed = with-len(npix)
+    i <- [0..npix): {
+        r = img.data[i * img.bands]
+        {
+            img.bands >= 3 -> {
+                g = img.data[i * img.bands + 1]
+                b = img.data[i * img.bands + 2]
+            }
+
+            -> {
+                g = r
+                b = r
+            }
+        }
+        ; Find nearest palette entry
+        best-idx = 0
+        best-dist = 1000000
+        ci <- [0..n-colors): {
+            pr = palette[ci * 3]
+            pg = palette[ci * 3 + 1]
+            pb = palette[ci * 3 + 2]
+            dr = r - pr
+            dg = g - pg
+            db = b - pb
+            dist = dr * dr + dg * dg + db * db
+            {
+                dist < best-dist -> {
+                    best-dist = dist
+                    best-idx = ci
+                }
+            }
+        }
+        indexed[i] = best-idx
+    }
+}

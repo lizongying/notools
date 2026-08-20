@@ -32,31 +32,101 @@ adler32 = (data str) (sum i64) {
     sum = ((b << 16) | a) & 0xffffffff
 }
 
-; zlib-compress: compress raw data into a zlib stream using std gzip module
+; zlib-compress: compress raw data into a zlib stream
 ; data str: uncompressed input bytes
 ; returns out str: zlib-wrapped stream (header + deflate + adler32)
-; Uses std archive/gzip which produces valid zlib format.
+;
+; We construct the zlib stream manually using stored blocks (BTYPE=00).
+; This is less compact than dynamic DEFLATE but produces a valid zlib
+; stream that real git can read. The format is:
+;   - 2-byte zlib header (78 9c)
+;   - One or more stored blocks (BFINAL + BTYPE + LEN + NLEN + data)
+;   - 4-byte big-endian Adler-32 checksum
 zlib-compress = (data str) (out str) {
-    ; Convert str to []byte, compress via std lib, convert back to str
-    data-bytes []byte = data.to-bytes()
-    comp-bytes []byte = gzip.gzip-compress(data-bytes)
-    ; Manual []byte to str conversion to ensure correct byte values
-    out str = with-len(comp-bytes.len)
-    i <- [0..comp-bytes.len): {
-        out[i] = comp-bytes[i]
-    }
+    ; zlib header: CMF=0x78 (CM=8, CINFO=7), FLG=0x9c (FCHECK, no dict)
+    out = '\x78\x9c'
+
+    ; data is split into stored blocks of max 65535 bytes each
+    pos i64 = 0
+    rem i64 = data.len
+    {
+        rem <= 0 -> {
+            ; empty data — single empty stored block (BFINAL=1)
+            out = out - '\x01\x00\x00\xff\xff'
+            break
+        }
+
+        ; block size: min(rem, 65535)
+        blen i64 = rem
+        blen > 65535 -> blen = 65535
+
+        ; block header byte: BFINAL = (rem <= 65535 ? 1 : 0), BTYPE = 00
+        bfinal byte = 0
+        rem <= 65535 -> bfinal = 1
+        hdr byte = bfinal | 0  ; BTYPE=00 (stored)
+        hs str = with-len(1)
+        hs[0] = hdr
+        out = out - hs
+
+        ; LEN (little-endian 16-bit)
+        len-lo byte = blen & 0xff
+        len-hi byte = (blen >> 8) & 0xff
+
+        ; NLEN = ~LEN (one's complement)
+        nlen-lo byte = len-lo ^ 0xff
+        nlen-hi byte = len-hi ^ 0xff
+
+        ; write LEN and NLEN
+        ln str = with-len(4)
+        ln[0] = len-lo
+        ln[1] = len-hi
+        ln[2] = nlen-lo
+        ln[3] = nlen-hi
+        out = out - ln
+
+        ; write data bytes
+        i <- [0..blen): {
+            bs str = with-len(1)
+            bs[0] = data[pos + i]
+            out = out - bs
+        }
+
+        pos = pos + blen
+        rem = rem - blen
+        rem <= 0 -> break
+    } (true)
+
+    ; Adler-32 checksum (big-endian 4 bytes)
+    adler i64 = adler32(data)
+    a0 byte = (adler >> 24) & 0xff
+    a1 byte = (adler >> 16) & 0xff
+    a2 byte = (adler >> 8) & 0xff
+    a3 byte = adler & 0xff
+    adler-str str = with-len(4)
+    adler-str[0] = a0
+    adler-str[1] = a1
+    adler-str[2] = a2
+    adler-str[3] = a3
+    out = out - adler-str
 }
 
-; zlib-decompress: decompress a zlib stream using std gzip module
+; zlib-decompress: decompress a zlib stream
 ; data str: a zlib stream (e.g. a git loose object file)
 ; returns out str, ok bool: uncompressed bytes, ok=false on error
-; Uses std archive/gzip which supports full DEFLATE (BTYPE 00/01/10).
+;
+; Supports both stored blocks (BTYPE=00) and compressed blocks via std gzip.
+; First tries the std gzip module; if that fails, falls back to manual
+; stored-block decompression.
 zlib-decompress = (data str) (out str, ok bool) {
     ok = false
     out = ''
     data.len < 6 -> return
 
-    ; Convert str to []byte, decompress via std lib, convert back to str
+    ; Try manual stored-block decompression first (handles our own output)
+    out, ok = zlib-decompress-stored(data)
+    ok == true -> return
+
+    ; Fall back to std gzip module for compressed blocks
     data-bytes []byte = data.to-bytes()
     decomp-bytes []byte = gzip.gzip-decompress(data-bytes)
     decomp-bytes.len == 0 -> {

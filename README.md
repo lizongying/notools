@@ -424,7 +424,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
 | GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；动画多帧提取+disposal 合成；写入用 median-cut 量化） |
 | JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 读写（DCT+Huffman 编码/解码+IDCT+YCbCr→RGB），不支持 progressive |
-| WebP | `.webp` | ✅ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离解码+颜色缓存+变换逆变换+颜色索引）；写入为结构合法的占位文件；不支持 lossy VP8 |
+| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+subtract-green 逆变换+颜色索引）；颜色变换逆变换受限（作用域限制）；不支持 lossy VP8；写入为占位 |
 
 ### CLI 命令
 
@@ -481,6 +481,15 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | `embed` | 嵌入大画布 | `noimg embed in.png out.png 10 10 200 200` |
 | `bandjoin2` | 两图通道拼接 | `noimg bandjoin2 r.png g.png out.png` |
 | `roi-blend` | 区域混合 | `noimg roi-blend base.png overlay.png out.png 10 10 0 255` |
+| `overlay-blend` | Overlay 混合 | `noimg overlay-blend in.png overlay.png out.png` |
+| `remove-alpha` | 移除 Alpha 通道 | `noimg remove-alpha in.png out.png` |
+| `rgb2lab` | RGB 转 Lab | `noimg rgb2lab in.png out.png` |
+| `lab2rgb` | Lab 转 RGB | `noimg lab2rgb in.png out.png` |
+| `rgb2cmyk` | RGB 转 CMYK | `noimg rgb2cmyk in.png out.png` |
+| `cmyk2rgb` | CMYK 转 RGB | `noimg cmyk2rgb in.png out.png` |
+| `watermark` | 文字水印 | `noimg watermark in.png out.png \"©2024\" 4 2` |
+| `to-u16` | 8-bit 转 16-bit | `noimg to-u16 in.png out.png` |
+| `to-u8` | 16-bit 转 8-bit | `noimg to-u8 in.png out.png` |
 
 ### 库 API
 
@@ -493,17 +502,19 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 | `bmp` | BMP 读写（24/32 位未压缩） |
 | `tga` | TGA 读写（含 RLE） |
 | `pam` | PAM 读写 |
-| `gif` | GIF 读写（LZW 解码+隔行+透明+动画多帧+disposal+median-cut 量化） |
+| `gif` | GIF 读写（LZW 解码+隔行+透明+动画多帧+disposal+median-cut 量化+动画写出） |
 | `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜、Adam7 隔行解码，仅 8 位） |
 | `tiff` | TIFF 读写（仅未压缩、8 位、单 strip） |
 | `jpeg` | JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB，不支持 progressive） |
-| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+变换逆变换+颜色索引）；写入为占位 |
-| `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
+| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+subtract-green+颜色索引；颜色变换逆变换受限）；写入为占位 |
+| `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr、RGB↔Lab、RGB↔CMYK）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
 | `resize` | 双线性缩放、缩略图、缩放、最近邻/双三次/面积平均 |
 | `rotate` | 旋转（90/180/270/任意角度）、翻转、转置/反对角转置 |
-| `composite` | 裁剪、自动裁剪、合成、边框、嵌入、通道合并/提取/选择、Alpha 混平、ROI 混合、多模式混合（Normal/Multiply/Screen/Add/Subtract/Diff/Lighten/Darken/Copy）、平铺 |
+| `composite` | 裁剪、自动裁剪、合成、边框、嵌入、通道合并/提取/选择、Alpha 混平、ROI 混合、多模式混合（Normal/Multiply/Screen/Overlay/Add/Subtract/Diff/Lighten/Darken/Copy）、平铺 |
 | `filter` | 卷积、高斯模糊（含可分离优化）、方框模糊、锐化（含 USM）、Sobel/Laplacian 边缘检测、浮雕、中值滤波、油画、噪声、形态学（膨胀/腐蚀/梯度）、暗角 |
 | `histogram` | 直方图查找/累积/打印、均衡化/归一化/拉伸、自动色阶/对比度、LUT 应用、均值/方差/标准差/熵/百分位/CDF |
+| `text` | 位图字体渲染、文字水印（5x7 点阵字体，9 种位置） |
+| `image` | 8-bit/16-bit 支持（U8/U16 格式、转换、像素访问、统计） |
 
 ### 构建与运行
 
@@ -537,13 +548,14 @@ noimg/
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 编解码）
 │   ├── jpeg.no          ; JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB）
-│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+变换逆变换+颜色索引）
-│   ├── colour.no        ; 色彩空间转换
+│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+subtract-green+颜色索引；颜色变换受限）
+│   ├── colour.no        ; 色彩空间转换（RGB↔Gray/HSV/HSL/YCbCr/Lab/CMYK）
 │   ├── resize.no        ; 缩放
 │   ├── rotate.no        ; 旋转与翻转
 │   ├── composite.no     ; 合成与裁剪
 │   ├── filter.no        ; 滤镜（模糊/锐化/边缘/浮雕/油画/中值/噪声/形态学/暗角）
-│   └── histogram.no     ; 直方图与统计
+│   ├── histogram.no     ; 直方图与统计
+│   └── text.no          ; 文字渲染与水印（5x7 点阵字体）
 ├── tests/
 │   ├── test-core.no       ; 核心图像操作测试
 │   ├── test-pnm.no        ; PNM 格式往返测试
