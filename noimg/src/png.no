@@ -14,13 +14,8 @@
 ; PNG signature bytes
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
+# /noimg/src/image.new-u16
 # /noimg/src/image.copy
-# /noimg/src/image.fill
-# /noimg/src/image.invert
-# /noimg/src/image.add-const
-# /noimg/src/image.avg
-# /noimg/src/image.min-val
-# /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
@@ -138,17 +133,15 @@ load = (path str) (img ?image) {
         }
     } (pos < data.len)
     {
-        w <= 0 || h <= 0 || bit-depth != 8 -> {
-            {
-                bit-depth != 8 -> {
-
-                    ; Only 8-bit supported for now
-                    img = nil
-                    return
-                }
-            }
+        w <= 0 || h <= 0 -> {
             img = nil
             return
+        }
+        {
+            bit-depth != 8 && bit-depth != 16 -> {
+                img = nil
+                return
+            }
         }
     }
 
@@ -169,20 +162,49 @@ load = (path str) (img ?image) {
         }
     }
 
-    ; Decompress IDAT using zlib
-    raw = gzip.gzip-decompress(idat-data)
-
-    ; Raw data has filter bytes: 1 byte per row + pixel data
+    ; bytes-per-pixel depends on bit depth
     bytes-per-pixel = bands
+    {
+        bit-depth == 16 -> {
+            bytes-per-pixel = bands * 2
+        }
+    }
     {
         color-type == 3 -> bytes-per-pixel = 1
     }
-    _d str = with-len(w * h * bands)
-    tmp = image.new-from-data(w, h, bands, _d)
+    ; Decompress IDAT using zlib
+    raw = gzip.gzip-decompress(idat-data)
+
+    ; Create output image — U16 if bit-depth == 16
+    is-u16 = false
+    {
+        bit-depth == 16 -> is-u16 = true
+    }
+    {
+        is-u16 -> {
+            _d str = with-len(w * h * bands * 2)
+            tmp = image.new-u16(w, h, bands)
+        }
+
+        -> {
+            _d str = with-len(w * h * bands)
+            tmp = image.new-from-data(w, h, bands, _d)
+        }
+    }
 
     ; Initialize image to zero
-    i <- [0..w * h * bands): {
-        tmp.data[i] = 0
+    {
+        is-u16 -> {
+            i <- [0..w * h * bands * 2): {
+                tmp.data[i] = 0
+            }
+        }
+
+        -> {
+            i <- [0..w * h * bands): {
+                tmp.data[i] = 0
+            }
+        }
     }
 
     {
@@ -466,15 +488,14 @@ load = (path str) (img ?image) {
                 {
                     color-type == 3 -> {
 
-                        ; Indexed color
+                        ; Indexed color (always 8-bit)
                         x <- [0..w): {
                             idx = cur-row[x]
                             {
                                 idx * 3 + 2 < palette.len -> {
-                                    dst = (y * w + x) * 3
-                                    tmp.data[dst] = palette[idx * 3]
-                                    tmp.data[dst + 1] = palette[idx * 3 + 1]
-                                    tmp.data[dst + 2] = palette[idx * 3 + 2]
+                                    image.set-pixel(tmp, x, y, 0, palette[idx * 3])
+                                    image.set-pixel(tmp, x, y, 1, palette[idx * 3 + 1])
+                                    image.set-pixel(tmp, x, y, 2, palette[idx * 3 + 2])
                                 }
                             }
                         }
@@ -484,8 +505,16 @@ load = (path str) (img ?image) {
 
                         ; Grayscale
                         x <- [0..w): {
-                            dst = y * w + x
-                            tmp.data[dst] = cur-row[x]
+                            {
+                                is-u16 -> {
+                                    v = (cur-row[x * 2] & 255) << 8 | (cur-row[x * 2 + 1] & 255)
+                                    image.set-pixel(tmp, x, y, 0, v)
+                                }
+
+                                -> {
+                                    image.set-pixel(tmp, x, y, 0, cur-row[x])
+                                }
+                            }
                         }
                     }
 
@@ -493,9 +522,17 @@ load = (path str) (img ?image) {
 
                         ; RGB / RGBA
                         x <- [0..w): {
-                            dst = (y * w + x) * bands
                             b <- [0..bands): {
-                                tmp.data[dst + b] = cur-row[x * bands + b]
+                                {
+                                    is-u16 -> {
+                                        v = (cur-row[x * bytes-per-pixel + b * 2] & 255) << 8 | (cur-row[x * bytes-per-pixel + b * 2 + 1] & 255)
+                                        image.set-pixel(tmp, x, y, b, v)
+                                    }
+
+                                    -> {
+                                        image.set-pixel(tmp, x, y, b, cur-row[x * bands + b])
+                                    }
+                                }
                             }
                         }
                     }
@@ -513,12 +550,16 @@ load = (path str) (img ?image) {
 
 ; ── Save ──
 
-; png.save: save an image as PNG (8-bit, color type auto-selected)
+; png.save: save an image as PNG (8-bit or 16-bit, color type auto-selected)
 ; path str: output path
 ; img image: image to save
 ; returns ok bool
 save = (path str, img image) (ok bool) {
-    ; CRC32 uses bitwise computation, no table init needed
+    ; Determine bit depth
+    bit-depth = 8
+    {
+        img.depth == 2 -> bit-depth = 16
+    }
     color-type = 2
     bands = 3
     {
@@ -534,15 +575,31 @@ save = (path str, img image) (ok bool) {
     }
 
     ; Build raw data with filter bytes (filter=0 for all rows)
-    stride = img.width * bands
+    bytes-per-channel = 1
+    {
+        bit-depth == 16 -> bytes-per-channel = 2
+    }
+    stride = img.width * bands * bytes-per-channel
     row-len = stride + 1
     raw str = with-len(row-len * img.height)
     y <- [0..img.height): {
         raw[y * row-len] = 0
         {
             img.bands == bands -> {
-                i <- [0..stride): {
-                    raw[y * row-len + 1 + i] = img.data[y * stride + i]
+                x <- [0..img.width): {
+                    b <- [0..bands): {
+                        v = image.get-pixel(img, x, y, b)
+                        {
+                            bit-depth == 16 -> {
+                                raw[y * row-len + 1 + (x * bands + b) * 2] = (v >> 8) & 255
+                                raw[y * row-len + 1 + (x * bands + b) * 2 + 1] = v & 255
+                            }
+
+                            -> {
+                                raw[y * row-len + 1 + x * bands + b] = v
+                            }
+                        }
+                    }
                 }
             }
 
@@ -552,15 +609,27 @@ save = (path str, img image) (ok bool) {
                 x <- [0..img.width): {
                     {
                         bands == 1 -> {
-                            img.bands >= 3 -> {
-                                r = img.data[(y * img.width + x) * img.bands]
-                                g = img.data[(y * img.width + x) * img.bands + 1]
-                                b = img.data[(y * img.width + x) * img.bands + 2]
-                                raw[y * row-len + 1 + x] = (r * 299 + g * 587 + b * 114) / 1000
-                            }
+                            {
+                                img.bands >= 3 -> {
+                                    r = image.get-pixel(img, x, y, 0)
+                                    g = image.get-pixel(img, x, y, 1)
+                                    b = image.get-pixel(img, x, y, 2)
+                                    v = (r * 299 + g * 587 + b * 114) / 1000
+                                }
 
-                            -> {
-                                raw[y * row-len + 1 + x] = img.data[(y * img.width + x) * img.bands]
+                                -> {
+                                    v = image.get-pixel(img, x, y, 0)
+                                }
+                            }
+                            {
+                                bit-depth == 16 -> {
+                                    raw[y * row-len + 1 + x * 2] = (v >> 8) & 255
+                                    raw[y * row-len + 1 + x * 2 + 1] = v & 255
+                                }
+
+                                -> {
+                                    raw[y * row-len + 1 + x] = v
+                                }
                             }
                         }
 
@@ -568,11 +637,24 @@ save = (path str, img image) (ok bool) {
                             i <- [0..bands): {
                                 {
                                     i < img.bands -> {
-                                        raw[y * row-len + 1 + x * bands + i] = img.data[(y * img.width + x) * img.bands + i]
+                                        v = image.get-pixel(img, x, y, i)
                                     }
 
                                     -> {
-                                        raw[y * row-len + 1 + x * bands + i] = 255
+                                        v = 255
+                                        {
+                                            bit-depth == 16 -> v = 65535
+                                        }
+                                    }
+                                }
+                                {
+                                    bit-depth == 16 -> {
+                                        raw[y * row-len + 1 + (x * bands + i) * 2] = (v >> 8) & 255
+                                        raw[y * row-len + 1 + (x * bands + i) * 2 + 1] = v & 255
+                                    }
+
+                                    -> {
+                                        raw[y * row-len + 1 + x * bands + i] = v
                                     }
                                 }
                             }
@@ -600,7 +682,7 @@ save = (path str, img image) (ok bool) {
     buf.push(10)
 
     ; IHDR chunk (13 bytes data)
-    png-write-chunk(buf, 'IHDR', png-build-ihdr(img.width, img.height, 8, color-type))
+    png-write-chunk(buf, 'IHDR', png-build-ihdr(img.width, img.height, bit-depth, color-type))
 
     ; IDAT chunk
     png-write-chunk-raw(buf, 'IDAT', compressed)

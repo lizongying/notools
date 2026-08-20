@@ -6,13 +6,8 @@
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
+# /noimg/src/image.new-u16
 # /noimg/src/image.copy
-# /noimg/src/image.fill
-# /noimg/src/image.invert
-# /noimg/src/image.add-const
-# /noimg/src/image.avg
-# /noimg/src/image.min-val
-# /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
@@ -30,8 +25,17 @@
 resize = (img image, w i64, h i64, method i64) (out image) {
     {
         w <= 0 || h <= 0 -> {
-            out = image.new(1, 1, img.bands)
-            return
+            {
+                img.depth == 2 -> {
+                    out = image.new-u16(1, 1, img.bands)
+                    return
+                }
+
+                -> {
+                    out = image.new(1, 1, img.bands)
+                    return
+                }
+            }
         }
 
         w == img.width && h == img.height -> {
@@ -101,8 +105,20 @@ scale = (img image, sx f64, sy f64, method i64) (out image) {
 ; h i64: target height
 ; returns out image: resized
 resize-nearest = (img image, w i64, h i64) (out image) {
-    _d str = with-len(w * h * img.bands)
-    out = image.new-from-data(w, h, img.bands, _d)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    {
+        d == 2 -> {
+            out = image.new-u16(w, h, img.bands)
+        }
+
+        -> {
+            _d str = with-len(w * h * img.bands)
+            out = image.new-from-data(w, h, img.bands, _d)
+        }
+    }
     x-ratio = img.width * 1000 / w
     y-ratio = img.height * 1000 / h
     y <- [0..h): {
@@ -111,10 +127,9 @@ resize-nearest = (img image, w i64, h i64) (out image) {
         x <- [0..w): {
             src-x = x * x-ratio / 1000
             src-x >= img.width -> src-x = img.width - 1
-            src-idx = (src-y * img.width + src-x) * img.bands
-            dst-idx = (y * w + x) * img.bands
             b <- [0..img.bands): {
-                out.data[dst-idx + b] = img.data[src-idx + b]
+                v = image.get-pixel(img, src-x, src-y, b)
+                image.set-pixel(out, x, y, b, v)
             }
         }
     }
@@ -128,10 +143,23 @@ resize-nearest = (img image, w i64, h i64) (out image) {
 ; h i64: target height
 ; returns out image: resized
 resize-bilinear = (img image, w i64, h i64) (out image) {
-    _d str = with-len(w * h * img.bands)
-    out = image.new-from-data(w, h, img.bands, _d)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(w, h, img.bands)
+            max-v = 65535
+        }
 
-    ; Use fixed-point math (scale * 4096 = 12 bits fractional)
+        -> {
+            _d str = with-len(w * h * img.bands)
+            out = image.new-from-data(w, h, img.bands, _d)
+        }
+    }
+
     x-ratio = (img.width - 1) * 4096 / w
     y-ratio = (img.height - 1) * 4096 / h
     y <- [0..h): {
@@ -147,22 +175,17 @@ resize-bilinear = (img image, w i64, h i64) (out image) {
             x1 >= img.width -> x1 = img.width - 1
             fx = src-x-f - (x0 << 12)
             b <- [0..img.bands): {
-                p00 = img.data[(y0 * img.width + x0) * img.bands + b]
-                p01 = img.data[(y0 * img.width + x1) * img.bands + b]
-                p10 = img.data[(y1 * img.width + x0) * img.bands + b]
-                p11 = img.data[(y1 * img.width + x1) * img.bands + b]
+                p00 = image.get-pixel(img, x0, y0, b)
+                p01 = image.get-pixel(img, x1, y0, b)
+                p10 = image.get-pixel(img, x0, y1, b)
+                p11 = image.get-pixel(img, x1, y1, b)
 
-                ; top row interpolation
                 top = p00 + ((p01 - p00) * fx) / 4096
-
-                ; bottom row interpolation
                 bot = p10 + ((p11 - p10) * fx) / 4096
-
-                ; vertical interpolation
                 val = top + ((bot - top) * fy) / 4096
-                val > 255 -> val = 255
+                val > max-v -> val = max-v
                 val < 0 -> val = 0
-                out.data[(y * w + x) * img.bands + b] = val
+                image.set-pixel(out, x, y, b, val)
             }
         }
     }
@@ -176,8 +199,22 @@ resize-bilinear = (img image, w i64, h i64) (out image) {
 ; h i64: target height
 ; returns out image: resized
 resize-bicubic = (img image, w i64, h i64) (out image) {
-    _d str = with-len(w * h * img.bands)
-    out = image.new-from-data(w, h, img.bands, _d)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(w, h, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(w * h * img.bands)
+            out = image.new-from-data(w, h, img.bands, _d)
+        }
+    }
     x-ratio = img.width * 4096 / w
     y-ratio = img.height * 4096 / h
     y <- [0..h): {
@@ -186,7 +223,6 @@ resize-bicubic = (img image, w i64, h i64) (out image) {
         y0 = src-y-f >> 12
         fy = src-y-f - (y0 << 12)
 
-        ; Catmull-Rom weights for y
         wy str = with-len(4)
         fy-n = fy
         fy2 = fy-n * fy-n / 4096
@@ -196,7 +232,6 @@ resize-bicubic = (img image, w i64, h i64) (out image) {
         wy[2] = -fy3 + fy2 + fy-n
         wy[3] = fy3 - fy2
 
-        ; Normalize weights
         wsum = wy[0] + wy[1] + wy[2] + wy[3]
         x <- [0..w): {
             src-x-f = x * x-ratio - 2048
@@ -204,7 +239,6 @@ resize-bicubic = (img image, w i64, h i64) (out image) {
             x0 = src-x-f >> 12
             fx = src-x-f - (x0 << 12)
 
-            ; Catmull-Rom weights for x
             fx-n = fx
             fx2 = fx-n * fx-n / 4096
             fx3 = fx2 * fx-n / 4096
@@ -225,15 +259,15 @@ resize-bicubic = (img image, w i64, h i64) (out image) {
                         sx = x0 + k - 1
                         sx < 0 -> sx = 0
                         sx >= img.width -> sx = img.width - 1
-                        px = img.data[(sy * img.width + sx) * img.bands + b]
+                        px = image.get-pixel(img, sx, sy, b)
                         row-val = row-val + px * wx[k]
                     }
                     val = val + (row-val / wsum-x) * wy[j]
                 }
                 val = val / wsum
-                val > 255 -> val = 255
+                val > max-v -> val = max-v
                 val < 0 -> val = 0
-                out.data[(y * w + x) * img.bands + b] = val
+                image.set-pixel(out, x, y, b, val)
             }
         }
     }
@@ -248,8 +282,22 @@ resize-bicubic = (img image, w i64, h i64) (out image) {
 ; h i64: target height
 ; returns out image: resized
 resize-area-avg = (img image, w i64, h i64) (out image) {
-    _d str = with-len(w * h * img.bands)
-    out = image.new-from-data(w, h, img.bands, _d)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(w, h, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(w * h * img.bands)
+            out = image.new-from-data(w, h, img.bands, _d)
+        }
+    }
     x-ratio = img.width * 1000 / w
     y-ratio = img.height * 1000 / h
     y <- [0..h): {
@@ -266,10 +314,13 @@ resize-area-avg = (img image, w i64, h i64) (out image) {
                 sum = 0
                 sy <- [y-start..y-end): {
                     sx <- [x-start..x-end): {
-                        sum = sum + img.data[(sy * img.width + sx) * img.bands + b]
+                        sum = sum + image.get-pixel(img, sx, sy, b)
                     }
                 }
-                out.data[(y * w + x) * img.bands + b] = sum / count
+                val = sum / count
+                val > max-v -> val = max-v
+                val < 0 -> val = 0
+                image.set-pixel(out, x, y, b, val)
             }
         }
     }

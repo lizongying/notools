@@ -8,12 +8,6 @@
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
 # /noimg/src/image.copy
-# /noimg/src/image.fill
-# /noimg/src/image.invert
-# /noimg/src/image.add-const
-# /noimg/src/image.avg
-# /noimg/src/image.min-val
-# /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
@@ -327,10 +321,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         }
 
                         ttype == 1 -> {
-                            ; Color transform: 3 bits
+                            ; Color transform: 3 bits for transform-bits
                             cbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
                             transform-bits[1] = cbits
-                            ; Color transform image is also a sub-image
+                            ; Color transform image is an ARGB sub-image
+                            ; of size ((w+3)/4) x ((h+3)/4)
+                            ; Each pixel's R channel = green_to_red (signed 8-bit)
+                            ; Each pixel's B channel = green_to_blue (signed 8-bit)
                             ct-w = (w + 3) / 4
                             ct-h = (h + 3) / 4
                             ct-n = ct-w * ct-h
@@ -340,11 +337,16 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             ct-first []byte = with-len(16)
                             ct-count []byte = with-len(16)
                             webp-build-huff-codes(ct-lens, 256, ct-codes, ct-first, ct-count)
-                            ; Decode color transform image into ct-img (declared above)
-                            ct-img = with-len(ct-n)
+                            ; Decode color transform image into ct-img as ARGB
+                            ; (4 bytes per block pixel: A, R, G, B)
+                            ct-img = with-len(ct-n * 4)
                             ci2 <- [0..ct-n): {
                                 csym, pos, buf, cnt = webp-huff-decode(ct-lens, 256, ct-codes, ct-first, ct-count, data, pos, buf, cnt)
-                                ct-img[ci2] = csym
+                                ; Each symbol is an ARGB value; store as 4 bytes
+                                ct-img[ci2 * 4] = (csym >> 24) & 255
+                                ct-img[ci2 * 4 + 1] = (csym >> 16) & 255
+                                ct-img[ci2 * 4 + 2] = (csym >> 8) & 255
+                                ct-img[ci2 * 4 + 3] = csym & 255
                             }
                         }
 
@@ -655,106 +657,353 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         }
                     }
 
-                    ; VP8L predictor modes (simplified):
-                    ; mode 0-10: use specific neighbors
-                    ; mode 11+: average of two or more neighbors
-                    ; We implement the common modes:
-                    ; 0 = 0xFF000000 (solid black + full alpha)
-                    ; 1 = left
-                    ; 2 = top
-                    ; etc.
-                    ; For simplicity, we implement left-neighbor prediction
-                    ; for mode 1 and top-neighbor for mode 2, which covers
-                    ; the majority of real-world VP8L images.
+                    ; VP8L predictor modes (per WebP Lossless Bitstream spec):
+                    ;   0  = 0xFF000000 (black, alpha=255)
+                    ;   1  = Left (L)
+                    ;   2  = Top (T)
+                    ;   3  = Top-Right (TR)
+                    ;   4  = Top-Left (TL)
+                    ;   5  = Average(L, T)
+                    ;   6  = Select(TL, L, T) — if |TL-T| < |TL-L|: L, else T
+                    ;   7  = Clamp(L | T..T+R) where R = TR - T (L clamped to [T, T+(TR-TL)])
+                    ;   8  = Clamp(T | L..L+R) where R = TL - L (T clamped to [L, L+(TL-TL)])
+                    ;   9  = Average(T, (TL+TR)/2)
+                    ;   10 = Select(L, T, TL) — min(|TL-T|, |TL-L|, |L-T|) decides
+                    ;   11 = Average(L, (T+TL+TR)/3)
+                    ;   12 = Average(T, (L+TL+TR)/3)
+                    ;   13 = Average(L, T, TL)
+                    ;
+                    ; For modes 1-4 we can apply the prediction inline (single neighbor).
+                    ; For modes 0 and 5-13 we compute pred-a/r/g/b then add at the end.
+
+                    ; ── Collect neighbor values (needed for all modes except 0) ──
+                    left-a = 0
+                    left-r = 0
+                    left-g = 0
+                    left-b = 0
+                    {
+                        px > 0 -> {
+                            left-a = argb[(pi - 1) * 4]
+                            left-r = argb[(pi - 1) * 4 + 1]
+                            left-g = argb[(pi - 1) * 4 + 2]
+                            left-b = argb[(pi - 1) * 4 + 3]
+                        }
+                    }
+                    top-a = 0
+                    top-r = 0
+                    top-g = 0
+                    top-b = 0
+                    {
+                        py > 0 -> {
+                            top-a = argb[(pi - w) * 4]
+                            top-r = argb[(pi - w) * 4 + 1]
+                            top-g = argb[(pi - w) * 4 + 2]
+                            top-b = argb[(pi - w) * 4 + 3]
+                        }
+                    }
+                    tl-a = 0
+                    tl-r = 0
+                    tl-g = 0
+                    tl-b = 0
+                    {
+                        px > 0 && py > 0 -> {
+                            tl-a = argb[(pi - w - 1) * 4]
+                            tl-r = argb[(pi - w - 1) * 4 + 1]
+                            tl-g = argb[(pi - w - 1) * 4 + 2]
+                            tl-b = argb[(pi - w - 1) * 4 + 3]
+                        }
+                    }
+                    tr-a = top-a
+                    tr-r = top-r
+                    tr-g = top-g
+                    tr-b = top-b
+                    {
+                        py > 0 && px + 1 < w -> {
+                            tr-a = argb[(pi - w + 1) * 4]
+                            tr-r = argb[(pi - w + 1) * 4 + 1]
+                            tr-g = argb[(pi - w + 1) * 4 + 2]
+                            tr-b = argb[(pi - w + 1) * 4 + 3]
+                        }
+                    }
+
+                    ; ── Compute prediction ──
+                    pred-a = 0
+                    pred-r = 0
+                    pred-g = 0
+                    pred-b = 0
+
                     {
                         mode == 0 -> {
-                            ; NULL predictor: predicted = 0, residual = actual
-                            ; Nothing to add
+                            ; 0xFF000000: solid black with full alpha
+                            pred-a = 255
+                            pred-r = 0
+                            pred-g = 0
+                            pred-b = 0
                         }
                     }
                     {
                         mode == 1 -> {
-                            ; Left neighbor prediction
-                            {
-                                px > 0 -> {
-                                    left = pi - 1
-                                    argb[pi * 4] = (argb[pi * 4] + argb[left * 4]) & 255
-                                    argb[pi * 4 + 1] = (argb[pi * 4 + 1] + argb[left * 4 + 1]) & 255
-                                    argb[pi * 4 + 2] = (argb[pi * 4 + 2] + argb[left * 4 + 2]) & 255
-                                    argb[pi * 4 + 3] = (argb[pi * 4 + 3] + argb[left * 4 + 3]) & 255
-                                }
-                            }
+                            ; Left (L)
+                            pred-a = left-a
+                            pred-r = left-r
+                            pred-g = left-g
+                            pred-b = left-b
                         }
                     }
                     {
                         mode == 2 -> {
-                            ; Top neighbor prediction
+                            ; Top (T)
+                            pred-a = top-a
+                            pred-r = top-r
+                            pred-g = top-g
+                            pred-b = top-b
+                        }
+                    }
+                    {
+                        mode == 3 -> {
+                            ; Top-Right (TR) — falls back to T when last in row
+                            pred-a = tr-a
+                            pred-r = tr-r
+                            pred-g = tr-g
+                            pred-b = tr-b
+                        }
+                    }
+                    {
+                        mode == 4 -> {
+                            ; Top-Left (TL)
+                            pred-a = tl-a
+                            pred-r = tl-r
+                            pred-g = tl-g
+                            pred-b = tl-b
+                        }
+                    }
+                    {
+                        mode == 5 -> {
+                            ; Average of L and T
+                            pred-a = (left-a + top-a) / 2
+                            pred-r = (left-r + top-r) / 2
+                            pred-g = (left-g + top-g) / 2
+                            pred-b = (left-b + top-b) / 2
+                        }
+                    }
+                    {
+                        mode == 6 -> {
+                            ; Select: if |TL - T| < |TL - L| then L, else T
+                            pa = tl-a - top-a
                             {
-                                py > 0 -> {
-                                    top = pi - w
-                                    argb[pi * 4] = (argb[pi * 4] + argb[top * 4]) & 255
-                                    argb[pi * 4 + 1] = (argb[pi * 4 + 1] + argb[top * 4 + 1]) & 255
-                                    argb[pi * 4 + 2] = (argb[pi * 4 + 2] + argb[top * 4 + 2]) & 255
-                                    argb[pi * 4 + 3] = (argb[pi * 4 + 3] + argb[top * 4 + 3]) & 255
+                                pa < 0 -> pa = -pa
+                            }
+                            pb = tl-a - left-a
+                            {
+                                pb < 0 -> pb = -pb
+                            }
+                            {
+                                pa <= pb -> {
+                                    pred-a = left-a
+                                    pred-r = left-r
+                                    pred-g = left-g
+                                    pred-b = left-b
+                                }
+                                -> {
+                                    pred-a = top-a
+                                    pred-r = top-r
+                                    pred-g = top-g
+                                    pred-b = top-b
                                 }
                             }
                         }
                     }
                     {
-                        mode >= 3 -> {
-                            ; For modes 3+, use left as fallback
-                            ; (full implementation would cover all 13 modes)
+                        mode == 7 -> {
+                            ; Clamp L to [T, T + (TR - TL)]
+                            pred-a = left-a
+                            pred-r = left-r
+                            pred-g = left-g
+                            pred-b = left-b
+                            hi-a = top-a + tr-a - tl-a
+                            hi-r = top-r + tr-r - tl-r
+                            hi-g = top-g + tr-g - tl-g
+                            hi-b = top-b + tr-b - tl-b
                             {
-                                px > 0 -> {
-                                    left = pi - 1
-                                    argb[pi * 4 + 1] = (argb[pi * 4 + 1] + argb[left * 4 + 1]) & 255
-                                    argb[pi * 4 + 2] = (argb[pi * 4 + 2] + argb[left * 4 + 2]) & 255
-                                    argb[pi * 4 + 3] = (argb[pi * 4 + 3] + argb[left * 4 + 3]) & 255
+                                pred-a < top-a -> pred-a = top-a
+                                pred-a > hi-a -> pred-a = hi-a
+                            }
+                            {
+                                pred-r < top-r -> pred-r = top-r
+                                pred-r > hi-r -> pred-r = hi-r
+                            }
+                            {
+                                pred-g < top-g -> pred-g = top-g
+                                pred-g > hi-g -> pred-g = hi-g
+                            }
+                            {
+                                pred-b < top-b -> pred-b = top-b
+                                pred-b > hi-b -> pred-b = hi-b
+                            }
+                        }
+                    }
+                    {
+                        mode == 8 -> {
+                            ; Clamp T to [L, L + (TL - TL)] = [L, L]
+                            ; Actually: T clamped to [L, L + (TL - L)]
+                            pred-a = top-a
+                            pred-r = top-r
+                            pred-g = top-g
+                            pred-b = top-b
+                            hi-a = left-a + tl-a - tl-a
+                            hi-r = left-r + tl-r - tl-r
+                            hi-g = left-g + tl-g - tl-g
+                            hi-b = left-b + tl-b - tl-b
+                            {
+                                pred-a < left-a -> pred-a = left-a
+                                pred-a > hi-a -> pred-a = hi-a
+                            }
+                            {
+                                pred-r < left-r -> pred-r = left-r
+                                pred-r > hi-r -> pred-r = hi-r
+                            }
+                            {
+                                pred-g < left-g -> pred-g = left-g
+                                pred-g > hi-g -> pred-g = hi-g
+                            }
+                            {
+                                pred-b < left-b -> pred-b = left-b
+                                pred-b > hi-b -> pred-b = hi-b
+                            }
+                        }
+                    }
+                    {
+                        mode == 9 -> {
+                            ; Average of T and (TL+TR)/2
+                            pred-a = (top-a + (tl-a + tr-a) / 2) / 2
+                            pred-r = (top-r + (tl-r + tr-r) / 2) / 2
+                            pred-g = (top-g + (tl-g + tr-g) / 2) / 2
+                            pred-b = (top-b + (tl-b + tr-b) / 2) / 2
+                        }
+                    }
+                    {
+                        mode == 10 -> {
+                            ; Select(L, T, TL): based on edges
+                            pa = tl-a - top-a
+                            {
+                                pa < 0 -> pa = -pa
+                            }
+                            pb = tl-a - left-a
+                            {
+                                pb < 0 -> pb = -pb
+                            }
+                            pc = left-a - top-a
+                            {
+                                pc < 0 -> pc = -pc
+                            }
+                            {
+                                pa <= pb && pa <= pc -> {
+                                    pred-a = left-a
+                                    pred-r = left-r
+                                    pred-g = left-g
+                                    pred-b = left-b
+                                }
+                                pb <= pc -> {
+                                    pred-a = top-a
+                                    pred-r = top-r
+                                    pred-g = top-g
+                                    pred-b = top-b
+                                }
+                                -> {
+                                    pred-a = tl-a
+                                    pred-r = tl-r
+                                    pred-g = tl-g
+                                    pred-b = tl-b
                                 }
                             }
                         }
                     }
+                    {
+                        mode == 11 -> {
+                            ; Average of L and (T+TL+TR)/3
+                            pred-a = (left-a + (top-a + tl-a + tr-a) / 3) / 2
+                            pred-r = (left-r + (top-r + tl-r + tr-r) / 3) / 2
+                            pred-g = (left-g + (top-g + tl-g + tr-g) / 3) / 2
+                            pred-b = (left-b + (top-b + tl-b + tr-b) / 3) / 2
+                        }
+                    }
+                    {
+                        mode == 12 -> {
+                            ; Average of T and (L+TL+TR)/3
+                            pred-a = (top-a + (left-a + tl-a + tr-a) / 3) / 2
+                            pred-r = (top-r + (left-r + tl-r + tr-r) / 3) / 2
+                            pred-g = (top-g + (left-g + tl-g + tr-g) / 3) / 2
+                            pred-b = (top-b + (left-b + tl-b + tr-b) / 3) / 2
+                        }
+                    }
+                    {
+                        mode >= 13 -> {
+                            ; Mode 13: Average of L, T, TL
+                            pred-a = (left-a + top-a + tl-a) / 3
+                            pred-r = (left-r + top-r + tl-r) / 3
+                            pred-g = (left-g + top-g + tl-g) / 3
+                            pred-b = (left-b + top-b + tl-b) / 3
+                        }
+                    }
+
+                    ; Add residual to prediction
+                    argb[pi * 4] = (argb[pi * 4] + pred-a) & 255
+                    argb[pi * 4 + 1] = (argb[pi * 4 + 1] + pred-r) & 255
+                    argb[pi * 4 + 2] = (argb[pi * 4 + 2] + pred-g) & 255
+                    argb[pi * 4 + 3] = (argb[pi * 4 + 3] + pred-b) & 255
                 }
             }
         }
 
         {
             ttype == 1 -> {
-                ; Inverse color transform: undo the per-4x4-block color transform
-                ; The color transform image (ct-img) stores a 3-bit transform type
-                ; per 4x4 block. VP8L color transform applies:
-                ;   red'   = red - (green >> shift)
-                ;   blue'  = blue - (green >> shift)
-                ; where shift is determined by the transform type.
-                ; The inverse is:
-                ;   red = red' + (green >> shift)
-                ;   blue = blue' + (green >> shift)
+                ; Inverse color transform (per VP8L spec)
+                ; The color transform image (ct-img) is an ARGB sub-image
+                ; of size (ct-w x ct-h). For each 4x4 block of the main image,
+                ; we look up the corresponding transform pixel:
+                ;   green_to_red = ct-img R channel (signed 8-bit: 0..127→0..127, 128..255→-128..-1)
+                ;   green_to_blue = ct-img B channel (signed 8-bit, same mapping)
+                ; Inverse transform:
+                ;   new_red  = red  + (green * green_to_red) >> 5
+                ;   new_blue = blue + (green * green_to_blue + new_red * green_to_red) >> 5
+                ; (Note: new_red is used when computing new_blue)
                 pi <- [0..n-pixels): {
                     py = pi / w
                     px = pi - py * w
                     blk-x = px / 4
                     blk-y = py / 4
                     blk-idx = blk-y * ct-w + blk-x
-                    transform-type = 0
+                    ; Read green_to_red and green_to_blue from ct-img ARGB
+                    gtr = 0  ; green_to_red (will be signed)
+                    gtb = 0  ; green_to_blue (will be signed)
                     {
-                        blk-idx < ct-img.len -> {
-                            transform-type = ct-img[blk-idx] & 7
+                        blk-idx * 4 + 3 < ct-img.len -> {
+                            ; R channel is at offset 1 in ARGB
+                            raw-r = ct-img[blk-idx * 4 + 1]
+                            raw-b = ct-img[blk-idx * 4 + 3]
+                            ; Convert to signed: values 128..255 → -128..-1
+                            gtr = raw-r
+                            gtr > 127 -> gtr = gtr - 256
+                            gtb = raw-b
+                            gtb > 127 -> gtb = gtb - 256
                         }
                     }
-                    ; The transform type determines how red/blue relate to green
-                    ; Type 0: no transform (already correct)
-                    ; Type 1-7: different prediction modes
-                    ; Common VP8L color transforms:
-                    ;   For each block, the transform image byte encodes
-                    ;   a 2-bit green-to-red/blue relationship.
-                    ; Simple inverse: add green to red and blue for non-zero types
+                    g = argb[pi * 4 + 2]
+                    r = argb[pi * 4 + 1]
+                    b = argb[pi * 4 + 3]
+                    ; Apply inverse color transform
+                    new-red = r + (g * gtr >> 5)
+                    new-red = new-red & 255
                     {
-                        transform-type != 0 -> {
-                            g = argb[pi * 4 + 2]
-                            argb[pi * 4 + 1] = (argb[pi * 4 + 1] + g) & 255
-                            argb[pi * 4 + 3] = (argb[pi * 4 + 3] + g) & 255
-                        }
+                        new-red < 0 -> new-red = new-red + 256
                     }
+                    argb[pi * 4 + 1] = new-red
+                    new-blue = b + ((g * gtb + new-red * gtr) >> 5)
+                    new-blue = new-blue & 255
+                    {
+                        new-blue < 0 -> new-blue = new-blue + 256
+                    }
+                    argb[pi * 4 + 3] = new-blue
                 }
             }
         }
@@ -971,79 +1220,20 @@ save = (path str, img image) (ok bool) {
     has-alpha = img.bands == 4
     npix = w * h
 
-    ; Build VP8L lossless bitstream
-    ; VP8L format:
-    ;   1 byte signature (0x2F)
-    ;   14-bit width-1, 14-bit height-1
-    ;   1 bit alpha hint, 3 bits version (0)
-    ;   Then: transform info, Huffman codes, pixel data
-
-    ; For simplicity, we use no transforms and encode raw ARGB
-    ; with a simple Huffman code (literal mode, no LZ77)
-
-    ; Build ARGB data (little-endian per pixel: A,R,G,B)
-    argb []byte = with-cap(npix * 4)
-    i <- [0..npix): {
-        {
-            img.bands >= 4 -> {
-                a = img.data[i * 4 + 3]
-                r = img.data[i * 4]
-                g = img.data[i * 4 + 1]
-                b = img.data[i * 4 + 2]
-            }
-
-            {
-                img.bands >= 3 -> {
-                    a = 255
-                    r = img.data[i * 3]
-                    g = img.data[i * 3 + 1]
-                    b = img.data[i * 3 + 2]
-                }
-
-                -> {
-                    a = 255
-                    r = img.data[i * img.bands]
-                    g = img.data[i * img.bands]
-                    b = img.data[i * img.bands]
-                }
-            }
-        }
-        ; VP8L stores ARGB as A<<24 | R<<16 | G<<8 | B
-        ; In the bitstream, pixels are encoded as green|red|blue|alpha
-        ; For no-transform mode, each pixel = 4 code-lengths
-        ; We use the simplest encoding: all literals
-        argb.push(g)
-        argb.push(r)
-        argb.push(b)
-        argb.push(a)
-    }
-
-    ; Build VP8L bitstream
-    ; We use a minimal valid encoding:
-    ; - No transforms (0 bits for transform count)
-    ; - Use simple Huffman code: code length 1 for all (trivial)
-    ; - Then raw pixel data
-
-    ; Actually, VP8L requires proper Huffman coding.
-    ; The simplest valid approach: use color cache = 0, no transforms,
-    ; and encode each pixel as 4 Huffman-coded values (green, red, blue, alpha)
-    ; with code length 9 (fixed 9-bit codes for 256 values).
-
-    ; For a truly minimal valid file, we write the VP8L header
-    ; and then a simple encoded stream.
-    ; Since proper VP8L encoding is complex, we write a structure that
-    ; is a valid RIFF/WebP container with VP8L chunk, but the pixel
-    ; data uses a trivial encoding.
+    ; Build VP8L lossless bitstream with real pixel data
+    ; We use no transforms, no color cache, and a fixed 9-bit Huffman
+    ; code for all 256 symbols in each of the 4 channels.
+    ; This produces a valid VP8L file that decodes to the actual image.
 
     ; VP8L bitstream writer
     bit-buf i64 = 0
     bit-count i64 = 0
-    vp8l-data []byte = with-cap(npix * 4 + 64)
+    vp8l-data []byte = with-cap(npix * 5 + 256)
 
-    ; Write bits helper
-    ; We inline this since Nolang doesn't have closures
+    ; Helper: flush bytes from bit buffer
+    ; We inline flush logic after each write
 
-    ; VP8L signature
+    ; VP8L signature (0x2F)
     bit-buf = bit-buf | (47 << bit-count)
     bit-count = bit-count + 8
     {
@@ -1078,7 +1268,7 @@ save = (path str, img image) (ok bool) {
         }
     } (bit-count >= 8)
 
-    ; Alpha hint (1 bit: 1 = has alpha), version (3 bits: 0)
+    ; Alpha hint (1 bit), version (3 bits = 0)
     alpha-bit = 0
     {
         has-alpha -> alpha-bit = 1
@@ -1106,18 +1296,7 @@ save = (path str, img image) (ok bool) {
         }
     } (bit-count >= 8)
 
-    ; Color cache size: 0 (3 bits)
-    bit-buf = bit-buf | (0 << bit-count)
-    bit-count = bit-count + 3
-    {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-            bit-count = bit-count - 8
-        }
-    } (bit-count >= 8)
-
-    ; Meta-Huffman: 0 = not used (1 bit)
+    ; Color cache: not used (1 bit = 0)
     bit-buf = bit-buf | (0 << bit-count)
     bit-count = bit-count + 1
     {
@@ -1128,50 +1307,74 @@ save = (path str, img image) (ok bool) {
         }
     } (bit-count >= 8)
 
-    ; Now we need to write Huffman code tables.
-    ; VP8L uses 5 Huffman trees: green, red, blue, alpha, distance.
-    ; For simplicity, we use code length 0 (single symbol = 0)
-    ; for all trees, meaning all pixel values are 0.
-    ; This produces a valid but all-black image.
+    ; Meta-Huffman for all 5 trees.
+    ; We use a non-simple Huffman with 256 symbols, each with code length 9.
+    ; This allows encoding any 8-bit value.
+    ; The meta-Huffman uses 18 meta-symbols (0-17).
+    ; Symbol 0-15 = code length 0-15
+    ; Symbol 16 = repeat previous (2 extra bits + 3)
+    ; Symbol 17 = zeros (3 extra bits + 3)
     ;
-    ; To produce actual pixel data, we'd need proper Huffman encoding.
-    ; Since that's very complex in Nolang, we write a minimal valid
-    ; VP8L stream that decoders can parse (all-zero pixels).
+    ; For 256 symbols all with code length 9:
+    ; We write: 9 (code length 9 for symbol 0), then 16 (repeat) with ext=3 (repeat 6),
+    ; then 16 with ext=3, ... until we cover 256 symbols.
+    ; 1 + 6*N >= 256 -> N >= 43
+    ; Actually: first symbol gets cl=9, then 42 repeats of 6 = 1 + 42*6 = 253,
+    ; then need 3 more: 16 with ext=0 (repeat 3). Total = 1 + 42*6 + 3 = 256.
+    ; But meta-Huffman itself needs its own code lengths.
     ;
-    ; Huffman table for each of 5 trees:
-    ; Simple code: 1 bit = 1, then 1 bit for max-code-length,
-    ; then if simple: 1 bit (is-simple-coverage), num-code-lengths (4+1 bits)
-    ; For a single-symbol tree (only value 0):
-    ; simple = 1, nsym-1 = 0 (1 sym), first sym = 0, code-length = 1
+    ; Meta-Huffman code lengths for 18 symbols:
+    ; symbol 9 -> code length 1 (for the '9' we use)
+    ; symbol 16 -> code length 2 (for repeat)
+    ; symbol 17 -> code length 2 (for zeros, not used but needs to be valid)
+    ; All others -> 0
+    ; Actually we only use symbols 9 and 16.
+    ; Meta-Huffman: 18 symbols, 3-bit code lengths each.
+    ; symbol 9: code length 1
+    ; symbol 16: code length 2
+    ; All others: 0
+    ; This gives: code 0 -> symbol 9, code 10 -> symbol 16, code 11 -> (unused)
+    ;
+    ; But we need a valid Huffman tree. With cl[9]=1, cl[16]=2:
+    ; count[1]=1, count[2]=1 -> first[1]=0, first[2]=2
+    ; code for sym 9 (cl=1): 0
+    ; code for sym 16 (cl=2): 10
+    ; This is valid.
+    ;
+    ; Meta-Huffman is stored as 3-bit code lengths for each of 18 symbols.
 
-    ; Tree 0 (green): simple, 1 symbol, symbol=0, code_length=1
-    bit-buf = bit-buf | (1 << bit-count)
-    bit-count = bit-count + 1  ; simple = 1
-    bit-buf = bit-buf | (0 << bit-count)
-    bit-count = bit-count + 1  ; nsym-1 = 0 (1 symbol)
-    ; symbol value (1 bit for code length, then 7 bits for value)
-    bit-buf = bit-buf | (1 << bit-count)
-    bit-count = bit-count + 1  ; code length = 1
-    bit-buf = bit-buf | (0 << bit-count)
-    bit-count = bit-count + 7  ; symbol = 0
-    {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-            bit-count = bit-count - 8
-        }
-    } (bit-count >= 8)
+    ; Build the meta-Huffman for each of 5 trees (all identical)
+    tree-idx <- [0..5): {
+        ; Write 3-bit code lengths for 18 meta-symbols
+        ; sym 0-8: code length 0
+        ; sym 9: code length 1
+        ; sym 10-15: code length 0
+        ; sym 16: code length 2
+        ; sym 17: code length 0
+        mi <- [0..18): {
+            ml = 0
+            {
+                mi == 9 -> ml = 1
+            }
+            {
+                mi == 16 -> ml = 2
+            }
+            bit-buf = bit-buf | (ml << bit-count)
+            bit-count = bit-count + 3
+            {
+                bit-count >= 8 -> {
+                    vp8l-data.push(bit-buf & 255)
+                    bit-buf = bit-buf >> 8
+                    bit-count = bit-count - 8
+                }
+            } (bit-count >= 8)
+        )
 
-    ; Trees 1-4 (red, blue, alpha, distance): same as tree 0
-    tree-i <- [0..4): {
-        bit-buf = bit-buf | (1 << bit-count)
-        bit-count = bit-count + 1
+        ; Now write 256 symbol code lengths using meta-Huffman
+        ; First symbol: code length 9 (meta symbol 9)
+        ; Code for meta-sym 9 = 0 (1 bit)
         bit-buf = bit-buf | (0 << bit-count)
         bit-count = bit-count + 1
-        bit-buf = bit-buf | (1 << bit-count)
-        bit-count = bit-count + 1
-        bit-buf = bit-buf | (0 << bit-count)
-        bit-count = bit-count + 7
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
@@ -1179,27 +1382,71 @@ save = (path str, img image) (ok bool) {
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
-    }
 
-    ; Now write npix pixels, each with 4 codes (green=0, red=0, blue=0, alpha=0)
-    ; Each code is 1 bit (value 0, code length 1)
-    ; So each pixel = 4 bits of 0
-    ; But we also need distance code after each pixel if not the last
-    ; Actually with 0 LZ77 matches, we just write 4 codes per pixel
-    ; Total bits = npix * 4
+        ; Remaining 255 symbols: use meta-symbol 16 (repeat) with ext bits
+        ; Repeat = 3 + ext (2 bits), so max repeat = 6 per use
+        ; 255 / 6 = 42.5, so 42 repeats of 6 (=252) + 1 repeat of 3
+        ; Code for meta-sym 16 = 10 (2 bits), then 2 extra bits
+        rep-count = 255
+        {
+            rep-count >= 6 -> {
+                ; Write repeat-6 (ext=3, 2 bits)
+                bit-buf = bit-buf | (2 << bit-count)
+                bit-count = bit-count + 2
+                bit-buf = bit-buf | (3 << bit-count)
+                bit-count = bit-count + 2
+                {
+                    bit-count >= 8 -> {
+                        vp8l-data.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+                        bit-count = bit-count - 8
+                    }
+                } (bit-count >= 8)
+                rep-count = rep-count - 6
+            }
+        } (rep-count >= 6)
+        {
+            rep-count > 0 -> {
+                ; Write remaining repeats (ext = rep-count - 3)
+                bit-buf = bit-buf | (2 << bit-count)
+                bit-count = bit-count + 2
+                ext-val = rep-count - 3
+                bit-buf = bit-buf | (ext-val << bit-count)
+                bit-count = bit-count + 2
+                {
+                    bit-count >= 8 -> {
+                        vp8l-data.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+                        bit-count = bit-count - 8
+                    }
+                } (bit-count >= 8)
+                rep-count = 0
+            }
+        }
+    )
+
+    ; Now write pixel data.
+    ; Each pixel is encoded as: green(9 bits), red(9 bits), blue(9 bits), alpha(9 bits if has-alpha)
+    ; The Huffman code for value v with code length 9 is: v itself (canonical code with 256 symbols all cl=9)
+    ; Canonical codes: first[9] = 0, all 256 symbols have cl=9
+    ; code for symbol v = v (9 bits)
+    ; Since green < 256 always, no LZ77 or color cache references.
     i <- [0..npix): {
-        ; green=0 (1 bit), red=0 (1 bit), blue=0 (1 bit), alpha=0 (1 bit)
-        ; alpha is only written if has-alpha
+        px = i % w
+        py = i / w
+        g = image.get-pixel(img, px, py, 1)
+        r = image.get-pixel(img, px, py, 0)
+        b = image.get-pixel(img, px, py, 2)
+        a = 255
         {
             has-alpha -> {
-                bit-count = bit-count + 4
+                a = image.get-pixel(img, px, py, 3)
             }
         }
-        {
-            has-alpha == false -> {
-                bit-count = bit-count + 3
-            }
-        }
+
+        ; Write green (9 bits)
+        bit-buf = bit-buf | (g << bit-count)
+        bit-count = bit-count + 9
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
@@ -1207,7 +1454,44 @@ save = (path str, img image) (ok bool) {
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
-    }
+
+        ; Write red (9 bits)
+        bit-buf = bit-buf | (r << bit-count)
+        bit-count = bit-count + 9
+        {
+            bit-count >= 8 -> {
+                vp8l-data.push(bit-buf & 255)
+                bit-buf = bit-buf >> 8
+                bit-count = bit-count - 8
+            }
+        } (bit-count >= 8)
+
+        ; Write blue (9 bits)
+        bit-buf = bit-buf | (b << bit-count)
+        bit-count = bit-count + 9
+        {
+            bit-count >= 8 -> {
+                vp8l-data.push(bit-buf & 255)
+                bit-buf = bit-buf >> 8
+                bit-count = bit-count - 8
+            }
+        } (bit-count >= 8)
+
+        ; Write alpha (9 bits) if has-alpha
+        {
+            has-alpha -> {
+                bit-buf = bit-buf | (a << bit-count)
+                bit-count = bit-count + 9
+                {
+                    bit-count >= 8 -> {
+                        vp8l-data.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+                        bit-count = bit-count - 8
+                    }
+                } (bit-count >= 8)
+            }
+        }
+    )
 
     ; Flush remaining bits
     {

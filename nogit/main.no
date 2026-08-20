@@ -201,14 +201,36 @@ add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix 
         fe-ok == false -> break
         fname, fe-ok = fs.read-dir(dirp)
         fe-ok == true -> {
-            print('DEBUG recurse: fname={fname} len={fname.len} dir={dir-path}')
-            skip = should-skip(fname)
-            print('DEBUG skip={skip}')
-            skip == false -> {
+            ; Inline skip check to avoid function return value issues
+            fl = fname.len
+            proceed = true
+            fl == 1 -> {
+                fname[0] == 46 -> proceed = false
+            }
+            fl == 2 -> {
+                c0 = fname[0]
+                c0 == 46 -> {
+                    c1 = fname[1]
+                    c1 == 46 -> proceed = false
+                }
+            }
+            fl == 4 -> {
+                c0 = fname[0]
+                c0 == 46 -> {
+                    c1 = fname[1]
+                    c1 == 103 -> {
+                        c2 = fname[2]
+                        c2 == 105 -> {
+                            c3 = fname[3]
+                            c3 == 116 -> proceed = false
+                        }
+                    }
+                }
+            }
+            proceed == true -> {
                 sub-full = dir-path - '/' - fname
                 sub-rel = fname
                 rel-prefix.len > 0 -> sub-rel = rel-prefix - '/' - fname
-                print('DEBUG calling add-file-or-dir: sub-full={sub-full} sub-rel={sub-rel}')
                 add-file-or-dir(git-dir, work-tree, sub-full, sub-rel)
             }
         }
@@ -216,41 +238,15 @@ add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix 
     fs.close-dir(dirp)
 }
 
-; should-skip: return true if the filename should be skipped (. .. .git)
-; Uses sequential checks to avoid && chain issues
-should-skip = (fname str) (skip bool) {
-    skip = false
-    L = fname.len
-    L == 1 -> {
-        fname[0] == 46 -> skip = true
-    }
-    L == 2 -> {
-        c0 = fname[0]
-        c1 = fname[1]
-        c0 == 46 -> {
-            c1 == 46 -> skip = true
-        }
-    }
-    L == 4 -> {
-        c0 = fname[0]
-        c0 == 46 -> {
-            c1 = fname[1]
-            c1 == 103 -> {
-                c2 = fname[2]
-                c2 == 105 -> {
-                    c3 = fname[3]
-                    c3 == 116 -> skip = true
-                }
-            }
-        }
-    }
-}
-
 ; add-file-or-dir: add a single file or recursively add all files in a directory
 ; git-dir str, work-tree str, full-path str (absolute path), rel-path str (relative to work-tree)
 add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
+    ; Normalize rel-path: strip leading "./" and reject "."
+    rel-path == '.' -> return
+    rel-path.starts-with('./') -> {
+        rel-path = util.str-range(rel-path, 2, rel-path.len)
+    }
     isf = fs.is-file(full-path)
-    print('DEBUG add-file-or-dir: full-path={full-path} rel-path={rel-path} isf={isf}')
     isf == true -> {
         content, read-ok = util.read-file-str(full-path)
         read-ok == false -> {
@@ -262,12 +258,9 @@ add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
         index-ok == false -> {
             print('fatal: could not stage {rel-path}')
         }
-        print('DEBUG add-file-or-dir: file done, returning')
         return
     }
-    print('DEBUG add-file-or-dir: isf was false, checking is-dir')
     isd = fs.is-dir(full-path)
-    print('DEBUG add-file-or-dir: isd={isd}')
     isd == true -> {
         add-directory-recursive(git-dir, work-tree, full-path, rel-path)
         return
@@ -467,11 +460,19 @@ cmd-status = (argc i64) {
     head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
     has-head = head-ok
 
-    ; If we have a HEAD, get the tree oid
-    head-tree-oid oid
+    ; If we have a HEAD, get the flat file list from the tree
+    head-flat-names str = ''
+    head-flat-oids str = ''
+    head-flat-count i64 = 0
     has-head == true -> {
         head-tree-oid, head-ok = revwalk.commit-tree-oid(git-dir, head-oid)
         has-head = head-ok
+        has-head == true -> {
+            head-flat-names, head-flat-oids, head-flat-modes, head-flat-count, head-flat-ok = object.tree-to-flat(git-dir, head-tree-oid, '')
+            head-flat-ok == false -> {
+                has-head = false
+            }
+        }
     }
 
     staged-names str = ''
@@ -492,25 +493,22 @@ cmd-status = (argc i64) {
         in-head = false
         head-matches = false
         has-head == true -> {
-            ; Try to find this file in the HEAD tree
-            head-kind str
-            head-data str
-            head-read-ok bool
-            head-kind, head-data, head-read-ok = object.read-loose(git-dir, head-tree-oid)
-            head-read-ok == true -> {
-                ; Search for this entry in the tree
-                n-entries = object.tree-count-raw(head-data)
-                j <- [0..n-entries): {
-                    tree-nm = object.tree-name-raw(head-data, j)
-                    same-nm = util.str-eq(tree-nm, nm)
-                    same-nm == true -> {
-                        in-head = true
-                        tree-id = object.tree-id-raw(head-data, j)
-                        tree-hex = oid.oid-hex-str(tree-id)
-                        head-matches = util.str-eq(tree-hex, hx)
-                        break
-                    }
+            ; Search for this file in the flat HEAD file list
+            hpos = 0
+            j <- [0..head-flat-count): {
+                hnl = util.find-byte-str(head-flat-names, 10, hpos)
+                hend = head-flat-names.len
+                hnl >= 0 -> hend = hnl
+                hnm = util.str-range(head-flat-names, hpos, hend)
+                same-nm = util.str-eq(hnm, nm)
+                same-nm == true -> {
+                    in-head = true
+                    hhex = util.str-range(head-flat-oids, j * 40, j * 40 + 40)
+                    head-matches = util.str-eq(hhex, hx)
+                    break
                 }
+                hpos = hnl + 1
+                hnl < 0 -> break
             }
         }
 
@@ -522,16 +520,19 @@ cmd-status = (argc i64) {
                 staged-count = staged-count + 1
             }
 
-            has-head == true && in-head == false -> {
-                ; File not in HEAD tree — new file
-                staged-names = staged-names - 'new file: ' - nm - '\n'
-                staged-count = staged-count + 1
-            }
-
-            has-head == true && in-head == true && head-matches == false -> {
-                ; File in HEAD but content differs — modified
-                staged-names = staged-names - 'modified: ' - nm - '\n'
-                staged-count = staged-count + 1
+            has-head == true -> {
+                in-head == false -> {
+                    ; File not in HEAD tree — new file
+                    staged-names = staged-names - 'new file: ' - nm - '\n'
+                    staged-count = staged-count + 1
+                }
+                in-head == true -> {
+                    head-matches == false -> {
+                        ; File in HEAD but content differs — modified
+                        staged-names = staged-names - 'modified: ' - nm - '\n'
+                        staged-count = staged-count + 1
+                    }
+                }
             }
         }
 

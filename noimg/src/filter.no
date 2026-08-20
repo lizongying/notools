@@ -13,19 +13,28 @@
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
+# /noimg/src/image.new-u16
 # /noimg/src/image.copy
-# /noimg/src/image.fill
-# /noimg/src/image.invert
-# /noimg/src/image.add-const
-# /noimg/src/image.avg
-# /noimg/src/image.min-val
-# /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
 convolve = (img image, kernel []i64, ksize i64, divisor i64, offset i64) (out image) {
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         ksize < 1 -> {
             out = image.copy(img)
@@ -61,14 +70,14 @@ convolve = (img image, kernel []i64, ksize i64, divisor i64, offset i64) (out im
 
                             sy >= img.height -> sy = img.height - 1
                         }
-                        px = img.data[(sy * img.width + sx) * img.bands + b]
+                        px = image.get-pixel(img, sx, sy, b)
                         sum = sum + px * kernel[ky * ksize + kx]
                     }
                 }
                 val = sum / div + offset
-                val > 255 -> val = 255
+                val > max-v -> val = max-v
                 val < 0 -> val = 0
-                out.data[(y * img.width + x) * img.bands + b] = val
+                image.set-pixel(out, x, y, b, val)
             }
         }
     }
@@ -171,20 +180,35 @@ box-blur = (img image, radius i64) (out image) {
 ; amount i64: sharpen amount * 100
 ; returns out image: sharpened image
 sharpen = (img image, sigma i64, amount i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
 
-    ; Create blurred version
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     blurred = filter.gauss-blur(img, sigma)
-
-    ; Unsharp mask: out = img + amount * (img - blurred)
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        diff = img.data[i] - blurred.data[i]
-        val = img.data[i] + (diff * amount) / 100
-        val > 255 -> val = 255
-        val < 0 -> val = 0
-        out.data[i] = val
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                pv = image.get-pixel(img, x, y, b)
+                bv = image.get-pixel(blurred, x, y, b)
+                diff = pv - bv
+                val = pv + (diff * amount) / 100
+                val > max-v -> val = max-v
+                val < 0 -> val = 0
+                image.set-pixel(out, x, y, b, val)
+            }
+        }
     }
 }
 
@@ -210,8 +234,22 @@ sharpen-simple = (img image) (out image) {
 ; img image: input image
 ; returns out image: edge image
 sobel = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
 
-    ; Sobel X kernel
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     kx = [
         -1, 0, 1, -2, 0, 2, -1, 0,
         1,
@@ -222,22 +260,18 @@ sobel = (img image) (out image) {
     ]
     gx = filter.convolve(img, kx, 3, 1, 0)
     gy = filter.convolve(img, ky, 3, 1, 0)
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-
-        ; magnitude = sqrt(gx^2 + gy^2)
-        ax = gx.data[i]
-        ay = gy.data[i]
-        ax2 = ax * ax
-        ay2 = ay * ay
-        sum = ax2 + ay2
-
-        ; sqrt approximation: sum >> 1 is good enough for edge detection
-        val = sum / 4
-        val > 255 -> val = 255
-        out.data[i] = val
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                ax = image.get-pixel(gx, x, y, b)
+                ay = image.get-pixel(gy, x, y, b)
+                sum = ax * ax + ay * ay
+                val = sum / 4
+                val > max-v -> val = max-v
+                val < 0 -> val = 0
+                image.set-pixel(out, x, y, b, val)
+            }
+        }
     }
 }
 
@@ -272,6 +306,22 @@ emboss = (img image) (out image) {
 ; radius i64: filter radius (1 = 3x3, 2 = 5x5)
 ; returns out image: filtered image
 median = (img image, radius i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         radius <= 0 -> {
             out = image.copy(img)
@@ -280,8 +330,6 @@ median = (img image, radius i64) (out image) {
     }
     ksize = radius * 2 + 1
     buf-len = ksize * ksize
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
     y <- [0..img.height): {
         x <- [0..img.width): {
             b <- [0..img.bands): {
@@ -301,12 +349,11 @@ median = (img image, radius i64) (out image) {
 
                             sy >= img.height -> sy = img.height - 1
                         }
-                        buf[cnt] = img.data[(sy * img.width + sx) * img.bands + b]
+                        buf[cnt] = image.get-pixel(img, sx, sy, b)
                         cnt = cnt + 1
                     }
                 }
 
-                ; Sort buf (simple insertion sort)
                 i <- [1..buf-len): {
                     key = buf[i]
                     j = i - 1
@@ -320,7 +367,7 @@ median = (img image, radius i64) (out image) {
                     } (true)
                     j + 1 >= 0 -> buf[j + 1] = key
                 }
-                out.data[(y * img.width + x) * img.bands + b] = buf[buf-len / 2]
+                image.set-pixel(out, x, y, b, buf[buf-len / 2])
             }
         }
     }
@@ -333,18 +380,34 @@ median = (img image, radius i64) (out image) {
 ; amount i64: noise amount (0-255)
 ; returns out image: noisy image
 add-noise = (img image, amount i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
 
-        ; Simple LCG random
+        -> {
+            out = image.copy(img)
+        }
+    }
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
         seed = os.now-ns() + i * 6364136223846793005
         r = (seed >> 16) & 255
         noise = (r * amount) / 255 - amount / 2
-        val = img.data[i] + noise
-        val > 255 -> val = 255
-        val < 0 -> val = 0
-        out.data[i] = val
+        b <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, b) + noise
+            v > max-v -> v = max-v
+            v < 0 -> v = 0
+            image.set-pixel(out, px, py, b, v)
+        }
     }
 }
 
@@ -356,6 +419,22 @@ add-noise = (img image, amount i64) (out image) {
 ; levels i64: number of intensity levels
 ; returns out image: stylized image
 oil-paint = (img image, radius i64, levels i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         radius <= 0 -> radius = 1
 
@@ -364,19 +443,15 @@ oil-paint = (img image, radius i64, levels i64) (out image) {
         levels > 256 -> levels = 256
     }
     ksize = radius * 2 + 1
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
     hist str = with-len(256)
     y <- [0..img.height): {
         x <- [0..img.width): {
             b <- [0..img.bands): {
 
-                ; Clear histogram
                 i <- [0..256): {
                     hist[i] = 0
                 }
 
-                ; Compute intensity histogram
                 ky <- [0..ksize): {
                     kx <- [0..ksize): {
                         sx = x + kx - radius
@@ -391,13 +466,12 @@ oil-paint = (img image, radius i64, levels i64) (out image) {
 
                             sy >= img.height -> sy = img.height - 1
                         }
-                        v = img.data[(sy * img.width + sx) * img.bands + b]
-                        lvl = v * levels / 256
+                        v = image.get-pixel(img, sx, sy, b)
+                        lvl = v * levels / (max-v + 1)
                         hist[lvl] = hist[lvl] + 1
                     }
                 }
 
-                ; Find most frequent level
                 max-count = 0
                 max-lvl = 0
                 i <- [0..levels): {
@@ -407,10 +481,10 @@ oil-paint = (img image, radius i64, levels i64) (out image) {
                     }
                 }
 
-                ; Output the max level value
-                val = max-lvl * 256 / levels + 256 / levels / 2
-                val > 255 -> val = 255
-                out.data[(y * img.width + x) * img.bands + b] = val
+                val = max-lvl * (max-v + 1) / levels + (max-v + 1) / levels / 2
+                val > max-v -> val = max-v
+                val < 0 -> val = 0
+                image.set-pixel(out, x, y, b, val)
             }
         }
     }
@@ -424,6 +498,22 @@ oil-paint = (img image, radius i64, levels i64) (out image) {
 ; sigma i64: blur radius (sigma * 10, e.g. 15 = 1.5)
 ; returns out image: blurred image
 gauss-blur-separable = (img image, sigma i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         sigma <= 0 -> {
             out = image.copy(img)
@@ -431,7 +521,6 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
         }
     }
 
-    ; Compute kernel size from sigma
     radius = 3 * sigma / 10
     radius < 1 -> radius = 1
     {
@@ -441,7 +530,6 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
     }
     ksize = radius * 2 + 1
 
-    ; Build 1D Gaussian kernel
     kernel str = with-len(ksize)
     two-sigma2 = 2 * sigma * sigma / 100
     two-sigma2 == 0 -> two-sigma2 = 1
@@ -472,9 +560,7 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
     }
     sum == 0 -> sum = 1
 
-    ; Horizontal blur pass
-    npix = img.width * img.height
-    _tmp str = with-len(npix * img.bands)
+    _tmp str = with-len(img.width * img.height * img.bands)
     tmp = image.new-from-data(img.width, img.height, img.bands, _tmp)
     y <- [0..img.height): {
         x <- [0..img.width): {
@@ -486,19 +572,16 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
                         sx < 0 -> sx = 0
                         sx >= img.width -> sx = img.width - 1
                     }
-                    acc = acc + img.data[(y * img.width + sx) * img.bands + b] * kernel[k]
+                    acc = acc + image.get-pixel(img, sx, y, b) * kernel[k]
                 }
                 v = acc / sum
-                v > 255 -> v = 255
+                v > max-v -> v = max-v
                 v < 0 -> v = 0
-                tmp.data[(y * img.width + x) * img.bands + b] = v
+                image.set-pixel(tmp, x, y, b, v)
             }
         }
     }
 
-    ; Vertical blur pass
-    _d str = with-len(npix * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
     y <- [0..img.height): {
         x <- [0..img.width): {
             b <- [0..img.bands): {
@@ -509,12 +592,12 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
                         sy < 0 -> sy = 0
                         sy >= img.height -> sy = img.height - 1
                     }
-                    acc = acc + tmp.data[(sy * img.width + x) * img.bands + b] * kernel[k]
+                    acc = acc + image.get-pixel(tmp, x, sy, b) * kernel[k]
                 }
                 v = acc / sum
-                v > 255 -> v = 255
+                v > max-v -> v = max-v
                 v < 0 -> v = 0
-                out.data[(y * img.width + x) * img.bands + b] = v
+                image.set-pixel(out, x, y, b, v)
             }
         }
     }
@@ -528,6 +611,22 @@ gauss-blur-separable = (img image, sigma i64) (out image) {
 ; radius i64: filter radius (1 = 3x3, 2 = 5x5)
 ; returns out image: dilated image
 dilate = (img image, radius i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         radius <= 0 -> {
             out = image.copy(img)
@@ -535,8 +634,6 @@ dilate = (img image, radius i64) (out image) {
         }
     }
     ksize = radius * 2 + 1
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
     y <- [0..img.height): {
         x <- [0..img.width): {
             b <- [0..img.bands): {
@@ -553,11 +650,11 @@ dilate = (img image, radius i64) (out image) {
                             sy < 0 -> sy = 0
                             sy >= img.height -> sy = img.height - 1
                         }
-                        v = img.data[(sy * img.width + sx) * img.bands + b]
+                        v = image.get-pixel(img, sx, sy, b)
                         v > mx -> mx = v
                     }
                 }
-                out.data[(y * img.width + x) * img.bands + b] = mx
+                image.set-pixel(out, x, y, b, mx)
             }
         }
     }
@@ -569,6 +666,22 @@ dilate = (img image, radius i64) (out image) {
 ; radius i64: filter radius (1 = 3x3, 2 = 5x5)
 ; returns out image: eroded image
 erode = (img image, radius i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
     {
         radius <= 0 -> {
             out = image.copy(img)
@@ -576,12 +689,10 @@ erode = (img image, radius i64) (out image) {
         }
     }
     ksize = radius * 2 + 1
-    _d str = with-len(img.width * img.height * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
     y <- [0..img.height): {
         x <- [0..img.width): {
             b <- [0..img.bands): {
-                mn = 255
+                mn = max-v
                 ky <- [0..ksize): {
                     kx <- [0..ksize): {
                         sx = x + kx - radius
@@ -594,11 +705,11 @@ erode = (img image, radius i64) (out image) {
                             sy < 0 -> sy = 0
                             sy >= img.height -> sy = img.height - 1
                         }
-                        v = img.data[(sy * img.width + sx) * img.bands + b]
+                        v = image.get-pixel(img, sx, sy, b)
                         v < mn -> mn = v
                     }
                 }
-                out.data[(y * img.width + x) * img.bands + b] = mn
+                image.set-pixel(out, x, y, b, mn)
             }
         }
     }
@@ -610,15 +721,33 @@ erode = (img image, radius i64) (out image) {
 ; radius i64: filter radius
 ; returns out image: gradient image
 gradient = (img image, radius i64) (out image) {
-    d = filter.dilate(img, radius)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
+    dl = filter.dilate(img, radius)
     e = filter.erode(img, radius)
-    n = img.width * img.height * img.bands
-    _d str = with-len(n)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
-    i <- [0..n): {
-        v = d.data[i] - e.data[i]
-        v < 0 -> v = 0
-        out.data[i] = v
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                v = image.get-pixel(dl, x, y, b) - image.get-pixel(e, x, y, b)
+                v < 0 -> v = 0
+                v > max-v -> v = max-v
+                image.set-pixel(out, x, y, b, v)
+            }
+        }
     }
 }
 
@@ -631,27 +760,46 @@ gradient = (img image, radius i64) (out image) {
 ; threshold i64: threshold for applying sharpening (0 = all pixels)
 ; returns out image: sharpened image
 unsharp-mask = (img image, sigma i64, amount i64, threshold i64) (out image) {
-    blurred = filter.gauss-blur-separable(img, sigma)
-    n = img.width * img.height * img.bands
-    _d str = with-len(n)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
-    i <- [0..n): {
-        diff = img.data[i] - blurred.data[i]
-        {
-            diff < 0 -> diff = -diff
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
         }
-        {
-            diff >= threshold -> {
-                val = img.data[i] + (img.data[i] - blurred.data[i]) * amount / 100
-            }
 
-            -> {
-                val = img.data[i]
+        -> {
+            _d str = with-len(img.width * img.height * img.bands)
+            out = image.new-from-data(img.width, img.height, img.bands, _d)
+        }
+    }
+    blurred = filter.gauss-blur-separable(img, sigma)
+    y <- [0..img.height): {
+        x <- [0..img.width): {
+            b <- [0..img.bands): {
+                pv = image.get-pixel(img, x, y, b)
+                bv = image.get-pixel(blurred, x, y, b)
+                diff = pv - bv
+                {
+                    diff < 0 -> diff = -diff
+                }
+                {
+                    diff >= threshold -> {
+                        val = pv + (pv - bv) * amount / 100
+                    }
+
+                    -> {
+                        val = pv
+                    }
+                }
+                val > max-v -> val = max-v
+                val < 0 -> val = 0
+                image.set-pixel(out, x, y, b, val)
             }
         }
-        val > 255 -> val = 255
-        val < 0 -> val = 0
-        out.data[i] = val
     }
 }
 
@@ -662,7 +810,21 @@ unsharp-mask = (img image, sigma i64, amount i64, threshold i64) (out image) {
 ; strength i64: vignette strength (0-100, percentage)
 ; returns out image: vignetted image
 vignette = (img image, strength i64) (out image) {
-    out = image.copy(img)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
     npix = img.width * img.height
     cx = img.width / 2
     cy = img.height / 2
@@ -676,12 +838,13 @@ vignette = (img image, strength i64) (out image) {
         dx = px - cx
         dy = py - cy
         dist2 = dx * dx + dy * dy
-        factor = 255 - dist2 * s / (max-dist * 100 / 255)
+        factor = max-v - dist2 * s / (max-dist * 100 / max-v)
         factor < 0 -> factor = 0
         b <- [0..img.bands): {
-            v = img.data[i * img.bands + b] * factor / 255
-            v > 255 -> v = 255
-            out.data[i * img.bands + b] = v
+            v = image.get-pixel(img, px, py, b) * factor / max-v
+            v > max-v -> v = max-v
+            v < 0 -> v = 0
+            image.set-pixel(out, px, py, b, v)
         }
     }
 }

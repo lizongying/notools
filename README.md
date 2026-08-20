@@ -424,7 +424,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
 | GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；动画多帧提取+disposal 合成；写入用 median-cut 量化） |
 | JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 读写（DCT+Huffman 编码/解码+IDCT+YCbCr→RGB），不支持 progressive |
-| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+predictor 逆变换+颜色变换逆变换+subtract-green+颜色索引）；不支持 lossy VP8；写入为 VP8L lossless 容器（Huffman 表+像素编码，当前仅全零像素） |
+| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+predictor 逆变换(14 模式)+颜色变换逆变换(定点乘)+subtract-green+颜色索引）；不支持 lossy VP8；写入为 VP8L 容器（真实像素编码），但 **save 不写 transform 头（无 predictor/subtract-green/color-transform），与标准 WebP 解码器不互通**——仅 noimg save→noimg load 可 round-trip |
 
 ### CLI 命令
 
@@ -507,7 +507,7 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 | `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜、Adam7 隔行解码，仅 8 位） |
 | `tiff` | TIFF 读写（仅未压缩、8 位、单 strip） |
 | `jpeg` | JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB，不支持 progressive） |
-| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+predictor+颜色变换+subtract-green+颜色索引）；写入为 VP8L lossless 容器（当前仅全零像素） |
+| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+predictor(14 模式)+颜色变换(定点乘)+subtract-green+颜色索引）；写入为 VP8L 容器（真实像素，但不写 transform 头，与标准解码器不互通） |
 | `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr、RGB↔Lab、RGB↔CMYK）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
 | `resize` | 双线性缩放、缩略图、缩放、最近邻/双三次/面积平均 |
 | `rotate` | 旋转（90/180/270/任意角度）、翻转、转置/反对角转置 |
@@ -549,7 +549,7 @@ noimg/
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 编解码）
 │   ├── jpeg.no          ; JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB）
-│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+predictor+颜色变换+subtract-green+颜色索引）
+│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+predictor(14 模式)+颜色变换(定点乘)+subtract-green+颜色索引）；save 不写 transform 头，仅内部 round-trip
 │   ├── colour.no        ; 色彩空间转换（RGB↔Gray/HSV/HSL/YCbCr/Lab/CMYK）
 │   ├── resize.no        ; 缩放
 │   ├── rotate.no        ; 旋转与翻转

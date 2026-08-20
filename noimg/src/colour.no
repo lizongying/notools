@@ -10,36 +10,46 @@
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
+# /noimg/src/image.new-u16
 # /noimg/src/image.copy
-# /noimg/src/image.fill
-# /noimg/src/image.invert
-# /noimg/src/image.add-const
-# /noimg/src/image.avg
-# /noimg/src/image.min-val
-# /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
 rgb2gray = (img image) (out image) {
     {
         img.bands >= 3 -> {
-            npix = img.width * img.height
-            _d str = with-len(npix)
-            out = image.new-from-data(img.width, img.height, 1, _d)
-            i <- [0..npix): {
-                r = img.data[i * img.bands]
-                g = img.data[i * img.bands + 1]
-                b = img.data[i * img.bands + 2]
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    _d str = with-len(img.width * img.height * 2)
+                    out = image.new-u16(img.width, img.height, 1)
+                    max-v = 65535
+                }
 
-                ; ITU-R BT.601 luma
+                -> {
+                    _d str = with-len(img.width * img.height)
+                    out = image.new-from-data(img.width, img.height, 1, _d)
+                }
+            }
+            npix = img.width * img.height
+            i <- [0..npix): {
+                px = i % img.width
+                py = i / img.width
+                r = image.get-pixel(img, px, py, 0)
+                g = image.get-pixel(img, px, py, 1)
+                b = image.get-pixel(img, px, py, 2)
                 v = (r * 299 + g * 587 + b * 114) / 1000
-                out.data[i] = v
+                v > max-v -> v = max-v
+                v < 0 -> v = 0
+                image.set-pixel(out, px, py, 0, v)
             }
         }
 
         -> {
-
-            ; Already grayscale or unknown — just copy
             out = image.copy(img)
         }
     }
@@ -51,14 +61,30 @@ rgb2gray = (img image) (out image) {
 gray2rgb = (img image) (out image) {
     {
         img.bands == 1 -> {
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 3)
+                    max-v = 65535
+                }
+
+                -> {
+                    _d str = with-len(img.width * img.height * 3)
+                    out = image.new-from-data(img.width, img.height, 3, _d)
+                }
+            }
             npix = img.width * img.height
-            _d str = with-len(npix * 3)
-            out = image.new-from-data(img.width, img.height, 3, _d)
             i <- [0..npix): {
-                v = img.data[i]
-                out.data[i * 3] = v
-                out.data[i * 3 + 1] = v
-                out.data[i * 3 + 2] = v
+                px = i % img.width
+                py = i / img.width
+                v = image.get-pixel(img, px, py, 0)
+                image.set-pixel(out, px, py, 0, v)
+                image.set-pixel(out, px, py, 1, v)
+                image.set-pixel(out, px, py, 2, v)
             }
         }
 
@@ -74,13 +100,29 @@ gray2rgb = (img image) (out image) {
 ; img image: RGB image
 ; returns out image: HSV image (H: 0-255, S: 0-255, V: 0-255)
 rgb2hsv = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        r = img.data[i * img.bands]
-        g = img.data[i * img.bands + 1]
-        b = img.data[i * img.bands + 2]
+        px = i % img.width
+        py = i / img.width
+        r = image.get-pixel(img, px, py, 0)
+        g = image.get-pixel(img, px, py, 1)
+        b = image.get-pixel(img, px, py, 2)
         h = 0
         s = 0
         v = 0
@@ -98,25 +140,25 @@ rgb2hsv = (img image) (out image) {
             }
 
             -> {
-                s = (delta * 255) / mx
+                s = (delta * max-v) / mx
             }
         }
         delta == 0 -> {
             h = 0
         }
         mx == r -> {
-            h = (g - b) * 255 / (delta)
-            h < 0 -> h = h + 255
+            h = (g - b) * max-v / (delta)
+            h < 0 -> h = h + max-v
         }
         mx == g -> {
-            h = 85 + (b - r) * 255 / (delta)
+            h = max-v / 3 + (b - r) * max-v / (delta)
         }
         mx == b -> {
-            h = 170 + (r - g) * 255 / (delta)
+            h = 2 * max-v / 3 + (r - g) * max-v / (delta)
         }
-        out.data[i * 3] = h
-        out.data[i * 3 + 1] = s
-        out.data[i * 3 + 2] = v
+        image.set-pixel(out, px, py, 0, h)
+        image.set-pixel(out, px, py, 1, s)
+        image.set-pixel(out, px, py, 2, v)
     }
 }
 
@@ -124,13 +166,29 @@ rgb2hsv = (img image) (out image) {
 ; img image: HSV image
 ; returns out image: RGB image
 hsv2rgb = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        h = img.data[i * img.bands]
-        s = img.data[i * img.bands + 1]
-        v = img.data[i * img.bands + 2]
+        px = i % img.width
+        py = i / img.width
+        h = image.get-pixel(img, px, py, 0)
+        s = image.get-pixel(img, px, py, 1)
+        v = image.get-pixel(img, px, py, 2)
         r = 0
         g = 0
         b = 0
@@ -142,13 +200,11 @@ hsv2rgb = (img image) (out image) {
             }
 
             -> {
-
-                ; h is 0-255, convert to sector 0-5
-                hi = h * 6 / 256
-                f = (h * 6 - hi * 256) / 256
-                p = v * (255 - s) / 255
-                q = v * (255 - (s * f) / 255) / 255
-                t = v * (255 - (s * (255 - f)) / 255) / 255
+                hi = h * 6 / (max-v + 1)
+                f = (h * 6 - hi * (max-v + 1)) / (max-v + 1)
+                p = v * (max-v - s) / max-v
+                q = v * (max-v - (s * f) / max-v) / max-v
+                t = v * (max-v - (s * (max-v - f)) / max-v) / max-v
                 {
                     hi == 0 -> {
                         r = v
@@ -189,9 +245,9 @@ hsv2rgb = (img image) (out image) {
             }
         }
 
-        out.data[i * 3] = r
-        out.data[i * 3 + 1] = g
-        out.data[i * 3 + 2] = b
+        image.set-pixel(out, px, py, 0, r)
+        image.set-pixel(out, px, py, 1, g)
+        image.set-pixel(out, px, py, 2, b)
     }
 }
 
@@ -201,13 +257,29 @@ hsv2rgb = (img image) (out image) {
 ; img image: RGB image
 ; returns out image: HSL image
 rgb2hsl = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        r = img.data[i * img.bands]
-        g = img.data[i * img.bands + 1]
-        b = img.data[i * img.bands + 2]
+        px = i % img.width
+        py = i / img.width
+        r = image.get-pixel(img, px, py, 0)
+        g = image.get-pixel(img, px, py, 1)
+        b = image.get-pixel(img, px, py, 2)
         h = 0
         s = 0
         l = 0
@@ -227,36 +299,36 @@ rgb2hsl = (img image) (out image) {
 
             -> {
                 {
-                    l < 128 -> {
-                        s = delta * 255 / (mx + mn)
+                    l < max-v / 2 -> {
+                        s = delta * max-v / (mx + mn)
                     }
 
                     -> {
-                        sum = 510 - mx - mn
+                        sum = 2 * max-v - mx - mn
                         sum == 0 -> {
                             s = 0
                         }
 
                         -> {
-                            s = delta * 255 / sum
+                            s = delta * max-v / sum
                         }
                     }
                 }
                 mx == r -> {
-                    h = (g - b) * 255 / delta
-                    h < 0 -> h = h + 255
+                    h = (g - b) * max-v / delta
+                    h < 0 -> h = h + max-v
                 }
                 mx == g -> {
-                    h = 85 + (b - r) * 255 / delta
+                    h = max-v / 3 + (b - r) * max-v / delta
                 }
                 mx == b -> {
-                    h = 170 + (r - g) * 255 / delta
+                    h = 2 * max-v / 3 + (r - g) * max-v / delta
                 }
             }
         }
-        out.data[i * 3] = h
-        out.data[i * 3 + 1] = s
-        out.data[i * 3 + 2] = l
+        image.set-pixel(out, px, py, 0, h)
+        image.set-pixel(out, px, py, 1, s)
+        image.set-pixel(out, px, py, 2, l)
     }
 }
 
@@ -264,13 +336,30 @@ rgb2hsl = (img image) (out image) {
 ; img image: HSL image (H: 0-255, S: 0-255, L: 0-255)
 ; returns out image: RGB image
 hsl2rgb = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
+    half-v = max-v / 2
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        h = img.data[i * img.bands]
-        s = img.data[i * img.bands + 1]
-        l = img.data[i * img.bands + 2]
+        px = i % img.width
+        py = i / img.width
+        h = image.get-pixel(img, px, py, 0)
+        s = image.get-pixel(img, px, py, 1)
+        l = image.get-pixel(img, px, py, 2)
         r = 0
         g = 0
         b = 0
@@ -282,35 +371,28 @@ hsl2rgb = (img image) (out image) {
             }
 
             -> {
-                ; q = l < 128 ? l * (255 + s) / 255 : (l + s - l * s / 255)
                 q = 0
                 {
-                    l < 128 -> {
-                        q = l * (255 + s) / 255
+                    l < half-v -> {
+                        q = l * (max-v + s) / max-v
                     }
 
                     -> {
-                        q = l + s - l * s / 255
+                        q = l + s - l * s / max-v
                     }
                 }
                 p = 2 * l - q
-                ; h is 0-255, convert to 0-360 then compute
-                ; Use sector approach: h * 6 / 256 gives sector
-                hk = h * 6 / 256
-                tc = h * 6 - hk * 256
-                ; s' = s * q / 255 (saturation in q space)
-                ; Actually use: c = (1 - |2l - 1|) * s
-                ; t = c * (1 - |h' mod 2 - 1|)
-                ; For integer math, compute RGB via p + (q - p) * sector
+                hk = h * 6 / (max-v + 1)
+                tc = h * 6 - hk * (max-v + 1)
                 {
                     hk == 0 -> {
                         r = q
-                        g = p + (q - p) * tc / 255
+                        g = p + (q - p) * tc / max-v
                         b = p
                     }
 
                     hk == 1 -> {
-                        r = p + (q - p) * (255 - tc) / 255
+                        r = p + (q - p) * (max-v - tc) / max-v
                         g = q
                         b = p
                     }
@@ -318,17 +400,17 @@ hsl2rgb = (img image) (out image) {
                     hk == 2 -> {
                         r = p
                         g = q
-                        b = p + (q - p) * tc / 255
+                        b = p + (q - p) * tc / max-v
                     }
 
                     hk == 3 -> {
                         r = p
-                        g = p + (q - p) * (255 - tc) / 255
+                        g = p + (q - p) * (max-v - tc) / max-v
                         b = q
                     }
 
                     hk == 4 -> {
-                        r = p + (q - p) * tc / 255
+                        r = p + (q - p) * tc / max-v
                         g = p
                         b = q
                     }
@@ -336,26 +418,26 @@ hsl2rgb = (img image) (out image) {
                     -> {
                         r = q
                         g = p
-                        b = p + (q - p) * (255 - tc) / 255
+                        b = p + (q - p) * (max-v - tc) / max-v
                     }
                 }
             }
         }
         {
             r < 0 -> r = 0
-            r > 255 -> r = 255
+            r > max-v -> r = max-v
         }
         {
             g < 0 -> g = 0
-            g > 255 -> g = 255
+            g > max-v -> g = max-v
         }
         {
             b < 0 -> b = 0
-            b > 255 -> b = 255
+            b > max-v -> b = max-v
         }
-        out.data[i * 3] = r
-        out.data[i * 3 + 1] = g
-        out.data[i * 3 + 2] = b
+        image.set-pixel(out, px, py, 0, r)
+        image.set-pixel(out, px, py, 1, g)
+        image.set-pixel(out, px, py, 2, b)
     }
 }
 
@@ -365,34 +447,48 @@ hsl2rgb = (img image) (out image) {
 ; img image: RGB image
 ; returns out image: YCbCr image
 rgb2ycbcr = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
+    half-v = max-v / 2
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        r = img.data[i * img.bands]
-        g = img.data[i * img.bands + 1]
-        b = img.data[i * img.bands + 2]
+        px = i % img.width
+        py = i / img.width
+        r = image.get-pixel(img, px, py, 0)
+        g = image.get-pixel(img, px, py, 1)
+        b = image.get-pixel(img, px, py, 2)
         y = (r * 77 + g * 150 + b * 29) >> 8
-        cb = ((b - y) * 128) / 255 + 128
-        cr = ((r - y) * 128) / 255 + 128
+        cb = ((b - y) * half-v) / max-v + half-v
+        cr = ((r - y) * half-v) / max-v + half-v
         {
             y < 0 -> y = 0
-
-            y > 255 -> y = 255
+            y > max-v -> y = max-v
         }
         {
             cb < 0 -> cb = 0
-
-            cb > 255 -> cb = 255
+            cb > max-v -> cb = max-v
         }
         {
             cr < 0 -> cr = 0
-
-            cr > 255 -> cr = 255
+            cr > max-v -> cr = max-v
         }
-        out.data[i * 3] = y
-        out.data[i * 3 + 1] = cb
-        out.data[i * 3 + 2] = cr
+        image.set-pixel(out, px, py, 0, y)
+        image.set-pixel(out, px, py, 1, cb)
+        image.set-pixel(out, px, py, 2, cr)
     }
 }
 
@@ -400,34 +496,48 @@ rgb2ycbcr = (img image) (out image) {
 ; img image: YCbCr image
 ; returns out image: RGB image
 ycbcr2rgb = (img image) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, 3)
+            max-v = 65535
+        }
+
+        -> {
+            _d str = with-len(img.width * img.height * 3)
+            out = image.new-from-data(img.width, img.height, 3, _d)
+        }
+    }
+    half-v = max-v / 2
     npix = img.width * img.height
-    _d str = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
-        y = img.data[i * img.bands]
-        cb = img.data[i * img.bands + 1]
-        cr = img.data[i * img.bands + 2]
-        r = y + (cr * 255) / 128
-        b = y + (cb * 255) / 128
-        g = (y * 255 - r * 77 - b * 29) / 150
+        px = i % img.width
+        py = i / img.width
+        y = image.get-pixel(img, px, py, 0)
+        cb = image.get-pixel(img, px, py, 1)
+        cr = image.get-pixel(img, px, py, 2)
+        r = y + (cr * max-v) / half-v
+        b = y + (cb * max-v) / half-v
+        g = (y * max-v - r * 77 - b * 29) / 150
         {
             r < 0 -> r = 0
-
-            r > 255 -> r = 255
+            r > max-v -> r = max-v
         }
         {
             g < 0 -> g = 0
-
-            g > 255 -> g = 255
+            g > max-v -> g = max-v
         }
         {
             b < 0 -> b = 0
-
-            b > 255 -> b = 255
+            b > max-v -> b = max-v
         }
-        out.data[i * 3] = r
-        out.data[i * 3 + 1] = g
-        out.data[i * 3 + 2] = b
+        image.set-pixel(out, px, py, 0, r)
+        image.set-pixel(out, px, py, 1, g)
+        image.set-pixel(out, px, py, 2, b)
     }
 }
 
@@ -438,15 +548,36 @@ ycbcr2rgb = (img image) (out image) {
 ; t i64: threshold value
 ; returns out image: binary (0 or 255) image
 threshold = (img image, t i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] >= t -> {
-            out.data[i] = 255
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
         }
 
         -> {
-            out.data[i] = 0
+            out = image.copy(img)
+        }
+    }
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        b <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, b)
+            {
+                v >= t -> {
+                    image.set-pixel(out, px, py, b, max-v)
+                }
+
+                -> {
+                    image.set-pixel(out, px, py, b, 0)
+                }
+            }
         }
     }
 }
@@ -455,32 +586,44 @@ threshold = (img image, t i64) (out image) {
 ; img image: input image
 ; returns t i64: computed threshold
 otsu-threshold = (img image) (t i64) {
-
-    ; Build histogram
-    hist str = with-len(256)
-    i <- [0..256): {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> max-v = 65535
+    }
+    hist-len = max-v + 1
+    hist str = with-len(hist-len)
+    i <- [0..hist-len): {
         hist[i] = 0
     }
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i]
-        hist[v] = hist[v] + 1
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        b <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, b)
+            v >= hist-len -> v = hist-len - 1
+            hist[v] = hist[v] + 1
+        }
     }
-
-    ; Total pixels
-    total = n
+    total = npix * img.bands
     sum = 0
-    i <- [0..256): {
+    i <- [0..hist-len): {
         sum = sum + i * hist[i]
     }
     sum-b = 0
     w-b = 0
     max-var = 0
     t = 0
-    i <- [0..256): {
+    i <- [0..hist-len): {
         w-b = w-b + hist[i]
-        w-b == 0 -> {
-            i <- [0..0): {
+        {
+            w-b == 0 -> {
+                i <- [0..0): {
+                }
             }
         }
         w-f = total - w-b
@@ -503,13 +646,31 @@ otsu-threshold = (img image) (t i64) {
 ; b i64: brightness adjustment (-255 to 255)
 ; returns out image: adjusted image
 brightness = (img image, b i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i] + b
-        v > 255 -> v = 255
-        v < 0 -> v = 0
-        out.data[i] = v
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, band) + b
+            v > max-v -> v = max-v
+            v < 0 -> v = 0
+            image.set-pixel(out, px, py, band, v)
+        }
     }
 }
 
@@ -518,14 +679,34 @@ brightness = (img image, b i64) (out image) {
 ; c i64: contrast factor (-100 to 100, percentage)
 ; returns out image: adjusted image
 contrast = (img image, c i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
-    factor = (259 * (c + 255)) / (255 * (259 - c))
-    i <- [0..n): {
-        v = factor * (img.data[i] - 128) + 128
-        v > 255 -> v = 255
-        v < 0 -> v = 0
-        out.data[i] = v
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    half-v = 128
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+            half-v = max-v / 2
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+    factor = (259 * (c + max-v)) / (max-v * (259 - c))
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            v = factor * (image.get-pixel(img, px, py, band) - half-v) + half-v
+            v > max-v -> v = max-v
+            v < 0 -> v = 0
+            image.set-pixel(out, px, py, band, v)
+        }
     }
 }
 
@@ -534,20 +715,26 @@ contrast = (img image, c i64) (out image) {
 ; g i64: gamma * 100 (e.g. 220 = 2.2)
 ; returns out image: corrected image
 gamma = (img image, g i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
     g == 0 -> return
-
-    ; Build lookup table for speed
-    lut str = with-len(256)
-    i <- [0..256): {
-
-        ; gamma = g / 100
-        ; lut[i] = 255 * (i/255)^(g/100)
-        ; Approximate with integer math
-        norm = i * 1000 / 255
-
-        ; norm^gamma * 255 / 1000^gamma
+    lut-len = max-v + 1
+    lut str = with-len(lut-len)
+    i <- [0..lut-len): {
+        norm = i * 1000 / max-v
         result = 0
         {
             g == 100 -> {
@@ -555,35 +742,38 @@ gamma = (img image, g i64) (out image) {
             }
 
             g > 100 -> {
-
-                ; gamma > 1: darker
-                ; approximate: i^gamma = i * i^(g-100)/100
                 exp = g - 100
                 tmp = norm
                 j <- [0..exp / 10): {
                     tmp = tmp * norm / 1000
                 }
-                result = tmp * 255 / 1000
+                result = tmp * max-v / 1000
             }
 
             -> {
-
-                ; gamma < 1: brighter
                 exp = 100 - g
                 tmp = norm
                 j <- [0..exp / 10): {
                     tmp = (tmp * 1000) / (norm > 0 ? norm : 1)
                 }
-                result = tmp * 255 / 1000
+                result = tmp * max-v / 1000
             }
         }
-
-        result > 255 -> result = 255
+        result > max-v -> result = max-v
         result < 0 -> result = 0
         lut[i] = result
     }
-    i <- [0..n): {
-        out.data[i] = lut[img.data[i]]
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, band)
+            {
+                v >= lut-len -> v = lut-len - 1
+            }
+            image.set-pixel(out, px, py, band, lut[v])
+        }
     }
 }
 
@@ -594,15 +784,36 @@ gamma = (img image, g i64) (out image) {
 ; levels i64: number of levels per channel (2-256)
 ; returns out image: posterized image
 posterize = (img image, levels i64) (out image) {
-    out = image.copy(img)
+    d = img.depth
     {
-        levels <= 0 || levels > 256 -> return
+        d == 0 -> d = 1
     }
-    step = 256 / levels
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i]
-        out.data[i] = (v / step) * step + step / 2
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+    {
+        levels <= 0 -> return
+    }
+    step = (max-v + 1) / levels
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, band)
+            v = (v / step) * step + step / 2
+            v > max-v -> v = max-v
+            v < 0 -> v = 0
+            image.set-pixel(out, px, py, band, v)
+        }
     }
 }
 
@@ -613,11 +824,33 @@ posterize = (img image, levels i64) (out image) {
 ; t i64: threshold
 ; returns out image: solarized image
 solarize = (img image, t i64) (out image) {
-    out = image.copy(img)
-    n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] >= t -> {
-            out.data[i] = 255 - img.data[i]
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
+    npix = img.width * img.height
+    i <- [0..npix): {
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            v = image.get-pixel(img, px, py, band)
+            {
+                v >= t -> {
+                    v = max-v - v
+                }
+            }
+            image.set-pixel(out, px, py, band, v)
         }
     }
 }
@@ -625,29 +858,46 @@ solarize = (img image, t i64) (out image) {
 ; ── Overlay blend mode ──
 
 ; colour.overlay: apply overlay blend mode (hard light)
-; For each pixel: if base < 128, result = 2 * base * overlay / 255
-;                 if base >= 128, result = 255 - 2 * (255 - base) * (255 - overlay) / 255
 ; img image: base image
 ; overlay image: overlay image
 ; returns out image: blended image
 overlay-blend = (img image, overlay image) (out image) {
-    out = image.copy(img)
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    half-v = 128
+    {
+        d == 2 -> {
+            out = image.new-u16(img.width, img.height, img.bands)
+            max-v = 65535
+            half-v = max-v / 2
+        }
+
+        -> {
+            out = image.copy(img)
+        }
+    }
     npix = img.width * img.height
     i <- [0..npix): {
-        b <- [0..img.bands): {
-            bv = img.data[i * img.bands + b]
+        px = i % img.width
+        py = i / img.width
+        band <- [0..img.bands): {
+            bv = image.get-pixel(img, px, py, band)
             {
-                b < overlay.bands -> {
-                    ov = overlay.data[i * overlay.bands + b]
+                band < overlay.bands -> {
+                    ov = image.get-pixel(overlay, px, py, band)
                     {
-                        bv < 128 -> {
-                            out.data[i * img.bands + b] = 2 * bv * ov / 255
+                        bv < half-v -> {
+                            v = 2 * bv * ov / max-v
                         }
 
                         -> {
-                            out.data[i * img.bands + b] = 255 - 2 * (255 - bv) * (255 - ov) / 255
+                            v = max-v - 2 * (max-v - bv) * (max-v - ov) / max-v
                         }
                     }
+                    image.set-pixel(out, px, py, band, v)
                 }
             }
         }
@@ -663,24 +913,34 @@ overlay-blend = (img image, overlay image) (out image) {
 ; val-shift i64: value/brightness adjustment (-255 to 255, added to V)
 ; returns out image: adjusted RGB image
 adjust-hsv = (img image, hue-shift i64, sat-shift i64, val-shift i64) (out image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    max-v = 255
+    {
+        d == 2 -> max-v = 65535
+    }
     hsv = colour.rgb2hsv(img)
     npix = img.width * img.height
     i <- [0..npix): {
-        h = hsv.data[i * 3]
-        s = hsv.data[i * 3 + 1]
-        v = hsv.data[i * 3 + 2]
+        px = i % img.width
+        py = i / img.width
+        h = image.get-pixel(hsv, px, py, 0)
+        s = image.get-pixel(hsv, px, py, 1)
+        v = image.get-pixel(hsv, px, py, 2)
         h = h + hue-shift
-        h >= 255 -> h = h - 255
-        h < 0 -> h = h + 255
+        h >= max-v -> h = h - max-v
+        h < 0 -> h = h + max-v
         s = s + sat-shift
-        s > 255 -> s = 255
+        s > max-v -> s = max-v
         s < 0 -> s = 0
         v = v + val-shift
-        v > 255 -> v = 255
+        v > max-v -> v = max-v
         v < 0 -> v = 0
-        hsv.data[i * 3] = h
-        hsv.data[i * 3 + 1] = s
-        hsv.data[i * 3 + 2] = v
+        image.set-pixel(hsv, px, py, 0, h)
+        image.set-pixel(hsv, px, py, 1, s)
+        image.set-pixel(hsv, px, py, 2, v)
     }
     out = colour.hsv2rgb(hsv)
 }
@@ -693,19 +953,38 @@ adjust-hsv = (img image, hue-shift i64, sat-shift i64, val-shift i64) (out image
 sepia = (img image) (out image) {
     {
         img.bands >= 3 -> {
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 3)
+                    max-v = 65535
+                }
+
+                -> {
+                    _d str = with-len(img.width * img.height * 3)
+                    out = image.new-from-data(img.width, img.height, 3, _d)
+                }
+            }
             npix = img.width * img.height
-            _d str = with-len(npix * 3)
-            out = image.new-from-data(img.width, img.height, 3, _d)
             i <- [0..npix): {
-                r = img.data[i * img.bands]
-                g = img.data[i * img.bands + 1]
-                b = img.data[i * img.bands + 2]
-                out.data[i * 3] = (r * 393 + g * 769 + b * 189) / 1000
-                out.data[i * 3 + 1] = (r * 349 + g * 686 + b * 168) / 1000
-                out.data[i * 3 + 2] = (r * 272 + g * 534 + b * 131) / 1000
-                out.data[i * 3] > 255 -> out.data[i * 3] = 255
-                out.data[i * 3 + 1] > 255 -> out.data[i * 3 + 1] = 255
-                out.data[i * 3 + 2] > 255 -> out.data[i * 3 + 2] = 255
+                px = i % img.width
+                py = i / img.width
+                r = image.get-pixel(img, px, py, 0)
+                g = image.get-pixel(img, px, py, 1)
+                b = image.get-pixel(img, px, py, 2)
+                rr = (r * 393 + g * 769 + b * 189) / 1000
+                gg = (r * 349 + g * 686 + b * 168) / 1000
+                bb = (r * 272 + g * 534 + b * 131) / 1000
+                rr > max-v -> rr = max-v
+                gg > max-v -> gg = max-v
+                bb > max-v -> bb = max-v
+                image.set-pixel(out, px, py, 0, rr)
+                image.set-pixel(out, px, py, 1, gg)
+                image.set-pixel(out, px, py, 2, bb)
             }
         }
 
@@ -724,20 +1003,33 @@ sepia = (img image) (out image) {
 rgb2lab = (img image) (out image) {
     {
         img.bands >= 3 -> {
-            npix = img.width * img.height
-            _d str = with-len(npix * 3)
-            out = image.new-from-data(img.width, img.height, 3, _d)
-            i <- [0..npix): {
-                r = img.data[i * img.bands]
-                g = img.data[i * img.bands + 1]
-                b = img.data[i * img.bands + 2]
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 3)
+                    max-v = 65535
+                }
 
-                ; sRGB to linear (inverse gamma)
-                ; if v/255 <= 0.04045 -> v/(255*12.92) else ((v/255+0.055)/1.055)^2.4
-                ; Simplified using integer math
-                rf = r * 1000 / 255
-                gf = g * 1000 / 255
-                bf = b * 1000 / 255
+                -> {
+                    _d str = with-len(img.width * img.height * 3)
+                    out = image.new-from-data(img.width, img.height, 3, _d)
+                }
+            }
+            npix = img.width * img.height
+            i <- [0..npix): {
+                px = i % img.width
+                py = i / img.width
+                r = image.get-pixel(img, px, py, 0)
+                g = image.get-pixel(img, px, py, 1)
+                b = image.get-pixel(img, px, py, 2)
+
+                rf = r * 1000 / max-v
+                gf = g * 1000 / max-v
+                bf = b * 1000 / max-v
 
                 {
                     rf <= 4045 -> {
@@ -767,7 +1059,6 @@ rgb2lab = (img image) (out image) {
                     }
                 }
 
-                ; XYZ conversion (D65, sRGB matrix)
                 xn = (4124 * rl + 3576 * gl + 1805 * bl) / 10000000
                 yn = (2126 * rl + 7152 * gl + 722 * bl) / 10000000
                 zn = (193 * rl + 1192 * gl + 9505 * bl) / 10000000
@@ -780,7 +1071,6 @@ rgb2lab = (img image) (out image) {
                 ; f(t) = t^(1/3) if t > 0.008856 else 7.787*t + 16/116
                 {
                     fx > 8856 -> {
-                        ; Cube root via Newton's method
                         x0 = fx / 20000 + 10
                         x1 = (2 * x0 * 1000 + fx * 1000 / x0 * 1000 / x0) / 3
                         x1 = x1 / 1000
@@ -813,25 +1103,23 @@ rgb2lab = (img image) (out image) {
                     }
                 }
 
-                ; L = 116*fy - 16, a = 500*(fx-fy), b = 200*(fy-fz)
                 l = 116 * fy / 1000 - 16
                 av = 500 * (fx - fy) / 1000
                 bv = 200 * (fy - fz) / 1000
 
-                ; Scale to 0-255 range
-                l = l * 255 / 100
+                l = l * max-v / 100
                 l < 0 -> l = 0
-                l > 255 -> l = 255
-                av = av + 128
+                l > max-v -> l = max-v
+                av = av + max-v / 2
                 av < 0 -> av = 0
-                av > 255 -> av = 255
-                bv = bv + 128
+                av > max-v -> av = max-v
+                bv = bv + max-v / 2
                 bv < 0 -> bv = 0
-                bv > 255 -> bv = 255
+                bv > max-v -> bv = max-v
 
-                out.data[i * 3] = l
-                out.data[i * 3 + 1] = av
-                out.data[i * 3 + 2] = bv
+                image.set-pixel(out, px, py, 0, l)
+                image.set-pixel(out, px, py, 1, av)
+                image.set-pixel(out, px, py, 2, bv)
             }
         }
 
@@ -847,20 +1135,35 @@ rgb2lab = (img image) (out image) {
 lab2rgb = (img image) (out image) {
     {
         img.bands >= 3 -> {
-            npix = img.width * img.height
-            _d str = with-len(npix * 3)
-            out = image.new-from-data(img.width, img.height, 3, _d)
-            i <- [0..npix): {
-                l = img.data[i * img.bands] * 100 / 255
-                av = img.data[i * img.bands + 1] - 128
-                bv = img.data[i * img.bands + 2] - 128
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 3)
+                    max-v = 65535
+                }
 
-                ; fy = (l + 16) / 116
+                -> {
+                    _d str = with-len(img.width * img.height * 3)
+                    out = image.new-from-data(img.width, img.height, 3, _d)
+                }
+            }
+            half-v = max-v / 2
+            npix = img.width * img.height
+            i <- [0..npix): {
+                px = i % img.width
+                py = i / img.width
+                l = image.get-pixel(img, px, py, 0) * 100 / max-v
+                av = image.get-pixel(img, px, py, 1) - half-v
+                bv = image.get-pixel(img, px, py, 2) - half-v
+
                 fy = (l + 16) * 1000 / 116
                 fx = fy + av * 1000 / 500
                 fz = fy - bv * 1000 / 200
 
-                ; Inverse f: t^3 if t > 6/29 else 3*(6/29)^2*(t - 2/29)
                 {
                     fx > 20690 -> {
                         xn = fx * fx / 1000000 * fx / 1000
@@ -890,18 +1193,15 @@ lab2rgb = (img image) (out image) {
                     }
                 }
 
-                ; XYZ to linear RGB (inverse matrix)
                 rl = (32406 * xn - 15372 * yn - 4986 * zn) / 10000
                 gl = (-9689 * xn + 18758 * yn + 415 * zn) / 10000
                 bl = (557 * xn - 2040 * yn + 10570 * zn) / 10000
 
-                ; Linear to sRGB (gamma)
                 {
                     rl <= 31308 -> {
                         r = 1292 * rl / 100000
                     }
                     -> {
-                        ; v^(1/2.4) ~ sqrt(v) approximation
                         r0 = rl / 200 + 50
                         r1 = (r0 + rl / r0) / 2
                         r = 1055 * r1 / 1000 * r1 / 1000 - 55
@@ -928,20 +1228,19 @@ lab2rgb = (img image) (out image) {
                     }
                 }
 
-                ; Scale to 0-255
-                r = r * 255 / 1000
-                g = g * 255 / 1000
-                b = b * 255 / 1000
+                r = r * max-v / 1000
+                g = g * max-v / 1000
+                b = b * max-v / 1000
                 r < 0 -> r = 0
-                r > 255 -> r = 255
+                r > max-v -> r = max-v
                 g < 0 -> g = 0
-                g > 255 -> g = 255
+                g > max-v -> g = max-v
                 b < 0 -> b = 0
-                b > 255 -> b = 255
+                b > max-v -> b = max-v
 
-                out.data[i * 3] = r
-                out.data[i * 3 + 1] = g
-                out.data[i * 3 + 2] = b
+                image.set-pixel(out, px, py, 0, r)
+                image.set-pixel(out, px, py, 1, g)
+                image.set-pixel(out, px, py, 2, b)
             }
         }
 
@@ -954,30 +1253,46 @@ lab2rgb = (img image) (out image) {
 ; ── RGB <-> CMYK ──
 
 ; colour.rgb2cmyk: convert RGB to CMYK
-; Uses simple subtractive model: K = 255 - max(R,G,B)
+; Uses simple subtractive model: K = max(R,G,B) inverted
 ; img image: input RGB image
 ; returns out image: CMYK image (4-band)
 rgb2cmyk = (img image) (out image) {
     {
         img.bands >= 3 -> {
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 4)
+                    max-v = 65535
+                }
+
+                -> {
+                    _d str = with-len(img.width * img.height * 4)
+                    out = image.new-from-data(img.width, img.height, 4, _d)
+                }
+            }
             npix = img.width * img.height
-            _d str = with-len(npix * 4)
-            out = image.new-from-data(img.width, img.height, 4, _d)
             i <- [0..npix): {
-                r = img.data[i * img.bands]
-                g = img.data[i * img.bands + 1]
-                b = img.data[i * img.bands + 2]
+                px = i % img.width
+                py = i / img.width
+                r = image.get-pixel(img, px, py, 0)
+                g = image.get-pixel(img, px, py, 1)
+                b = image.get-pixel(img, px, py, 2)
 
                 mx = r
                 mx < g -> mx = g
                 mx < b -> mx = b
-                k = 255 - mx
+                k = max-v - mx
 
                 {
-                    k < 255 -> {
-                        c = (255 - r - k) * 255 / (255 - k)
-                        m = (255 - g - k) * 255 / (255 - k)
-                        y = (255 - b - k) * 255 / (255 - k)
+                    k < max-v -> {
+                        c = (max-v - r - k) * max-v / (max-v - k)
+                        m = (max-v - g - k) * max-v / (max-v - k)
+                        y = (max-v - b - k) * max-v / (max-v - k)
                     }
 
                     -> {
@@ -987,10 +1302,10 @@ rgb2cmyk = (img image) (out image) {
                     }
                 }
 
-                out.data[i * 4] = c
-                out.data[i * 4 + 1] = m
-                out.data[i * 4 + 2] = y
-                out.data[i * 4 + 3] = k
+                image.set-pixel(out, px, py, 0, c)
+                image.set-pixel(out, px, py, 1, m)
+                image.set-pixel(out, px, py, 2, y)
+                image.set-pixel(out, px, py, 3, k)
             }
         }
 
@@ -1006,26 +1321,42 @@ rgb2cmyk = (img image) (out image) {
 cmyk2rgb = (img image) (out image) {
     {
         img.bands >= 4 -> {
-            npix = img.width * img.height
-            _d str = with-len(npix * 3)
-            out = image.new-from-data(img.width, img.height, 3, _d)
-            i <- [0..npix): {
-                c = img.data[i * img.bands]
-                m = img.data[i * img.bands + 1]
-                y = img.data[i * img.bands + 2]
-                k = img.data[i * img.bands + 3]
+            d = img.depth
+            {
+                d == 0 -> d = 1
+            }
+            max-v = 255
+            {
+                d == 2 -> {
+                    out = image.new-u16(img.width, img.height, 3)
+                    max-v = 65535
+                }
 
-                r = 255 - (c * (255 - k) / 255 + k)
-                g = 255 - (m * (255 - k) / 255 + k)
-                b = 255 - (y * (255 - k) / 255 + k)
+                -> {
+                    _d str = with-len(img.width * img.height * 3)
+                    out = image.new-from-data(img.width, img.height, 3, _d)
+                }
+            }
+            npix = img.width * img.height
+            i <- [0..npix): {
+                px = i % img.width
+                py = i / img.width
+                c = image.get-pixel(img, px, py, 0)
+                m = image.get-pixel(img, px, py, 1)
+                y = image.get-pixel(img, px, py, 2)
+                k = image.get-pixel(img, px, py, 3)
+
+                r = max-v - (c * (max-v - k) / max-v + k)
+                g = max-v - (m * (max-v - k) / max-v + k)
+                b = max-v - (y * (max-v - k) / max-v + k)
 
                 r < 0 -> r = 0
                 g < 0 -> g = 0
                 b < 0 -> b = 0
 
-                out.data[i * 3] = r
-                out.data[i * 3 + 1] = g
-                out.data[i * 3 + 2] = b
+                image.set-pixel(out, px, py, 0, r)
+                image.set-pixel(out, px, py, 1, g)
+                image.set-pixel(out, px, py, 2, b)
             }
         }
 
