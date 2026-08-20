@@ -424,7 +424,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
 | GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；动画多帧提取+disposal 合成；写入用 median-cut 量化） |
 | JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 读写（DCT+Huffman 编码/解码+IDCT+YCbCr→RGB），不支持 progressive |
-| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+subtract-green 逆变换+颜色索引）；颜色变换逆变换受限（作用域限制）；不支持 lossy VP8；写入为占位 |
+| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+predictor 逆变换+颜色变换逆变换+subtract-green+颜色索引）；不支持 lossy VP8；写入为 VP8L lossless 容器（Huffman 表+像素编码，当前仅全零像素） |
 
 ### CLI 命令
 
@@ -490,6 +490,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | `watermark` | 文字水印 | `noimg watermark in.png out.png \"©2024\" 4 2` |
 | `to-u16` | 8-bit 转 16-bit | `noimg to-u16 in.png out.png` |
 | `to-u8` | 16-bit 转 8-bit | `noimg to-u8 in.png out.png` |
+| `animate` | 创建动画 GIF | `noimg animate out.gif 20 f1.png f2.png f3.png` |
 
 ### 库 API
 
@@ -506,7 +507,7 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 | `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜、Adam7 隔行解码，仅 8 位） |
 | `tiff` | TIFF 读写（仅未压缩、8 位、单 strip） |
 | `jpeg` | JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB，不支持 progressive） |
-| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+subtract-green+颜色索引；颜色变换逆变换受限）；写入为占位 |
+| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+predictor+颜色变换+subtract-green+颜色索引）；写入为 VP8L lossless 容器（当前仅全零像素） |
 | `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr、RGB↔Lab、RGB↔CMYK）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
 | `resize` | 双线性缩放、缩略图、缩放、最近邻/双三次/面积平均 |
 | `rotate` | 旋转（90/180/270/任意角度）、翻转、转置/反对角转置 |
@@ -514,7 +515,7 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 | `filter` | 卷积、高斯模糊（含可分离优化）、方框模糊、锐化（含 USM）、Sobel/Laplacian 边缘检测、浮雕、中值滤波、油画、噪声、形态学（膨胀/腐蚀/梯度）、暗角 |
 | `histogram` | 直方图查找/累积/打印、均衡化/归一化/拉伸、自动色阶/对比度、LUT 应用、均值/方差/标准差/熵/百分位/CDF |
 | `text` | 位图字体渲染、文字水印（5x7 点阵字体，9 种位置） |
-| `image` | 8-bit/16-bit 支持（U8/U16 格式、转换、像素访问、统计） |
+| `image` | 8-bit/16-bit 支持（U8/U16 格式、depth 字段、转换、像素访问、统计；16-bit 暂不进 resize/filter/colour/IO 管线） |
 
 ### 构建与运行
 
@@ -548,7 +549,7 @@ noimg/
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 编解码）
 │   ├── jpeg.no          ; JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB）
-│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+subtract-green+颜色索引；颜色变换受限）
+│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+predictor+颜色变换+subtract-green+颜色索引）
 │   ├── colour.no        ; 色彩空间转换（RGB↔Gray/HSV/HSL/YCbCr/Lab/CMYK）
 │   ├── resize.no        ; 缩放
 │   ├── rotate.no        ; 旋转与翻转

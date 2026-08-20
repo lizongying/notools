@@ -62,6 +62,7 @@
 ;   watermark   Add text watermark
 ;   to-u16      Convert 8-bit to 16-bit
 ;   to-u8       Convert 16-bit to 8-bit
+;   animate     Create animated GIF from frames
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
@@ -163,7 +164,9 @@
 # /noimg/src/image.invert-u16
 # /noimg/src/image.avg-u16
 # /noimg/src/image.min-val-u16
-# /noimg/src/image.max-val-u16
+# /noimg/src/image.is-u8
+# /noimg/src/image.is-u16
+# /noimg/src/image.bytes-per-sample
 # /noimg/src/colour.rgb2lab
 # /noimg/src/colour.lab2rgb
 # /noimg/src/colour.rgb2cmyk
@@ -252,6 +255,7 @@ print-usage = () {
     print('  watermark <in> <out> <text> <pos> <scale>  Add text watermark')
     print('  to-u16 <in> <out>            Convert 8-bit to 16-bit')
     print('  to-u8 <in> <out>             Convert 16-bit to 8-bit')
+    print('  animate <out.gif> <delay> <f1> [f2...]  Create animated GIF')
     print('  version                      Print version')
 }
 
@@ -1552,6 +1556,8 @@ cmd = arg(1)
     cmd == 'to-u16' -> {
         argc < 4 -> {
             print('Usage: img to-u16 <in> <out>')
+            print('  Note: 16-bit images can use u16 functions but cannot')
+            print('  enter resize/filter/colour/IO pipelines yet.')
             os.exit(1)
         }
         in-path = arg(2)
@@ -1580,6 +1586,44 @@ cmd = arg(1)
         out = image.u16-to-u8(img)
         save-image(out-path, out)
         print('16-bit -> 8-bit: {in-path} -> {out-path}')
+    }
+    cmd == 'animate' -> {
+        argc < 5 -> {
+            print('Usage: img animate <out.gif> <delay> <f1> [f2 ...]')
+            print('  delay: centiseconds per frame (e.g. 20 = 0.2s)')
+            os.exit(1)
+        }
+        out-path = arg(2)
+        delay = parse-i64(arg(3))
+        n-frames = argc - 4
+        {
+            n-frames < 1 -> {
+                print('error: need at least 1 frame')
+                os.exit(1)
+            }
+        }
+        frames []image = with-len(n-frames)
+        delays []i64 = with-len(n-frames)
+        fi <- [0..n-frames): {
+            fp = arg(4 + fi)
+            img, ok = load-image(fp)
+            {
+                ok == false -> {
+                    print('error: could not load {fp}')
+                    os.exit(1)
+                }
+            }
+            frames[fi] = img
+            delays[fi] = delay
+        }
+        ok = gif.save-frames(out-path, frames, delays)
+        {
+            ok == false -> {
+                print('error: could not write {out-path}')
+                os.exit(1)
+            }
+        }
+        print('Animated: {n-frames} frames -> {out-path}')
     }
     -> {
         print('Unknown command: {cmd}')

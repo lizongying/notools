@@ -161,34 +161,20 @@ cmd-add = (argc i64) {
         path == '--' -> {}
 
         path == '.' -> {
-            ; Add all files in current directory
-            dirp = fs.open-dir(work-tree)
-            dirp == 0 -> {
-                print('fatal: could not open directory')
-                return
-            }
-            fe-ok = true
-            {
-                fe-ok == false -> break
-                fname, fe-ok = fs.read-dir(dirp)
-                fe-ok == true -> {
-                    ; skip . and .. and .git
-                    is-dot = util.str-eq(fname, '.')
-                    is-dotdot = util.str-eq(fname, '..')
-                    is-git = util.str-eq(fname, '.git')
-                    is-dot == false && is-dotdot == false && is-git == false -> {
-                        full-path = work-tree - '/' - fname
-                        add-file-or-dir(git-dir, work-tree, full-path, fname)
-                    }
-                }
-            } (true)
-            fs.close-dir(dirp)
+            ; Add all files in current directory recursively
+            add-directory-recursive(git-dir, work-tree, work-tree, '')
         }
 
         path.starts-with('./') -> {
             clean-path = util.str-range(path, 2, path.len)
-            full-path = work-tree - '/' - clean-path
-            add-file-or-dir(git-dir, work-tree, full-path, clean-path)
+            clean-path.len == 0 -> {
+                ; path is './' — add entire work tree
+                add-directory-recursive(git-dir, work-tree, work-tree, '')
+            }
+            -> {
+                full-path = work-tree - '/' - clean-path
+                add-file-or-dir(git-dir, work-tree, full-path, clean-path)
+            }
         }
 
         path.starts-with('/') -> {
@@ -204,10 +190,67 @@ cmd-add = (argc i64) {
     }
 }
 
+; add-directory-recursive: recursively add all files in a directory
+; Uses a single skip-check function to avoid && chain issues.
+; git-dir str, work-tree str, dir-path str (absolute), rel-prefix str (relative prefix)
+add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix str) {
+    dirp = fs.open-dir(dir-path)
+    dirp == 0 -> return
+    fe-ok = true
+    {
+        fe-ok == false -> break
+        fname, fe-ok = fs.read-dir(dirp)
+        fe-ok == true -> {
+            print('DEBUG recurse: fname={fname} len={fname.len} dir={dir-path}')
+            skip = should-skip(fname)
+            print('DEBUG skip={skip}')
+            skip == false -> {
+                sub-full = dir-path - '/' - fname
+                sub-rel = fname
+                rel-prefix.len > 0 -> sub-rel = rel-prefix - '/' - fname
+                print('DEBUG calling add-file-or-dir: sub-full={sub-full} sub-rel={sub-rel}')
+                add-file-or-dir(git-dir, work-tree, sub-full, sub-rel)
+            }
+        }
+    } (true)
+    fs.close-dir(dirp)
+}
+
+; should-skip: return true if the filename should be skipped (. .. .git)
+; Uses sequential checks to avoid && chain issues
+should-skip = (fname str) (skip bool) {
+    skip = false
+    L = fname.len
+    L == 1 -> {
+        fname[0] == 46 -> skip = true
+    }
+    L == 2 -> {
+        c0 = fname[0]
+        c1 = fname[1]
+        c0 == 46 -> {
+            c1 == 46 -> skip = true
+        }
+    }
+    L == 4 -> {
+        c0 = fname[0]
+        c0 == 46 -> {
+            c1 = fname[1]
+            c1 == 103 -> {
+                c2 = fname[2]
+                c2 == 105 -> {
+                    c3 = fname[3]
+                    c3 == 116 -> skip = true
+                }
+            }
+        }
+    }
+}
+
 ; add-file-or-dir: add a single file or recursively add all files in a directory
 ; git-dir str, work-tree str, full-path str (absolute path), rel-path str (relative to work-tree)
 add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
     isf = fs.is-file(full-path)
+    print('DEBUG add-file-or-dir: full-path={full-path} rel-path={rel-path} isf={isf}')
     isf == true -> {
         content, read-ok = util.read-file-str(full-path)
         read-ok == false -> {
@@ -219,39 +262,17 @@ add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
         index-ok == false -> {
             print('fatal: could not stage {rel-path}')
         }
+        print('DEBUG add-file-or-dir: file done, returning')
+        return
     }
-
-    isf == false -> {
-        isd = fs.is-dir(full-path)
-        isd == true -> {
-            ; recursively add all files in directory
-            dirp = fs.open-dir(full-path)
-            dirp == 0 -> {
-                print('fatal: could not open directory {rel-path}')
-                return
-            }
-            fe-ok = true
-            {
-                fe-ok == false -> break
-                fname, fe-ok = fs.read-dir(dirp)
-                fe-ok == true -> {
-                    is-dot = util.str-eq(fname, '.')
-                    is-dotdot = util.str-eq(fname, '..')
-                    is-git = util.str-eq(fname, '.git')
-                    is-dot == false && is-dotdot == false && is-git == false -> {
-                        sub-full = full-path - '/' - fname
-                        sub-rel = rel-path - '/' - fname
-                        add-file-or-dir(git-dir, work-tree, sub-full, sub-rel)
-                    }
-                }
-            } (true)
-            fs.close-dir(dirp)
-        }
-
-        isd == false -> {
-            print('fatal: pathspec {rel-path} did not match any files')
-        }
+    print('DEBUG add-file-or-dir: isf was false, checking is-dir')
+    isd = fs.is-dir(full-path)
+    print('DEBUG add-file-or-dir: isd={isd}')
+    isd == true -> {
+        add-directory-recursive(git-dir, work-tree, full-path, rel-path)
+        return
     }
+    print('fatal: pathspec {rel-path} did not match any files')
 }
 
 ; ═══════════════════════════════════════════════

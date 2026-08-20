@@ -8,7 +8,8 @@ image {
     width i64
     height i64
     bands i64
-    format i64
+    format i64      ; DEPRECATED: use depth instead. 0=U8, 1=U16 (== depth-1)
+    depth i64       ; bytes per sample: 1=8-bit (U8), 2=16-bit (U16)
     interpretation i64
     coding i64
     xres f64
@@ -30,6 +31,7 @@ new = (w i64, h i64, b i64) (img image) {
     img.height = h
     img.bands = b
     img.format = 0
+    img.depth = 1
     img.interpretation = 0
     img.coding = 0
     img.xres = 1.0
@@ -52,6 +54,7 @@ new-from-data = (w i64, h i64, b i64, data str) (img image) {
     img.height = h
     img.bands = b
     img.format = 0
+    img.depth = 1
     img.interpretation = 0
     img.coding = 0
     img.xres = 1.0
@@ -70,8 +73,19 @@ new-from-data = (w i64, h i64, b i64, data str) (img image) {
 ; band i64: band index
 ; returns val i64: pixel value
 get-pixel = (img image, x i64, y i64, band i64) (val i64) {
-    idx = (y * img.width + x) * img.bands + band
-    val = img.data[idx]
+    {
+        img.depth == 2 -> {
+            idx = ((y * img.width + x) * img.bands + band) * 2
+            lo = img.data[idx]
+            hi = img.data[idx + 1]
+            val = lo | (hi << 8)
+        }
+
+        -> {
+            idx = (y * img.width + x) * img.bands + band
+            val = img.data[idx]
+        }
+    }
 }
 
 ; set-pixel: set a pixel value
@@ -81,8 +95,24 @@ get-pixel = (img image, x i64, y i64, band i64) (val i64) {
 ; band i64: band index
 ; v i64: value
 set-pixel = (img image, x i64, y i64, band i64, v i64) {
-    idx = (y * img.width + x) * img.bands + band
-    img.data[idx] = v
+    {
+        img.depth == 2 -> {
+            {
+                v < 0 -> v = 0
+            }
+            {
+                v > 65535 -> v = 65535
+            }
+            idx = ((y * img.width + x) * img.bands + band) * 2
+            img.data[idx] = v & 255
+            img.data[idx + 1] = (v >> 8) & 255
+        }
+
+        -> {
+            idx = (y * img.width + x) * img.bands + band
+            img.data[idx] = v
+        }
+    }
 }
 
 ; ── Copy / Clone ──
@@ -95,13 +125,14 @@ copy = (img image) (out image) {
     out.height = img.height
     out.bands = img.bands
     out.format = img.format
+    out.depth = img.depth
     out.interpretation = img.interpretation
     out.coding = img.coding
     out.xres = img.xres
     out.yres = img.yres
     out.xoffset = img.xoffset
     out.yoffset = img.yoffset
-    n = img.width * img.height * img.bands
+    n = img.width * img.height * img.bands * img.depth
     _d str = with-len(n)
     out.data = _d
     i <- [0..n): {
@@ -115,18 +146,60 @@ copy = (img image) (out image) {
 ; img image: image to fill (modified in place)
 ; v i64: value to fill
 fill = (img image, v i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] = v
+    {
+        d == 2 -> {
+            {
+                v < 0 -> v = 0
+            }
+            {
+                v > 65535 -> v = 65535
+            }
+            i <- [0..n): {
+                idx = i * 2
+                img.data[idx] = v & 255
+                img.data[idx + 1] = (v >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                img.data[i] = v
+            }
+        }
     }
 }
 
 ; invert: invert all pixels (255 - val for U8)
 ; img image: image (modified in place)
 invert = (img image) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] = 255 - img.data[i]
+    {
+        d == 2 -> {
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                val = lo | (hi << 8)
+                val = 65535 - val
+                img.data[idx] = val & 255
+                img.data[idx + 1] = (val >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                img.data[i] = 255 - img.data[i]
+            }
+        }
     }
 }
 
@@ -134,12 +207,34 @@ invert = (img image) {
 ; img image: image (modified in place)
 ; c i64: constant to add
 add-const = (img image, c i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i] + c
-        v > 255 -> v = 255
-        v < 0 -> v = 0
-        img.data[i] = v
+    {
+        d == 2 -> {
+            mx-v = 65535
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                v = (lo | (hi << 8)) + c
+                v > mx-v -> v = mx-v
+                v < 0 -> v = 0
+                img.data[idx] = v & 255
+                img.data[idx + 1] = (v >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                v = img.data[i] + c
+                v > 255 -> v = 255
+                v < 0 -> v = 0
+                img.data[i] = v
+            }
+        }
     }
 }
 
@@ -147,10 +242,27 @@ add-const = (img image, c i64) {
 ; img image: image
 ; returns avg i64: average value
 avg = (img image) (avg i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
     sum = 0
-    i <- [0..n): {
-        sum = sum + img.data[i]
+    {
+        d == 2 -> {
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                sum = sum + (lo | (hi << 8))
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                sum = sum + img.data[i]
+            }
+        }
     }
     n == 0 -> return
     avg = sum / n
@@ -160,10 +272,29 @@ avg = (img image) (avg i64) {
 ; img image: image
 ; returns mn i64: minimum value
 min-val = (img image) (mn i64) {
-    mn = 255
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] < mn -> mn = img.data[i]
+    {
+        d == 2 -> {
+            mn = 65535
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                val = lo | (hi << 8)
+                val < mn -> mn = val
+            }
+        }
+
+        -> {
+            mn = 255
+            i <- [0..n): {
+                img.data[i] < mn -> mn = img.data[i]
+            }
+        }
     }
 }
 
@@ -171,10 +302,29 @@ min-val = (img image) (mn i64) {
 ; img image: image
 ; returns mx i64: maximum value
 max-val = (img image) (mx i64) {
-    mx = 0
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        img.data[i] > mx -> mx = img.data[i]
+    {
+        d == 2 -> {
+            mx = 0
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                val = lo | (hi << 8)
+                val > mx -> mx = val
+            }
+        }
+
+        -> {
+            mx = 0
+            i <- [0..n): {
+                img.data[i] > mx -> mx = img.data[i]
+            }
+        }
     }
 }
 
@@ -184,11 +334,31 @@ max-val = (img image) (mx i64) {
 ; img image: image (modified in place)
 ; c i64: constant to subtract
 sub-const = (img image, c i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i] - c
-        v < 0 -> v = 0
-        img.data[i] = v
+    {
+        d == 2 -> {
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                v = (lo | (hi << 8)) - c
+                v < 0 -> v = 0
+                img.data[idx] = v & 255
+                img.data[idx + 1] = (v >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                v = img.data[i] - c
+                v < 0 -> v = 0
+                img.data[i] = v
+            }
+        }
     }
 }
 
@@ -196,12 +366,34 @@ sub-const = (img image, c i64) {
 ; img image: image (modified in place)
 ; factor i64: multiplication factor * 1000 (e.g. 1500 = 1.5x)
 mul-const = (img image, factor i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i] * factor / 1000
-        v > 255 -> v = 255
-        v < 0 -> v = 0
-        img.data[i] = v
+    {
+        d == 2 -> {
+            mx-v = 65535
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                v = (lo | (hi << 8)) * factor / 1000
+                v > mx-v -> v = mx-v
+                v < 0 -> v = 0
+                img.data[idx] = v & 255
+                img.data[idx + 1] = (v >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                v = img.data[i] * factor / 1000
+                v > 255 -> v = 255
+                v < 0 -> v = 0
+                img.data[i] = v
+            }
+        }
     }
 }
 
@@ -210,12 +402,33 @@ mul-const = (img image, factor i64) {
 ; mn i64: minimum value
 ; mx i64: maximum value
 clamp = (img image, mn i64, mx i64) {
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
     n = img.width * img.height * img.bands
-    i <- [0..n): {
-        v = img.data[i]
-        v < mn -> v = mn
-        v > mx -> v = mx
-        img.data[i] = v
+    {
+        d == 2 -> {
+            i <- [0..n): {
+                idx = i * 2
+                lo = img.data[idx]
+                hi = img.data[idx + 1]
+                v = lo | (hi << 8)
+                v < mn -> v = mn
+                v > mx -> v = mx
+                img.data[idx] = v & 255
+                img.data[idx + 1] = (v >> 8) & 255
+            }
+        }
+
+        -> {
+            i <- [0..n): {
+                v = img.data[i]
+                v < mn -> v = mn
+                v > mx -> v = mx
+                img.data[i] = v
+            }
+        }
     }
 }
 
@@ -312,9 +525,37 @@ n-pixels = (img image) (n i64) {
 
 ; n-bytes: return total data byte count
 ; img image: image
-; returns n i64: total bytes (width * height * bands)
+; returns n i64: total bytes (width * height * bands * depth)
 n-bytes = (img image) (n i64) {
-    n = img.width * img.height * img.bands
+    d = img.depth
+    {
+        d == 0 -> d = 1
+    }
+    n = img.width * img.height * img.bands * d
+}
+
+; image.is-u8: check if image is 8-bit
+; img image: image
+; returns ok bool: true if depth == 1
+is-u8 = (img image) (ok bool) {
+    ok = img.depth == 1
+}
+
+; image.is-u16: check if image is 16-bit
+; img image: image
+; returns ok bool: true if depth == 2
+is-u16 = (img image) (ok bool) {
+    ok = img.depth == 2
+}
+
+; image.bytes-per-sample: return bytes per sample
+; img image: image
+; returns n i64: 1 for U8, 2 for U16
+bytes-per-sample = (img image) (n i64) {
+    n = img.depth
+    {
+        n == 0 -> n = 1
+    }
 }
 
 ; ── 16-bit / HDR support ──
@@ -336,6 +577,7 @@ new-u16 = (w i64, h i64, b i64) (img image) {
     img.height = h
     img.bands = b
     img.format = 1
+    img.depth = 2
     img.interpretation = 0
     img.coding = 0
     img.xres = 1.0
@@ -403,6 +645,8 @@ u16-to-u8 = (img image) (out image) {
     npix = img.width * img.height
     _d str = with-len(npix * img.bands)
     out = image.new-from-data(img.width, img.height, img.bands, _d)
+    out.depth = 1
+    out.format = 0
     i <- [0..npix * img.bands): {
         lo = img.data[i * 2]
         hi = img.data[i * 2 + 1]
