@@ -245,38 +245,156 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
 ; revwalk-format-log: resolve ref, walk commits, format log output
 ; git-dir str, ref str (e.g. "HEAD"), max-count i64 (0 = unlimited)
 ; returns output str (formatted log), ok bool
+;
+; Walks all parents (not just first-parent) using BFS with a simple
+; queue. This ensures merge commits have all their branches visible.
+; Visited commits are tracked by concatenated hex strings.
 revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool) {
     ok = false
     output = ''
     start-oid, ref-ok = resolve-ref(git-dir, ref)
     ref-ok == false -> return
-    cur = start-oid
+
+    ; BFS queue — stored as concatenated 40-char hex strings
+    queue-hex = oid.oid-hex-str(start-oid)
+    queue-n i64 = 1
+
+    ; visited set — concatenated 40-char hex strings
+    visited-hex = ''
     count i64 = 0
+
     {
+        queue-n == 0 -> break
         count >= 10000 -> break
         max-count > 0 -> {
             count >= max-count -> break
         }
-        ch = oid.oid-hex-str(cur)
-        t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
-        cok == false -> break
-        output = output - 'commit ' - ch - '\n'
-        output = output - 'Author: ' - an - ' <' - ae - '>\n'
-        output = output - '\n'
-        output = output - '    ' - msg - '\n'
-        output = output - '\n'
-        count = count + 1
-        np i64 = ph.len / 40
-        np == 0 -> break
-        {
-            ph.len >= 40 -> {
-                first-parent-hex = ph[0..40)
-                cur, cok = oid.oid-from-hex(first-parent-hex)
-                cok == false -> break
-            }
 
-            -> {
+        ; dequeue first element
+        cur-hex = util.str-range(queue-hex, 0, 40)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-n = queue-n - 1
+
+        ; check if already visited
+        is-visited = false
+        vpos = 0
+        {
+            vpos >= visited-hex.len -> break
+            vh = util.str-range(visited-hex, vpos, vpos + 40)
+            same = util.str-eq(vh, cur-hex)
+            same == true -> {
+                is-visited = true
                 break
+            }
+            vpos = vpos + 40
+        } (true)
+
+        is-visited == false -> {
+            ; mark as visited
+            visited-hex = visited-hex - cur-hex
+
+            ; parse oid
+            cur, cur-ok = oid.oid-from-hex(cur-hex)
+            cur-ok == true -> {
+                ; read commit
+                t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
+                cok == true -> {
+                    output = output - 'commit ' - cur-hex - '\n'
+                    output = output - 'Author: ' - an - ' <' - ae - '>\n'
+                    output = output - '\n'
+                    output = output - '    ' - msg - '\n'
+                    output = output - '\n'
+                    count = count + 1
+
+                    ; enqueue all parents (not just first-parent)
+                    np i64 = ph.len / 40
+                    i <- [0..np): {
+                        parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        queue-hex = queue-hex - parent-hex
+                        queue-n = queue-n + 1
+                    }
+                }
+            }
+        }
+    } (true)
+    ok = true
+}
+
+; revwalk-format-log-oneline: resolve ref, walk commits, format oneline log output
+; git-dir str, ref str (e.g. "HEAD"), max-count i64 (0 = unlimited)
+; returns output str (formatted oneline log), ok bool
+;
+; Like revwalk-format-log but uses the --oneline format:
+;   "<short-hash> <message-first-line>"
+; Walks all parents using BFS with visited set.
+revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, ok bool) {
+    ok = false
+    output = ''
+    start-oid, ref-ok = resolve-ref(git-dir, ref)
+    ref-ok == false -> return
+
+    ; BFS queue — stored as concatenated 40-char hex strings
+    queue-hex = oid.oid-hex-str(start-oid)
+    queue-n i64 = 1
+
+    ; visited set — concatenated 40-char hex strings
+    visited-hex = ''
+    count i64 = 0
+
+    {
+        queue-n == 0 -> break
+        count >= 10000 -> break
+        max-count > 0 -> {
+            count >= max-count -> break
+        }
+
+        ; dequeue first element
+        cur-hex = util.str-range(queue-hex, 0, 40)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-n = queue-n - 1
+
+        ; check if already visited
+        is-visited = false
+        vpos = 0
+        {
+            vpos >= visited-hex.len -> break
+            vh = util.str-range(visited-hex, vpos, vpos + 40)
+            same = util.str-eq(vh, cur-hex)
+            same == true -> {
+                is-visited = true
+                break
+            }
+            vpos = vpos + 40
+        } (true)
+
+        is-visited == false -> {
+            ; mark as visited
+            visited-hex = visited-hex - cur-hex
+
+            ; parse oid
+            cur, cur-ok = oid.oid-from-hex(cur-hex)
+            cur-ok == true -> {
+                ; read commit
+                t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
+                cok == true -> {
+                    ; short hash = first 7 chars
+                    short-hex = util.str-range(cur-hex, 0, 7)
+                    ; first line of message
+                    msg-nl = util.find-byte-str(msg, 10, 0)
+                    msg-end = msg.len
+                    msg-nl >= 0 -> msg-end = msg-nl
+                    msg-line = util.str-range(msg, 0, msg-end)
+                    output = output - short-hex - ' ' - msg-line - '\n'
+                    count = count + 1
+
+                    ; enqueue all parents
+                    np i64 = ph.len / 40
+                    i <- [0..np): {
+                        parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        queue-hex = queue-hex - parent-hex
+                        queue-n = queue-n + 1
+                    }
+                }
             }
         }
     } (true)

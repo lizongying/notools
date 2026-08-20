@@ -1,9 +1,10 @@
-; gif.no — GIF (Graphics Interchange Format) reader
+; gif.no — GIF (Graphics Interchange Format) reader/writer
 ; Supports GIF89a with:
 ;   - Global and local color tables
 ;   - LZW compressed image data
 ;   - Interlaced images (de-interlacing)
 ;   - Transparent color (GCE extension)
+;   - Animation: multi-frame extraction with disposal methods
 ;
 ; GIF file layout:
 ;   Header: 'GIF89a' or 'GIF87a' (6 bytes)
@@ -13,9 +14,9 @@
 
 ; ── Load ──
 
-; gif.load: load a GIF file (first frame)
+; gif.load: load a GIF file (first frame, composited)
 ; path str: file path
-; returns img ?image: loaded image (RGBA, first frame), nil on error
+; returns img ?image: loaded image (RGBA, first frame composited), nil on error
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
@@ -30,9 +31,24 @@
 # /noimg/src/image.set-pixel
 
 load = (path str) (img ?image) {
+    frames = gif-load-frames(path)
+    {
+        frames.len == 0 -> {
+            img = nil
+            return
+        }
+    }
+    img = frames[0]
+}
+
+; gif-load-frames: load all frames from an animated GIF
+; Composites each frame according to its disposal method.
+; path str: file path
+; returns frames []image: array of composited RGBA images, empty on error
+gif-load-frames = (path str) (frames []image) {
+    frames []image = with-cap(1)
     data = fs.read-file(path)
     data.len < 13 -> {
-        img = nil
         return
     }
 
@@ -42,7 +58,6 @@ load = (path str) (img ?image) {
         gif-ok = true
     }
     gif-ok == false -> {
-        img = nil
         return
     }
 
@@ -50,10 +65,8 @@ load = (path str) (img ?image) {
     w = (data[6] & 255) | ((data[7] & 255) << 8)
     h = (data[8] & 255) | ((data[9] & 255) << 8)
     packed = data[10] & 255
-    bg-color = data[11] & 255
     {
         w <= 0 || h <= 0 -> {
-            img = nil
             return
         }
     }
@@ -72,15 +85,19 @@ load = (path str) (img ?image) {
         pos = pos + gct-size * 3
     }
 
-    ; Parse blocks
-    transparency = -1
-    _d str = with-len(w * h * 4)
-    tmp = image.new-from-data(w, h, 4, _d)
-
-    ; Fill with transparent black
+    ; Create canvas (current composited frame)
+    canvas-data str = with-len(w * h * 4)
+    canvas = image.new-from-data(w, h, 4, canvas-data)
     i <- [0..w * h * 4): {
-        tmp.data[i] = 0
+        canvas.data[i] = 0
     }
+
+    ; Track disposal method and transparent color
+    disposal = 0
+    transparency = -1
+    delay = 0
+
+    ; Parse blocks
     {
         pos < data.len -> {
             block = data[pos] & 255
@@ -88,8 +105,47 @@ load = (path str) (img ?image) {
                 block == 44 -> {
 
                     ; Image descriptor (0x2C)
-                    ; Process image
-                    transparency, pos = gif-process-image(data, pos + 1, tmp, gct, has-gct, transparency)
+                    ; Save canvas state for disposal method 3 (restore to previous)
+                    prev-canvas-data str = with-len(w * h * 4)
+                    {
+                        disposal == 3 -> {
+                            i <- [0..w * h * 4): {
+                                prev-canvas-data[i] = canvas.data[i]
+                            }
+                        }
+                    }
+
+                    ; Process image onto canvas
+                    transparency, pos = gif-process-image(data, pos + 1, canvas, gct, has-gct, transparency)
+
+                    ; Create output frame (copy of canvas)
+                    frame-data str = with-len(w * h * 4)
+                    i <- [0..w * h * 4): {
+                        frame-data[i] = canvas.data[i]
+                    }
+                    frame = image.new-from-data(w, h, 4, frame-data)
+                    frames.push(frame)
+
+                    ; Apply disposal method
+                    {
+                        disposal == 2 -> {
+                            ; Restore to background color
+                            ; Clear the frame region to transparent
+                            ; (We don't track the exact frame region here,
+                            ; so we clear the entire canvas for simplicity)
+                            i <- [0..w * h * 4): {
+                                canvas.data[i] = 0
+                            }
+                        }
+
+                        disposal == 3 -> {
+                            ; Restore to previous
+                            i <- [0..w * h * 4): {
+                                canvas.data[i] = prev-canvas-data[i]
+                            }
+                        }
+                    }
+                    ; disposal == 0 or 1: do nothing (keep canvas as is)
                 }
 
                 block == 33 -> {
@@ -105,14 +161,20 @@ load = (path str) (img ?image) {
                             gce-size = data[pos] & 255
                             pos = pos + 1
                             gce-packed = data[pos] & 255
+                            disposal = (gce-packed >> 2) & 7
                             has-transp = (gce-packed & 1) != 0
                             pos = pos + 1
 
                             ; delay time (2 bytes)
+                            delay = (data[pos] & 255) | ((data[pos + 1] & 255) << 8)
                             pos = pos + 2
                             {
                                 has-transp == true -> {
                                     transparency = data[pos] & 255
+                                }
+
+                                -> {
+                                    transparency = -1
                                 }
                             }
                             pos = pos + 1
@@ -141,7 +203,6 @@ load = (path str) (img ?image) {
             }
         }
     } (pos < data.len)
-    img = tmp
 }
 
 ; gif-process-image: process one image descriptor + data
@@ -282,9 +343,14 @@ gif-deinterlace-y = (seq-y i64, h i64) (actual-y i64) {
 
     ; Count rows per pass
     pass1 = (h + 7) / 8
-    pass2 = (h + 3 - 4 + 7) / 8
     {
-        h > 4 -> pass2 = (h - 4 + 7) / 8
+        h >= 4 -> {
+            pass2 = (h - 4 + 7) / 8
+        }
+
+        -> {
+            pass2 = 0
+        }
     }
     {
         seq-y < pass1 -> {
@@ -329,7 +395,7 @@ gif-skip-subblocks = (data str, pos i64) (new-pos i64) {
             block-size == 0 -> break
             new-pos = new-pos + block-size
         }
-    } (new-pos < data.len && (data[new-pos] & 255) != 0)
+    } (new-pos < data.len)
 }
 
 ; ── LZW decoder ──
@@ -495,49 +561,24 @@ gif-lzw-decode = (data []byte, min-code i64, expected-len i64) (decoded []byte) 
 
 ; ── Save (simple) ──
 
-; gif.save: save as GIF89a with global color table (no LZW, uses uncompressed data)
-; Note: GIF requires LZW compression. This writes a minimal valid GIF with
-; a global color table and LZW-encoded data.
+; gif.save: save as GIF89a with global color table using median-cut quantization
+; Uses median-cut color quantization for better color fidelity.
 ; path str: output path
 ; img image: image to save (will be quantized to 256 colors)
 ; returns ok bool
 save = (path str, img image) (ok bool) {
     w = img.width
     h = img.height
-
-    ; Build 256-color palette by simple quantization
-    palette str = with-len(768)
-    used str = with-len(256)
-    i <- [0..256): {
-        used[i] = 0
-    }
-
-    ; Simple 3-3-2 quantization
     npix = w * h
-    indexed str = with-len(npix)
-    i <- [0..npix): {
-        {
-            img.bands >= 3 -> {
-                r = img.data[i * img.bands] & 248
-                g = img.data[i * img.bands + 1] & 248
-                b = img.data[i * img.bands + 2] & 192
-                idx = (r >> 3) | ((g >> 3) << 3) | ((b >> 6) << 6)
-            }
 
-            -> {
-                v = img.data[i * img.bands] & 248
-                idx = (v >> 3) | (0 << 3) | (0 << 6)
-            }
-        }
-        indexed[i] = idx
-        used[idx] = 1
-    }
+    ; Build palette using median-cut quantization
+    palette, indexed = gif-median-cut(img, 256)
+    n-colors = palette.len / 3
 
-    ; Build palette
-    j <- [0..256): {
-        palette[j * 3] = (j & 7) << 3
-        palette[j * 3 + 1] = ((j >> 3) & 7) << 3
-        palette[j * 3 + 2] = ((j >> 6) & 3) << 6
+    ; Build full 256-entry palette (pad remaining with zeros)
+    full-palette str = with-len(768)
+    i <- [0..n-colors * 3): {
+        full-palette[i] = palette[i]
     }
 
     ; Build output
@@ -562,7 +603,7 @@ save = (path str, img image) (ok bool) {
 
     ; Global color table (256 entries * 3 = 768 bytes)
     i <- [0..768): {
-        buf.push(palette[i])
+        buf.push(full-palette[i])
     }
 
     ; Image descriptor
@@ -610,25 +651,347 @@ save = (path str, img image) (ok bool) {
     ok = true
 }
 
-; gif-lzw-encode: simple LZW encoder
+; gif-median-cut: median-cut color quantization
+; Reduces image colors to at most n-colors using the median-cut algorithm.
+; img image: source image
+; n-colors i64: maximum number of colors (typically 256)
+; returns palette []byte (n_colors*3 bytes), indexed []byte (w*h bytes)
+gif-median-cut = (img image, n-colors i64) (palette []byte, indexed []byte) {
+    w = img.width
+    h = img.height
+    npix = w * h
+
+    ; Step 1: Collect pixel colors (sample if image is large)
+    sample-step = 1
+    {
+        npix > 50000 -> {
+            sample-step = npix / 50000 + 1
+        }
+    }
+
+    ; Collect sampled colors into arrays
+    max-samples = npix / sample-step + 1
+    sample-r []byte = with-cap(max-samples)
+    sample-g []byte = with-cap(max-samples)
+    sample-b []byte = with-cap(max-samples)
+
+    i <- [0..npix): {
+        {
+            i % sample-step == 0 -> {
+                {
+                    img.bands >= 3 -> {
+                        sample-r.push(img.data[i * img.bands])
+                        sample-g.push(img.data[i * img.bands + 1])
+                        sample-b.push(img.data[i * img.bands + 2])
+                    }
+
+                    -> {
+                        v = img.data[i * img.bands]
+                        sample-r.push(v)
+                        sample-g.push(v)
+                        sample-b.push(v)
+                    }
+                }
+            }
+        }
+    }
+
+    n-samples = sample-r.len
+
+    ; Step 2: Median-cut algorithm
+    ; We maintain up to 256 boxes, each defined by:
+    ; - start/end index into a sorted pixel array
+    ; - the R/G/B range
+    ; We split the box with the largest range along its widest channel
+    ; at the median point.
+
+    ; Sort indices by R, G, B separately (we sort per-box on demand)
+    ; Instead of sorting, we use a simpler approach:
+    ; Each box stores its pixel indices, and we split by finding the median
+    ; of the widest channel using a counting sort.
+
+    ; Box storage: up to 256 boxes
+    ; Each box: [start, end, level]
+    ; We store pixel indices per box in a flat array with start/end pointers
+    ; We use a work array of pixel indices
+    max-boxes = 256
+    {
+        n-colors > 256 -> n-colors = 256
+    }
+
+    ; Pixel index arrays: for each box, we have a contiguous range
+    ; We use a single flat array and split it
+    pix-idx []i64 = with-len(n-samples)
+    i <- [0..n-samples): {
+        pix-idx[i] = i
+    }
+
+    ; Box ranges: start, end (exclusive)
+    box-start []i64 = with-len(max-boxes)
+    box-end []i64 = with-len(max-boxes)
+    n-boxes = 1
+    box-start[0] = 0
+    box-end[0] = n-samples
+
+    ; Split boxes until we have n-colors boxes
+    {
+        n-boxes < n-colors -> {
+            ; Find box with largest range
+            best-box = -1
+            best-range = 0
+            best-channel = 0  ; 0=R, 1=G, 2=B
+            bi <- [0..n-boxes): {
+                {
+                    box-end[bi] - box-start[bi] > 1 -> {
+                        ; Compute range for each channel
+                        r-min = 255
+                        r-max = 0
+                        g-min = 255
+                        g-max = 0
+                        b-min = 255
+                        b-max = 0
+                        pi <- [box-start[bi]..box-end[bi]): {
+                            pidx = pix-idx[pi]
+                            r = sample-r[pidx]
+                            g = sample-g[pidx]
+                            b = sample-b[pidx]
+                            {
+                                r < r-min -> r-min = r
+                            }
+                            {
+                                r > r-max -> r-max = r
+                            }
+                            {
+                                g < g-min -> g-min = g
+                            }
+                            {
+                                g > g-max -> g-max = g
+                            }
+                            {
+                                b < b-min -> b-min = b
+                            }
+                            {
+                                b > b-max -> b-max = b
+                            }
+                        }
+                        r-range = r-max - r-min
+                        g-range = g-max - g-min
+                        b-range = b-max - b-min
+                        ; Pick widest channel
+                        max-range = r-range
+                        channel = 0
+                        {
+                            g-range > max-range -> {
+                                max-range = g-range
+                                channel = 1
+                            }
+                        }
+                        {
+                            b-range > max-range -> {
+                                max-range = b-range
+                                channel = 2
+                            }
+                        }
+                        {
+                            max-range > best-range -> {
+                                best-range = max-range
+                                best-box = bi
+                                best-channel = channel
+                            }
+                        }
+                    }
+                }
+            }
+
+            {
+                best-box >= 0 -> {
+                    ; Split best_box along best_channel at median
+                    ; Sort the pixels in this box by the selected channel
+                    ; Use simple insertion sort (boxes are usually small)
+                    bs = box-start[best-box]
+                    be = box-end[best_box]
+                    n-in-box = be - bs
+
+                    ; Insertion sort by channel value
+                    si <- [1..n-in-box): {
+                        sj = si
+                        {
+                            sj > 0 -> {
+                                ; Compare pix-idx[bs+sj] with pix-idx[bs+sj-1]
+                                ; by the selected channel
+                                p1 = pix-idx[bs + sj]
+                                p0 = pix-idx[bs + sj - 1]
+                                v1 = 0
+                                v0 = 0
+                                {
+                                    best-channel == 0 -> {
+                                        v1 = sample-r[p1]
+                                        v0 = sample-r[p0]
+                                    }
+
+                                    best-channel == 1 -> {
+                                        v1 = sample-g[p1]
+                                        v0 = sample-g[p0]
+                                    }
+
+                                    best-channel == 2 -> {
+                                        v1 = sample-b[p1]
+                                        v0 = sample-b[p0]
+                                    }
+                                }
+                                {
+                                    v1 < v0 -> {
+                                        ; Swap
+                                        tmp = pix-idx[bs + sj]
+                                        pix-idx[bs + sj] = pix-idx[bs + sj - 1]
+                                        pix-idx[bs + sj - 1] = tmp
+                                        sj = sj - 1
+                                    }
+                                }
+                            }
+                        } (sj > 0)
+                    }
+
+                    ; Split at median
+                    mid = bs + (be - bs) / 2
+                    {
+                        mid > bs && mid < be -> {
+                            ; Move current box end to mid, create new box
+                            box-start[n-boxes] = mid
+                            box-end[n-boxes] = be
+                            box-end[best-box] = mid
+                            n-boxes = n-boxes + 1
+                        }
+                    }
+                }
+
+                -> {
+                    ; No splittable box found
+                    n-boxes = n-colors
+                }
+            }
+        }
+    } (n-boxes < n-colors)
+
+    ; Build palette: average color per box
+    palette = with-cap(n-boxes * 3)
+    bi <- [0..n-boxes): {
+        {
+            box-end[bi] > box-start[bi] -> {
+                r-sum = 0
+                g-sum = 0
+                b-sum = 0
+                cnt = 0
+                pi <- [box-start[bi]..box-end[bi]): {
+                    pidx = pix-idx[pi]
+                    r-sum = r-sum + sample-r[pidx]
+                    g-sum = g-sum + sample-g[pidx]
+                    b-sum = b-sum + sample-b[pidx]
+                    cnt = cnt + 1
+                }
+                {
+                    cnt > 0 -> {
+                        palette.push((r-sum / cnt) & 255)
+                        palette.push((g-sum / cnt) & 255)
+                        palette.push((b-sum / cnt) & 255)
+                    }
+
+                    -> {
+                        palette.push(0)
+                        palette.push(0)
+                        palette.push(0)
+                    }
+                }
+            }
+
+            -> {
+                palette.push(0)
+                palette.push(0)
+                palette.push(0)
+            }
+        }
+    })
+
+    n-pal-colors = palette.len / 3
+
+    ; Map each pixel to nearest palette color
+    indexed = with-len(npix)
+    i <- [0..npix): {
+        {
+            img.bands >= 3 -> {
+                r = img.data[i * img.bands]
+                g = img.data[i * img.bands + 1]
+                b = img.data[i * img.bands + 2]
+            }
+
+            -> {
+                r = img.data[i * img.bands]
+                g = r
+                b = r
+            }
+        }
+
+        ; Find nearest palette color
+        best-idx = 0
+        best-dist = 999999
+        ci <- [0..n-pal-colors): {
+            pr = palette[ci * 3]
+            pg = palette[ci * 3 + 1]
+            pb = palette[ci * 3 + 2]
+            dr = r - pr
+            {
+                dr < 0 -> dr = -dr
+            }
+            dg = g - pg
+            {
+                dg < 0 -> dg = -dg
+            }
+            db = b - pb
+            {
+                db < 0 -> db = -db
+            }
+            dist = dr + dg + db
+            {
+                dist < best-dist -> {
+                    best-dist = dist
+                    best-idx = ci
+                }
+            }
+        }
+        indexed[i] = best-idx
+    }
+}
+
+; gif-lzw-encode: LZW encoder for GIF
 ; data []byte: input data (indexed pixels)
 ; data-len i64: data length
-; min-code i64: minimum code size
+; min-code i64: minimum code size (typically 8)
 ; returns encoded []byte
 gif-lzw-encode = (data []byte, data-len i64, min-code i64) (encoded []byte) {
     clear-code = 1 << min-code
     end-code = clear-code + 1
     code-size = min-code + 1
 
-    ; Initialize dictionary
-    dict-prefix str = with-len(4096)
-    dict-key str = with-len(4096)
+    ; Dictionary: for each code (0..4095), store the prefix code and suffix byte
+    ; dict-prefix[code] = prefix code (-1 for root entries)
+    ; dict-suffix[code] = suffix byte
+    dict-prefix []i64 = with-len(4096)
+    dict-suffix []byte = with-len(4096)
     dict-len = end-code + 1
 
+    ; Initialize root entries
+    i <- [0..clear-code): {
+        dict-prefix[i] = -1
+        dict-suffix[i] = i
+    }
+
     ; Bit writer state
-    bit-buf = 0
-    bit-count = 0
+    bit-buf i64 = 0
+    bit-count i64 = 0
     encoded []byte = with-cap(data.len)
+
+    ; Helper: write a code to the bitstream
+    ; Using inline code since Nolang functions modify parameters by reference
 
     ; Output clear code
     bit-buf = bit-buf | (clear-code << bit-count)
@@ -641,34 +1004,82 @@ gif-lzw-encode = (data []byte, data-len i64, min-code i64) (encoded []byte) {
         }
     } (bit-count >= 8)
 
-    ; LZW encode
-    i = 0
+    ; LZW encode: find longest match in dictionary
     {
-        i < data.len -> {
-            cur = data[i]
-
-            ; Try to find cur in dictionary starting from end-code+1
-            found = -1
-            j <- [end-code + 1..dict-len): {
-                {
-                    dict-prefix[j] == -1 -> {
-                        ; Check if this matches the last code + cur
-                        ; Simplified: just use single-char codes
-                    }
-                }
-            }
-
-            ; Simplified LZW: always output single char + add to dict
+        data.len > 0 -> {
+            ; Start with the first character as current code
+            cur-code i64 = data[0]
+            i = 1
             {
-                cur < clear-code -> {
-                    code = cur
-                }
+                i < data.len -> {
+                    next-byte = data[i]
 
-                -> {
-                    code = 0
+                    ; Search for (cur-code, next-byte) in dictionary
+                    found = -1
+                    j <- [end-code + 1..dict-len): {
+                        {
+                            found == -1 && dict-prefix[j] == cur-code && dict-suffix[j] == next-byte -> {
+                                found = j
+                            }
+                        }
+                    }
+
+                    {
+                        found >= 0 -> {
+                            ; Extend current match
+                            cur-code = found
+                        }
+
+                        -> {
+                            ; No match: output cur-code, add (cur-code, next-byte) to dict
+                            bit-buf = bit-buf | (cur-code << bit-count)
+                            bit-count = bit-count + code-size
+                            {
+                                bit-count >= 8 -> {
+                                    encoded.push(bit-buf & 255)
+                                    bit-buf = bit-buf >> 8
+                                    bit-count = bit-count - 8
+                                }
+                            } (bit-count >= 8)
+
+                            ; Add new entry to dictionary
+                            {
+                                dict-len < 4096 -> {
+                                    dict-prefix[dict-len] = cur-code
+                                    dict-suffix[dict-len] = next-byte
+                                    dict-len = dict-len + 1
+                                    {
+                                        dict-len == (1 << code-size) && code-size < 12 -> {
+                                            code-size = code-size + 1
+                                        }
+                                    }
+                                }
+
+                                -> {
+                                    ; Dictionary full: output clear code
+                                    bit-buf = bit-buf | (clear-code << bit-count)
+                                    bit-count = bit-count + code-size
+                                    {
+                                        bit-count >= 8 -> {
+                                            encoded.push(bit-buf & 255)
+                                            bit-buf = bit-buf >> 8
+                                            bit-count = bit-count - 8
+                                        }
+                                    } (bit-count >= 8)
+                                    dict-len = end-code + 1
+                                    code-size = min-code + 1
+                                }
+                            }
+                            cur-code = next-byte
+                        }
+                    }
+
+                    i = i + 1
                 }
-            }
-            bit-buf = bit-buf | (code << bit-count)
+            } (i < data.len)
+
+            ; Output the last code
+            bit-buf = bit-buf | (cur-code << bit-count)
             bit-count = bit-count + code-size
             {
                 bit-count >= 8 -> {
@@ -677,36 +1088,8 @@ gif-lzw-encode = (data []byte, data-len i64, min-code i64) (encoded []byte) {
                     bit-count = bit-count - 8
                 }
             } (bit-count >= 8)
-            {
-                dict-len < 4096 -> {
-                    dict-len = dict-len + 1
-                    {
-                        dict-len == (1 << code-size) && code-size < 12 -> {
-                            code-size = code-size + 1
-                        }
-                    }
-                }
-
-                -> {
-
-                    ; Reset
-                    bit-buf = bit-buf | (clear-code << bit-count)
-                    bit-count = bit-count + code-size
-                    {
-                        bit-count >= 8 -> {
-                            encoded.push(bit-buf & 255)
-                            bit-buf = bit-buf >> 8
-                            bit-count = bit-count - 8
-                        }
-                    } (bit-count >= 8)
-                    dict-len = end-code + 1
-                    code-size = min-code + 1
-                }
-            }
-
-            i = i + 1
         }
-    } (i < data.len)
+    }
 
     ; Output end code
     bit-buf = bit-buf | (end-code << bit-count)

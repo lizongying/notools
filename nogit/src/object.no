@@ -971,6 +971,63 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ok = ok && util.str-eq(tmsg, 'tm')
 }
 
+; tree-to-flat: recursively walk a tree and produce flat index arrays.
+; Recursively reads subtrees, producing paths like "dir/sub/file.txt".
+;
+; git-dir str, tree-oid oid, prefix str (path prefix for entries in this subtree)
+; returns paths str (newline-sep), hexoids str (40-char each), modes str (newline-sep),
+;         count i64, ok bool
+tree-to-flat = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, modes str, count i64, ok bool) {
+    ok = false
+    paths = ''
+    hexoids = ''
+    modes = ''
+    count = 0
+
+    ; read tree object
+    kind str
+    raw str
+    read-ok bool
+    kind, raw, read-ok = read-loose(git-dir, tree-oid)
+    read-ok == false -> return
+
+    ; parse tree entries
+    n = tree-count-raw(raw)
+    i <- [0..n): {
+        mode = tree-mode-raw(raw, i)
+        nm = tree-name-raw(raw, i)
+        entry-oid = tree-id-raw(raw, i)
+        entry-hex = oid.oid-hex-str(entry-oid)
+
+        ; build full path: prefix/nm or just nm if prefix is empty
+        full-path = nm
+        prefix.len > 0 -> {
+            full-path = prefix - '/' - nm
+        }
+
+        mode == 16384 -> {
+            ; subtree — recurse
+            sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat(git-dir, entry-oid, full-path)
+            sub-ok == true -> {
+                paths = paths - sub-paths
+                hexoids = hexoids - sub-hexoids
+                modes = modes - sub-modes
+                count = count + sub-count
+            }
+        }
+
+        -> {
+            ; blob or other — add as flat entry
+            paths = paths - full-path - '\n'
+            hexoids = hexoids - entry-hex
+            mode-str = util.i64-to-str(mode)
+            modes = modes - mode-str - '\n'
+            count = count + 1
+        }
+    }
+    ok = true
+}
+
 ; checkout-tree: recursively write tree contents to the working directory.
 ; This reads a tree object, and for each entry:
 ;   - if it's a blob (mode != 16384), write the blob content to a file
@@ -1027,4 +1084,84 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
         }
     }
     ok = true
+}
+
+; remove-stale-files: remove files in the working directory that are NOT in the
+; target tree. This is called before checkout-tree to clean up files that were
+; tracked in the old HEAD but are not in the new HEAD.
+;
+; git-dir str, tree-oid oid, dest-dir str (work tree root)
+; returns ok bool
+remove-stale-files = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
+    ok = true
+
+    ; get flat file list from the target tree
+    flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = tree-to-flat(git-dir, tree-oid, '')
+    flat-ok == false -> return
+
+    ; scan the working directory and remove files not in flat-paths
+    dest-dir.len > 0 -> {
+        remove-stale-dir(git-dir, dest-dir, dest-dir, flat-paths, flat-count)
+    }
+}
+
+; remove-stale-dir: recursively scan a directory and remove files not in the
+; target set. Also removes empty directories after removing stale files.
+; base-dir str (root work tree), dir str (current dir),
+; cur-prefix str (unused, for future use), flat-paths str (newline-sep),
+; flat-count i64
+remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-count i64) {
+    dirp = fs.open-dir(dir)
+    dirp == 0 -> return
+    fe-ok = true
+    {
+        fe-ok == false -> break
+        fname, fe-ok = fs.read-dir(dirp)
+        fe-ok == true -> {
+            ; skip . and .. and .git
+            is-dot = util.str-eq(fname, '.')
+            is-dotdot = util.str-eq(fname, '..')
+            is-git = util.str-eq(fname, '.git')
+            is-dot == false && is-dotdot == false && is-git == false -> {
+                full-path = dir - '/' - fname
+                ; compute relative path from base-dir
+                rel-path = fname
+                base-len = base-dir.len
+                full-len = full-path.len
+                full-len > base-len -> {
+                    rel-path = util.str-range(full-path, base-len + 1, full-len)
+                }
+                isf = fs.is-file(full-path)
+                isf == true -> {
+                    ; check if this file is in the target set
+                    in-target = false
+                    pos = 0
+                    j <- [0..flat-count): {
+                        nl = util.find-byte-str(flat-paths, 10, pos)
+                        end = flat-paths.len
+                        nl >= 0 -> end = nl
+                        nm = util.str-range(flat-paths, pos, end)
+                        same = util.str-eq(nm, rel-path)
+                        same == true -> {
+                            in-target = true
+                            break
+                        }
+                        pos = nl + 1
+                        nl < 0 -> break
+                    }
+                    in-target == false -> {
+                        fs.remove(full-path)
+                    }
+                }
+                isf == false -> {
+                    isd = fs.is-dir(full-path)
+                    isd == true -> {
+                        ; recursively scan subdirectory
+                        remove-stale-dir(base-dir, full-path, cur-prefix, flat-paths, flat-count)
+                    }
+                }
+            }
+        }
+    } (true)
+    fs.close-dir(dirp)
 }

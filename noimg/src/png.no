@@ -177,153 +177,335 @@ load = (path str) (img ?image) {
     {
         color-type == 3 -> bytes-per-pixel = 1
     }
-    stride = w * bytes-per-pixel
-    row-len = stride + 1
     _d str = with-len(w * h * bands)
     tmp = image.new-from-data(w, h, bands, _d)
 
-    ; Allocate filtered row buffers
-    prev-row str = with-len(stride)
-    i <- [0..stride): {
-        prev-row[i] = 0
+    ; Initialize image to zero
+    i <- [0..w * h * bands): {
+        tmp.data[i] = 0
     }
-    y <- [0..h): {
-        row-start = y * row-len
-        {
-            row-start + row-len > raw.len -> break
-        }
-        filter-type = raw[row-start]
 
-        ; Copy current row
-        cur-row str = with-len(stride)
-        i <- [0..stride): {
-            cur-row[i] = raw[row-start + 1 + i]
-        }
+    {
+        interlace == 1 -> {
+            ; Adam7 interlacing: 7 passes
+            ; Each pass has different starting offset and step
+            ; Pass:  start_x, start_y, step_x, step_y
+            ;   0:     0,      0,      8,      8
+            ;   1:     4,      0,      8,      8
+            ;   2:     0,      4,      4,      8
+            ;   3:     2,      0,      4,      4
+            ;   4:     0,      2,      2,      4
+            ;   5:     1,      0,      2,      2
+            ;   6:     0,      1,      1,      2
+            pass-starts-x [7] = [0, 4, 0, 2, 0, 1, 0]
+            pass-starts-y [7] = [0, 0, 4, 0, 2, 0, 1]
+            pass-steps-x [7] = [8, 8, 4, 4, 2, 2, 1]
+            pass-steps-y [7] = [8, 8, 8, 4, 4, 2, 2]
 
-        ; Apply filter
-        {
-            filter-type == 0 -> {
-                ; None
-            }
+            raw-pos = 0
+            pass <- [0..7): {
+                sx-start = pass-starts-x[pass]
+                sy-start = pass-starts-y[pass]
+                sx-step = pass-steps-x[pass]
+                sy-step = pass-steps-y[pass]
 
-            filter-type == 1 -> {
+                ; Number of pixels per row in this pass
+                pass-w = (w - sx-start + sx-step - 1) / sx-step
+                pass-h = (h - sy-start + sy-step - 1) / sy-step
 
-                ; Sub: raw + left
-                x <- [bytes-per-pixel..stride): {
-                    cur-row[x] = cur-row[x] + cur-row[x - bytes-per-pixel]
-                }
-            }
+                {
+                    pass-w > 0 && pass-h > 0 -> {
+                        pass-stride = pass-w * bytes-per-pixel
+                        pass-row-len = pass-stride + 1
 
-            filter-type == 2 -> {
-
-                ; Up: raw + above
-                x <- [0..stride): {
-                    cur-row[x] = cur-row[x] + prev-row[x]
-                }
-            }
-
-            filter-type == 3 -> {
-
-                ; Average: raw + (left + above) / 2
-                x <- [0..stride): {
-                    left = 0
-                    x >= bytes-per-pixel -> {
-                        left = cur-row[x - bytes-per-pixel]
-                    }
-                    above = prev-row[x]
-                    cur-row[x] = cur-row[x] + (left + above) / 2
-                }
-            }
-
-            filter-type == 4 -> {
-
-                ; Paeth: raw + Paeth predictor
-                x <- [0..stride): {
-                    left = 0
-                    x >= bytes-per-pixel -> {
-                        left = cur-row[x - bytes-per-pixel]
-                    }
-                    above = prev-row[x]
-                    above-left = 0
-                    x >= bytes-per-pixel -> {
-                        above-left = prev-row[x - bytes-per-pixel]
-                    }
-
-                    ; Paeth predictor
-                    p = left + above - above-left
-                    pa = left - above-left
-                    {
-                        pa < 0 -> pa = -pa
-                    }
-                    pb = above - above-left
-                    {
-                        pb < 0 -> pb = -pb
-                    }
-                    pc = p - above-left
-                    {
-                        pc < 0 -> pc = -pc
-                    }
-                    predictor = 0
-                    {
-                        pa <= pb && pa <= pc -> {
-                            predictor = left
+                        ; Allocate previous row for filtering
+                        pass-prev str = with-len(pass-stride)
+                        pi <- [0..pass-stride): {
+                            pass-prev[pi] = 0
                         }
 
-                        pb <= pc -> {
-                            predictor = above
-                        }
+                        py <- [0..pass-h): {
+                            {
+                                raw-pos + pass-row-len > raw.len -> break
+                            }
+                            img-y = sy-start + py * sy-step
 
-                        -> {
-                            predictor = above-left
+                            ; Read filter type
+                            filter-type = raw[raw-pos]
+
+                            ; Copy current row
+                            pass-cur str = with-len(pass-stride)
+                            pi <- [0..pass-stride): {
+                                pass-cur[pi] = raw[raw-pos + 1 + pi]
+                            }
+
+                            ; Apply filter
+                            {
+                                filter-type == 0 -> {
+                                    ; None
+                                }
+
+                                filter-type == 1 -> {
+                                    pi <- [bytes-per-pixel..pass-stride): {
+                                        pass-cur[pi] = pass-cur[pi] + pass-cur[pi - bytes-per-pixel]
+                                    }
+                                }
+
+                                filter-type == 2 -> {
+                                    pi <- [0..pass-stride): {
+                                        pass-cur[pi] = pass-cur[pi] + pass-prev[pi]
+                                    }
+                                }
+
+                                filter-type == 3 -> {
+                                    pi <- [0..pass-stride): {
+                                        left = 0
+                                        pi >= bytes-per-pixel -> {
+                                            left = pass-cur[pi - bytes-per-pixel]
+                                        }
+                                        above = pass-prev[pi]
+                                        pass-cur[pi] = pass-cur[pi] + (left + above) / 2
+                                    }
+                                }
+
+                                filter-type == 4 -> {
+                                    pi <- [0..pass-stride): {
+                                        left = 0
+                                        pi >= bytes-per-pixel -> {
+                                            left = pass-cur[pi - bytes-per-pixel]
+                                        }
+                                        above = pass-prev[pi]
+                                        above-left = 0
+                                        pi >= bytes-per-pixel -> {
+                                            above-left = pass-prev[pi - bytes-per-pixel]
+                                        }
+                                        p = left + above - above-left
+                                        pa = left - above-left
+                                        {
+                                            pa < 0 -> pa = -pa
+                                        }
+                                        pb = above - above-left
+                                        {
+                                            pb < 0 -> pb = -pb
+                                        }
+                                        pc = p - above-left
+                                        {
+                                            pc < 0 -> pc = -pc
+                                        }
+                                        predictor = 0
+                                        {
+                                            pa <= pb && pa <= pc -> {
+                                                predictor = left
+                                            }
+
+                                            pb <= pc -> {
+                                                predictor = above
+                                            }
+
+                                            -> {
+                                                predictor = above-left
+                                            }
+                                        }
+                                        pass-cur[pi] = pass-cur[pi] + predictor
+                                    }
+                                }
+                            }
+
+                            ; Write pixels to image at correct positions
+                            px <- [0..pass-w): {
+                                img-x = sx-start + px * sx-step
+                                {
+                                    img-x < w && img-y < h -> {
+                                        {
+                                            color-type == 3 -> {
+                                                idx = pass-cur[px]
+                                                {
+                                                    idx * 3 + 2 < palette.len -> {
+                                                        dst = (img-y * w + img-x) * 3
+                                                        tmp.data[dst] = palette[idx * 3]
+                                                        tmp.data[dst + 1] = palette[idx * 3 + 1]
+                                                        tmp.data[dst + 2] = palette[idx * 3 + 2]
+                                                    }
+                                                }
+                                            }
+
+                                            color-type == 0 -> {
+                                                dst = img-y * w + img-x
+                                                tmp.data[dst] = pass-cur[px]
+                                            }
+
+                                            -> {
+                                                dst = (img-y * w + img-x) * bands
+                                                b <- [0..bands): {
+                                                    tmp.data[dst + b] = pass-cur[px * bytes-per-pixel + b]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ; Save current row as prev
+                            pi <- [0..pass-stride): {
+                                pass-prev[pi] = pass-cur[pi]
+                            }
+
+                            raw-pos = raw-pos + pass-row-len
                         }
                     }
-                    cur-row[x] = cur-row[x] + predictor
                 }
             }
         }
 
-        ; Write pixels to image
-        {
-            color-type == 3 -> {
+        -> {
+            ; Non-interlaced
+            stride = w * bytes-per-pixel
+            row-len = stride + 1
 
-                ; Indexed color
-                x <- [0..w): {
-                    idx = cur-row[x]
-                    {
-                        idx * 3 + 2 < palette.len -> {
-                            dst = (y * w + x) * 3
-                            tmp.data[dst] = palette[idx * 3]
-                            tmp.data[dst + 1] = palette[idx * 3 + 1]
-                            tmp.data[dst + 2] = palette[idx * 3 + 2]
+            ; Allocate filtered row buffers
+            prev-row str = with-len(stride)
+            i <- [0..stride): {
+                prev-row[i] = 0
+            }
+            y <- [0..h): {
+                row-start = y * row-len
+                {
+                    row-start + row-len > raw.len -> break
+                }
+                filter-type = raw[row-start]
+
+                ; Copy current row
+                cur-row str = with-len(stride)
+                i <- [0..stride): {
+                    cur-row[i] = raw[row-start + 1 + i]
+                }
+
+                ; Apply filter
+                {
+                    filter-type == 0 -> {
+                        ; None
+                    }
+
+                    filter-type == 1 -> {
+
+                        ; Sub: raw + left
+                        x <- [bytes-per-pixel..stride): {
+                            cur-row[x] = cur-row[x] + cur-row[x - bytes-per-pixel]
+                        }
+                    }
+
+                    filter-type == 2 -> {
+
+                        ; Up: raw + above
+                        x <- [0..stride): {
+                            cur-row[x] = cur-row[x] + prev-row[x]
+                        }
+                    }
+
+                    filter-type == 3 -> {
+
+                        ; Average: raw + (left + above) / 2
+                        x <- [0..stride): {
+                            left = 0
+                            x >= bytes-per-pixel -> {
+                                left = cur-row[x - bytes-per-pixel]
+                            }
+                            above = prev-row[x]
+                            cur-row[x] = cur-row[x] + (left + above) / 2
+                        }
+                    }
+
+                    filter-type == 4 -> {
+
+                        ; Paeth: raw + Paeth predictor
+                        x <- [0..stride): {
+                            left = 0
+                            x >= bytes-per-pixel -> {
+                                left = cur-row[x - bytes-per-pixel]
+                            }
+                            above = prev-row[x]
+                            above-left = 0
+                            x >= bytes-per-pixel -> {
+                                above-left = prev-row[x - bytes-per-pixel]
+                            }
+
+                            ; Paeth predictor
+                            p = left + above - above-left
+                            pa = left - above-left
+                            {
+                                pa < 0 -> pa = -pa
+                            }
+                            pb = above - above-left
+                            {
+                                pb < 0 -> pb = -pb
+                            }
+                            pc = p - above-left
+                            {
+                                pc < 0 -> pc = -pc
+                            }
+                            predictor = 0
+                            {
+                                pa <= pb && pa <= pc -> {
+                                    predictor = left
+                                }
+
+                                pb <= pc -> {
+                                    predictor = above
+                                }
+
+                                -> {
+                                    predictor = above-left
+                                }
+                            }
+                            cur-row[x] = cur-row[x] + predictor
                         }
                     }
                 }
-            }
 
-            color-type == 0 -> {
+                ; Write pixels to image
+                {
+                    color-type == 3 -> {
 
-                ; Grayscale
-                x <- [0..w): {
-                    dst = y * w + x
-                    tmp.data[dst] = cur-row[x]
-                }
-            }
+                        ; Indexed color
+                        x <- [0..w): {
+                            idx = cur-row[x]
+                            {
+                                idx * 3 + 2 < palette.len -> {
+                                    dst = (y * w + x) * 3
+                                    tmp.data[dst] = palette[idx * 3]
+                                    tmp.data[dst + 1] = palette[idx * 3 + 1]
+                                    tmp.data[dst + 2] = palette[idx * 3 + 2]
+                                }
+                            }
+                        }
+                    }
 
-            -> {
+                    color-type == 0 -> {
 
-                ; RGB / RGBA
-                x <- [0..w): {
-                    dst = (y * w + x) * bands
-                    b <- [0..bands): {
-                        tmp.data[dst + b] = cur-row[x * bands + b]
+                        ; Grayscale
+                        x <- [0..w): {
+                            dst = y * w + x
+                            tmp.data[dst] = cur-row[x]
+                        }
+                    }
+
+                    -> {
+
+                        ; RGB / RGBA
+                        x <- [0..w): {
+                            dst = (y * w + x) * bands
+                            b <- [0..bands): {
+                                tmp.data[dst + b] = cur-row[x * bands + b]
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        ; Save current row as prev
-        i <- [0..stride): {
-            prev-row[i] = cur-row[i]
+                ; Save current row as prev
+                i <- [0..stride): {
+                    prev-row[i] = cur-row[i]
+                }
+            }
         }
     }
     img = tmp

@@ -1,6 +1,7 @@
 ; jpeg.no — JPEG (Joint Photographic Experts Group) reader/writer
-; Supports baseline JPEG (sequential DCT, Huffman coded)
-; Color models: YCbCr (default), Grayscale
+; Supports:
+;   - Load: baseline JPEG decoder (Huffman decode + IDCT + YCbCr→RGB, 8-bit)
+;   - Save: baseline JPEG encoder (DCT + quantization + Huffman, 8-bit, YCbCr 4:2:0 or grayscale)
 ;
 ; JPEG structure:
 ;   SOI: FFD8
@@ -11,14 +12,6 @@
 ;   SOS (Start of Scan): FFDA
 ;   RSTn (Restart Markers): FFD0-FFD7
 ;   EOI: FFD9
-;
-; This is a minimal baseline JPEG decoder/encoder.
-
-; ── Load ──
-
-; jpeg.load: load a JPEG file
-; path str: file path
-; returns img ?image: loaded image, nil on error
 
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
@@ -31,6 +24,13 @@
 # /noimg/src/image.max-val
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
+
+; ── Load ──
+
+; jpeg.load: load a baseline JPEG file (8-bit, Huffman coded)
+; Supports: baseline sequential (SOF0), YCbCr 4:2:0 / 4:4:4, grayscale
+; path str: file path
+; returns img ?image: loaded image, nil on error
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
@@ -251,19 +251,269 @@ load = (path str) (img ?image) {
                                 }
                             }
 
-                            ; We return nil for complex JPEGs
-                            ; (full baseline decode requires DCT + IDCT which is too
-                            ;  complex for this implementation)
-                            ; Instead, store image dimensions and return a placeholder
+                            ; Build Huffman decode tables from DHT data
+                            ; Each table: max_code[16], val_ptr[16], symbols[256]
+                            ; We store 4 DC tables and 4 AC tables
+                            dc-maxcode []i64 = with-len(4 * 16)
+                            dc-valptr []i64 = with-len(4 * 16)
+                            ac-maxcode []i64 = with-len(4 * 16)
+                            ac-valptr []i64 = with-len(4 * 16)
+
+                            ; Build DC decode tables
+                            ti <- [0..4): {
+                                jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, dc-counts[ti], dc-maxcode, ti * 16, dc-valptr, ti * 16)
+                            }
+                            ; Build AC decode tables
+                            ti <- [0..4): {
+                                jpeg-build-huff-table(ac-lens, ti * 16, ac-tables, ti * 256, ac-counts[ti], ac-maxcode, ti * 16, ac-valptr, ti * 16)
+                            }
+
+                            ; Determine output bands
                             bands = 3
                             components == 1 -> bands = 1
+
+                            ; Create output image
                             _d str = with-len(w * h * bands)
                             tmp = image.new-from-data(w, h, bands, _d)
 
-                            ; Fill with gray placeholder
-                            i <- [0..w * h * bands): {
-                                tmp.data[i] = 128
+                            ; MCU dimensions
+                            ; Max H/V sampling factors determine MCU size
+                            max-h = 1
+                            max-v = 1
+                            ci <- [0..components): {
+                                comp-h[ci] > max-h -> max-h = comp-h[ci]
+                                comp-v[ci] > max-v -> max-v = comp-v[ci]
                             }
+                            mcu-w = max-h * 8
+                            mcu-h = max-v * 8
+
+                            ; Padded image dimensions to MCU boundary
+                            pad-w = (w + mcu-w - 1) & ~(mcu-w - 1)
+                            pad-h = (h + mcu-h - 1) & ~(mcu-h - 1)
+                            n-mcu-x = pad-w / mcu-w
+                            n-mcu-y = pad-h / mcu-h
+
+                            ; Bit reader state
+                            bit-pos = pos
+                            bit-buf i64 = 0
+                            bit-cnt i64 = 0
+
+                            ; Previous DC values for differential coding
+                            prev-dc-0 = 0
+                            prev-dc-1 = 0
+                            prev-dc-2 = 0
+                            prev-dc-3 = 0
+
+                            ; Component data buffers (decoded blocks stored per-component)
+                            ; Each component has its own width/height in blocks
+                            ; We store pixel data in temporary buffers
+                            comp-w0 = (pad-w / 8) * max-h
+                            comp-h0 = (pad-h / 8) * max-v
+
+                            ; Allocate per-component pixel buffers (up to 4 components)
+                            ; Each buffer holds the decoded samples for that component
+                            ; We use flat arrays of size comp-w0 * comp-h0
+                            comp-data-0 []byte = with-len(comp-w0 * comp-h0)
+                            comp-data-1 []byte = with-len(comp-w0 * comp-h0)
+                            comp-data-2 []byte = with-len(comp-w0 * comp-h0)
+                            comp-data-3 []byte = with-len(comp-w0 * comp-h0)
+
+                            ; Decode all MCUs
+                            my <- [0..n-mcu-y): {
+                                mx <- [0..n-mcu-x): {
+                                    ; For each component in scan order
+                                    ci <- [0..components): {
+                                        ; Get quantization table for this component
+                                        qt-id = comp-qt[ci]
+                                        qt []byte = qt0
+                                        qt-id == 1 -> qt = qt1
+                                        qt-id == 2 -> qt = qt2
+                                        qt-id == 3 -> qt = qt3
+
+                                        ; Get Huffman table IDs
+                                        dc-tid = comp-dc-table[ci]
+                                        ac-tid = comp-ac-table[ci]
+
+                                        ; Number of blocks for this component in this MCU
+                                        n-blk-h = comp-h[ci]
+                                        n-blk-v = comp-v[ci]
+
+                                        ; Decode n-blk-h * n-blk-v blocks
+                                        by <- [0..n-blk-v): {
+                                            bx <- [0..n-blk-h): {
+                                                ; Decode one 8x8 block
+                                                block [64]f64 = [
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                ]
+
+                                                ; Decode DC coefficient
+                                                prev-dc = prev-dc-0
+                                                ci == 1 -> prev-dc = prev-dc-1
+                                                ci == 2 -> prev-dc = prev-dc-2
+                                                ci == 3 -> prev-dc = prev-dc-3
+
+                                                dc-val, bit-pos, bit-buf, bit-cnt = jpeg-decode-dc(data, bit-pos, bit-buf, bit-cnt, dc-tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
+                                                dc-val = dc-val + prev-dc
+
+                                                ci == 0 -> prev-dc-0 = dc-val
+                                                ci == 1 -> prev-dc-1 = dc-val
+                                                ci == 2 -> prev-dc-2 = dc-val
+                                                ci == 3 -> prev-dc-3 = dc-val
+
+                                                ; DC coefficient goes to position [0,0]
+                                                block[0] = dc-val * qt[0]
+
+                                                ; Decode AC coefficients (1..63 in zigzag order)
+                                                k = 1
+                                                {
+                                                    k < 64 -> {
+                                                        rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
+                                                        ; rs = run << 4 | size
+                                                        run = (rs >> 4) & 15
+                                                        size = rs & 15
+
+                                                        size == 0 -> {
+                                                            run == 15 -> {
+                                                                ; ZRL: skip 16 zeros
+                                                                k = k + 16
+                                                            }
+
+                                                            -> {
+                                                                ; EOB: rest are zero
+                                                                k = 64
+                                                            }
+                                                        }
+
+                                                        -> {
+                                                            ; Skip run zeros
+                                                            k = k + run
+                                                            ; Read 'size' bits for the value
+                                                            val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
+                                                            val = jpeg-extend-val(val, size)
+
+                                                            ; Place coefficient in zigzag order
+                                                            {
+                                                                k < 64 -> {
+                                                                    zi = jpeg-zigzag(k)
+                                                                    block[zi] = val * qt[zi]
+                                                                }
+                                                            }
+                                                            k = k + 1
+                                                        }
+                                                    }
+                                                } (k < 64)
+
+                                                ; IDCT
+                                                pixels [64]f64 = [
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                ]
+                                                jpeg-idct-8x8(block, pixels)
+
+                                                ; Store decoded pixels in component buffer
+                                                ; Block position in component grid
+                                                blk-x = mx * n-blk-h + bx
+                                                blk-y = my * n-blk-v + by
+                                                comp-buf []byte = comp-data-0
+                                                ci == 1 -> comp-buf = comp-data-1
+                                                ci == 2 -> comp-buf = comp-data-2
+                                                ci == 3 -> comp-buf = comp-data-3
+
+                                                ; Write 8x8 block to component buffer
+                                                py <- [0..8): {
+                                                    px <- [0..8): {
+                                                        v = pixels[py * 8 + px] + 128.0
+                                                        v < 0.0 -> v = 0.0
+                                                        v > 255.0 -> v = 255.0
+                                                        cx = blk-x * 8 + px
+                                                        cy = blk-y * 8 + py
+                                                        comp-buf[cy * comp-w0 + cx] = number.f64-to-i64(math.floor(v))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ; Now convert component data to output image
+                            {
+                                components == 1 -> {
+                                    ; Grayscale
+                                    i <- [0..w * h): {
+                                        sy = i / w
+                                        sx = i - sy * w
+                                        tmp.data[i] = comp-data-0[sy * comp-w0 + sx]
+                                    }
+                                }
+
+                                -> {
+                                    ; YCbCr → RGB
+                                    ; Determine subsampling
+                                    ; Component 0 (Y): h0, v0
+                                    ; Component 1 (Cb): h1, v1
+                                    ; Component 2 (Cr): h2, v2
+                                    h0 = comp-h[0]
+                                    v0 = comp-v[0]
+                                    h1 = comp-h[1]
+                                    v1 = comp-v[1]
+                                    h2 = comp-h[2]
+                                    v2 = comp-v[2]
+
+                                    i <- [0..w * h): {
+                                        sy = i / w
+                                        sx = i - sy * w
+
+                                        ; Y sample (always full resolution)
+                                        y-val = comp-data-0[sy * comp-w0 + sx]
+
+                                        ; Cb sample (may be subsampled)
+                                        cb-x = sx * h1 / max-h
+                                        cb-y = sy * v1 / max-v
+                                        cb-val = comp-data-1[cb-y * comp-w0 + cb-x]
+
+                                        ; Cr sample
+                                        cr-x = sx * h2 / max-h
+                                        cr-y = sy * v2 / max-v
+                                        cr-val = comp-data-2[cr-y * comp-w0 + cr-x]
+
+                                        ; YCbCr → RGB (ITU-R BT.601)
+                                        yf = y-val
+                                        cbf = cb-val - 128
+                                        crf = cr-val - 128
+
+                                        r = yf + 1.402 * crf
+                                        g = yf - 0.344136 * cbf - 0.714136 * crf
+                                        b = yf + 1.772 * cbf
+
+                                        r < 0 -> r = 0
+                                        r > 255 -> r = 255
+                                        g < 0 -> g = 0
+                                        g > 255 -> g = 255
+                                        b < 0 -> b = 0
+                                        b > 255 -> b = 255
+
+                                        dst = i * 3
+                                        tmp.data[dst] = number.f64-to-i64(r)
+                                        tmp.data[dst + 1] = number.f64-to-i64(g)
+                                        tmp.data[dst + 2] = number.f64-to-i64(b)
+                                    }
+                                }
+                            }
+
                             img = tmp
                             return
                         }
@@ -281,20 +531,341 @@ load = (path str) (img ?image) {
     } (pos < data.len)
 
     ; If we get here without SOS, return nil
-    {
-        w > 0 && h > 0 -> {
-            bands = 3
-            components == 1 -> bands = 1
-            _d str = with-len(w * h * bands)
-            tmp2 = image.new-from-data(w, h, bands, _d)
-            i <- [0..w * h * bands): {
-                tmp2.data[i] = 128
+    img = nil
+}
+
+; jpeg-build-huff-table: build Huffman decode lookup table
+; lens []byte: code lengths (16 bytes, lens[0..15] for lengths 1..16)
+; lens-offset i64: offset into lens array
+; vals []byte: symbol values
+; vals-offset i64: offset into vals array
+; n-vals i64: number of values
+; maxcode []byte: output max codes per length (output)
+; mc-off i64: offset into maxcode
+; valptr []byte: output value pointer per length (output)
+; vp-off i64: offset into valptr
+jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset i64, n-vals i64, maxcode []i64, mc-off i64, valptr []i64, vp-off i64) {
+    ; Generate Huffman codes using the JPEG standard algorithm
+    code = 0
+    idx = 0
+    l <- [0..16): {
+        cnt = lens[lens-offset + l]
+        {
+            cnt == 0 -> {
+                maxcode[mc-off + l] = -1
             }
-            img = tmp2
+
+            -> {
+                ; maxcode for this length
+                maxcode[mc-off + l] = code + cnt - 1
+                ; valptr: index into vals array for first code of this length
+                valptr[vp-off + l] = idx
+                code = code + cnt
+                idx = idx + cnt
+            }
+        }
+        code = code << 1
+    }
+}
+
+; jpeg-read-bits: read n bits from the bitstream
+; data str: file data
+; pos i64: byte position
+; buf i64: bit buffer
+; cnt i64: bits in buffer
+; n i64: number of bits to read (1-24)
+; returns val i64, new-pos i64, new-buf i64, new-cnt i64
+jpeg-read-bits = (data str, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
+    ; Fill buffer until we have enough bits
+    {
+        cnt < n -> {
+            {
+                pos < data.len -> {
+                    b = data[pos] & 255
+                    ; Skip 0xFF stuffing (FF 00 → FF)
+                    b == 255 -> {
+                        {
+                            pos + 1 < data.len -> {
+                                next = data[pos + 1] & 255
+                                next == 0 -> {
+                                    ; FF00 → stuffed FF
+                                    buf = (buf << 8) | 255
+                                    cnt = cnt + 8
+                                    pos = pos + 2
+                                }
+
+                                -> {
+                                    ; RST marker or EOI — stop reading
+                                    buf = (buf << 8)
+                                    cnt = cnt + 8
+                                    pos = pos + 1
+                                }
+                            }
+
+                            -> {
+                                buf = (buf << 8)
+                                cnt = cnt + 8
+                                pos = pos + 1
+                            }
+                        }
+                    }
+
+                    -> {
+                        buf = (buf << 8) | b
+                        cnt = cnt + 8
+                        pos = pos + 1
+                    }
+                }
+
+                -> {
+                    ; Ran out of data
+                    buf = (buf << 8)
+                    cnt = cnt + 8
+                }
+            }
+        }
+    } (cnt < n)
+
+    ; Extract n bits
+    val = (buf >> (cnt - n)) & ((1 << n) - 1)
+    cnt = cnt - n
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; jpeg-read-1-bit: read a single bit from the bitstream
+; data str: file data
+; pos i64: byte position
+; buf i64: bit buffer
+; cnt i64: bits in buffer
+; returns val i64, new-pos i64, new-buf i64, new-cnt i64
+jpeg-read-1-bit = (data str, pos i64, buf i64, cnt i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
+    {
+        cnt == 0 -> {
+            {
+                pos < data.len -> {
+                    b = data[pos] & 255
+                    b == 255 -> {
+                        {
+                            pos + 1 < data.len -> {
+                                next = data[pos + 1] & 255
+                                next == 0 -> {
+                                    buf = 255
+                                    cnt = 8
+                                    pos = pos + 2
+                                }
+
+                                -> {
+                                    buf = 0
+                                    cnt = 8
+                                    pos = pos + 1
+                                }
+                            }
+
+                            -> {
+                                buf = 0
+                                cnt = 8
+                                pos = pos + 1
+                            }
+                        }
+                    }
+
+                    -> {
+                        buf = b
+                        cnt = 8
+                        pos = pos + 1
+                    }
+                }
+
+                -> {
+                    buf = 0
+                    cnt = 1
+                }
+            }
+        }
+    }
+    val = (buf >> (cnt - 1)) & 1
+    cnt = cnt - 1
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; jpeg-decode-huff: decode one Huffman symbol
+; data str: file data
+; pos i64: byte position
+; buf i64: bit buffer
+; cnt i64: bits in buffer
+; tid i64: table ID (0-3)
+; lens []byte: code lengths array (lens[tid*16 .. tid*16+15])
+; vals []byte: symbol values array (vals[tid*256 ..])
+; counts []byte: number of values per table
+; maxcode []byte: max code per length (maxcode[tid*16..])
+; valptr []byte: value pointer per length (valptr[tid*16..])
+; returns sym i64, new-pos i64, new-buf i64, new-cnt i64
+jpeg-decode-huff = (data str, pos i64, buf i64, cnt i64, tid i64, lens []byte, vals []byte, counts []byte, maxcode []i64, valptr []i64) (sym i64, new-pos i64, new-buf i64, new-cnt i64) {
+    code = 0
+    l = 0
+    found = false
+    {
+        found == false -> {
+            bit, pos, buf, cnt = jpeg-read-1-bit(data, pos, buf, cnt)
+            code = (code << 1) | bit
+            l = l + 1
+            mc = maxcode[tid * 16 + l - 1]
+            {
+                mc != -1 && code <= mc -> {
+                    found = true
+                }
+            }
+        }
+    } (found == false && l < 16)
+
+    {
+        found == true -> {
+            vp = valptr[tid * 16 + l - 1]
+            ; symbol = vals[vp + (code - first_code_of_length)]
+            ; first_code_of_length = maxcode[tid*16+l-1] - counts_in_this_len + 1
+            ; But we stored valptr as index into vals, so:
+            ; offset = vp + (code - (maxcode - lens_sum + 1))
+            ; Simpler: we know the code, length, and valptr.
+            ; The symbol index = vp + (code - first_code)
+            ; first_code = (code - (number of codes of this length - 1))
+            ; We need to compute first_code for this length
+            ; first_code = code - (idx within this length group)
+            ; idx = code - (first code of this length)
+            ; Since maxcode = first_code + cnt - 1, first_code = maxcode - cnt + 1
+            ; But we don't have cnt here easily. Instead:
+            ; valptr already points to start of this length group in vals
+            ; The index within the group = code - first_code
+            ; first_code = maxcode_of_prev_length + 1 shifted... no.
+            ; Actually in JPEG, the code assignment is:
+            ;   code starts at 0 for length L
+            ;   first_code = (prev_maxcode + 1) << 1
+            ; We can compute: offset = code - first_code_of_this_length
+            ; first_code = maxcode[tid*16+l-1] - lens[tid*16+l-1] + 1
+            ; No, that's not right either. Let me use a simpler approach:
+            ; We have valptr[vp] pointing to start of this length's symbols.
+            ; The number of symbols of this length = lens[tid*16+l-1]
+            ; first_code = maxcode - lens[tid*16+l-1] + 1
+            cnt-len = lens[tid * 16 + l - 1]
+            first-code = maxcode[tid * 16 + l - 1] - cnt-len + 1
+            idx = code - first-code
+            sym = vals[tid * 256 + vp + idx]
         }
 
         -> {
-            img = nil
+            sym = 0
+        }
+    }
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; jpeg-decode-dc: decode DC coefficient
+; data str: file data
+; pos i64: byte position
+; buf i64: bit buffer
+; cnt i64: bits in buffer
+; tid i64: DC Huffman table ID
+; dc-lens []byte: DC code lengths
+; dc-tables []byte: DC symbol values
+; dc-counts []byte: DC counts per table
+; dc-maxcode []byte: DC max codes
+; dc-valptr []byte: DC value pointers
+; returns dc-val i64, new-pos i64, new-buf i64, new-cnt i64
+jpeg-decode-dc = (data str, pos i64, buf i64, cnt i64, tid i64, dc-lens []byte, dc-tables []byte, dc-counts []byte, dc-maxcode []i64, dc-valptr []i64) (dc-val i64, new-pos i64, new-buf i64, new-cnt i64) {
+    ; Decode Huffman symbol to get magnitude category
+    s, pos, buf, cnt = jpeg-decode-huff(data, pos, buf, cnt, tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
+    ; s = number of additional bits to read
+    {
+        s == 0 -> {
+            dc-val = 0
+        }
+
+        -> {
+            dc-val, pos, buf, cnt = jpeg-read-bits(data, pos, buf, cnt, s)
+            dc-val = jpeg-extend-val(dc-val, s)
+        }
+    }
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; jpeg-decode-ac: decode AC coefficient (returns run-size byte)
+; data str: file data
+; pos i64: byte position
+; buf i64: bit buffer
+; cnt i64: bits in buffer
+; tid i64: AC Huffman table ID
+; ac-lens []byte: AC code lengths
+; ac-tables []byte: AC symbol values
+; ac-counts []byte: AC counts per table
+; ac-maxcode []byte: AC max codes
+; ac-valptr []byte: AC value pointers
+; returns rs i64, new-pos i64, new-buf i64, new-cnt i64
+jpeg-decode-ac = (data str, pos i64, buf i64, cnt i64, tid i64, ac-lens []byte, ac-tables []byte, ac-counts []byte, ac-maxcode []i64, ac-valptr []i64) (rs i64, new-pos i64, new-buf i64, new-cnt i64) {
+    rs, pos, buf, cnt = jpeg-decode-huff(data, pos, buf, cnt, tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; jpeg-extend-val: extend a value from 'size' bits to a signed integer
+; val i64: raw value
+; size i64: number of bits
+; returns extended i64
+jpeg-extend-val = (val i64, size i64) (extended i64) {
+    {
+        size == 0 -> {
+            extended = 0
+        }
+
+        -> {
+            ; If the most significant bit is 0, the value is negative
+            half = 1 << (size - 1)
+            {
+                val < half -> {
+                    extended = val - (1 << size) + 1
+                }
+
+                -> {
+                    extended = val
+                }
+            }
+        }
+    }
+}
+
+; jpeg-idct-8x8: perform 2D Inverse Discrete Cosine Transform on an 8x8 block
+; block [64]f64: input DCT coefficients (dequantized)
+; out [64]f64: output pixel values
+jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
+    ; IDCT using the formula:
+    ;   f(x,y) = (1/4) * sum_{u,v} C(u)*C(v) * F(u,v) * cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
+    ; where C(0) = 1/sqrt(2), C(u) = 1 for u>0
+    pi = 3.14159265358979
+    inv-sqrt2 = 0.70710678118655
+
+    ; Precompute cosine table for IDCT
+    ; cos_table[i][j] = cos((2*i+1)*j*pi/16) * C(j) / 2
+    ; We compute inline for simplicity
+    y <- [0..8): {
+        x <- [0..8): {
+            sum = 0.0
+            v <- [0..8): {
+                u <- [0..8): {
+                    cu = 1.0
+                    u == 0 -> cu = inv-sqrt2
+                    cv = 1.0
+                    v == 0 -> cv = inv-sqrt2
+                    sum = sum + cu * cv * block[v * 8 + u] * math.cos((2 * x + 1) * u * pi / 16.0) * math.cos((2 * y + 1) * v * pi / 16.0)
+                }
+            }
+            out[y * 8 + x] = sum * 0.25
         }
     }
 }
@@ -563,143 +1134,8 @@ jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
         buf.push(0)
     }
 
-    ; --- Scan data (placeholder: write minimal valid scan data) ---
-    ; Full DCT encoding is complex; write a minimal scan that produces
-    ; a valid JPEG structure. Each MCU writes DC=0 + EOB.
-    {
-        is-gray -> {
-            ; Grayscale: one 8x8 block per MCU
-            pad-w = (w + 7) & ~7
-            pad-h = (h + 7) & ~7
-            n-mcu-x = pad-w / 8
-            n-mcu-y = pad-h / 8
-            bit-acc i64 = 0
-            bit-cnt i64 = 0
-            my <- [0..n-mcu-y): {
-                mx <- [0..n-mcu-x): {
-                    ; DC code for magnitude 0: luma DC huffman code for cat 0
-                    ; From standard table: code=00, len=2
-                    bit-acc = (bit-acc << 2) | 0
-                    bit-cnt = bit-cnt + 2
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                    ; EOB code: luma AC huffman code for 0x00
-                    ; From standard table: code=1010, len=4
-                    bit-acc = (bit-acc << 4) | 10
-                    bit-cnt = bit-cnt + 4
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                }
-            }
-            ; Flush remaining bits
-            {
-                bit-cnt > 0 -> {
-                    byte = (bit-acc << (8 - bit-cnt)) & 255
-                    buf.push(byte)
-                    byte == 255 -> buf.push(0)
-                }
-            }
-        }
-
-        -> {
-            ; YCbCr 4:2:0: 4Y + 1Cb + 1Cr per MCU
-            pad-w = (w + 15) & ~15
-            pad-h = (h + 15) & ~15
-            n-mcu-x = pad-w / 16
-            n-mcu-y = pad-h / 16
-            bit-acc i64 = 0
-            bit-cnt i64 = 0
-            my <- [0..n-mcu-y): {
-                mx <- [0..n-mcu-x): {
-                    ; 4 Y blocks: DC=0 (code 00, len 2) + EOB (code 1010, len 4)
-                    bi <- [0..4): {
-                        bit-acc = (bit-acc << 2) | 0
-                        bit-cnt = bit-cnt + 2
-                        {
-                            bit-cnt >= 8 -> {
-                                byte = (bit-acc >> (bit-cnt - 8)) & 255
-                                buf.push(byte)
-                                bit-cnt = bit-cnt - 8
-                                byte == 255 -> buf.push(0)
-                            }
-                        }
-                        bit-acc = (bit-acc << 4) | 10
-                        bit-cnt = bit-cnt + 4
-                        {
-                            bit-cnt >= 8 -> {
-                                byte = (bit-acc >> (bit-cnt - 8)) & 255
-                                buf.push(byte)
-                                bit-cnt = bit-cnt - 8
-                                byte == 255 -> buf.push(0)
-                            }
-                        }
-                    }
-                    ; Cb block: DC=0 (chroma DC code 00, len 3) + EOB (chroma AC code 00, len 2)
-                    bit-acc = (bit-acc << 3) | 0
-                    bit-cnt = bit-cnt + 3
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                    bit-acc = (bit-acc << 2) | 0
-                    bit-cnt = bit-cnt + 2
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                    ; Cr block: same as Cb
-                    bit-acc = (bit-acc << 3) | 0
-                    bit-cnt = bit-cnt + 3
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                    bit-acc = (bit-acc << 2) | 0
-                    bit-cnt = bit-cnt + 2
-                    {
-                        bit-cnt >= 8 -> {
-                            byte = (bit-acc >> (bit-cnt - 8)) & 255
-                            buf.push(byte)
-                            bit-cnt = bit-cnt - 8
-                            byte == 255 -> buf.push(0)
-                        }
-                    }
-                }
-            }
-            ; Flush remaining bits
-            {
-                bit-cnt > 0 -> {
-                    byte = (bit-acc << (8 - bit-cnt)) & 255
-                    buf.push(byte)
-                    byte == 255 -> buf.push(0)
-                }
-            }
-        }
-    }
+    ; --- Scan data (real DCT + Huffman encoding) ---
+    jpeg-encode-scan(buf, img, w, h, is-gray, qt-luma, qt-chroma)
 
     ; --- EOI ---
     buf.push(255)
@@ -1046,7 +1482,7 @@ jpeg-quantize = (dct [64]f64, qt []byte) (q [64]f64) {
 ; table-id i64: Huffman table ID (0=luma, 1=chroma)
 ; bit-acc i64: bit accumulator
 ; bit-cnt i64: bit count
-; returns new-prev-dc i64, acc i64, cnt i64
+; returns new-prev-dc i64 (acc and cnt are modified in-place via reference parameters)
 jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, cnt i64) (new-prev-dc i64) {
     ; Zigzag scan
     zigzag-vals [64]f64 = [
@@ -1165,12 +1601,14 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
 
         -> {
             ; Flush run of zeros (16 zeros at a time)
-            for run >= 16 {
-                ; ZRL code (0xF0)
-                code, code-len = jpeg-huffman-lookup-ac(240, table-id)
-                jpeg-bit-write(buf, acc, cnt, code, code-len)
-                run = run - 16
-            }
+            {
+                run >= 16 -> {
+                    ; ZRL code (0xF0)
+                    code, code-len = jpeg-huffman-lookup-ac(240, table-id)
+                    jpeg-bit-write(buf, acc, cnt, code, code-len)
+                    run = run - 16
+                }
+            } (run >= 16)
 
             ; Determine magnitude
             mag = 0
@@ -1179,17 +1617,19 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
                 v < 0 -> v = -v
             }
             {
-                v >= 64 -> mag = 6
+                v >= 128 -> mag = 8
 
-                v >= 32 -> mag = 5
+                v >= 64 -> mag = 7
 
-                v >= 16 -> mag = 4
+                v >= 32 -> mag = 6
 
-                v >= 8 -> mag = 3
+                v >= 16 -> mag = 5
 
-                v >= 4 -> mag = 2
+                v >= 8 -> mag = 4
 
-                v >= 2 -> mag = 1
+                v >= 4 -> mag = 3
+
+                v >= 2 -> mag = 2
 
                 -> mag = 1
             }

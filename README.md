@@ -320,14 +320,14 @@ notools 仓库内含一个**纯 Nolang 实现的 Git**（`nogit/` 目录），�
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `init [path]` | 初始化新仓库（含 `.git` 目录结构） | `nogit init myrepo` |
-| `add <path>` | 将文件写入 blob 对象并加入暂存区 | `nogit add file.txt` |
+| `init [path]` | 初始化新仓库（幂等，可重复执行） | `nogit init myrepo` |
+| `add <path>` | 将文件或目录写入 blob 并加入暂存区（支持递归添加目录） | `nogit add file.txt`、`nogit add .` |
 | `commit -m <msg>` | 从暂存区创建 tree 和 commit 对象 | `nogit commit -m 'initial'` |
-| `log [count]` | 沿 first-parent 遍历提交历史 | `nogit log -n 10` |
-| `status` | 显示当前分支与已暂存文件 | `nogit status` |
-| `branch [name]` | 列出或创建分支 | `nogit branch dev` |
-| `checkout <name>` | 切换分支 | `nogit checkout dev` |
-| `tag <name>` | 创建标签 | `nogit v1.0` |
+| `log [count]` | 遍历提交历史 | `nogit log -n 10` |
+| `status` | 显示当前分支、已暂存与未暂存的变更 | `nogit status` |
+| `branch [name] [-d <name>]` | 列出、创建或删除分支 | `nogit branch dev`、`nogit branch -d dev` |
+| `checkout <name>` | 切换分支并还原工作树 | `nogit checkout dev` |
+| `tag <name> [-a <name> -m <msg>] [-d <name>]` | 创建轻量/标注标签或删除标签 | `nogit tag v1.0`、`nogit tag -a v1.0 -m 'msg'` |
 | `show <ref>` | 显示对象类型与内容 | `nogit show HEAD` |
 | `cat-file <opt> <ref>` | 按类型/引用查看对象（`-t`/`-s`/`-p`） | `nogit cat-file -p HEAD` |
 | `hash-object [-w] <file>` | 计算文件 SHA-1（`-w` 写入对象库） | `nogit hash-object -w file` |
@@ -335,6 +335,8 @@ notools 仓库内含一个**纯 Nolang 实现的 Git**（`nogit/` 目录），�
 | `ls-files` | 列出暂存区文件 | `nogit ls-files` |
 | `rev-parse <ref>` | 将引用解析为 OID | `nogit rev-parse HEAD` |
 | `write-tree` | 从暂存区写入 tree 对象 | `nogit write-tree` |
+| `rm <path> [--cached]` | 从暂存区和工作树中删除文件 | `nogit rm file.txt` |
+| `reset [ref]` | 重置 HEAD 和索引到指定引用 | `nogit reset HEAD` |
 | `update-ref <ref> <oid>` | 更新引用 | `nogit update-ref refs/heads/x <oid>` |
 | `config <key> [val]` | 读取或设置配置项 | `nogit config user.name 'Alice'` |
 | `reflog` | 显示 HEAD reflog | `nogit reflog` |
@@ -369,16 +371,16 @@ notools 仓库内含一个**纯 Nolang 实现的 Git**（`nogit/` 目录），�
 ```bash
 cd nogit
 no build
-; 产物位于 nogit/dist/main
+; 产物位于 nogit/dist/git
 
 ; 示例工作流
 cd my-project
-no run /path/to/nogit/dist/main init
-no run /path/to/nogit/dist/main config user.name 'Alice'
-no run /path/to/nogit/dist/main config user.email 'alice@example.com'
-no run /path/to/nogit/dist/main add file.txt
-no run /path/to/nogit/dist/main commit -m 'initial commit'
-no run /path/to/nogit/dist/main log
+no run /path/to/nogit/dist/git init
+no run /path/to/nogit/dist/git config user.name 'Alice'
+no run /path/to/nogit/dist/git config user.email 'alice@example.com'
+no run /path/to/nogit/dist/git add file.txt
+no run /path/to/nogit/dist/git commit -m 'initial commit'
+no run /path/to/nogit/dist/git log
 ```
 
 ### 项目结构
@@ -392,13 +394,17 @@ nogit/
 │   ├── object.no        ; 对象读写（blob/tree/commit/tag）
 │   ├── refs.no          ; 引用与 reflog
 │   ├── config.no        ; 配置文件
-│   ├── index.no         ; 暂存区
-│   ├── repository.no    ; 仓库初始化与发现
-│   ├── revwalk.no       ; 提交遍历
-│   ├── zlib.no          ; zlib 压缩/解压
-│   └── pack.no          ; Packfile v2 读取
+│   ├── index.no         ; 暂存区（index v2）
+│   ├── repository.no    ; 仓库初始化（幂等）与发现
+│   ├── revwalk.no       ; 提交遍历与引用解析
+│   ├── zlib.no          ; zlib 压缩/解压（archive/gzip）
+│   └── pack.no          ; Packfile v2 读取（delta 解析）
 ├── tests/
-│   └── test.no          ; 测试
+│   ├── test.no               ; 统一测试运行器
+│   ├── test-e2e-init.no       ; 初始化集成测试
+│   ├── test-e2e-commit.no     ; 提交流水线集成测试
+│   ├── test-e2e-comprehensive.no ; 全流程集成测试
+│   └── ...                   ; 其余单元测试
 └── package.jsonc        ; 项目配置
 ```
 
@@ -414,11 +420,11 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | BMP | `.bmp` | ✅ | ✅ | Windows Bitmap（仅 24/32 位未压缩） |
 | TGA | `.tga` | ✅ | ✅ | Targa（含 RLE 压缩） |
 | PAM | `.pam` | ✅ | ✅ | Portable Arbitrary Map |
-| PNG | `.png` | ✅ | ✅ | Portable Network Graphics（仅 8 位，zlib 压缩，CRC32 校验，5 种扫描线滤镜；不支持隔行 Adam7） |
+| PNG | `.png` | ✅ | ✅ | Portable Network Graphics（8 位，zlib 压缩，CRC32 校验，5 种扫描线滤镜，支持 Adam7 隔行解码） |
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
-| GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；写入用 3-3-2 量化，单帧） |
-| JPEG | `.jpg` `.jpeg` | ⚠️ | ✅ | baseline JPEG 写入（DCT+Huffman 编码）；读取仅解析元数据返回占位灰图，不支持 progressive |
-| WebP | `.webp` | ⚠️ | ⚠️ | RIFF 容器+VP8/VP8L 头部解析；读取返回占位图、写入为结构合法的占位文件 |
+| GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；动画多帧提取+disposal 合成；写入用 median-cut 量化） |
+| JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 读写（DCT+Huffman 编码/解码+IDCT+YCbCr→RGB），不支持 progressive |
+| WebP | `.webp` | ✅ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离解码+颜色缓存+变换逆变换+颜色索引）；写入为结构合法的占位文件；不支持 lossy VP8 |
 
 ### CLI 命令
 
@@ -426,9 +432,10 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 |------|------|------|
 | `info` | 显示图像属性 | `noimg info photo.png` |
 | `convert` | 格式转换 | `noimg convert input.png output.jpg` |
-| `resize` | 调整大小（双线性） | `noimg resize in.png out.png 800 600` |
+| `resize` | 调整大小（可选插值方法） | `noimg resize in.png out.png 800 600 1` |
 | `thumbnail` | 缩略图（最大边长） | `noimg thumbnail in.png out.png 128` |
 | `rotate` | 旋转（90/180/270） | `noimg rotate in.png out.png 90` |
+| `rot-free` | 任意角度旋转 | `noimg rot-free in.png out.png 45.0` |
 | `flip` | 翻转（h/v/both） | `noimg flip in.png out.png h` |
 | `crop` | 裁剪区域 | `noimg crop in.png out.png 10 10 100 100` |
 | `grayscale` | 灰度转换 | `noimg grayscale in.png out.png` |
@@ -486,11 +493,11 @@ noimg 可作为 Nolang 库使用，通过 `lib.no` 导出以下模块：
 | `bmp` | BMP 读写（24/32 位未压缩） |
 | `tga` | TGA 读写（含 RLE） |
 | `pam` | PAM 读写 |
-| `gif` | GIF 读取（LZW 解码+隔行+透明）、写入（3-3-2 量化、单帧） |
-| `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜；仅 8 位、不支持 Adam7） |
+| `gif` | GIF 读写（LZW 解码+隔行+透明+动画多帧+disposal+median-cut 量化） |
+| `png` | PNG 读写（zlib 压缩、CRC32 校验、5 种滤镜、Adam7 隔行解码，仅 8 位） |
 | `tiff` | TIFF 读写（仅未压缩、8 位、单 strip） |
-| `jpeg` | JPEG 写入（DCT+Huffman 编码）；读取仅解析元数据 |
-| `webp` | WebP RIFF 容器+VP8/VP8L 头部解析（读写均为占位） |
+| `jpeg` | JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB，不支持 progressive） |
+| `webp` | WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+变换逆变换+颜色索引）；写入为占位 |
 | `colour` | 色彩空间转换（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr）、亮度/对比度/Gamma/阈值/色调分离/日晒/棕褐/HSV 调整/Overlay 混合/Otsu 自动阈值 |
 | `resize` | 双线性缩放、缩略图、缩放、最近邻/双三次/面积平均 |
 | `rotate` | 旋转（90/180/270/任意角度）、翻转、转置/反对角转置 |
@@ -529,8 +536,8 @@ noimg/
 │   ├── png.no           ; PNG（CRC32 位运算、zlib）
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 编解码）
-│   ├── jpeg.no          ; JPEG 写入（DCT、Huffman 编码），读取仅解析元数据
-│   ├── webp.no          ; WebP RIFF 解析（读写均为占位）
+│   ├── jpeg.no          ; JPEG 读写（baseline DCT+Huffman 编码/解码+IDCT+YCbCr→RGB）
+│   ├── webp.no          ; WebP VP8L lossless 解码（Huffman+LZ77+颜色缓存+变换逆变换+颜色索引）
 │   ├── colour.no        ; 色彩空间转换
 │   ├── resize.no        ; 缩放
 │   ├── rotate.no        ; 旋转与翻转

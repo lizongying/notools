@@ -297,6 +297,18 @@ cmd-commit = (argc i64) {
     parent-oid, parent-ok = refs.read-ref(git-dir, 'HEAD')
     parenthex = ''
     parent-ok == true -> parenthex = oid.oid-hex-str(parent-oid)
+
+    ; Check for empty commit — if HEAD tree matches the new tree, nothing changed
+    parent-ok == true -> {
+        head-tree-oid, ht-ok = revwalk.commit-tree-oid(git-dir, parent-oid)
+        ht-ok == true -> {
+            same-tree = oid.eq(head-tree-oid, tree-oid)
+            same-tree == true -> {
+                print('nothing to commit, working tree clean')
+                return
+            }
+        }
+    }
     a-name, a-ok = config.get-user-name(git-dir)
     {
         a-ok == false -> {
@@ -368,6 +380,7 @@ cmd-log = (argc i64) {
         return
     }
     max-count = 0
+    oneline = false
     i <- [1..argc): {
         arg = os.arg(i + 1)
         arg == '-n' -> {
@@ -382,13 +395,24 @@ cmd-log = (argc i64) {
                 }
             }
         }
+        arg == '--oneline' -> oneline = true
     }
-    log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
-    log-ok == false -> {
-        print('fatal: could not walk commits')
-        return
+    oneline == true -> {
+        log-output, log-ok = revwalk.revwalk-format-log-oneline(git-dir, 'HEAD', max-count)
+        log-ok == false -> {
+            print('fatal: could not walk commits')
+            return
+        }
+        print(log-output)
     }
-    print(log-output)
+    oneline == false -> {
+        log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
+        log-ok == false -> {
+            print('fatal: could not walk commits')
+            return
+        }
+        print(log-output)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -470,21 +494,23 @@ cmd-status = (argc i64) {
         }
 
         ; Determine staged status
-        has-head == false -> {
-            ; No HEAD — everything is "new file"
-            staged-names = staged-names - 'new file: ' - nm - '\n'
-            staged-count = staged-count + 1
-        }
-        in-head == false -> {
-            staged-names = staged-names - 'new file: ' - nm - '\n'
-            staged-count = staged-count + 1
-        }
-        head-matches == false -> {
-            has-head == true -> {
-                in-head == true -> {
-                    staged-names = staged-names - 'modified: ' - nm - '\n'
-                    staged-count = staged-count + 1
-                }
+        {
+            has-head == false -> {
+                ; No HEAD — everything is "new file"
+                staged-names = staged-names - 'new file: ' - nm - '\n'
+                staged-count = staged-count + 1
+            }
+
+            has-head == true && in-head == false -> {
+                ; File not in HEAD tree — new file
+                staged-names = staged-names - 'new file: ' - nm - '\n'
+                staged-count = staged-count + 1
+            }
+
+            has-head == true && in-head == true && head-matches == false -> {
+                ; File in HEAD but content differs — modified
+                staged-names = staged-names - 'modified: ' - nm - '\n'
+                staged-count = staged-count + 1
             }
         }
 
@@ -551,9 +577,99 @@ cmd-status = (argc i64) {
         print('')
     }
 
-    staged-count == 0 && modified-count == 0 -> {
+    ; Detect untracked files — files in work tree not in index
+    untracked-names str = ''
+    untracked-count i64 = 0
+    work-tree.len > 0 -> {
+        untracked-names, untracked-count = scan-untracked(work-tree, work-tree, names, count)
+    }
+
+    ; Print untracked files
+    untracked-count > 0 -> {
+        print('Untracked files:')
+        upos = 0
+        {
+            upos >= untracked-names.len -> break
+            unl = util.find-byte-str(untracked-names, 10, upos)
+            uend = untracked-names.len
+            unl >= 0 -> uend = unl
+            uline = util.str-range(untracked-names, upos, uend)
+            print('  ' - uline)
+            upos = unl + 1
+            unl < 0 -> break
+        } (true)
+        print('')
+    }
+
+    staged-count == 0 && modified-count == 0 && untracked-count == 0 -> {
         print('nothing to commit, working tree clean')
     }
+}
+
+; scan-untracked: recursively scan work tree for files not in index
+; base-dir str (root work tree dir), dir str (current dir being scanned),
+; index-names str (newline-separated), index-count i64
+; returns untracked-names str (newline-sep), untracked-count i64
+scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untracked-names str, untracked-count i64) {
+    untracked-names = ''
+    untracked-count = 0
+    dirp = fs.open-dir(dir)
+    dirp == 0 -> return
+    fe-ok = true
+    {
+        fe-ok == false -> break
+        fname, fe-ok = fs.read-dir(dirp)
+        fe-ok == true -> {
+            ; skip . and .. and .git
+            is-dot = util.str-eq(fname, '.')
+            is-dotdot = util.str-eq(fname, '..')
+            is-git = util.str-eq(fname, '.git')
+            is-dot == false && is-dotdot == false && is-git == false -> {
+                full-path = dir - '/' - fname
+                ; compute relative path from base-dir
+                rel-path = fname
+                base-len = base-dir.len
+                full-len = full-path.len
+                full-len > base-len -> {
+                    ; skip base-dir + '/' prefix
+                    rel-path = util.str-range(full-path, base-len + 1, full-len)
+                }
+                isf = fs.is-file(full-path)
+                isf == true -> {
+                    ; check if this file is in index
+                    in-index = false
+                    pos = 0
+                    j <- [0..index-count): {
+                        nl = util.find-byte-str(index-names, 10, pos)
+                        end = index-names.len
+                        nl >= 0 -> end = nl
+                        nm = util.str-range(index-names, pos, end)
+                        same = util.str-eq(nm, rel-path)
+                        same == true -> {
+                            in-index = true
+                            break
+                        }
+                        pos = nl + 1
+                        nl < 0 -> break
+                    }
+                    in-index == false -> {
+                        untracked-names = untracked-names - rel-path - '\n'
+                        untracked-count = untracked-count + 1
+                    }
+                }
+                isf == false -> {
+                    isd = fs.is-dir(full-path)
+                    isd == true -> {
+                        ; recursively scan subdirectory
+                        sub-names, sub-count = scan-untracked(base-dir, full-path, index-names, index-count)
+                        untracked-names = untracked-names - sub-names
+                        untracked-count = untracked-count + sub-count
+                    }
+                }
+            }
+        }
+    } (true)
+    fs.close-dir(dirp)
 }
 
 ; ═══════════════════════════════════════════════
@@ -635,7 +751,7 @@ cmd-branch = (argc i64) {
 
 cmd-checkout = (argc i64) {
     argc < 2 -> {
-        print('usage: git checkout <branch>')
+        print('usage: git checkout <branch> [-- <file>...]')
         return
     }
     git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
@@ -643,6 +759,80 @@ cmd-checkout = (argc i64) {
         print('fatal: not a git repository')
         return
     }
+
+    ; Check for -- separator (checkout files mode)
+    has-separator = false
+    file-start = argc
+    i <- [1..argc): {
+        a = os.arg(i + 1)
+        a == '--' -> {
+            has-separator = true
+            file-start = i + 1
+        }
+    }
+
+    ; File checkout mode: restore specific files from HEAD/tree
+    has-separator == true -> {
+        head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+        head-ok == false -> {
+            print('fatal: no HEAD ref')
+            return
+        }
+        tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, head-oid)
+        tree-ok == false -> {
+            print('fatal: could not read commit tree')
+            return
+        }
+
+        ; Get flat file list from tree
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-ok == false -> {
+            print('fatal: could not read tree')
+            return
+        }
+
+        ; Restore each requested file
+        j <- [file-start..argc): {
+            req-file = os.arg(j + 1)
+            ; find this file in the flat list
+            pos = 0
+            i2 <- [0..flat-count): {
+                nl = util.find-byte-str(flat-paths, 10, pos)
+                end = flat-paths.len
+                nl >= 0 -> end = nl
+                nm = util.str-range(flat-paths, pos, end)
+                same = util.str-eq(nm, req-file)
+                same == true -> {
+                    ; read blob and restore
+                    hx = util.str-range(flat-hexoids, i2 * 40, i2 * 40 + 40)
+                    file-oid, oid-ok = oid.oid-from-hex(hx)
+                    oid-ok == true -> {
+                        b-kind, b-data, b-read-ok = object.read-loose(git-dir, file-oid)
+                        b-read-ok == true -> {
+                            full-path = req-file
+                            work-tree.len > 0 -> {
+                                full-path = work-tree - '/' - req-file
+                            }
+                            ; ensure parent dir
+                            slash = full-path.rindex('/')
+                            slash >= 0 -> {
+                                parent = util.str-range(full-path, 0, slash)
+                                util.mkdir-all(parent)
+                            }
+                            util.write-file-simple(full-path, b-data)
+                        }
+                    }
+                    break
+                }
+                pos = nl + 1
+                nl < 0 -> break
+            }
+        }
+        print('Restored files from HEAD')
+        return
+    }
+
+    ; Branch checkout mode
     name = os.arg(2)
     ref-name = 'refs/heads/' - name
     o, ref-ok = refs.read-ref(git-dir, ref-name)
@@ -654,15 +844,21 @@ cmd-checkout = (argc i64) {
     ; Read the commit to get the tree oid
     tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, o)
     tree-ok == true -> {
+        ; Remove files that are in the work tree but not in the target tree
+        object.remove-stale-files(git-dir, tree-oid, work-tree)
+
         ; Restore working tree from the commit's tree
         co-ok = object.checkout-tree(git-dir, tree-oid, work-tree)
         co-ok == false -> {
             print('warning: could not fully restore working tree')
         }
-    }
 
-    ; Update index to match the tree
-    ; (For now, we update HEAD; index update from tree is a future improvement)
+        ; Rebuild index from the tree
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-ok == true -> {
+            index.write-index(git-dir, flat-paths, flat-hexoids, flat-modes, flat-count)
+        }
+    }
 
     refs.update-head(git-dir, ref-name)
     print('Switched to branch {name}')
@@ -795,10 +991,10 @@ cmd-cat-file = (argc i64) {
         return
     }
     kind, data, read-ok = object.read-loose(git-dir, o)
-    if read-ok == false {
+    read-ok == false -> {
         kind, data, read-ok = pack.read-packed-object(git-dir, o)
     }
-    if read-ok == false {
+    read-ok == false -> {
         print('fatal: object not found')
         return
     }
@@ -879,17 +1075,17 @@ cmd-ls-tree = (argc i64) {
         return
     }
     kind, data, read-ok = object.read-loose(git-dir, o)
-    if read-ok == false {
+    read-ok == false -> {
         kind, data, read-ok = pack.read-packed-object(git-dir, o)
     }
-    if read-ok == false {
+    read-ok == false -> {
         print('fatal: object not found')
         return
     }
     kind: {
         'commit' -> {
             o, ref-ok = revwalk.commit-tree-oid(git-dir, o)
-            if ref-ok == false {
+            ref-ok == false -> {
                 print('fatal: could not read commit tree')
                 return
             }
@@ -1114,10 +1310,10 @@ cmd-show = (argc i64) {
         return
     }
     kind, data, read-ok = object.read-loose(git-dir, o)
-    if read-ok == false {
+    read-ok == false -> {
         kind, data, read-ok = pack.read-packed-object(git-dir, o)
     }
-    if read-ok == false {
+    read-ok == false -> {
         print('fatal: object not found')
         return
     }
@@ -1159,7 +1355,7 @@ cmd-rm = (argc i64) {
     ; Remove from index
     ok = index.index-remove(git-dir, path)
     ok == false -> {
-        print("fatal: could not remove '{path}' from index")
+        print('fatal: could not remove {path} from index')
         return
     }
 
@@ -1172,7 +1368,7 @@ cmd-rm = (argc i64) {
         }
         fs.remove(full-path)
     }
-    print("rm '{path}'")
+    print('rm {path}')
 }
 
 ; ═══════════════════════════════════════════════
@@ -1185,16 +1381,23 @@ cmd-reset = (argc i64) {
         print('fatal: not a git repository')
         return
     }
+
+    ; Check for --hard flag
+    hard = false
     target = 'HEAD'
-    argc >= 2 -> {
-        target = os.arg(2)
+    i <- [1..argc): {
+        arg = os.arg(i + 1)
+        arg == '--hard' -> hard = true
+        arg != '--hard' -> target = arg
     }
+
     ; Resolve the target ref to an oid
     target-oid, target-ok = revwalk.resolve-ref(git-dir, target)
     target-ok == false -> {
         print('fatal: could not resolve {target}')
         return
     }
+
     ; Reset HEAD to the target
     branch, detached, branch-ok = refs.current-branch(git-dir)
     {
@@ -1206,14 +1409,26 @@ cmd-reset = (argc i64) {
             refs.set-head-detached(git-dir, target-oid)
         }
     }
-    ; Also reset index to match the target's tree (if it's a commit)
+
+    ; Read the target's tree and rebuild index + worktree
     tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, target-oid)
     tree-ok == true -> {
-        ; Read the tree and rebuild index from it
-        ; For now, just print a message
-        print('Reset to {target}')
+        ; Rebuild index from the tree
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-ok == true -> {
+            index.write-index(git-dir, flat-paths, flat-hexoids, flat-modes, flat-count)
+        }
+
+        ; --hard: also restore working tree
+        hard == true -> {
+            ; Remove files not in the target tree
+            object.remove-stale-files(git-dir, tree-oid, work-tree)
+
+            co-ok = object.checkout-tree(git-dir, tree-oid, work-tree)
+            co-ok == false -> {
+                print('warning: could not fully restore working tree')
+            }
+        }
     }
-    tree-ok == false -> {
-        print('Reset to {target}')
-    }
+    print('Reset to {target}')
 }

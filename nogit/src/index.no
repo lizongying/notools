@@ -305,9 +305,15 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
 ;
 ; We build the entire index file content as a single str (byte-string)
 ; and write it byte-by-byte (stride-safe).
+;
+; Stat fields (ctime/mtime/uid/gid/size) are populated using fs.stat-*
+; builtins. dev and ino remain 0 (not available in Nolang stdlib).
 write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i64) (ok bool) {
     ok = false
     p = git-dir - '/index'
+
+    ; get working directory for stat lookups
+    work-dir = os.get-wd()
 
     ; build index content
     ; header: DIRC + version(4) + count(4) = 12 bytes
@@ -363,19 +369,38 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         }
 
         ; build entry (62 bytes fixed + name + NUL + padding)
-        ; for simplicity, use stat defaults (0 for ctime/mtime/dev/ino)
-        ; ctime(8)
-        zero8 str = with-len(8)
-        out = out - zero8
+        ; populate stat fields using fs.stat-* builtins
+        ; build the full file path for stat lookup
+        stat-path = work-dir - '/' - nm
+        stat-ok = fs.is-file(stat-path)
+
+        ; stat fields (default to 0 if file not found)
+        st-mtime i64 = 0
+        st-uid i64 = 0
+        st-gid i64 = 0
+        st-size i64 = 0
+        stat-ok == true -> {
+            st-mtime = fs.stat-mtime(stat-path)
+            st-uid = fs.stat-uid(stat-path)
+            st-gid = fs.stat-gid(stat-path)
+            st-size = fs.stat-size(stat-path)
+        }
+
+        ; ctime(8) — use mtime as ctime (Nolang has no stat-ctime)
+        ct8 str = with-len(8)
+        i64-to-u32-be-at(ct8, 0, st-mtime)
+        out = out - ct8
 
         ; mtime(8)
-        out = out - zero8
+        mt8 str = with-len(8)
+        i64-to-u32-be-at(mt8, 0, st-mtime)
+        out = out - mt8
 
-        ; dev(4)
+        ; dev(4) — 0 (not available in Nolang stdlib)
         zero4 str = with-len(4)
         out = out - zero4
 
-        ; ino(4)
+        ; ino(4) — 0 (not available in Nolang stdlib)
         out = out - zero4
 
         ; mode(4)
@@ -384,13 +409,19 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         out = out - mode-bytes
 
         ; uid(4)
-        out = out - zero4
+        uid-bytes str = with-len(4)
+        i64-to-u32-be-at(uid-bytes, 0, st-uid)
+        out = out - uid-bytes
 
         ; gid(4)
-        out = out - zero4
+        gid-bytes str = with-len(4)
+        i64-to-u32-be-at(gid-bytes, 0, st-gid)
+        out = out - gid-bytes
 
-        ; size(4) — we use 0 as placeholder
-        out = out - zero4
+        ; size(4)
+        size-bytes str = with-len(4)
+        i64-to-u32-be-at(size-bytes, 0, st-size)
+        out = out - size-bytes
 
         ; sha1(20)
         oid-bytes str = with-len(20)
