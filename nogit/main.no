@@ -104,6 +104,90 @@ read-worktree-file = (work-tree str, path str) (content str, ok bool) {
     content, ok = util.read-file-str(full)
 }
 
+; read-object-unified: try loose first, then packed.
+read-object-unified = (git-dir str, o oid) (kind str, data str, ok bool) {
+    kind, data, ok = object.read-loose(git-dir, o)
+    ok == false -> {
+        kind, data, ok = pack.read-packed-object(git-dir, o)
+    }
+}
+
+; log-packed: manual commit walk for packed repos (fallback when revwalk fails)
+; Walks first-parent chain using read-object-unified.
+log-packed = (git-dir str, oneline bool, max-count i64) {
+    start-oid, ref-ok = refs.read-ref(git-dir, 'HEAD')
+    ref-ok == false -> return
+    cur = start-oid
+    count i64 = 0
+    {
+        count >= 10000 -> break
+        max-count > 0 -> {
+            count >= max-count -> break
+        }
+        k str
+        d str
+        read-ok bool
+        k, d, read-ok = read-object-unified(git-dir, cur)
+        read-ok == false -> break
+        ; parse commit: tree, parent, author, message
+        cur-hex = oid.oid-hex-str(cur)
+        idx i64 = d.index('\n\n')
+        hend = d.len
+        idx >= 0 -> hend = idx
+        msg = ''
+        idx >= 0 -> msg = util.str-range(d, idx + 2, d.len)
+        parent-hex str = ''
+        a-name str = ''
+        a-email str = ''
+        a-time i64 = 0
+        a-tz str = ''
+        pos = 0
+        {
+            pos >= hend -> break
+            nl i64 = util.find-byte-str(d, 10, pos)
+            nl < 0 -> nl = hend
+            line str = util.str-range(d, pos, nl)
+            line.starts-with('parent ') -> {
+                parent-hex = util.str-range(line, 7, line.len)
+            }
+            line.starts-with('author ') -> {
+                ap str = util.str-range(line, 7, line.len)
+                a-name, a-email, a-time, a-tz = object.parse-person-fields(ap)
+            }
+            pos = nl + 1
+        } (true)
+        oneline == true -> {
+            short-hex = util.str-range(cur-hex, 0, 7)
+            ; first line of message
+            ml = msg.len
+            mnl = util.find-byte-str(msg, 10, 0)
+            mnl >= 0 -> ml = mnl
+            first-line = util.str-range(msg, 0, ml)
+            print('{short-hex} {first-line}')
+        }
+        -> {
+            print('commit ' - cur-hex)
+            print('Author: ' - a-name - ' <' - a-email - '>')
+            print('Date:   ' - util.i64-to-str(a-time) - ' ' - a-tz)
+            print('')
+            print('    ' - msg)
+            print('')
+        }
+        count = count + 1
+        parent-hex.len == 40 -> {
+            cur, ref-ok = oid.oid-from-hex(parent-hex)
+            ref-ok == false -> break
+        }
+        parent-hex.len == 0 -> break
+        parent-hex.len > 40 -> {
+            ; multiple parents — take first
+            first-hex = util.str-range(parent-hex, 0, 40)
+            cur, ref-ok = oid.oid-from-hex(first-hex)
+            ref-ok == false -> break
+        }
+    } (true)
+}
+
 ; ═══════════════════════════════════════════════
 ; git init
 ; ═══════════════════════════════════════════════
@@ -414,7 +498,11 @@ cmd-log = (argc i64) {
     oneline == true -> {
         log-output, log-ok = revwalk.revwalk-format-log-oneline(git-dir, 'HEAD', max-count)
         log-ok == false -> {
-            print('fatal: could not walk commits')
+            log-packed(git-dir, true, max-count)
+            return
+        }
+        log-output.len == 0 -> {
+            log-packed(git-dir, true, max-count)
             return
         }
         print(log-output)
@@ -422,7 +510,11 @@ cmd-log = (argc i64) {
     oneline == false -> {
         log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
         log-ok == false -> {
-            print('fatal: could not walk commits')
+            log-packed(git-dir, false, max-count)
+            return
+        }
+        log-output.len == 0 -> {
+            log-packed(git-dir, false, max-count)
             return
         }
         print(log-output)
@@ -1120,6 +1212,9 @@ cmd-ls-tree = (argc i64) {
                     return
                 }
                 kind, data, read-ok = object.read-loose(git-dir, o)
+                read-ok == false -> {
+                    kind, data, read-ok = pack.read-packed-object(git-dir, o)
+                }
                 read-ok == false -> {
                     print('fatal: could not read tree object')
                     return

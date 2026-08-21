@@ -485,6 +485,123 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 ; index add / remove
 ; ═══════════════════════════════════════════════
 
+; sort-index-entries: sort the flat index arrays by base_name_compare.
+; Uses selection sort: repeatedly pick the smallest unsorted entry and
+; append it to the output. This avoids in-place array manipulation.
+; names str: newline-separated file paths
+; hexoids str: concatenated 40-char hex oids
+; modes-str str: newline-separated mode strings
+; count i64: number of entries
+; returns: sorted-names, sorted-oids, sorted-modes
+sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-names str, sorted-oids str, sorted-modes str) {
+    sorted-names = ''
+    sorted-oids = ''
+    sorted-modes = ''
+
+    ; Track which entries have been placed (by index).
+    ; We use a string of '0'/'1' as a bitmap.
+    placed str = with-len(count)
+    i <- [0..count): {
+        placed[i] = 48 ; '0' = not placed
+    }
+
+    ; For each output position, find the smallest unsorted entry.
+    out-i <- [0..count): {
+        best-j i64 = -1
+
+        ; Pre-extract all names and find the minimum unsorted one.
+        ; We scan all entries, skipping those already placed.
+        scan-j <- [0..count): {
+            placed[scan-j] == 48 -> {
+                ; extract name scan-j
+                np i64 = 0
+                k <- [0..scan-j): {
+                    nl-k = find-newline-local(names, np)
+                    np = nl-k + 1
+                }
+                nj-end = find-newline-local(names, np)
+                nj-name = names[np..nj-end)
+
+                best-j < 0 -> {
+                    best-j = scan-j
+                }
+                best-j >= 0 -> {
+                    ; extract name best-j for comparison
+                    bp i64 = 0
+                    k <- [0..best-j): {
+                        nl-b = find-newline-local(names, bp)
+                        bp = nl-b + 1
+                    }
+                    bj-end = find-newline-local(names, bp)
+                    bj-name = names[bp..bj-end)
+
+                    cmp = name-cmp-index(nj-name, bj-name)
+                    cmp < 0 -> best-j = scan-j
+                }
+            }
+        }
+
+        ; Place best-j into output
+        best-j >= 0 -> {
+            ; extract name best-j
+            np i64 = 0
+            k <- [0..best-j): {
+                nl-k = find-newline-local(names, np)
+                np = nl-k + 1
+            }
+            nj-end = find-newline-local(names, np)
+            nj-name = names[np..nj-end)
+
+            ; extract oid best-j
+            nj-oid = hexoids[best-j * 40..best-j * 40 + 40)
+
+            ; extract mode best-j
+            mp i64 = 0
+            k <- [0..best-j): {
+                ml-k = find-newline-local(modes-str, mp)
+                mp = ml-k + 1
+            }
+            mj-end = find-newline-local(modes-str, mp)
+            nj-mode = modes-str[mp..mj-end)
+
+            sorted-names = sorted-names - nj-name - '\n'
+            sorted-oids = sorted-oids - nj-oid
+            sorted-modes = sorted-modes - nj-mode - '\n'
+            placed[best-j] = 49 ; '1' = placed
+        }
+    }
+}
+
+; name-cmp-index: simplified base_name_compare for index sorting.
+; Compares two file names byte by byte. Both are regular files (not dirs)
+; in the index context, so no directory '/' rule needed.
+; Returns <0 if a < b, 0 if equal, >0 if a > b.
+name-cmp-index = (a str, b str) (r i64) {
+    la = a.len
+    lb = b.len
+    len = la
+    lb < len -> len = lb
+    r = 0
+    i = 0
+    {
+        i < len -> {
+            ca = a[i]
+            cb = b[i]
+            ca < cb -> {
+                r = -1
+                return
+            }
+            ca > cb -> {
+                r = 1
+                return
+            }
+            i = i + 1
+        }
+    } (i < len)
+    la < lb -> r = -1
+    la > lb -> r = 1
+}
+
 ; index-add: add a file to the index (blob already written to object store)
 ; git-dir str, path str (file path relative to work tree), o oid, mode i64
 ; returns ok bool
@@ -566,9 +683,15 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
         }
     }
 
+    ; sort entries before writing (Git requires base_name_compare order)
+    sorted-names str
+    sorted-oids str
+    sorted-modes str
+    sorted-names, sorted-oids, sorted-modes = sort-index-entries(new-names, new-oids, new-modes, new-count)
+
     ; rewrite index
     write-ok bool
-    write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)
+    write-ok = write-index(git-dir, sorted-names, sorted-oids, sorted-modes, new-count)
     ok = write-ok
 }
 
@@ -619,7 +742,12 @@ index-remove = (git-dir str, path str) (ok bool) {
         mode-pos = mnl2 + 1
         nl >= ri-names.len -> break
     }
+    ; sort entries before writing (Git requires base_name_compare order)
+    sorted-names str
+    sorted-oids str
+    sorted-modes str
+    sorted-names, sorted-oids, sorted-modes = sort-index-entries(new-names, new-oids, new-modes, new-count)
     write-ok bool
-    write-ok = write-index(git-dir, new-names, new-oids, new-modes, new-count)
+    write-ok = write-index(git-dir, sorted-names, sorted-oids, sorted-modes, new-count)
     ok = write-ok
 }

@@ -239,6 +239,200 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
     new-cnt = cnt
 }
 
+; ── VP8L Sub-Image Decoder ──
+
+; webp-decode-argb-image: decode a VP8L ARGB sub-image (for transform images)
+; This is used to decode predictor and color transform sub-images.
+; Each sub-image has its own color cache config and 5 Huffman tables.
+; data str: file data
+; pos i64: current bit position
+; buf i64: bit buffer
+; cnt i64: bit count
+; img-w i64: sub-image width
+; img-h i64: sub-image height
+; returns out []byte: ARGB pixel data (4 bytes per pixel), new-pos, new-buf, new-cnt
+webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h i64) (out []byte, new-pos i64, new-buf i64, new-cnt i64) {
+    sub-n = img-w * img-h
+    sub-argb []byte = with-len(sub-n * 4)
+
+    ; Read color cache config for sub-image
+    sub-cc-used, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+    sub-cc-size = 0
+    {
+        sub-cc-used == 1 -> {
+            sub-cc-bits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 4)
+            sub-cc-size = 1 << sub-cc-bits
+        }
+    }
+
+    ; Decode 5 Huffman tables for sub-image
+    sub-n-syms = 256 + sub-cc-size
+
+    sub-lens-0 []byte = with-len(sub-n-syms)
+    sub-lens-1 []byte = with-len(sub-n-syms)
+    sub-lens-2 []byte = with-len(sub-n-syms)
+    sub-lens-3 []byte = with-len(sub-n-syms)
+    sub-lens-4 []byte = with-len(sub-n-syms)
+
+    sub-lens-0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    sub-lens-1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    sub-lens-2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    sub-lens-3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    sub-lens-4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+
+    ; Build canonical codes for all 5 tables
+    sub-codes-0 []byte = with-len(sub-n-syms)
+    sub-first-0 []byte = with-len(16)
+    sub-count-0 []byte = with-len(16)
+    webp-build-huff-codes(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0)
+
+    sub-codes-1 []byte = with-len(sub-n-syms)
+    sub-first-1 []byte = with-len(16)
+    sub-count-1 []byte = with-len(16)
+    webp-build-huff-codes(sub-lens-1, sub-n-syms, sub-codes-1, sub-first-1, sub-count-1)
+
+    sub-codes-2 []byte = with-len(sub-n-syms)
+    sub-first-2 []byte = with-len(16)
+    sub-count-2 []byte = with-len(16)
+    webp-build-huff-codes(sub-lens-2, sub-n-syms, sub-codes-2, sub-first-2, sub-count-2)
+
+    sub-codes-3 []byte = with-len(sub-n-syms)
+    sub-first-3 []byte = with-len(16)
+    sub-count-3 []byte = with-len(16)
+    webp-build-huff-codes(sub-lens-3, sub-n-syms, sub-codes-3, sub-first-3, sub-count-3)
+
+    sub-codes-4 []byte = with-len(sub-n-syms)
+    sub-first-4 []byte = with-len(16)
+    sub-count-4 []byte = with-len(16)
+    webp-build-huff-codes(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4)
+
+    ; Color cache for sub-image
+    sub-cc-cache []byte = with-len(sub-cc-size * 4)
+
+    ; Decode all pixels
+    sub-px = 0
+    {
+        sub-px < sub-n -> {
+            ; Decode green channel (table 0)
+            sgreen, pos, buf, cnt = webp-huff-decode(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0, data, pos, buf, cnt)
+
+            {
+                sgreen < 256 -> {
+                    ; Normal pixel: decode R, B, A using table selected by (green >> 3) % 5
+                    s-tbl = (sgreen >> 3) % 5
+                    s-red = 0
+                    s-blue = 0
+                    s-alpha = 255
+
+                    {
+                        s-tbl == 0 -> {
+                            s-red, pos, buf, cnt = webp-huff-decode(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0, data, pos, buf, cnt)
+                            s-blue, pos, buf, cnt = webp-huff-decode(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0, data, pos, buf, cnt)
+                            s-alpha, pos, buf, cnt = webp-huff-decode(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0, data, pos, buf, cnt)
+                        }
+
+                        s-tbl == 1 -> {
+                            s-red, pos, buf, cnt = webp-huff-decode(sub-lens-1, sub-n-syms, sub-codes-1, sub-first-1, sub-count-1, data, pos, buf, cnt)
+                            s-blue, pos, buf, cnt = webp-huff-decode(sub-lens-1, sub-n-syms, sub-codes-1, sub-first-1, sub-count-1, data, pos, buf, cnt)
+                            s-alpha, pos, buf, cnt = webp-huff-decode(sub-lens-1, sub-n-syms, sub-codes-1, sub-first-1, sub-count-1, data, pos, buf, cnt)
+                        }
+
+                        s-tbl == 2 -> {
+                            s-red, pos, buf, cnt = webp-huff-decode(sub-lens-2, sub-n-syms, sub-codes-2, sub-first-2, sub-count-2, data, pos, buf, cnt)
+                            s-blue, pos, buf, cnt = webp-huff-decode(sub-lens-2, sub-n-syms, sub-codes-2, sub-first-2, sub-count-2, data, pos, buf, cnt)
+                            s-alpha, pos, buf, cnt = webp-huff-decode(sub-lens-2, sub-n-syms, sub-codes-2, sub-first-2, sub-count-2, data, pos, buf, cnt)
+                        }
+
+                        s-tbl == 3 -> {
+                            s-red, pos, buf, cnt = webp-huff-decode(sub-lens-3, sub-n-syms, sub-codes-3, sub-first-3, sub-count-3, data, pos, buf, cnt)
+                            s-blue, pos, buf, cnt = webp-huff-decode(sub-lens-3, sub-n-syms, sub-codes-3, sub-first-3, sub-count-3, data, pos, buf, cnt)
+                            s-alpha, pos, buf, cnt = webp-huff-decode(sub-lens-3, sub-n-syms, sub-codes-3, sub-first-3, sub-count-3, data, pos, buf, cnt)
+                        }
+
+                        s-tbl == 4 -> {
+                            s-red, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
+                            s-blue, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
+                            s-alpha, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
+                        }
+                    }
+
+                    sub-argb[sub-px * 4] = s-alpha
+                    sub-argb[sub-px * 4 + 1] = s-red
+                    sub-argb[sub-px * 4 + 2] = sgreen
+                    sub-argb[sub-px * 4 + 3] = s-blue
+                }
+
+                -> {
+                    ; Color cache or LZ77 reference
+                    s-cc-idx = sgreen - 256
+                    {
+                        s-cc-idx < sub-cc-size -> {
+                            sub-argb[sub-px * 4] = sub-cc-cache[s-cc-idx * 4]
+                            sub-argb[sub-px * 4 + 1] = sub-cc-cache[s-cc-idx * 4 + 1]
+                            sub-argb[sub-px * 4 + 2] = sub-cc-cache[s-cc-idx * 4 + 2]
+                            sub-argb[sub-px * 4 + 3] = sub-cc-cache[s-cc-idx * 4 + 3]
+                        }
+
+                        -> {
+                            ; LZ77 back-reference
+                            s-len = sgreen - 256 - sub-cc-size
+                            s-len = s-len + 1
+                            s-dist-code, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
+                            {
+                                s-dist-code <= 3 -> {
+                                    s-dist = s-dist-code + 1
+                                }
+
+                                -> {
+                                    s-dist-extra = (s-dist-code - 2) >> 1
+                                    s-extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, s-dist-extra)
+                                    s-odd = (s-dist-code - 2) & 1
+                                    s-dist-base = 1 + ((1 + s-odd) << s-dist-extra)
+                                    s-dist = s-dist-base + s-extra-val
+                                }
+                            }
+                            s-li <- [0..s-len): {
+                                {
+                                    sub-px - s-dist + s-li >= 0 && sub-px + s-li < sub-n -> {
+                                        s-src = sub-px - s-dist + s-li
+                                        sub-argb[(sub-px + s-li) * 4] = sub-argb[s-src * 4]
+                                        sub-argb[(sub-px + s-li) * 4 + 1] = sub-argb[s-src * 4 + 1]
+                                        sub-argb[(sub-px + s-li) * 4 + 2] = sub-argb[s-src * 4 + 2]
+                                        sub-argb[(sub-px + s-li) * 4 + 3] = sub-argb[s-src * 4 + 3]
+                                    }
+                                }
+                            }
+                            sub-px = sub-px + s-len - 1
+                        }
+                    }
+                }
+            }
+
+            ; Update color cache
+            {
+                sub-cc-size > 0 -> {
+                    sa0 = sub-argb[sub-px * 4]
+                    sr0 = sub-argb[sub-px * 4 + 1]
+                    sg0 = sub-argb[sub-px * 4 + 2]
+                    sb0 = sub-argb[sub-px * 4 + 3]
+                    s-hash = (sa0 * 506832829 + sr0 * 6454117 + sg0 * 2654435761 + sb0 * 40503) & (sub-cc-size - 1)
+                    sub-cc-cache[s-hash * 4] = sa0
+                    sub-cc-cache[s-hash * 4 + 1] = sr0
+                    sub-cc-cache[s-hash * 4 + 2] = sg0
+                    sub-cc-cache[s-hash * 4 + 3] = sb0
+                }
+            }
+
+            sub-px = sub-px + 1
+        }
+    } (sub-px < sub-n)
+
+    out = sub-argb
+    new-pos = pos
+    new-buf = buf
+    new-cnt = cnt
+}
+
 ; ── VP8L Main Decoder ──
 
 ; webp-decode-vp8l: decode VP8L lossless bitstream to raw pixel data
@@ -298,25 +492,20 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     n-transforms = n-transforms + 1
                     {
                         ttype == 0 -> {
-                            ; Predictor: 4 bits per pixel
+                            ; Predictor: 4 bits per pixel for the transform-bits field
                             pbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 4)
                             transform-bits[0] = pbits
-                            ; The predictor image is a sub-image of size
-                            ; ((w+3)/4) * ((h+3)/4) with 4 bits per pixel
+                            ; The predictor image is an ARGB sub-image of size
+                            ; ((w+3)/4) * ((h+3)/4), decoded with full 5-table Huffman.
                             pred-w = (w + 3) / 4
                             pred-h = (h + 3) / 4
+                            ; Decode the predictor sub-image as ARGB
+                            pred-argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, pred-w, pred-h)
+                            ; Extract the green channel (byte offset +2) as the predictor mode
                             pred-n = pred-w * pred-h
-                            ; Decode meta-Huffman for predictor image
-                            pred-lens []byte, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-                            pred-codes []byte = with-len(256)
-                            pred-first []byte = with-len(16)
-                            pred-count []byte = with-len(16)
-                            webp-build-huff-codes(pred-lens, 256, pred-codes, pred-first, pred-count)
-                            ; Store predictor image in pred-img (declared above)
                             pred-img = with-len(pred-n)
                             pi <- [0..pred-n): {
-                                psym, pos, buf, cnt = webp-huff-decode(pred-lens, 256, pred-codes, pred-first, pred-count, data, pos, buf, cnt)
-                                pred-img[pi] = psym
+                                pred-img[pi] = pred-argb[pi * 4 + 2]
                             }
                         }
 
@@ -325,29 +514,16 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             cbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
                             transform-bits[1] = cbits
                             ; Color transform image is an ARGB sub-image
-                            ; of size ((w+3)/4) x ((h+3)/4)
-                            ; Each pixel's R channel = green_to_red (signed 8-bit)
-                            ; Each pixel's B channel = green_to_blue (signed 8-bit)
+                            ; of size ((w+3)/4) x ((h+3)/4), decoded with full 5-table Huffman.
+                            ; Channel layout per spec:
+                            ;   R channel (offset +1) = red_to_blue
+                            ;   G channel (offset +2) = green_to_blue
+                            ;   B channel (offset +3) = green_to_red
                             ct-w = (w + 3) / 4
                             ct-h = (h + 3) / 4
                             ct-n = ct-w * ct-h
-                            ; Decode meta-Huffman for color transform image
-                            ct-lens []byte, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-                            ct-codes []byte = with-len(256)
-                            ct-first []byte = with-len(16)
-                            ct-count []byte = with-len(16)
-                            webp-build-huff-codes(ct-lens, 256, ct-codes, ct-first, ct-count)
-                            ; Decode color transform image into ct-img as ARGB
-                            ; (4 bytes per block pixel: A, R, G, B)
-                            ct-img = with-len(ct-n * 4)
-                            ci2 <- [0..ct-n): {
-                                csym, pos, buf, cnt = webp-huff-decode(ct-lens, 256, ct-codes, ct-first, ct-count, data, pos, buf, cnt)
-                                ; Each symbol is an ARGB value; store as 4 bytes
-                                ct-img[ci2 * 4] = (csym >> 24) & 255
-                                ct-img[ci2 * 4 + 1] = (csym >> 16) & 255
-                                ct-img[ci2 * 4 + 2] = (csym >> 8) & 255
-                                ct-img[ci2 * 4 + 3] = csym & 255
-                            }
+                            ; Decode the color transform sub-image as ARGB
+                            ct-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h)
                         }
 
                         ttype == 2 -> {
@@ -515,86 +691,44 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
 
                         -> {
                             ; LZ77 back-reference
-                            ; green - 256 - cc_size encodes the copy length
+                            ; Copy length: green - 256 - cc-size + 1
                             lz77-len = green - 256 - cc-size
-                            lz77-len = lz77-len + 1  ; +1 because min length is 1
+                            lz77-len = lz77-len + 1
+
                             ; Read distance code from the distance Huffman table (table 4)
-                            dist, pos, buf, cnt = webp-huff-decode(huff-lens-4, n-huff-syms, codes-4, first-4, count-4, data, pos, buf, cnt)
-                            ; Decode distance: extra bits depend on dist value
+                            dist-code, pos, buf, cnt = webp-huff-decode(huff-lens-4, n-huff-syms, codes-4, first-4, count-4, data, pos, buf, cnt)
+
+                            ; VP8L distance code table:
+                            ; code 0: dist=1 (0 extra bits)
+                            ; code 1: dist=2
+                            ; code 2: dist=3
+                            ; code 3: dist=4
+                            ; For code >= 4: extra_bits = (code - 2) / 2, base computed via formula
+                            ; Actually VP8L uses: codes 0-3 = direct, then each pair of codes adds 1 extra bit
+                            ; code 4-5: 1 extra bit, base=5
+                            ; code 6-7: 2 extra bits, base=7
+                            ; code 8-9: 3 extra bits, base=11
+                            ; General: for code >= 4:
+                            ;   extra_bits = (code - 2) / 2  (integer division)
+                            ;   base = 1 + (1 << extra_bits) + ((code - 2) % 2) * (1 << extra_bits)
+                            ; Simplified: dist = base + extra_val
                             {
-                                dist < 120 -> {
-                                    ; Distance is coded directly: dist = dist + 1
-                                    lz77-dist = dist + 1
+                                dist-code <= 3 -> {
+                                    lz77-dist = dist-code + 1
                                 }
 
                                 -> {
-                                    ; Distance with extra bits
-                                    ; Calculate number of extra bits
-                                    ; The distance code is split into ranges
-                                    ; codes 0-3: 1 byte, 4-7: 2 bytes, etc.
-                                    ; Use a lookup approach
-                                    dist-extra-bits = 0
-                                    dist-base = 0
-                                    {
-                                        dist < 4 -> {
-                                            lz77-dist = dist + 1
-                                        }
-
-                                        -> {
-                                            ; Compute extra bits: each 4 codes adds 1 extra bit
-                                            d = dist
-                                            d = d - 4
-                                            dist-extra-bits = 1
-                                            {
-                                                d >= 8 -> {
-                                                    d = d - 8
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 16 -> {
-                                                    d = d - 16
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 32 -> {
-                                                    d = d - 32
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 64 -> {
-                                                    d = d - 64
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 128 -> {
-                                                    d = d - 128
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 256 -> {
-                                                    d = d - 256
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            {
-                                                d >= 512 -> {
-                                                    d = d - 512
-                                                    dist-extra-bits = dist-extra-bits + 1
-                                                }
-                                            }
-                                            ; Read extra bits
-                                            extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, dist-extra-bits)
-                                            ; Compute distance
-                                            ; base = (1 << dist-extra-bits) + 3 + 4*(dist_extra_bits>0 ? ... )
-                                            ; Simplified: distance = d + (1 << dist-extra-bits)
-                                            lz77-dist = d + (1 << dist-extra-bits) + 1
-                                        }
-                                    }
+                                    ; Compute extra bits and base
+                                    ; extra_bits = (dist_code - 2) >> 1  (i.e. (dist_code - 2) / 2)
+                                    dist-extra = (dist-code - 2) >> 1
+                                    ; Read extra bits
+                                    extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, dist-extra)
+                                    ; base = 1 + (1 << dist_extra)  for even code-2
+                                    ; base = 1 + (1 << dist_extra) + (1 << dist_extra) for odd code-2
+                                    ; i.e. base = 1 + ((1 + ((dist_code - 2) & 1)) << dist_extra)
+                                    odd-bit = (dist-code - 2) & 1
+                                    dist-base = 1 + ((1 + odd-bit) << dist-extra)
+                                    lz77-dist = dist-base + extra-val
                                 }
                             }
                             ; Copy lz77-len pixels from distance lz77-dist back
@@ -663,15 +797,20 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     ;   2  = Top (T)
                     ;   3  = Top-Right (TR)
                     ;   4  = Top-Left (TL)
-                    ;   5  = Average(L, T)
-                    ;   6  = Select(TL, L, T) — if |TL-T| < |TL-L|: L, else T
-                    ;   7  = Clamp(L | T..T+R) where R = TR - T (L clamped to [T, T+(TR-TL)])
-                    ;   8  = Clamp(T | L..L+R) where R = TL - L (T clamped to [L, L+(TL-TL)])
-                    ;   9  = Average(T, (TL+TR)/2)
-                    ;   10 = Select(L, T, TL) — min(|TL-T|, |TL-L|, |L-T|) decides
-                    ;   11 = Average(L, (T+TL+TR)/3)
-                    ;   12 = Average(T, (L+TL+TR)/3)
-                    ;   13 = Average(L, T, TL)
+                    ;   5  = Average2(Average2(L, TR), T)
+                    ;   6  = Average2(L, TL)
+                    ;   7  = Average2(L, T)
+                    ;   8  = Average2(TL, T)
+                    ;   9  = Average2(T, TR)
+                    ;   10 = Average2(Average2(L, TL), Average2(T, TR))
+                    ;   11 = Select(L, T, TL): based on Manhattan distance,
+                    ;        pL = |L-TL|+|L-TL|+|L-TL|+|L-TL| (4-channel sum)
+                    ;        pT = |T-TL|+|T-TL|+|T-TL|+|T-TL| (4-channel sum)
+                    ;        pL < pT -> L, else T
+                    ;   12 = ClampAddSubtractFull(L, T, TL) = Clamp(L + T - TL)
+                    ;        i.e. per channel: clamp(val=L+T-TL, lo=0, hi=255)
+                    ;   13 = ClampAddSubtractHalf(Average2(L,T), TL)
+                    ;        i.e. per channel: clamp(val=Avg2(L,T)+(Avg2(L,T)-TL)/2, lo=0, hi=255)
                     ;
                     ; For modes 1-4 we can apply the prediction inline (single neighbor).
                     ; For modes 0 and 5-13 we compute pred-a/r/g/b then add at the end.
@@ -779,7 +918,29 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     }
                     {
                         mode == 5 -> {
-                            ; Average of L and T
+                            ; Average2(Average2(L, TR), T)
+                            avg-ltr-a = (left-a + tr-a) / 2
+                            avg-ltr-r = (left-r + tr-r) / 2
+                            avg-ltr-g = (left-g + tr-g) / 2
+                            avg-ltr-b = (left-b + tr-b) / 2
+                            pred-a = (avg-ltr-a + top-a) / 2
+                            pred-r = (avg-ltr-r + top-r) / 2
+                            pred-g = (avg-ltr-g + top-g) / 2
+                            pred-b = (avg-ltr-b + top-b) / 2
+                        }
+                    }
+                    {
+                        mode == 6 -> {
+                            ; Average2(L, TL)
+                            pred-a = (left-a + tl-a) / 2
+                            pred-r = (left-r + tl-r) / 2
+                            pred-g = (left-g + tl-g) / 2
+                            pred-b = (left-b + tl-b) / 2
+                        }
+                    }
+                    {
+                        mode == 7 -> {
+                            ; Average2(L, T)
                             pred-a = (left-a + top-a) / 2
                             pred-r = (left-r + top-r) / 2
                             pred-g = (left-g + top-g) / 2
@@ -787,162 +948,159 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         }
                     }
                     {
-                        mode == 6 -> {
-                            ; Select: if |TL - T| < |TL - L| then L, else T
-                            pa = tl-a - top-a
-                            {
-                                pa < 0 -> pa = -pa
-                            }
-                            pb = tl-a - left-a
-                            {
-                                pb < 0 -> pb = -pb
-                            }
-                            {
-                                pa <= pb -> {
-                                    pred-a = left-a
-                                    pred-r = left-r
-                                    pred-g = left-g
-                                    pred-b = left-b
-                                }
-                                -> {
-                                    pred-a = top-a
-                                    pred-r = top-r
-                                    pred-g = top-g
-                                    pred-b = top-b
-                                }
-                            }
-                        }
-                    }
-                    {
-                        mode == 7 -> {
-                            ; Clamp L to [T, T + (TR - TL)]
-                            pred-a = left-a
-                            pred-r = left-r
-                            pred-g = left-g
-                            pred-b = left-b
-                            hi-a = top-a + tr-a - tl-a
-                            hi-r = top-r + tr-r - tl-r
-                            hi-g = top-g + tr-g - tl-g
-                            hi-b = top-b + tr-b - tl-b
-                            {
-                                pred-a < top-a -> pred-a = top-a
-                                pred-a > hi-a -> pred-a = hi-a
-                            }
-                            {
-                                pred-r < top-r -> pred-r = top-r
-                                pred-r > hi-r -> pred-r = hi-r
-                            }
-                            {
-                                pred-g < top-g -> pred-g = top-g
-                                pred-g > hi-g -> pred-g = hi-g
-                            }
-                            {
-                                pred-b < top-b -> pred-b = top-b
-                                pred-b > hi-b -> pred-b = hi-b
-                            }
-                        }
-                    }
-                    {
                         mode == 8 -> {
-                            ; Clamp T to [L, L + (TL - TL)] = [L, L]
-                            ; Actually: T clamped to [L, L + (TL - L)]
-                            pred-a = top-a
-                            pred-r = top-r
-                            pred-g = top-g
-                            pred-b = top-b
-                            hi-a = left-a + tl-a - tl-a
-                            hi-r = left-r + tl-r - tl-r
-                            hi-g = left-g + tl-g - tl-g
-                            hi-b = left-b + tl-b - tl-b
-                            {
-                                pred-a < left-a -> pred-a = left-a
-                                pred-a > hi-a -> pred-a = hi-a
-                            }
-                            {
-                                pred-r < left-r -> pred-r = left-r
-                                pred-r > hi-r -> pred-r = hi-r
-                            }
-                            {
-                                pred-g < left-g -> pred-g = left-g
-                                pred-g > hi-g -> pred-g = hi-g
-                            }
-                            {
-                                pred-b < left-b -> pred-b = left-b
-                                pred-b > hi-b -> pred-b = hi-b
-                            }
+                            ; Average2(TL, T)
+                            pred-a = (tl-a + top-a) / 2
+                            pred-r = (tl-r + top-r) / 2
+                            pred-g = (tl-g + top-g) / 2
+                            pred-b = (tl-b + top-b) / 2
                         }
                     }
                     {
                         mode == 9 -> {
-                            ; Average of T and (TL+TR)/2
-                            pred-a = (top-a + (tl-a + tr-a) / 2) / 2
-                            pred-r = (top-r + (tl-r + tr-r) / 2) / 2
-                            pred-g = (top-g + (tl-g + tr-g) / 2) / 2
-                            pred-b = (top-b + (tl-b + tr-b) / 2) / 2
+                            ; Average2(T, TR)
+                            pred-a = (top-a + tr-a) / 2
+                            pred-r = (top-r + tr-r) / 2
+                            pred-g = (top-g + tr-g) / 2
+                            pred-b = (top-b + tr-b) / 2
                         }
                     }
                     {
                         mode == 10 -> {
-                            ; Select(L, T, TL): based on edges
-                            pa = tl-a - top-a
+                            ; Average2(Average2(L, TL), Average2(T, TR))
+                            avg-ltl-a = (left-a + tl-a) / 2
+                            avg-ltl-r = (left-r + tl-r) / 2
+                            avg-ltl-g = (left-g + tl-g) / 2
+                            avg-ltl-b = (left-b + tl-b) / 2
+                            avg-ttr-a = (top-a + tr-a) / 2
+                            avg-ttr-r = (top-r + tr-r) / 2
+                            avg-ttr-g = (top-g + tr-g) / 2
+                            avg-ttr-b = (top-b + tr-b) / 2
+                            pred-a = (avg-ltl-a + avg-ttr-a) / 2
+                            pred-r = (avg-ltl-r + avg-ttr-r) / 2
+                            pred-g = (avg-ltl-g + avg-ttr-g) / 2
+                            pred-b = (avg-ltl-b + avg-ttr-b) / 2
+                        }
+                    }
+                    {
+                        mode == 11 -> {
+                            ; Select(L, T, TL): Manhattan distance on all 4 channels
+                            ; pL = |L.A-TL.A| + |L.R-TL.R| + |L.G-TL.G| + |L.B-TL.B|
+                            ; pT = |T.A-TL.A| + |T.R-TL.R| + |T.G-TL.G| + |T.B-TL.B|
+                            ; pL < pT -> Left, else Top
+                            dla = left-a - tl-a
                             {
-                                pa < 0 -> pa = -pa
+                                dla < 0 -> dla = -dla
                             }
-                            pb = tl-a - left-a
+                            dlr = left-r - tl-r
                             {
-                                pb < 0 -> pb = -pb
+                                dlr < 0 -> dlr = -dlr
                             }
-                            pc = left-a - top-a
+                            dlg = left-g - tl-g
                             {
-                                pc < 0 -> pc = -pc
+                                dlg < 0 -> dlg = -dlg
                             }
+                            dlb = left-b - tl-b
                             {
-                                pa <= pb && pa <= pc -> {
+                                dlb < 0 -> dlb = -dlb
+                            }
+                            pL = dla + dlr + dlg + dlb
+                            dta = top-a - tl-a
+                            {
+                                dta < 0 -> dta = -dta
+                            }
+                            dtr = top-r - tl-r
+                            {
+                                dtr < 0 -> dtr = -dtr
+                            }
+                            dtg = top-g - tl-g
+                            {
+                                dtg < 0 -> dtg = -dtg
+                            }
+                            dtb = top-b - tl-b
+                            {
+                                dtb < 0 -> dtb = -dtb
+                            }
+                            pT = dta + dtr + dtg + dtb
+                            {
+                                pL < pT -> {
                                     pred-a = left-a
                                     pred-r = left-r
                                     pred-g = left-g
                                     pred-b = left-b
                                 }
-                                pb <= pc -> {
+                                -> {
                                     pred-a = top-a
                                     pred-r = top-r
                                     pred-g = top-g
                                     pred-b = top-b
                                 }
-                                -> {
-                                    pred-a = tl-a
-                                    pred-r = tl-r
-                                    pred-g = tl-g
-                                    pred-b = tl-b
-                                }
                             }
                         }
                     }
                     {
-                        mode == 11 -> {
-                            ; Average of L and (T+TL+TR)/3
-                            pred-a = (left-a + (top-a + tl-a + tr-a) / 3) / 2
-                            pred-r = (left-r + (top-r + tl-r + tr-r) / 3) / 2
-                            pred-g = (left-g + (top-g + tl-g + tr-g) / 3) / 2
-                            pred-b = (left-b + (top-b + tl-b + tr-b) / 3) / 2
-                        }
-                    }
-                    {
                         mode == 12 -> {
-                            ; Average of T and (L+TL+TR)/3
-                            pred-a = (top-a + (left-a + tl-a + tr-a) / 3) / 2
-                            pred-r = (top-r + (left-r + tl-r + tr-r) / 3) / 2
-                            pred-g = (top-g + (left-g + tl-g + tr-g) / 3) / 2
-                            pred-b = (top-b + (left-b + tl-b + tr-b) / 3) / 2
+                            ; ClampAddSubtractFull(L, T, TL) = Clamp(L + T - TL)
+                            ; Per channel: val = L + T - TL, clamp to [0, 255]
+                            val-a = left-a + top-a - tl-a
+                            val-r = left-r + top-r - tl-r
+                            val-g = left-g + top-g - tl-g
+                            val-b = left-b + top-b - tl-b
+                            {
+                                val-a < 0 -> val-a = 0
+                                val-a > 255 -> val-a = 255
+                            }
+                            {
+                                val-r < 0 -> val-r = 0
+                                val-r > 255 -> val-r = 255
+                            }
+                            {
+                                val-g < 0 -> val-g = 0
+                                val-g > 255 -> val-g = 255
+                            }
+                            {
+                                val-b < 0 -> val-b = 0
+                                val-b > 255 -> val-b = 255
+                            }
+                            pred-a = val-a
+                            pred-r = val-r
+                            pred-g = val-g
+                            pred-b = val-b
                         }
                     }
                     {
                         mode >= 13 -> {
-                            ; Mode 13: Average of L, T, TL
-                            pred-a = (left-a + top-a + tl-a) / 3
-                            pred-r = (left-r + top-r + tl-r) / 3
-                            pred-g = (left-g + top-g + tl-g) / 3
-                            pred-b = (left-b + top-b + tl-b) / 3
+                            ; Mode 13: ClampAddSubtractHalf(Average2(L,T), TL)
+                            ; Per channel: avg = Average2(L,T), val = avg + (avg - TL) / 2
+                            ; clamp to [0, 255]
+                            avg-lt-a = (left-a + top-a) / 2
+                            avg-lt-r = (left-r + top-r) / 2
+                            avg-lt-g = (left-g + top-g) / 2
+                            avg-lt-b = (left-b + top-b) / 2
+                            val-a = avg-lt-a + (avg-lt-a - tl-a) / 2
+                            val-r = avg-lt-r + (avg-lt-r - tl-r) / 2
+                            val-g = avg-lt-g + (avg-lt-g - tl-g) / 2
+                            val-b = avg-lt-b + (avg-lt-b - tl-b) / 2
+                            {
+                                val-a < 0 -> val-a = 0
+                                val-a > 255 -> val-a = 255
+                            }
+                            {
+                                val-r < 0 -> val-r = 0
+                                val-r > 255 -> val-r = 255
+                            }
+                            {
+                                val-g < 0 -> val-g = 0
+                                val-g > 255 -> val-g = 255
+                            }
+                            {
+                                val-b < 0 -> val-b = 0
+                                val-b > 255 -> val-b = 255
+                            }
+                            pred-a = val-a
+                            pred-r = val-r
+                            pred-g = val-g
+                            pred-b = val-b
                         }
                     }
 
@@ -957,48 +1115,55 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
 
         {
             ttype == 1 -> {
-                ; Inverse color transform (per VP8L spec)
+                ; Inverse color transform (per VP8L spec §4.2)
                 ; The color transform image (ct-img) is an ARGB sub-image
                 ; of size (ct-w x ct-h). For each 4x4 block of the main image,
-                ; we look up the corresponding transform pixel:
-                ;   green_to_red = ct-img R channel (signed 8-bit: 0..127→0..127, 128..255→-128..-1)
-                ;   green_to_blue = ct-img B channel (signed 8-bit, same mapping)
+                ; we look up the corresponding transform pixel.
+                ; Channel layout per spec:
+                ;   R channel (offset +1) = red_to_blue   (signed 8-bit)
+                ;   G channel (offset +2) = green_to_blue (signed 8-bit)
+                ;   B channel (offset +3) = green_to_red  (signed 8-bit)
+                ;   A channel (offset +0) = 255 (unused)
                 ; Inverse transform:
-                ;   new_red  = red  + (green * green_to_red) >> 5
-                ;   new_blue = blue + (green * green_to_blue + new_red * green_to_red) >> 5
-                ; (Note: new_red is used when computing new_blue)
+                ;   new_red  = red  + ((green_to_red   * green) >> 5)
+                ;   new_blue = blue + ((green_to_blue  * green) >> 5)
+                ;                     + ((red_to_blue  * (new_red & 0xff)) >> 5)
+                ; Note: two independent >>5 shifts, not a combined one.
                 pi <- [0..n-pixels): {
                     py = pi / w
                     px = pi - py * w
                     blk-x = px / 4
                     blk-y = py / 4
                     blk-idx = blk-y * ct-w + blk-x
-                    ; Read green_to_red and green_to_blue from ct-img ARGB
-                    gtr = 0  ; green_to_red (will be signed)
-                    gtb = 0  ; green_to_blue (will be signed)
+                    ; Read coefficients from ct-img ARGB
+                    rtb = 0  ; red_to_blue   (from R channel, signed)
+                    gtb = 0  ; green_to_blue (from G channel, signed)
+                    gtr = 0  ; green_to_red  (from B channel, signed)
                     {
                         blk-idx * 4 + 3 < ct-img.len -> {
-                            ; R channel is at offset 1 in ARGB
                             raw-r = ct-img[blk-idx * 4 + 1]
+                            raw-g = ct-img[blk-idx * 4 + 2]
                             raw-b = ct-img[blk-idx * 4 + 3]
                             ; Convert to signed: values 128..255 → -128..-1
-                            gtr = raw-r
-                            gtr > 127 -> gtr = gtr - 256
-                            gtb = raw-b
+                            rtb = raw-r
+                            rtb > 127 -> rtb = rtb - 256
+                            gtb = raw-g
                             gtb > 127 -> gtb = gtb - 256
+                            gtr = raw-b
+                            gtr > 127 -> gtr = gtr - 256
                         }
                     }
                     g = argb[pi * 4 + 2]
                     r = argb[pi * 4 + 1]
                     b = argb[pi * 4 + 3]
-                    ; Apply inverse color transform
-                    new-red = r + (g * gtr >> 5)
+                    ; Apply inverse color transform (two independent >>5)
+                    new-red = r + ((gtr * g) >> 5)
                     new-red = new-red & 255
                     {
                         new-red < 0 -> new-red = new-red + 256
                     }
                     argb[pi * 4 + 1] = new-red
-                    new-blue = b + ((g * gtb + new-red * gtr) >> 5)
+                    new-blue = b + ((gtb * g) >> 5) + ((rtb * (new-red & 255)) >> 5)
                     new-blue = new-blue & 255
                     {
                         new-blue < 0 -> new-blue = new-blue + 256
@@ -1167,7 +1332,7 @@ load = (path str) (img ?image) {
                     vp8l-pos = chunk-data-pos
                     vp8l-size = chunk-size
                     w, h = webp-parse-vp8l(data, chunk-data-pos, chunk-size)
-                    alpha-flag, _ = webp-vp8l-alpha-flag(data, chunk-data-pos)
+                    alpha-flag = webp-vp8l-alpha-flag(data, chunk-data-pos)
                     alpha-flag == true -> {
                         has-alpha = true
                         bands = 4

@@ -12,6 +12,7 @@
 # /nogit/src/util
 # /nogit/src/oid
 # /nogit/src/object
+# /nogit/src/refs
 
 ; ═══════════════════════════════════════════════
 ; local helpers
@@ -30,21 +31,21 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ; try HEAD first (most common short name)
     {
         ref == 'HEAD' -> {
-            o, ok = read-ref-from-module(git-dir, 'HEAD')
+            o, ok = refs.read-ref(git-dir, 'HEAD')
             ok == true -> return
         }
     }
 
     ; try as full ref name (refs/heads/..., refs/tags/...)
-    o, ok = read-ref-from-module(git-dir, ref)
+    o, ok = refs.read-ref(git-dir, ref)
     ok == true -> return
 
     ; try as refs/heads/<ref>
-    o, ok = read-ref-from-module(git-dir, 'refs/heads/' - ref)
+    o, ok = refs.read-ref(git-dir, 'refs/heads/' - ref)
     ok == true -> return
 
     ; try as refs/tags/<ref>
-    o, ok = read-ref-from-module(git-dir, 'refs/tags/' - ref)
+    o, ok = refs.read-ref(git-dir, 'refs/tags/' - ref)
     {
         ok == true -> return
 
@@ -53,88 +54,6 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
             ; try as 40-char hex oid (must be exactly 40 chars)
 
             o, ok = oid.oid-from-hex(ref)
-        }
-    }
-}
-
-; read-ref-from-module: delegate to refs.read-ref
-; We inline a minimal ref reader here to avoid the dependency cycle.
-read-ref-from-module = (git-dir str, name str) (o oid, ok bool) {
-    ok = false
-
-    ; build path: git-dir/name
-    sl str = '/'
-    p = git-dir - sl - name
-    isf = fs.is-file(p)
-    {
-        isf == true -> {
-            raw = fs.read-file(p)
-            content = raw
-
-            ; trim newline
-            L = content.len
-            L > 0 -> {
-                content[L - 1] == 10 -> {
-                    content = util.str-range(content, 0, L - 1)
-                }
-            }
-
-            ; check symbolic ref
-            content.starts-with('ref: ') -> {
-                target = util.str-range(content, 5, content.len)
-                o, ok = read-ref-from-module(git-dir, target)
-                return
-            }
-
-            ; parse as hex
-            content.len >= 40 -> {
-                o, ok = oid.oid-from-hex(util.str-range(content, 0, 40))
-                return
-            }
-        }
-    }
-
-    ; try packed-refs
-    pr-path = git-dir - '/packed-refs'
-    isf2 = fs.is-file(pr-path)
-    {
-        isf2 == true -> {
-            raw2 = fs.read-file(pr-path)
-            content2 = raw2
-
-            ; scan lines: "<hex> <refname>"
-            pos = 0
-            {
-                pos >= content2.len -> break
-                nl = util.find-byte-str(content2, 10, pos)
-                end = content2.len
-                nl >= 0 -> end = nl
-                line = util.str-range(content2, pos, end)
-                {
-                    line.starts-with('#') ->
-
-                    -> {
-                        line.starts-with('^') ->
-
-                        -> {
-                            sp = util.find-byte-str(line, 32, 0)
-                            sp >= 0 -> {
-                                hx = util.str-range(line, 0, sp)
-                                refname = util.str-range(line, sp + 1, line.len)
-                                same = util.str-eq(refname, name)
-                                same == true -> {
-                                    hx.len >= 40 -> {
-                                        o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
-                                        ok == true -> break
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                pos = nl + 1
-                nl < 0 -> break
-            } (true)
         }
     }
 }

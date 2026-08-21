@@ -234,12 +234,12 @@ read-ofs-delta-base = (data str, pos i64) (offset i64, new-pos i64, ok bool) {
 ; packfile object scanning and reading
 ; ═══════════════════════════════════════════════
 
-; find-pack-object: find an object in a packfile by oid
+; find-pack-object: find an object in a packfile by oid using .idx file
 ; git-dir str, o oid
 ; returns pack-path str, offset i64, ok bool
 ;
-; Scans all .pack files in objects/pack/ and their .idx files.
-; For simplicity, we scan the pack directly (no idx support yet).
+; Uses the pack .idx file (v2 format) to locate the object by oid.
+; Falls back to scan-pack-for-oid if no .idx file is found.
 find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
     ok = false
     pack-dir = git-dir - '/objects/pack'
@@ -266,17 +266,138 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                 fname[ext-start + 4] != 107 -> is-pack = false; k
                 is-pack == true -> {
                     pp = pack-dir - '/' - fname
-                    offset, found = scan-pack-for-oid(pp, o)
-                    found == true -> {
-                        pack-path = pp
-                        ok = true
-                        break
+
+                    ; try .idx file first
+                    idx-path = util.str-range(pp, 0, pp.len - 5) - '.idx'
+                    idx-ok = fs.is-file(idx-path)
+                    idx-ok == true -> {
+                        offset, found = find-in-idx(idx-path, o)
+                        found == true -> {
+                            pack-path = pp
+                            ok = true
+                            break
+                        }
+                    }
+
+                    ; fallback: scan pack directly
+                    idx-ok == false -> {
+                        offset, found = scan-pack-for-oid(pp, o)
+                        found == true -> {
+                            pack-path = pp
+                            ok = true
+                            break
+                        }
                     }
                 }
             }
         }
     } (true)
     fs.close-dir(dirp)
+}
+
+; find-in-idx: look up an oid in a pack .idx v2 file
+; idx-path str: path to .idx file
+; target oid: the oid to find
+; returns offset i64, ok bool
+find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
+    ok = false
+    idx str
+    read-ok bool
+    idx, read-ok = util.read-file-str(idx-path)
+    read-ok == false -> return
+    idx.len < 8 -> return
+
+    ; verify magic: \xff t O c
+    idx[0] != 0xff -> return
+    idx[1] != 0x74 -> return
+    idx[2] != 0x4f -> return
+    idx[3] != 0x63 -> return
+
+    ; version (must be 2)
+    ver i64 = read-u32-be-local-idx(idx, 4)
+    ver != 2 -> return
+
+    ; fanout table at offset 8, 256 entries of 4 bytes each
+    ; fanout[255] = total object count
+    obj-count i64 = read-u32-be-local-idx(idx, 8 + 255 * 4)
+    obj-count == 0 -> return
+
+    ; oid table starts at offset 8 + 256*4 = 1032
+    oid-table-start = 8 + 256 * 4
+
+    ; binary search for the target oid in the sorted oid table
+    target-bytes str = with-len(20)
+    k <- [0..20): {
+        target-bytes[k] = target.id[k]
+    }
+
+    lo i64 = 0
+    hi i64 = obj-count - 1
+    found-idx i64 = -1
+    {
+        lo > hi -> break
+        mid i64 = (lo + hi) / 2
+        ; compare target with oid at mid
+        oid-start = oid-table-start + mid * 20
+        cmp i64 = 0
+        j <- [0..20): {
+            a = idx[oid-start + j] & 0xff
+            b = target.id[j] & 0xff
+            a < b -> {
+                cmp = -1
+                break
+            }
+            a > b -> {
+                cmp = 1
+                break
+            }
+        }
+        cmp == 0 -> {
+            found-idx = mid
+            break
+        }
+        cmp < 0 -> lo = mid + 1
+        cmp > 0 -> hi = mid - 1
+    } (true)
+
+    found-idx < 0 -> return
+
+    ; offset table starts after oid table + crc table
+    ; layout: oid-table (obj-count * 20) + crc-table (obj-count * 4) + offset-table (obj-count * 4)
+    offset-table-start = oid-table-start + obj-count * 20 + obj-count * 4
+    off-raw i64 = read-u32-be-local-idx(idx, offset-table-start + found-idx * 4)
+
+    ; if high bit is set, it's an index into the large-offset table
+    (off-raw & 0x80000000) != 0 -> {
+        large-idx = off-raw & 0x7fffffff
+        large-table-start = offset-table-start + obj-count * 4
+        ; large offsets are 8 bytes each
+        offset = read-u64-be-local-idx(idx, large-table-start + large-idx * 8)
+    }
+    -> {
+        offset = off-raw
+    }
+    ok = true
+}
+
+; read-u32-be-local-idx: read big-endian 32-bit from idx str
+read-u32-be-local-idx = (s str, pos i64) (v i64) {
+    v = s[pos] & 0xff
+    v = (v << 8) | (s[pos + 1] & 0xff)
+    v = (v << 8) | (s[pos + 2] & 0xff)
+    v = (v << 8) | (s[pos + 3] & 0xff)
+}
+
+; read-u64-be-local-idx: read big-endian 64-bit from idx str
+read-u64-be-local-idx = (s str, pos i64) (v i64) {
+    v = s[pos] & 0xff
+    v = (v << 8) | (s[pos + 1] & 0xff)
+    v = (v << 8) | (s[pos + 2] & 0xff)
+    v = (v << 8) | (s[pos + 3] & 0xff)
+    v = (v << 8) | (s[pos + 4] & 0xff)
+    v = (v << 8) | (s[pos + 5] & 0xff)
+    v = (v << 8) | (s[pos + 6] & 0xff)
+    v = (v << 8) | (s[pos + 7] & 0xff)
 }
 
 ; scan-pack-for-oid: scan a packfile for an object with the given oid
@@ -404,49 +525,22 @@ warmup-data[10] = 0x01
         }
 
         ; advance pos past the zlib stream
-        ; We need to find the end of the compressed data.
-        ; With full DEFLATE support, we can try to decompress and
-        ; use the known compressed size. However, since we don't have
-        ; an exact compressed size, we use a heuristic:
-        ; try to find the next object header or end of pack.
-        ; A simpler approach: use the decompressed data to estimate.
-        ; For stored blocks, we can scan; for compressed blocks,
-        ; we need to try decompressing from increasing offsets.
-        ; The most reliable approach: try decompressing from comp-start
-        ; and advance by the consumed input. Since gzip.gzip-decompress
-        ; may not tell us how many bytes it consumed, we try the next
-        ; position that yields a valid object header.
-        zp = comp-start + 2; skip 2-byte zlib header
-        {
-            zp >= data.len -> break
-            bfinal = data[zp] & 1
-            btype = (data[zp] >> 1) & 3
-            zp = zp + 1
-            {
-                btype == 0 -> {
-                    ; stored block
-                    blen = (data[zp] & 0xff) | ((data[zp + 1] & 0xff) << 8)
-                    zp = zp + 4; skip LEN + NLEN
-                    zp = zp + blen
-                }
-
-                -> {
-                    ; compressed block — can't easily skip
-                    ; Try to advance to a position where the next object
-                    ; header makes sense. For now, we try decompressing
-                    ; from comp-start to get the data, then estimate
-                    ; the compressed size by binary search.
-                    ; Fallback: scan for the next plausible position.
-                    break
-                }
-            }
-
-            bfinal == 1 -> {
-                zp = zp + 4; skip Adler-32
-                break
-            }
-        } (true)
-        pos = zp
+        ; Use zlib-consumed-binary-search to find the exact number of
+        ; bytes consumed by the zlib stream. This handles both stored
+        ; blocks (our own output) and compressed blocks (real git's
+        ; DEFLATE output) correctly.
+        consumed i64 = 0
+        consumed = zlib.zlib-consumed-binary-search(data, comp-start)
+        consumed == 0 -> {
+            ; fallback: try stored-block scan
+            sub str = util.str-range(data, comp-start, data.len)
+            consumed = zlib.zlib-consumed-stored(sub)
+        }
+        consumed == 0 -> {
+            ; could not determine compressed size — stop scanning
+            break
+        }
+        pos = comp-start + consumed
     }
 }
 

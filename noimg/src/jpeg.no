@@ -110,7 +110,8 @@ load = (path str) (img ?image) {
                             {
                                 marker == 194 -> {
 
-                                    ; Progressive JPEG not supported
+                                    ; Progressive JPEG (SOF2) not supported
+                                    print("jpeg: progressive JPEG (SOF2) is not supported")
                                     img = nil
                                     return
                                 }
@@ -368,19 +369,19 @@ load = (path str) (img ?image) {
                                                 ci == 3 -> prev-dc-3 = dc-val
 
                                                 ; DC coefficient goes to position [0,0]
-                                                block[0] = dc-val * qt[0]
+                                                block[0] = number.i64-to-f64(dc-val * qt[0])
 
                                                 ; Decode AC coefficients (1..63 in zigzag order)
                                                 k = 1
                                                 {
                                                     k < 64 -> {
                                                         rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
-                                                        ; rs = run << 4 | size
-                                                        run = (rs >> 4) & 15
+                                                        ; rs = zrun << 4 | size
+                                                        zrun = (rs >> 4) & 15
                                                         size = rs & 15
 
                                                         size == 0 -> {
-                                                            run == 15 -> {
+                                                            zrun == 15 -> {
                                                                 ; ZRL: skip 16 zeros
                                                                 k = k + 16
                                                             }
@@ -392,8 +393,8 @@ load = (path str) (img ?image) {
                                                         }
 
                                                         -> {
-                                                            ; Skip run zeros
-                                                            k = k + run
+                                                            ; Skip zrun zeros
+                                                            k = k + zrun
                                                             ; Read 'size' bits for the value
                                                             val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
                                                             val = jpeg-extend-val(val, size)
@@ -402,7 +403,7 @@ load = (path str) (img ?image) {
                                                             {
                                                                 k < 64 -> {
                                                                     zi = jpeg-zigzag(k)
-                                                                    block[zi] = val * qt[zi]
+                                                                    block[zi] = number.i64-to-f64(val * qt[zi])
                                                                 }
                                                             }
                                                             k = k + 1
@@ -1081,7 +1082,7 @@ jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
             0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
             0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
             0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xd0,
-            0x15, 0x62, 0x72, 0xe1, 0xf0, 0x24, 0x33, 0x82,
+            0x15, 0x62, 0x72, 0xe1, 0xf0, 0x24, 0x83, 0x82,
             0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25,
             0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36,
             0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46,
@@ -1586,7 +1587,7 @@ jpeg-encode-dc = (buf []byte, dc-diff i64, table-id i64, acc i64, cnt i64) {
 ; returns acc i64, cnt i64
 jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
     ; Run-length encoding
-    run = 0
+    zrun = 0
     k <- [1..64): {
         val-f f64 = zz[k]
         val i64 = number.f64-to-i64(math.floor(val-f + 0.5))
@@ -1596,19 +1597,17 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
             }
         }
         val == 0 -> {
-            run = run + 1
+            zrun = zrun + 1
         }
 
         -> {
-            ; Flush run of zeros (16 zeros at a time)
-            {
-                run >= 16 -> {
-                    ; ZRL code (0xF0)
-                    code, code-len = jpeg-huffman-lookup-ac(240, table-id)
-                    jpeg-bit-write(buf, acc, cnt, code, code-len)
-                    run = run - 16
-                }
-            } (run >= 16)
+            ; Flush zrun of zeros (16 zeros at a time)
+            for zrun >= 16 {
+                ; ZRL code (0xF0)
+                code, code-len = jpeg-huffman-lookup-ac(240, table-id)
+                jpeg-bit-write(buf, acc, cnt, code, code-len)
+                zrun = zrun - 16
+            }
 
             ; Determine magnitude
             mag = 0
@@ -1634,8 +1633,8 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
                 -> mag = 1
             }
 
-            ; AC symbol = run*16 + mag
-            sym i64 = run << 4
+            ; AC symbol = zrun*16 + mag
+            sym i64 = zrun << 4
             sym = sym | mag
             code, code-len = jpeg-huffman-lookup-ac(sym, table-id)
             jpeg-bit-write(buf, acc, cnt, code, code-len)
@@ -1646,12 +1645,12 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
                 bits = val + (1 << mag) - 1
             }
             jpeg-bit-write(buf, acc, cnt, bits, mag)
-            run = 0
+            zrun = 0
         }
     }
 
     ; If remaining are all zeros, write EOB
-    run > 0 -> {
+    zrun > 0 -> {
         code, code-len = jpeg-huffman-lookup-ac(0, table-id)
         jpeg-bit-write(buf, acc, cnt, code, code-len)
     }
