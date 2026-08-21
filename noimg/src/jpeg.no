@@ -1,7 +1,7 @@
 ; jpeg.no — JPEG (Joint Photographic Experts Group) reader/writer
 ; Supports:
 ;   - Load: baseline JPEG decoder (Huffman decode + IDCT + YCbCr→RGB, 8-bit)
-;   - Save: baseline JPEG encoder (DCT + quantization + Huffman, 8-bit, YCbCr 4:2:0 or grayscale)
+;   - Save: baseline JPEG encoder (DCT + quantization + Huffman, 8-bit, YCbCr 4:2:0/4:4:4 or grayscale)
 ;
 ; JPEG structure:
 ;   SOI: FFD8
@@ -111,7 +111,7 @@ load = (path str) (img ?image) {
                                 marker == 194 -> {
 
                                     ; Progressive JPEG (SOF2) not supported
-                                    print("jpeg: progressive JPEG (SOF2) is not supported")
+                                    print('jpeg: progressive JPEG (SOF2) is not supported')
                                     img = nil
                                     return
                                 }
@@ -246,8 +246,8 @@ load = (path str) (img ?image) {
 
                             ; Now at scan data — decode
                             {
-                                w <= 0 || h <= 0 || components <= 0 -> {
-                                    img = nil
+w <= 0 || h <= 0 || components <= 0 || w > 65535 || h > 65535 -> {
+img = nil
                                     return
                                 }
                             }
@@ -903,7 +903,7 @@ jpeg-zigzag = (i i64) (zi i64) {
 ; img image: image to save
 ; returns ok bool
 save = (path str, img image) (ok bool) {
-    ok = jpeg-save-impl(path, img, 90)
+    ok = jpeg-save-impl(path, img, 90, 0)
 }
 
 ; jpeg.save-quality: save image as JPEG with specified quality (1-100)
@@ -912,15 +912,26 @@ save = (path str, img image) (ok bool) {
 ; quality i64: quality level (1-100, higher = better)
 ; returns ok bool
 save-quality = (path str, img image, quality i64) (ok bool) {
-    ok = jpeg-save-impl(path, img, quality)
+    ok = jpeg-save-impl(path, img, quality, 0)
+}
+
+; jpeg.save-quality-subsampling: save image as JPEG with quality and subsampling
+; path str: output path
+; img image: image to save
+; quality i64: quality level (1-100, higher = better)
+; subsampling i64: 0=4:2:0 (default), 1=4:4:4
+; returns ok bool
+save-quality-subsampling = (path str, img image, quality i64, subsampling i64) (ok bool) {
+    ok = jpeg-save-impl(path, img, quality, subsampling)
 }
 
 ; jpeg-save-impl: internal JPEG save implementation
 ; path str: output path
 ; img image: image to save
 ; quality i64: quality 1-100
+; subsampling i64: 0=4:2:0, 1=4:4:4
 ; returns ok bool
-jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
+jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     w = img.width
     h = img.height
 
@@ -1022,6 +1033,13 @@ jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
     }
 
     -> {
+        ; Color JPEG: 3 components (Y, Cb, Cr)
+        ; 4:2:0: Y sampling = 0x22 (h=2,v=2), Cb/Cr = 0x11 (h=1,v=1)
+        ; 4:4:4: all components = 0x11 (h=1,v=1)
+        y-sampling = 34  ; 0x22 = 4:2:0
+        {
+            subsampling == 1 -> y-sampling = 17  ; 0x11 = 4:4:4
+        }
         buf.push(255)
         buf.push(192)
         buf.push(0)
@@ -1033,7 +1051,7 @@ jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
         buf.push(w & 255)
         buf.push(3)
         buf.push(1)
-        buf.push(34)
+        buf.push(y-sampling)
         buf.push(0)
         buf.push(2)
         buf.push(17)
@@ -1136,7 +1154,7 @@ jpeg-save-impl = (path str, img image, quality i64) (ok bool) {
     }
 
     ; --- Scan data (real DCT + Huffman encoding) ---
-    jpeg-encode-scan(buf, img, w, h, is-gray, qt-luma, qt-chroma)
+    jpeg-encode-scan(buf, img, w, h, is-gray, subsampling, qt-luma, qt-chroma)
 
     ; --- EOI ---
     buf.push(255)
@@ -1231,9 +1249,10 @@ jpeg-bit-write = (buf []byte, acc i64, cnt i64, bits i64, n i64) {
 ; w i64: width
 ; h i64: height
 ; is-gray bool: grayscale mode
+; subsampling i64: 0=4:2:0, 1=4:4:4
 ; qt-luma []byte: luma quantization table
 ; qt-chroma []byte: chroma quantization table
-jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, qt-luma []byte, qt-chroma []byte) {
+jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampling i64, qt-luma []byte, qt-chroma []byte) {
     ; Bit writer state (local, not global)
     bit-acc i64 = 0
     bit-cnt i64 = 0
@@ -1246,6 +1265,13 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, qt-luma [
     is-gray == false -> {
         mcu-w = 16
         mcu-h = 16
+        {
+            subsampling == 1 -> {
+                ; 4:4:4: MCU is 8x8
+                mcu-w = 8
+                mcu-h = 8
+            }
+        }
     }
     pad-w = (w + mcu-w - 1) & ~(mcu-w - 1)
     pad-h = (h + mcu-h - 1) & ~(mcu-h - 1)
@@ -1269,30 +1295,53 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, qt-luma [
             }
 
             -> {
-                ; YCbCr 4:2:0: 4 Y blocks + 1 Cb + 1 Cr
-                ; Extract 16x16 region, convert to YCbCr, subsample Cb/Cr
-
-                ; Process 4 Y blocks (2x2)
-                by <- [0..2): {
-                    bx <- [0..2): {
-                        block = jpeg-read-block(img, mx * 16 + bx * 8, my * 16 + by * 8, 0, w, h, 1)
+                {
+                    subsampling == 1 -> {
+                        ; YCbCr 4:4:4: 1 Y + 1 Cb + 1 Cr per MCU (8x8)
+                        ; Y block
+                        block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 1)
                         dct = jpeg-dct-8x8(block)
                         q = jpeg-quantize(dct, qt-luma)
                         prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
+
+                        ; Cb block (full resolution)
+                        cb-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 1)
+                        cb-dct = jpeg-dct-8x8(cb-block)
+                        cb-q = jpeg-quantize(cb-dct, qt-chroma)
+                        prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
+
+                        ; Cr block (full resolution)
+                        cr-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 2)
+                        cr-dct = jpeg-dct-8x8(cr-block)
+                        cr-q = jpeg-quantize(cr-dct, qt-chroma)
+                        prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
+                    }
+
+                    -> {
+                        ; YCbCr 4:2:0: 4 Y blocks + 1 Cb + 1 Cr
+                        ; Process 4 Y blocks (2x2)
+                        by <- [0..2): {
+                            bx <- [0..2): {
+                                block = jpeg-read-block(img, mx * 16 + bx * 8, my * 16 + by * 8, 0, w, h, 1)
+                                dct = jpeg-dct-8x8(block)
+                                q = jpeg-quantize(dct, qt-luma)
+                                prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
+                            }
+                        }
+
+                        ; Cb block (subsampled 16x16 -> 8x8)
+                        cb-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 1)
+                        cb-dct = jpeg-dct-8x8(cb-block)
+                        cb-q = jpeg-quantize(cb-dct, qt-chroma)
+                        prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
+
+                        ; Cr block (subsampled 16x16 -> 8x8)
+                        cr-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 2)
+                        cr-dct = jpeg-dct-8x8(cr-block)
+                        cr-q = jpeg-quantize(cr-dct, qt-chroma)
+                        prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
                     }
                 }
-
-                ; Cb block (subsampled 16x16 -> 8x8)
-                cb-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 1)
-                cb-dct = jpeg-dct-8x8(cb-block)
-                cb-q = jpeg-quantize(cb-dct, qt-chroma)
-                prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
-
-                ; Cr block (subsampled 16x16 -> 8x8)
-                cr-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 2)
-                cr-dct = jpeg-dct-8x8(cr-block)
-                cr-q = jpeg-quantize(cr-dct, qt-chroma)
-                prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
             }
         }
     }
@@ -1409,6 +1458,50 @@ jpeg-read-block-420 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
                 }
             }
             block[y * 8 + x] = sum / 4.0
+        }
+    }
+}
+
+; jpeg-read-block-444: read an 8x8 Cb/Cr block at full resolution (4:4:4)
+; img image: source image
+; ox i64: origin x
+; oy i64: origin y
+; w i64: image width
+; h i64: image height
+; cbcr i64: 1=Cb, 2=Cr
+; returns block [64]f64
+jpeg-read-block-444 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block [64]f64) {
+    block = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    y <- [0..8): {
+        x <- [0..8): {
+            sx = ox + x
+            sy = oy + y
+            sx >= w -> sx = w - 1
+            sy >= h -> sy = h - 1
+            sx < 0 -> sx = 0
+            sy < 0 -> sy = 0
+            idx = (sy * w + sx) * img.bands
+            r = img.data[idx]
+            g = img.data[idx + 1]
+            b = img.data[idx + 2]
+            cbcr == 1 -> {
+                ; Cb = -0.168736*R - 0.331264*G + 0.5*B
+                block[y * 8 + x] = -0.168736 * r - 0.331264 * g + 0.5 * b
+            }
+
+            -> {
+                ; Cr = 0.5*R - 0.418688*G - 0.081312*B
+                block[y * 8 + x] = 0.5 * r - 0.418688 * g - 0.081312 * b
+            }
         }
     }
 }

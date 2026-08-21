@@ -13,20 +13,79 @@
 # /nogit/src/oid
 # /nogit/src/object
 # /nogit/src/refs
+# /nogit/src/pack
 
 ; ═══════════════════════════════════════════════
 ; local helpers
 ; ═══════════════════════════════════════════════
 
 ; ═══════════════════════════════════════════════
+; unified object read (loose + packed)
+; ═══════════════════════════════════════════════
+
+; read-object: try loose first, then packed. Returns kind, data, ok.
+read-object = (git-dir str, o oid) (kind str, data str, ok bool) {
+    kind, data, ok = object.read-loose(git-dir, o)
+    ok == false -> {
+        kind, data, ok = pack.read-packed-object(git-dir, o)
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; commit lookup
 ; ═══════════════════════════════════════════════
 
 ; resolve-ref: resolve a ref name or hex oid to an oid
+; Supports: HEAD, main, refs/heads/main, 40-char hex, HEAD~N, HEAD^N, ref~N, ref^N
 ; git-dir str, ref str (e.g. "HEAD", "main", "refs/heads/main", or 40-char hex)
 ; returns oid oid, ok bool
 resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ok = false
+
+    ; check for ~N or ^N suffix
+    tilde-pos = util.find-byte-str(ref, 126, 0)
+    caret-pos = util.find-byte-str(ref, 94, 0)
+    split-pos = -1
+    tilde-pos >= 0 -> split-pos = tilde-pos
+    caret-pos > tilde-pos -> split-pos = caret-pos
+
+    ; if there's a ~ or ^ suffix, resolve the base ref and walk back N steps
+    split-pos > 0 -> {
+        base-ref = util.str-range(ref, 0, split-pos)
+        suffix = util.str-range(ref, split-pos + 1, ref.len)
+        base-oid, base-ok = resolve-ref(git-dir, base-ref)
+        base-ok == false -> return
+
+        ; parse N (default 1)
+        n i64 = 1
+        suffix.len > 0 -> {
+            n = 0
+            si <- [0..suffix.len): {
+                n = n * 10 + (suffix[si] - 48)
+            }
+            n == 0 -> n = 1
+        }
+
+        ; walk first-parent N steps
+        cur = base-oid
+        step <- [0..n): {
+            ph str
+            np i64
+            ph, np, walk-ok = commit-parents(git-dir, cur)
+            walk-ok == false -> return
+            ph.len >= 40 -> {
+                first-hex = util.str-range(ph, 0, 40)
+                cur, walk-ok = oid.oid-from-hex(first-hex)
+                walk-ok == false -> return
+            }
+            -> {
+                return
+            }
+        }
+        o = cur
+        ok = true
+        return
+    }
 
     ; try HEAD first (most common short name)
     {
@@ -70,7 +129,7 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
     k str
     d str
     read-ok bool
-    k, d, read-ok = object.read-loose(git-dir, commit-oid)
+    k, d, read-ok = read-object(git-dir, commit-oid)
     {
         read-ok == false -> return
 
@@ -90,7 +149,7 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
     k str
     data str
     read-ok bool
-    k, data, read-ok = object.read-loose(git-dir, commit-oid)
+    k, data, read-ok = read-object(git-dir, commit-oid)
     read-ok == false -> return
     parent-hex = ''
     nparents = 0

@@ -864,6 +864,55 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
     ok = true
 }
 
+; parse-commit-from-data: parse commit data string into fields
+; data str: commit object payload (no header)
+; returns tree-oid oid, parenthex str, a-name str, a-email str, a-time i64, a-tz str,
+;   c-name str, c-email str, c-time i64, c-tz str, message str, ok bool
+parse-commit-from-data = (d str) (tree-oid oid, parenthex str, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
+    text str = d
+    idx i64 = text.index('\n\n')
+    hend = text.len
+    idx >= 0 -> hend = idx
+    message = ''
+    idx >= 0 -> message = util.str-range(text, idx + 2, text.len)
+    tree-oid = oid.zero-oid()
+    parenthex = ''
+    a-name = ''
+    a-email = ''
+    a-time = 0
+    a-tz = ''
+    c-name = ''
+    c-email = ''
+    c-time = 0
+    c-tz = ''
+    pos = 0
+    {
+        pos >= hend -> break
+        nl i64 = util.find-byte-str(text, 10, pos)
+        nl < 0 -> nl = hend
+        line str = util.str-range(text, pos, nl)
+        line.starts-with('tree ') -> {
+            hx str = util.str-range(line, 5, line.len)
+            toid, tok = oid.oid-from-hex(hx)
+            tok == true -> tree-oid = toid
+        }
+        line.starts-with('parent ') -> {
+            hx2 str = util.str-range(line, 7, line.len)
+            parenthex = parenthex - hx2
+        }
+        line.starts-with('author ') -> {
+            ap str = util.str-range(line, 7, line.len)
+            a-name, a-email, a-time, a-tz = parse-person-fields(ap)
+        }
+        line.starts-with('committer ') -> {
+            cp str = util.str-range(line, 10, line.len)
+            c-name, c-email, c-time, c-tz = parse-person-fields(cp)
+        }
+        pos = nl + 1
+    } (true)
+    ok = true
+}
+
 ; write-tag-full: encode + store an annotated tag from its parts; returns oid
 write-tag-full = (git-dir str, obj oid, obj-type str, tag str, t-name str, t-email str, t-time i64, t-tz str, message str) (o oid) {
     tg = tag-info {

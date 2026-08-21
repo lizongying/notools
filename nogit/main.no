@@ -112,6 +112,112 @@ read-object-unified = (git-dir str, o oid) (kind str, data str, ok bool) {
     }
 }
 
+; tree-to-flat-unified: like object.tree-to-flat but supports packed repos.
+; Uses read-object-unified instead of read-loose.
+tree-to-flat-unified = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, modes str, count i64, ok bool) {
+    ok = false
+    paths = ''
+    hexoids = ''
+    modes = ''
+    count = 0
+
+    ; read tree object (loose or packed)
+    kind str
+    raw str
+    read-ok bool
+    kind, raw, read-ok = read-object-unified(git-dir, tree-oid)
+    read-ok == false -> return
+
+    ; parse tree entries
+    n = object.tree-count-raw(raw)
+    i <- [0..n): {
+        mode = object.tree-mode-raw(raw, i)
+        nm = object.tree-name-raw(raw, i)
+        entry-oid = object.tree-id-raw(raw, i)
+        entry-hex = oid.oid-hex-str(entry-oid)
+
+        ; build full path
+        full-path = nm
+        prefix.len > 0 -> {
+            full-path = prefix - '/' - nm
+        }
+
+        mode == 16384 -> {
+            ; subtree — recurse
+            sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat-unified(git-dir, entry-oid, full-path)
+            sub-ok == true -> {
+                paths = paths - sub-paths
+                hexoids = hexoids - sub-hexoids
+                modes = modes - sub-modes
+                count = count + sub-count
+            }
+        }
+
+        -> {
+            ; blob — add as flat entry
+            paths = paths - full-path - '\n'
+            hexoids = hexoids - entry-hex
+            mode-str = util.i64-to-str(mode)
+            modes = modes - mode-str - '\n'
+            count = count + 1
+        }
+    }
+    ok = true
+}
+
+; checkout-tree-unified: like object.checkout-tree but supports packed repos.
+; Uses read-object-unified to read tree and blob objects.
+checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
+    ok = false
+
+    ; read tree object (loose or packed)
+    kind str
+    raw str
+    read-ok bool
+    kind, raw, read-ok = read-object-unified(git-dir, tree-oid)
+    read-ok == false -> return
+
+    ; parse tree entries
+    n = object.tree-count-raw(raw)
+    i <- [0..n): {
+        mode = object.tree-mode-raw(raw, i)
+        nm = object.tree-name-raw(raw, i)
+        entry-oid = object.tree-id-raw(raw, i)
+
+        ; build full path
+        full-path = dest-dir
+        dest-dir.len > 0 -> {
+            last = dest-dir[dest-dir.len - 1]
+            last != 47 -> full-path = dest-dir - '/' - nm
+        }
+        dest-dir.len == 0 -> full-path = nm
+
+        mode == 16384 -> {
+            ; subtree — create directory and recurse
+            util.mkdir-all(full-path)
+            sub-ok = checkout-tree-unified(git-dir, entry-oid, full-path)
+        }
+
+        -> {
+            ; blob — read object and write to file
+            b-kind str
+            b-data str
+            b-ok bool
+            b-kind, b-data, b-ok = read-object-unified(git-dir, entry-oid)
+            b-ok == true -> {
+                ; ensure parent directory exists
+                slash = full-path.rindex('/')
+                slash >= 0 -> {
+                    parent = util.str-range(full-path, 0, slash)
+                    util.mkdir-all(parent)
+                }
+                util.write-file-simple(full-path, b-data)
+            }
+        }
+    }
+    ok = true
+}
+
 ; log-packed: manual commit walk for packed repos (fallback when revwalk fails)
 ; Walks first-parent chain using read-object-unified.
 log-packed = (git-dir str, oneline bool, max-count i64) {
@@ -560,7 +666,7 @@ cmd-status = (argc i64) {
         head-tree-oid, head-ok = revwalk.commit-tree-oid(git-dir, head-oid)
         has-head = head-ok
         has-head == true -> {
-            head-flat-names, head-flat-oids, head-flat-modes, head-flat-count, head-flat-ok = object.tree-to-flat(git-dir, head-tree-oid, '')
+            head-flat-names, head-flat-oids, head-flat-modes, head-flat-count, head-flat-ok = tree-to-flat-unified(git-dir, head-tree-oid, '')
             head-flat-ok == false -> {
                 has-head = false
             }
@@ -899,7 +1005,7 @@ cmd-checkout = (argc i64) {
         }
 
         ; Get flat file list from tree
-        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = tree-to-flat-unified(git-dir, tree-oid, '')
         flat-ok == false -> {
             print('fatal: could not read tree')
             return
@@ -962,13 +1068,13 @@ cmd-checkout = (argc i64) {
         object.remove-stale-files(git-dir, tree-oid, work-tree)
 
         ; Restore working tree from the commit's tree
-        co-ok = object.checkout-tree(git-dir, tree-oid, work-tree)
+        co-ok = checkout-tree-unified(git-dir, tree-oid, work-tree)
         co-ok == false -> {
             print('warning: could not fully restore working tree')
         }
 
         ; Rebuild index from the tree
-        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = tree-to-flat-unified(git-dir, tree-oid, '')
         flat-ok == true -> {
             index.write-index(git-dir, flat-paths, flat-hexoids, flat-modes, flat-count)
         }
@@ -1548,7 +1654,7 @@ cmd-reset = (argc i64) {
     tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, target-oid)
     tree-ok == true -> {
         ; Rebuild index from the tree
-        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = object.tree-to-flat(git-dir, tree-oid, '')
+        flat-paths, flat-hexoids, flat-modes, flat-count, flat-ok = tree-to-flat-unified(git-dir, tree-oid, '')
         flat-ok == true -> {
             index.write-index(git-dir, flat-paths, flat-hexoids, flat-modes, flat-count)
         }
@@ -1558,7 +1664,7 @@ cmd-reset = (argc i64) {
             ; Remove files not in the target tree
             object.remove-stale-files(git-dir, tree-oid, work-tree)
 
-            co-ok = object.checkout-tree(git-dir, tree-oid, work-tree)
+            co-ok = checkout-tree-unified(git-dir, tree-oid, work-tree)
             co-ok == false -> {
                 print('warning: could not fully restore working tree')
             }

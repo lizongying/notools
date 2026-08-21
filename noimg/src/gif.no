@@ -66,8 +66,8 @@ gif-load-frames = (path str) (frames []image) {
     h = (data[8] & 255) | ((data[9] & 255) << 8)
     packed = data[10] & 255
     {
-        w <= 0 || h <= 0 -> {
-            return
+w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
+return
         }
     }
 
@@ -116,7 +116,7 @@ gif-load-frames = (path str) (frames []image) {
                     }
 
                     ; Process image onto canvas
-                    transparency, pos = gif-process-image(data, pos + 1, canvas, gct, has-gct, transparency)
+                    transparency, pos, frame-left, frame-top, frame-w, frame-h = gif-process-image(data, pos + 1, canvas, gct, has-gct, transparency)
 
                     ; Create output frame (copy of canvas)
                     frame-data str = with-len(w * h * 4)
@@ -130,11 +130,21 @@ gif-load-frames = (path str) (frames []image) {
                     {
                         disposal == 2 -> {
                             ; Restore to background color
-                            ; Clear the frame region to transparent
-                            ; (We don't track the exact frame region here,
-                            ; so we clear the entire canvas for simplicity)
-                            i <- [0..w * h * 4): {
-                                canvas.data[i] = 0
+                            ; Clear only the frame region to transparent
+                            fy <- [0..frame-h): {
+                                fx <- [0..frame-w): {
+                                    cx = frame-left + fx
+                                    cy = frame-top + fy
+                                    {
+                                        cx >= 0 && cx < w && cy >= 0 && cy < h -> {
+                                            dst = (cy * w + cx) * 4
+                                            canvas.data[dst] = 0
+                                            canvas.data[dst + 1] = 0
+                                            canvas.data[dst + 2] = 0
+                                            canvas.data[dst + 3] = 0
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -212,10 +222,14 @@ gif-load-frames = (path str) (frames []image) {
 ; gct []byte: global color table
 ; has-gct bool: whether gct is valid
 ; transp i64: transparent color index (or -1)
-; returns new-transp i64, new-pos i64
-gif-process-image = (data str, pos i64, img image, gct []byte, has-gct bool, transp i64) (new-transp i64, new-pos i64) {
+; returns new-transp i64, new-pos i64, frame-left i64, frame-top i64, frame-w i64, frame-h i64
+gif-process-image = (data str, pos i64, img image, gct []byte, has-gct bool, transp i64) (new-transp i64, new-pos i64, frame-left i64, frame-top i64, frame-w i64, frame-h i64) {
     new-transp = transp
     new-pos = pos
+    frame-left = 0
+    frame-top = 0
+    frame-w = 0
+    frame-h = 0
 
     ; Image descriptor fields
     left = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
@@ -226,6 +240,10 @@ gif-process-image = (data str, pos i64, img image, gct []byte, has-gct bool, tra
     new-pos = new-pos + 2
     ih = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
     new-pos = new-pos + 2
+    frame-left = left
+    frame-top = top
+    frame-w = iw
+    frame-h = ih
     packed = data[new-pos] & 255
     new-pos = new-pos + 1
 

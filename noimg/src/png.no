@@ -20,10 +20,10 @@
 # /noimg/src/image.set-pixel
 
 ; ── CRC32 ──
-; CRC-32 (IEEE 802.3) using bitwise computation (no lookup table needed)
+; CRC-32 (IEEE 802.3) using bitwise computation
 ; Polynomial: 0xEDB88320 (reflected)
 
-; png-crc32: compute CRC32 of data (bitwise, no table)
+; png-crc32: compute CRC32 of data (bitwise)
 ; data str: input
 ; start i64: starting position
 ; len i64: length
@@ -133,8 +133,8 @@ load = (path str) (img ?image) {
         }
     } (pos < data.len)
     {
-        w <= 0 || h <= 0 -> {
-            img = nil
+w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
+img = nil
             return
         }
         {
@@ -545,6 +545,123 @@ load = (path str) (img ?image) {
             }
         }
     }
+
+    ; Apply tRNS transparency if present
+    {
+        has-trns -> {
+            {
+                color-type == 0 -> {
+                    ; Grayscale tRNS: 2 bytes (16-bit gray value)
+                    ; Pixels matching this value get alpha=0, others alpha=255
+                    {
+                        trns.len >= 2 -> {
+                            trns-val = ((trns[0] & 255) << 8) | (trns[1] & 255)
+                            ; Create RGBA image
+                            rgba-img = image.new(w, h, 4)
+                            i <- [0..w * h): {
+                                g = tmp.data[i]
+                                a = 255
+                                {
+                                    is-u16 -> {
+                                        {
+                                            g == trns-val -> a = 0
+                                        }
+                                    }
+
+                                    -> {
+                                        {
+                                            g == (trns-val >> 8) -> a = 0
+                                        }
+                                    }
+                                }
+                                rgba-img.data[i * 4] = g
+                                rgba-img.data[i * 4 + 1] = g
+                                rgba-img.data[i * 4 + 2] = g
+                                rgba-img.data[i * 4 + 3] = a
+                            }
+                            tmp = rgba-img
+                        }
+                    }
+                }
+
+                color-type == 2 -> {
+                    ; RGB tRNS: 6 bytes (R, G, B — each 16-bit)
+                    ; Pixels matching get alpha=0, others alpha=255
+                    {
+                        trns.len >= 6 -> {
+                            trns-r = ((trns[0] & 255) << 8) | (trns[1] & 255)
+                            trns-g = ((trns[2] & 255) << 8) | (trns[3] & 255)
+                            trns-b = ((trns[4] & 255) << 8) | (trns[5] & 255)
+                            rgba-img = image.new(w, h, 4)
+                            i <- [0..w * h): {
+                                r = tmp.data[i * 3]
+                                g = tmp.data[i * 3 + 1]
+                                b = tmp.data[i * 3 + 2]
+                                a = 255
+                                {
+                                    is-u16 -> {
+                                        {
+                                            r == trns-r && g == trns-g && b == trns-b -> a = 0
+                                        }
+                                    }
+
+                                    -> {
+                                        {
+                                            r == (trns-r >> 8) && g == (trns-g >> 8) && b == (trns-b >> 8) -> a = 0
+                                        }
+                                    }
+                                }
+                                rgba-img.data[i * 4] = r
+                                rgba-img.data[i * 4 + 1] = g
+                                rgba-img.data[i * 4 + 2] = b
+                                rgba-img.data[i * 4 + 3] = a
+                            }
+                            tmp = rgba-img
+                        }
+                    }
+                }
+
+                color-type == 3 -> {
+                    ; Indexed tRNS: one alpha byte per palette entry
+                    ; Expand to RGBA
+                    {
+                        has-palette -> {
+                            rgba-img = image.new(w, h, 4)
+                            i <- [0..w * h): {
+                                idx = tmp.data[i * 3]  ; This was set from palette R
+                                ; Actually for indexed, tmp already has RGB expanded.
+                                ; We need the original index, but it's lost.
+                                ; Instead, match by RGB value to find the index.
+                                ; This is inefficient but correct for tRNS on indexed.
+                                ; Better: store indices during decode.
+                                ; For now, copy RGB and set alpha from palette tRNS
+                                r = tmp.data[i * 3]
+                                g = tmp.data[i * 3 + 1]
+                                b = tmp.data[i * 3 + 2]
+                                a = 255
+                                ; Search palette for matching entry
+                                pi <- [0..palette.len / 3): {
+                                    {
+                                        palette[pi * 3] == r && palette[pi * 3 + 1] == g && palette[pi * 3 + 2] == b -> {
+                                            {
+                                                pi < trns.len -> a = trns[pi]
+                                            }
+                                        }
+                                    }
+                                }
+                                rgba-img.data[i * 4] = r
+                                rgba-img.data[i * 4 + 1] = g
+                                rgba-img.data[i * 4 + 2] = b
+                                rgba-img.data[i * 4 + 3] = a
+                            }
+                            tmp = rgba-img
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     img = tmp
 }
 
@@ -800,7 +917,7 @@ png-write-chunk-raw = (out []byte, type-str str, data []byte) {
     out.push(crc & 255)
 }
 
-; png-crc32-combined: compute CRC32 from a []byte buffer (bitwise, no table)
+; png-crc32-combined: compute CRC32 from a []byte buffer (bitwise)
 ; data []byte: input data
 ; len i64: data length
 ; returns crc i64

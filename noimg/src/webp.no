@@ -1,7 +1,7 @@
 ; webp.no — WebP format reader/writer
 ; Supports:
-;   - Load: VP8L lossless decoding (Huffman + color transforms)
-;   - Save: writes structurally valid RIFF container with placeholder pixel data
+;   - Load: VP8L lossless decoding (Huffman + LZ77 + color cache + transforms)
+;   - Save: VP8L lossless encoding with real pixel data (no transforms)
 ;
 ; NOTE: VP8 (lossy) decoding is NOT supported — load() returns nil for lossy WebP.
 
@@ -144,10 +144,11 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
 
 ; ── VP8L Meta-Huffman ──
 
-; webp-decode-meta-huff: decode meta-Huffman to build a 256-symbol code length table
-; returns code-lens []byte (256 entries), new-pos i64, new-buf i64, new-cnt i64
-webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte, new-pos i64, new-buf i64, new-cnt i64) {
-    code-lens []byte = with-len(256)
+; webp-decode-meta-huff: decode meta-Huffman to build a code length table
+; n-syms i64: number of symbols (256 + cc-size)
+; returns code-lens []byte (n-syms entries), new-pos i64, new-buf i64, new-cnt i64
+webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64, n-syms i64) (code-lens []byte, new-pos i64, new-buf i64, new-cnt i64) {
+    code-lens []byte = with-len(n-syms)
     simple, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
 
     {
@@ -186,7 +187,7 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
 
             sym-idx = 0
             {
-                sym-idx < 256 -> {
+                sym-idx < n-syms -> {
                     msym, pos, buf, cnt = webp-huff-decode(meta-lens, 18, meta-codes, meta-first, meta-count, data, pos, buf, cnt)
                     {
                         msym <= 15 -> {
@@ -198,7 +199,7 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
                             ext, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 2)
                             repeat = 3 + ext
                             {
-                                sym-idx > 0 && sym-idx + repeat <= 256 -> {
+                                sym-idx > 0 && sym-idx + repeat <= n-syms -> {
                                     prev = code-lens[sym-idx - 1]
                                     r <- [0..repeat): {
                                         code-lens[sym-idx + r] = prev
@@ -207,7 +208,7 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
                                 }
 
                                 -> {
-                                    sym-idx = 256
+                                    sym-idx = n-syms
                                 }
                             }
                         }
@@ -216,7 +217,7 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
                             ext, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
                             repeat = 3 + ext
                             {
-                                sym-idx + repeat <= 256 -> {
+                                sym-idx + repeat <= n-syms -> {
                                     r <- [0..repeat): {
                                         code-lens[sym-idx + r] = 0
                                     }
@@ -224,13 +225,13 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64) (code-lens []byte,
                                 }
 
                                 -> {
-                                    sym-idx = 256
+                                    sym-idx = n-syms
                                 }
                             }
                         }
                     }
                 }
-            } (sym-idx < 256)
+            } (sym-idx < n-syms)
         }
     }
 
@@ -274,11 +275,11 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
     sub-lens-3 []byte = with-len(sub-n-syms)
     sub-lens-4 []byte = with-len(sub-n-syms)
 
-    sub-lens-0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    sub-lens-1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    sub-lens-2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    sub-lens-3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    sub-lens-4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    sub-lens-0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, sub-n-syms)
+    sub-lens-1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, sub-n-syms)
+    sub-lens-2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, sub-n-syms)
+    sub-lens-3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, sub-n-syms)
+    sub-lens-4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, sub-n-syms)
 
     ; Build canonical codes for all 5 tables
     sub-codes-0 []byte = with-len(sub-n-syms)
@@ -386,9 +387,9 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
                                 -> {
                                     s-dist-extra = (s-dist-code - 2) >> 1
                                     s-extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, s-dist-extra)
-                                    s-odd = (s-dist-code - 2) & 1
-                                    s-dist-base = 1 + ((1 + s-odd) << s-dist-extra)
-                                    s-dist = s-dist-base + s-extra-val
+                                    s-odd = s-dist-code & 1
+                                    s-dist-offset = (2 + s-odd) << s-dist-extra
+                                    s-dist = s-dist-offset + 1 + s-extra-val
                                 }
                             }
                             s-li <- [0..s-len): {
@@ -469,6 +470,9 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     ; Color indexing palette (ttype 3)
     ci-palette []byte = with-len(256 * 4)  ; ARGB per entry
     ci-palette-size = 0
+    ci-bits = 8
+    ci-sub-w = 0
+    ci-img []byte = with-len(0)
     ; Transform image buffers — declared outside branch scope
     ; so inverse transforms can access them
     pred-img []byte = with-len(0)
@@ -531,14 +535,36 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         }
 
                         ttype == 3 -> {
-                            ; Color indexing: 8 bits palette size
-                            psize, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
-                            ci-palette-size = psize + 1
-                            ; Read palette entries (ARGB, 1 byte each)
+                            ; Color indexing: 8 bits palette size code
+                            psize-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
+                            ci-palette-size = psize-code + 1
+                            ; Read palette entries (ARGB, 4 bytes each)
                             pi3 <- [0..ci-palette-size * 4): {
                                 pv, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
                                 ci-palette[pi3] = pv
                             }
+                            ; Determine bits per pixel for color indexing
+                            ; VP8L spec: the palette code determines how many
+                            ; pixel indices are packed into each ARGB sub-image pixel.
+                            ; palette_size <= 2  -> 1 bit/pixel
+                            ; palette_size <= 4  -> 2 bits/pixel
+                            ; palette_size <= 16 -> 4 bits/pixel
+                            ; palette_size <= 256 -> 8 bits/pixel (no packing)
+                            ci-bits = 8
+                            {
+                                ci-palette-size <= 2 -> ci-bits = 1
+                            }
+                            {
+                                ci-palette-size > 2 && ci-palette-size <= 4 -> ci-bits = 2
+                            }
+                            {
+                                ci-palette-size > 4 && ci-palette-size <= 16 -> ci-bits = 4
+                            }
+                            ; Decode the color index sub-image with modified width
+                            ; The sub-image width = ceil(w / ci-bits), height = h
+                            ci-sub-w = (w + ci-bits - 1) / ci-bits
+                            ci-sub-h = h
+                            ci-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ci-sub-w, ci-sub-h)
                         }
                     }
                 }
@@ -565,11 +591,11 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     huff-lens-3 []byte = with-len(n-huff-syms)
     huff-lens-4 []byte = with-len(n-huff-syms)
 
-    huff-lens-0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    huff-lens-1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    huff-lens-2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    huff-lens-3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
-    huff-lens-4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt)
+    huff-lens-0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, n-huff-syms)
+    huff-lens-1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, n-huff-syms)
+    huff-lens-2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, n-huff-syms)
+    huff-lens-3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, n-huff-syms)
+    huff-lens-4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, n-huff-syms)
 
     ; Build canonical codes for all 5 tables
     codes-0 []byte = with-len(n-huff-syms)
@@ -718,17 +744,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                                 }
 
                                 -> {
-                                    ; Compute extra bits and base
-                                    ; extra_bits = (dist_code - 2) >> 1  (i.e. (dist_code - 2) / 2)
+                                    ; VP8L distance: extra_bits = (code - 2) >> 1
+                                    ; dist = ((2 + (code & 1)) << extra_bits) + 1 + extra_val
                                     dist-extra = (dist-code - 2) >> 1
-                                    ; Read extra bits
                                     extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, dist-extra)
-                                    ; base = 1 + (1 << dist_extra)  for even code-2
-                                    ; base = 1 + (1 << dist_extra) + (1 << dist_extra) for odd code-2
-                                    ; i.e. base = 1 + ((1 + ((dist_code - 2) & 1)) << dist_extra)
-                                    odd-bit = (dist-code - 2) & 1
-                                    dist-base = 1 + ((1 + odd-bit) << dist-extra)
-                                    lz77-dist = dist-base + extra-val
+                                    odd-bit = dist-code & 1
+                                    dist-offset = (2 + odd-bit) << dist-extra
+                                    lz77-dist = dist-offset + 1 + extra-val
                                 }
                             }
                             ; Copy lz77-len pixels from distance lz77-dist back
@@ -1186,16 +1208,43 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
 
         {
             ttype == 3 -> {
-                ; Inverse color indexing: map palette indices to colors
-                ; Each pixel in argb currently holds a palette index in its green channel
+                ; Inverse color indexing: unpack palette indices from sub-image
+                ; The sub-image (ci-img) has width ci-sub-w and height h.
+                ; Each ARGB pixel in ci-img packs ci-bits palette indices.
+                ; We need to unpack them back to the main image.
+                ; For ci-bits == 8: each sub-image pixel green channel = 1 index
+                ; For ci-bits < 8: each 32-bit ARGB value packs multiple indices
+                ; VP8L packing: bits are stored from LSB to MSB in the 32-bit value
+                ; The 32-bit value is treated as: alpha(8) | red(8) | green(8) | blue(8)
+                ; Bits are packed sequentially across all 4 channels (32 bits total)
                 pi <- [0..n-pixels): {
-                    idx = argb[pi * 4 + 2]  ; index stored in green channel
+                    py = pi / w
+                    px = pi - py * w
+                    ; Which sub-image pixel contains this pixel's index?
+                    sub-px = px / ci-bits
+                    sub-idx = py * ci-sub-w + sub-px
+                    ; Which bit position within the sub-image pixel?
+                    bit-pos = (px - sub-px * ci-bits) * ci-bits
+                    ; Extract the index from the 32-bit ARGB value
+                    ; The ARGB value is stored as [A, R, G, B] in ci-img
+                    ; Reconstruct the 32-bit value: A<<24 | R<<16 | G<<8 | B
                     {
-                        idx < ci-palette-size -> {
-                            argb[pi * 4] = ci-palette[idx * 4]
-                            argb[pi * 4 + 1] = ci-palette[idx * 4 + 1]
-                            argb[pi * 4 + 2] = ci-palette[idx * 4 + 2]
-                            argb[pi * 4 + 3] = ci-palette[idx * 4 + 3]
+                        sub-idx * 4 + 3 < ci-img.len -> {
+                            a-val = ci-img[sub-idx * 4]
+                            r-val = ci-img[sub-idx * 4 + 1]
+                            g-val = ci-img[sub-idx * 4 + 2]
+                            b-val = ci-img[sub-idx * 4 + 3]
+                            packed = (a-val << 24) | (r-val << 16) | (g-val << 8) | b-val
+                            mask = (1 << ci-bits) - 1
+                            idx = (packed >> bit-pos) & mask
+                            {
+                                idx < ci-palette-size -> {
+                                    argb[pi * 4] = ci-palette[idx * 4]
+                                    argb[pi * 4 + 1] = ci-palette[idx * 4 + 1]
+                                    argb[pi * 4 + 2] = ci-palette[idx * 4 + 2]
+                                    argb[pi * 4 + 3] = ci-palette[idx * 4 + 3]
+                                }
+                            }
                         }
                     }
                 }
@@ -1354,8 +1403,8 @@ load = (path str) (img ?image) {
 
     ; Check if VP8L was found
     {
-        vp8l-pos < 0 || w <= 0 || h <= 0 -> {
-            img = nil
+vp8l-pos < 0 || w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
+img = nil
             return
         }
     }
@@ -1373,9 +1422,9 @@ load = (path str) (img ?image) {
 
 ; ── Save ──
 
-; webp.save: save image as WebP (placeholder — not a true VP8/VP8L encode)
-; Writes a structurally valid RIFF container with correct dimensions
-; but placeholder pixel data. The file is not a real WebP image.
+; webp.save: save image as WebP VP8L lossless
+; Encodes real pixel data using fixed 9-bit Huffman codes (no transforms/compression).
+; The output is a valid VP8L file that decodes to the exact input image.
 ; path str: output path
 ; img image: image to save
 ; returns ok bool
