@@ -2,11 +2,13 @@ name: Build
 
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
-#   1. 测试 setup-nolang 逻辑（下载编译器 + 标准库源码）
-#   2. 测试工具链安装（LLVM opt/llc + Zig 交叉编译器）
-#   3. no build 交叉编译 6 个目标平台（notools / nogit / noimg 三个独立构建）
-#   4. 对产物运行 smoke test 验证正确性
-#   5. tag 推送时发布 GitHub Release
+#   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
+#      判断 notools / nogit / noimg 哪些子项目有变更，决定是否需要构建
+#   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
+#   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
+#   4. no build 交叉编译 6 个目标平台（按需构建）
+#   5. 对产物运行 smoke test 验证正确性
+#   6. tag 推送时发布 GitHub Release（跳过的子项目从上一个 release 继承）
 #
 # 依赖：lizongying/nolang 仓库的 .github/actions/build-nolang action
 
@@ -18,17 +20,167 @@ permissions:
   contents: write
 
 jobs:
+  # ── 检测子项目变更 ─────────────────────────────────────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      needs-notools: ${{ steps.detect.outputs.needs-notools }}
+      needs-nogit: ${{ steps.detect.outputs.needs-nogit }}
+      needs-noimg: ${{ steps.detect.outputs.needs-noimg }}
+      last-tag: ${{ steps.detect.outputs.last-tag }}
+    steps:
+      - name: Detect changed subprojects via GitHub API
+        id: detect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NEW_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          echo "============================================"
+          echo "  Change Detection"
+          echo "  NEW_TAG: $NEW_TAG"
+          echo "  REPO:    $REPO"
+          echo "============================================"
+
+          # ── 1. 获取所有 tags，semver 排序，找到上一个 release tag ──
+          # GitHub API 分页获取全部 tags
+          TAGS_JSON=""
+          PAGE=1
+          while true; do
+            RESP=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/tags?per_page=100&page=${PAGE}")
+            COUNT=$(echo "$RESP" | jq 'length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            TAGS_JSON="${TAGS_JSON}${RESP}"
+            PAGE=$((PAGE + 1))
+            # 安全上限：最多拉 10 页 (1000 tags)
+            [ "$PAGE" -gt 10 ] && break
+          done
+
+          # 合并所有 tags，提取 tag name，过滤 v* 前缀，semver 排序
+          ALL_TAGS=$(echo "$TAGS_JSON" | jq -r '.[].name' | grep '^v[0-9]' | sort -V -r)
+
+          # 找到 NEW_TAG 的上一个 tag
+          LAST_TAG=""
+          FOUND_CURRENT=false
+          while IFS= read -r t; do
+            if [ "$FOUND_CURRENT" = "true" ]; then
+              LAST_TAG="$t"
+              break
+            fi
+            [ "$t" = "$NEW_TAG" ] && FOUND_CURRENT=true
+          done <<< "$ALL_TAGS"
+
+          echo "Last release tag: ${LAST_TAG:-<none>}"
+
+          # ── 2. 边界处理：没有上一个 tag → 全部构建 ──
+          if [ -z "$LAST_TAG" ]; then
+            echo "::notice::No previous tag found — building all subprojects"
+            echo "needs-notools=true"    >> "$GITHUB_OUTPUT"
+            echo "needs-nogit=true"      >> "$GITHUB_OUTPUT"
+            echo "needs-noimg=true"      >> "$GITHUB_OUTPUT"
+            echo "last-tag="             >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ── 3. 调用 compare API 获取变更文件清单 ──
+          echo "Comparing $LAST_TAG...$NEW_TAG"
+          COMPARE_URL="https://api.github.com/repos/${REPO}/compare/${LAST_TAG}...${NEW_TAG}"
+          COMPARE_JSON=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$COMPARE_URL")
+
+          # 提取变更文件路径（files[].filename）
+          CHANGED_FILES=$(echo "$COMPARE_JSON" | jq -r '.files[].filename')
+
+          echo ""
+          echo "--- Changed files ---"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          # ── 4. 判断每个子项目是否有变更 ──
+          # 子项目路径前缀：notools/  nogit/  noimg/
+          # 额外：根目录的 .github/workflows/ 或 package.jsonc 变更也触发全部构建
+          NEEDS_NOTOOLS=false
+          NEEDS_NOGIT=false
+          NEEDS_NOIMG=false
+
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+
+            # 根级 CI/配置变更 → 全部构建
+            case "$f" in
+              .github/workflows/*|package.jsonc|workspace.jsonc)
+                NEEDS_NOTOOLS=true
+                NEEDS_NOGIT=true
+                NEEDS_NOIMG=true
+                echo "  [root-config] $f → triggers all"
+                continue
+                ;;
+            esac
+
+            # 子项目路径匹配
+            case "$f" in
+              notools/*)
+                NEEDS_NOTOOLS=true
+                echo "  [notools] $f"
+                ;;
+              nogit/*)
+                NEEDS_NOGIT=true
+                echo "  [nogit] $f"
+                ;;
+              noimg/*)
+                NEEDS_NOIMG=true
+                echo "  [noimg] $f"
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          echo ""
+          echo "============================================"
+          echo "  Detection Results"
+          echo "============================================"
+          echo "  notools: $NEEDS_NOTOOLS"
+          echo "  nogit:   $NEEDS_NOGIT"
+          echo "  noimg:   $NEEDS_NOIMG"
+          echo "  last-tag: $LAST_TAG"
+          echo "============================================"
+
+          echo "needs-notools=$NEEDS_NOTOOLS" >> "$GITHUB_OUTPUT"
+          echo "needs-nogit=$NEEDS_NOGIT"     >> "$GITHUB_OUTPUT"
+          echo "needs-noimg=$NEEDS_NOIMG"     >> "$GITHUB_OUTPUT"
+          echo "last-tag=$LAST_TAG"           >> "$GITHUB_OUTPUT"
+
   # ── 构建 notools ──────────────────────────────────────────────────
   build-notools:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-notools == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          echo "Injecting VERSION='$VER' (from tag '$TAG')"
+          sed -i "s/^VERSION = 'dev'$/VERSION = '$VER'/" notools/main.no
+          grep -n '^VERSION' notools/main.no
 
       - name: Build notools for multiple platforms
         id: build
-        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.25
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.27
         with:
-          version: "0.2.25"
+          version: "0.2.27"
           entry: notools/main.no
           name: notools
           targets: >-
@@ -97,6 +249,12 @@ jobs:
           out=$(echo "hello notools" | "$BIN" echo)
           check "echo stdin" "$out" "hello notools"
 
+          echo "=== version ==="
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          out=$("$BIN" version)
+          check "version" "$out" "notools v$VER (pure Nolang)"
+
           echo "=== md5 ==="
           out=$(echo -n abc | "$BIN" md5)
           check "md5(abc)" "$out" "900150983cd24fb0d6963f7d28e17f72"
@@ -145,15 +303,28 @@ jobs:
 
   # ── 构建 nogit ───────────────────────────────────────────────────
   build-nogit:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nogit == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          echo "Injecting VERSION='$VER' (from tag '$TAG')"
+          sed -i "s/^VERSION = 'dev'$/VERSION = '$VER'/" nogit/main.no
+          grep -n '^VERSION' nogit/main.no
 
       - name: Build nogit for multiple platforms
         id: build
-        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.25
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.27
         with:
-          version: "0.2.25"
+          version: "0.2.27"
           entry: nogit/main.no
           name: nogit
           targets: >-
@@ -219,8 +390,10 @@ jobs:
           }
 
           echo "=== nogit version ==="
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
           out=$("$BIN" version)
-          check "version" "$out" "nolang-git v0.1.0 (pure nolang)"
+          check "version" "$out" "nolang-git v$VER (pure nolang)"
 
           echo "=== nogit init ==="
           rm -rf /tmp/nogit-smoke-test
@@ -287,15 +460,28 @@ jobs:
 
   # ── 构建 noimg ───────────────────────────────────────────────────
   build-noimg:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-noimg == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          echo "Injecting VERSION='$VER' (from tag '$TAG')"
+          sed -i "s/^VERSION = 'dev'$/VERSION = '$VER'/" noimg/main.no
+          grep -n '^VERSION' noimg/main.no
 
       - name: Build noimg for multiple platforms
         id: build
-        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.25
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.27
         with:
-          version: "0.2.25"
+          version: "0.2.27"
           entry: noimg/main.no
           name: noimg
           targets: >-
@@ -359,6 +545,12 @@ jobs:
               FAIL=$((FAIL+1))
             fi
           }
+
+          echo "=== noimg version ==="
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          out=$("$BIN" version)
+          check "version" "$out" "img v$VER (pure Nolang image processing)"
 
           echo "=== noimg convert (PPM -> BMP) ==="
           printf 'P3\n2 2\n255\n255 0 0 0 255 0 0 0 255 255 255 0\n' > /tmp/test.ppm
@@ -437,60 +629,83 @@ jobs:
 
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-notools, build-nogit, build-noimg]
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    needs: [detect-changes, build-notools, build-nogit, build-noimg]
     runs-on: ubuntu-latest
     steps:
       - name: Download notools artifacts
+        if: needs.detect-changes.outputs.needs-notools == 'true'
         uses: actions/download-artifact@v4
         with:
           name: notools-binaries
           path: artifacts
 
       - name: Download nogit artifacts
+        if: needs.detect-changes.outputs.needs-nogit == 'true'
         uses: actions/download-artifact@v4
         with:
           name: nogit-binaries
           path: artifacts
 
       - name: Download noimg artifacts
+        if: needs.detect-changes.outputs.needs-noimg == 'true'
         uses: actions/download-artifact@v4
         with:
           name: noimg-binaries
           path: artifacts
 
-      - name: Generate checksums
-        working-directory: artifacts
+      - name: Generate checksums and build release notes
+        id: prep
+        shell: bash
+        env:
+          NEEDS_NOTOOLS: ${{ needs.detect-changes.outputs.needs-notools }}
+          NEEDS_NOGIT: ${{ needs.detect-changes.outputs.needs-nogit }}
+          NEEDS_NOIMG: ${{ needs.detect-changes.outputs.needs-noimg }}
+          LAST_TAG: ${{ needs.detect-changes.outputs.last-tag }}
+          REPO: ${{ github.repository }}
         run: |
-          sha256sum * > checksums-sha256.txt
-          echo "## Artifacts"
+          set -euo pipefail
+          cd artifacts
+
+          echo "============================================"
+          echo "  Release Asset Summary"
+          echo "============================================"
+          echo "  notools: $NEEDS_NOTOOLS"
+          echo "  nogit:   $NEEDS_NOGIT"
+          echo "  noimg:   $NEEDS_NOIMG"
+          echo "  last-tag: $LAST_TAG"
+          echo "============================================"
+
+          # 只对存在的文件生成 checksums
+          if ls * 2>/dev/null | head -1 > /dev/null; then
+            sha256sum * > checksums-sha256.txt
+          else
+            echo "(no binaries)" > checksums-sha256.txt
+          fi
+
+          echo "--- Artifacts ---"
           ls -lh
-          echo ""
-          echo "### SHA-256"
-          cat checksums-sha256.txt
+
+          # 构建未变更子项目提示
+          UNCHANGED=""
+          [ "$NEEDS_NOTOOLS" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### notools\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/notools-linux-amd64) 下载。\n\n"
+          [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64) 下载。\n\n"
+          [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64) 下载。\n\n"
+
+          # 输出到 GITHUB_ENV 供 release step 的 body 引用
+          {
+            echo "UNCHANGED_NOTES<<EOF"
+            echo -e "$UNCHANGED"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/notools-linux-amd64
-            artifacts/notools-linux-arm64
-            artifacts/notools-darwin-amd64
-            artifacts/notools-darwin-arm64
-            artifacts/notools-windows-amd64.exe
-            artifacts/notools-windows-arm64.exe
-            artifacts/nogit-linux-amd64
-            artifacts/nogit-linux-arm64
-            artifacts/nogit-darwin-amd64
-            artifacts/nogit-darwin-arm64
-            artifacts/nogit-windows-amd64.exe
-            artifacts/nogit-windows-arm64.exe
-            artifacts/noimg-linux-amd64
-            artifacts/noimg-linux-arm64
-            artifacts/noimg-darwin-amd64
-            artifacts/noimg-darwin-arm64
-            artifacts/noimg-windows-amd64.exe
-            artifacts/noimg-windows-arm64.exe
+            artifacts/notools-*
+            artifacts/nogit-*
+            artifacts/noimg-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
@@ -519,6 +734,10 @@ jobs:
             ### 校验
 
             下载同目录下的 `checksums-sha256.txt` 进行 SHA-256 校验。
+
+            ---
+
+            ${{ env.UNCHANGED_NOTES }}
           generate_release_notes: true
           draft: false
           prerelease: false
