@@ -1,0 +1,940 @@
+# /nouv/src/version
+# /nouv/src/utils
+; python.no — Python version management
+;
+; Manages Python installations, discovery, and version pinning.
+; Supports system Python, homebrew Python, pyenv, and managed installations.
+; Uses python-build-standalone releases from astral-sh/python-build-standalone.
+;
+; API:
+;   find-python(ver str) (path str, ok bool) — find a Python installation
+;   install-version(ver str) (ok bool) — install a Python version
+;   uninstall-version(ver str) (ok bool) — uninstall a managed Python
+;   list-versions() (versions str) — list all known Python versions
+;   list-installed-versions() (versions str) — list managed installations
+;   list-available() (versions str) — list available versions for install
+;   get-python-dir() (dir str) — get managed Python directory
+;   pin-version(dir str, ver str) (ok bool) — pin Python version for project
+;   get-pinned-version(dir str) (ver ?str) — get pinned version
+;   find-system-python() (path str, ok bool) — find system Python
+;   detect-platform() (plat str) — detect current platform
+;   get-download-url(ver str, plat str) (url str) — get download URL
+;   resolve-version(ver str) (full-ver str, ok bool) — resolve a partial version
+;   get-version-info(py-path str) (ver str, impl str) — get version from binary
+;   find-python-preferred(dir str, ver str) (path str, ok bool) — find with preference
+
+PY-INSTALL-BASE = '.local/share/nouv/python'
+PY-STANDALONE-BASE = 'https://github.com/astral-sh/python-build-standalone/releases/download/'
+
+; ═══════════════════════════════════════════════
+; find-python — find a Python installation matching version
+; ver str — version string (empty = any)
+; returns: path str, ok bool
+; ═══════════════════════════════════════════════
+
+python.find-python = (ver str) (path str, ok bool) {
+    ok = false
+    path = ''
+
+    ; 1. check pinned version
+    pinned = get-pinned-version('.')
+    pinned: {
+        ok -> {
+            p, found = check-version-path(pinned, ver)
+            {
+                found -> {
+                    path = p
+                    ok = true
+                    return
+                }
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+
+    ; 2. check managed installations
+    managed-dir = get-python-dir()
+    p = path{
+        p: managed-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            versions = scan-managed-versions(managed-dir)
+            lines = versions.split('\n')
+            n = lines.len
+            i = 0
+            {
+                v = lines[i]
+                i = i + 1
+                v = v.trim()
+                v.len > 0 -> {
+                    {
+                        ver == '' || v.starts-with(ver) -> {
+                            p2 = managed-dir - '/' - v - '/bin/python' - v.slice(0, 1)
+                            {
+                                v.starts-with('3') -> p2 = managed-dir - '/' - v - '/bin/python3'
+                            }
+                            p3 = path{
+                                p: p2,
+                            }
+                            e2 = p3.exists()
+                            {
+                                e2 -> {
+                                    path = p2
+                                    ok = true
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+        }
+    }
+
+    ; 3. check system Python
+    sys-path, sys-ok = find-system-python()
+    {
+        sys-ok -> {
+            {
+                ver == '' -> {
+                    path = sys-path
+                    ok = true
+                    return
+                }
+                -> {
+                    ; verify version matches
+                    content = run-cmd-output('python3 --version')
+                    {
+                        content.contains(ver) -> {
+                            path = sys-path
+                            ok = true
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; 4. check common paths
+    common-paths = '/usr/bin/python3\n/usr/local/bin/python3\n/opt/homebrew/bin/python3\n'
+    lines = common-paths.split('\n')
+    n = lines.len
+    i = 0
+    {
+        p = lines[i]
+        i = i + 1
+        p = p.trim()
+        p.len > 0 -> {
+            pp = path{
+                p: p,
+            }
+            e3 = pp.exists()
+            {
+                e3 -> {
+                    path = p
+                    ok = true
+                    return
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; check-version-path — check if a version path exists and matches
+; ═══════════════════════════════════════════════
+
+python.check-version-path = (installed-ver str, want-ver str) (path str, ok bool) {
+    ok = false
+    path = ''
+    {
+        want-ver != '' && installed-ver.starts-with(want-ver) == false -> return
+        -> {
+            managed-dir = get-python-dir()
+            p = managed-dir - '/' - installed-ver - '/bin/python3'
+            pp = path{
+                p: p,
+            }
+            e = pp.exists()
+            {
+                e -> {
+                    path = p
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; find-system-python — find system Python
+; ═══════════════════════════════════════════════
+
+python.find-system-python = () (path str, ok bool) {
+    ok = false
+    path = ''
+
+    ; try python3
+    code = run-cmd('python3 --version')
+    {
+        code == 0 -> {
+            path = 'python3'
+            ok = true
+            return
+        }
+    }
+
+    ; try python
+    code = run-cmd('python --version')
+    {
+        code == 0 -> {
+            path = 'python'
+            ok = true
+            return
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-version — install a Python version from source or standalone builds
+; ═══════════════════════════════════════════════
+
+python.install-version = (ver str) (ok bool) {
+    ok = false
+
+    ; get managed directory
+    managed-dir = get-python-dir()
+    p = path{
+        p: managed-dir,
+    }
+    mk = p.make-dir()
+
+    ; target directory
+    target-dir = managed-dir - '/' - ver
+
+    ; check if already installed
+    p2 = path{
+        p: target-dir,
+    }
+    exists = p2.exists()
+    {
+        exists -> {
+            print('Python {ver} is already installed')
+            ok = true
+            return
+        }
+    }
+
+    ; download standalone Python from python-build-standalone
+    ; https://github.com/astral-sh/python-build-standalone
+    plat = detect-platform()
+    url = get-download-url(ver, plat)
+    {
+        url == '' -> {
+            print('error: unsupported platform or version')
+            return
+        }
+    }
+
+    print('Downloading Python {ver} from {url}...')
+    archive-path = managed-dir - '/python-' - ver - '.tar.gz'
+
+    ; download
+    resp = http.http-get(url)
+    resp: {
+        nil -> {
+            print('error: failed to download Python')
+            return
+        }
+        -> {
+            body = it.body
+            fd = fs.open-write(archive-path)
+            {
+                fd <= 0 -> {
+                    print('error: failed to write archive')
+                    return
+                }
+                -> {
+                    fs.write(fd, body, body.len)
+                    fs.close(fd)
+                }
+            }
+        }
+    }
+
+    ; extract
+    print('Extracting...')
+    p3 = path{
+        p: target-dir,
+    }
+    mk2 = p3.make-dir()
+
+    ; read archive and extract using tar module
+    data = fs.read-file(archive-path)
+    {
+        data == '' -> {
+            print('error: failed to read archive')
+            return
+        }
+        -> {
+            ; decompress and extract
+            archive = tar.tar-open-gz(data)
+            count = archive.count()
+            i <- [0..count): {
+                name = archive.name(i)
+                {
+                    archive.is-dir(i) -> {
+                        dir-path = target-dir - '/' - name
+                        p4 = path{
+                            p: dir-path,
+                        }
+                        mk3 = p4.make-dir()
+                    }
+                    -> {
+                        content = archive.read(i)
+                        file-path = target-dir - '/' - name
+                        p5 = path{
+                            p: file-path,
+                        }
+                        ; ensure parent dir exists
+                        parent = file-path.slice(0, file-path.rindex('/'))
+                        {
+                            parent.len > 0 -> {
+                                p6 = path{
+                                    p: parent,
+                                }
+                                mk4 = p6.make-dir()
+                            }
+                        }
+                        wfd = fs.open-write(file-path)
+                        {
+                            wfd > 0 -> {
+                                fs.write(wfd, content, content.len)
+                                fs.close(wfd)
+                                ; set executable for bin
+                                name.starts-with('bin/') -> {
+                                    chmod(file-path, '755')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; clean up archive
+    fs.remove(archive-path)
+
+    ; verify installation
+    py-bin = target-dir - '/bin/python3'
+    p7 = path{
+        p: py-bin,
+    }
+    py-exists = p7.exists()
+    {
+        py-exists -> {
+            print('Installed Python {ver}')
+            ok = true
+        }
+        -> {
+            print('error: installation verification failed')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; detect-platform — detect current platform
+; returns: platform string like "x86_64-macos", "aarch64-macos", etc.
+; ═══════════════════════════════════════════════
+
+python.detect-platform = () (plat str) {
+    plat = ''
+    ; use uname to detect
+    arch = run-cmd-output('uname -m').trim()
+    os-name = run-cmd-output('uname -s').trim()
+
+    {
+        os-name == 'Darwin' -> {
+            {
+                arch == 'arm64' -> plat = 'aarch64-macos'
+                -> plat = 'x86_64-macos'
+            }
+        }
+        os-name == 'Linux' -> {
+            {
+                arch == 'aarch64' -> plat = 'aarch64-linux'
+                -> plat = 'x86_64-linux'
+            }
+        }
+        -> {
+            plat = 'x86_64-linux'
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-download-url — get download URL for standalone Python
+; ═══════════════════════════════════════════════
+
+python.get-download-url = (ver str, plat str) (url str) {
+    url = ''
+    base = 'https://github.com/astral-sh/python-build-standalone/releases/download/'
+    tag = ''
+    suffix = ''
+
+    {
+        plat == 'x86_64-macos' -> {
+            suffix = 'x86_64-apple-darwin-install_only.tar.gz'
+        }
+        plat == 'aarch64-macos' -> {
+            suffix = 'aarch64-apple-darwin-install_only.tar.gz'
+        }
+        plat == 'x86_64-linux' -> {
+            suffix = 'x86_64-unknown-linux-gnu-install_only.tar.gz'
+        }
+        plat == 'aarch64-linux' -> {
+            suffix = 'aarch64-unknown-linux-gnu-install_only.tar.gz'
+        }
+        -> return
+    }
+
+    ; construct tag - format: 20241008-3720-3.12.7+freethreaded
+    ; for simplicity use a known tag pattern
+    tag = ver - '+' - suffix
+    url = base - tag - '/' - suffix
+}
+
+; ═══════════════════════════════════════════════
+; list-versions — list all known Python versions
+; ═══════════════════════════════════════════════
+
+python.list-versions = () (versions str) {
+    versions = ''
+    versions = versions - 'Managed installations:\n'
+
+    ; list managed versions
+    managed-dir = get-python-dir()
+    p = path{
+        p: managed-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            found = scan-managed-versions(managed-dir)
+            versions = versions - found
+        }
+        -> versions = versions - '  (none)\n'
+    }
+
+    ; check system Python
+    versions = versions - '\nSystem Python:\n'
+    sys-path, sys-ok = find-system-python()
+    {
+        sys-ok -> {
+            versions = versions - '  ' - sys-path - '\n'
+            ; get version
+            v-out = run-cmd-output(sys-path - ' --version')
+            versions = versions - '  Version: ' - v-out.trim() - '\n'
+        }
+        -> versions = versions - '  (not found)\n'
+    }
+}
+
+; ═══════════════════════════════════════════════
+; scan-managed-versions — scan managed Python directory
+; ═══════════════════════════════════════════════
+
+python.scan-managed-versions = (dir str) (versions str) {
+    versions = ''
+    ; list directories in dir that look like version numbers
+    out = run-cmd-output('ls' - ' ' - dir)
+    lines = out.split('\n')
+    n2 = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.len > 0 && line.starts-with('3') -> {
+                versions = versions - '  ' - line - '\n'
+            }
+        }
+    } (i < n2)
+}
+
+; ═══════════════════════════════════════════════
+; get-python-dir — get managed Python directory
+; ═══════════════════════════════════════════════
+
+python.get-python-dir = () (dir str) {
+    home = os.get-env('HOME')
+    {
+        home == '' -> home = '/tmp'
+    }
+    dir = home - '/' - PY-INSTALL-BASE
+}
+
+; ═══════════════════════════════════════════════
+; pin-version — pin Python version for project
+; writes .python-version file
+; ═══════════════════════════════════════════════
+
+python.pin-version = (dir str, ver str) (ok bool) {
+    ok = false
+    path = dir - '/.python-version'
+    fd = fs.open-write(path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, ver, ver.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-pinned-version — read .python-version file
+; ═══════════════════════════════════════════════
+
+python.get-pinned-version = (dir str) (ver ?str) {
+    pin-path = dir - '/.python-version'
+    p = path{
+        p: pin-path,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            ver = nil
+            return
+        }
+        -> {
+            content = fs.read-file(pin-path)
+            v = content.trim()
+            {
+                v == '' -> ver = nil
+                -> ver = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; uninstall-version — remove a managed Python installation
+; ═══════════════════════════════════════════════
+
+python.uninstall-version = (ver str) (ok bool) {
+    ok = false
+    managed-dir = get-python-dir()
+    target-dir = managed-dir - '/' - ver
+
+    p = path{
+        p: target-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            print('error: Python {ver} is not installed')
+            return
+        }
+        -> {
+            code = run-cmd('rm -rf ' - target-dir)
+            {
+                code == 0 -> {
+                    print('Uninstalled Python {ver}')
+                    ok = true
+                }
+                -> print('error: failed to uninstall Python {ver}')
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-download-url-full — get download URL with proper release tag
+; Uses the python-build-standalone release naming convention
+; ═══════════════════════════════════════════════
+
+python.get-download-url-full = (ver str, plat str) (url str) {
+    url = ''
+    base = 'https://github.com/astral-sh/python-build-standalone/releases/download/'
+
+    ; map platform to filename suffix
+    suffix = ''
+    {
+        plat == 'x86_64-macos' -> suffix = 'x86_64-apple-darwin-install_only.tar.gz'
+        plat == 'aarch64-macos' -> suffix = 'aarch64-apple-darwin-install_only.tar.gz'
+        plat == 'x86_64-linux' -> suffix = 'x86_64-unknown-linux-gnu-install_only.tar.gz'
+        plat == 'aarch64-linux' -> suffix = 'aarch64-unknown-linux-gnu-install_only.tar.gz'
+        plat == 'x86_64-windows' -> suffix = 'x86_64-pc-windows-msvc-shared-install_only.tar.gz'
+        -> return
+    }
+
+    ; construct tag - format: YYYYMMDD-<commit>-<version>+<flavor>
+    ; for simplicity, use a known tag pattern
+    ; In production, this would query the GitHub API for the latest release
+    tag = ver - '+' - suffix
+    url = base - tag - '/' - suffix
+}
+
+; ═══════════════════════════════════════════════
+; get-available-versions — get available Python versions for download
+; ═══════════════════════════════════════════════
+
+python.get-available-versions = () (versions str) {
+    versions = ''
+    ; known stable versions
+    versions = versions - '3.8.0\n'
+    versions = versions - '3.8.10\n'
+    versions = versions - '3.8.18\n'
+    versions = versions - '3.9.0\n'
+    versions = versions - '3.9.10\n'
+    versions = versions - '3.9.18\n'
+    versions = versions - '3.10.0\n'
+    versions = versions - '3.10.6\n'
+    versions = versions - '3.10.13\n'
+    versions = versions - '3.11.0\n'
+    versions = versions - '3.11.6\n'
+    versions = versions - '3.12.0\n'
+    versions = versions - '3.12.1\n'
+    versions = versions - '3.12.7\n'
+    versions = versions - '3.13.0\n'
+}
+
+; ═══════════════════════════════════════════════
+; find-python-preferred — find Python matching version preference
+; Checks: pinned > managed > system > common paths
+; ═══════════════════════════════════════════════
+
+python.find-python-preferred = (dir str, ver str) (path str, ok bool) {
+    ok = false
+    path = ''
+
+    ; 1. check .python-version
+    pinned = get-pinned-version(dir)
+    pinned: {
+        ok -> {
+            p, found = check-version-path(pinned, ver)
+            {
+                found -> {
+                    path = p
+                    ok = true
+                    return
+                }
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+
+    ; 2. check UV_PYTHON env
+    uv-py = os.get-env('UV-PYTHON')
+    {
+        uv-py != '' -> {
+            ; could be a version number or path
+            {
+                uv-py.starts-with('/') -> {
+                    p = path{
+                        p: uv-py,
+                    }
+                    e = p.exists()
+                    {
+                        e -> {
+                            path = uv-py
+                            ok = true
+                            return
+                        }
+                    }
+                }
+                -> {
+                    p, found = check-version-path(uv-py, ver)
+                    {
+                        found -> {
+                            path = p
+                            ok = true
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; 3. check managed
+    managed-dir = get-python-dir()
+    p = path{
+        p: managed-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            versions = scan-managed-versions(managed-dir)
+            lines = versions.split('\n')
+            n = lines.len
+            i = 0
+            {
+                v = lines[i]
+                i = i + 1
+                v = v.trim()
+                v.len > 0 -> {
+                    {
+                        ver == '' || v.starts-with(ver) -> {
+                            py-bin = managed-dir - '/' - v - '/bin/python3'
+                            p2 = path{
+                                p: py-bin,
+                            }
+                            e2 = p2.exists()
+                            {
+                                e2 -> {
+                                    path = py-bin
+                                    ok = true
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+        }
+    }
+
+    ; 4. system Python
+    sys-path, sys-ok = find-system-python()
+    {
+        sys-ok -> {
+            {
+                ver == '' -> {
+                    path = sys-path
+                    ok = true
+                    return
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-version-info — get version info for a Python binary
+; ═══════════════════════════════════════════════
+
+python.get-version-info = (py-path str) (ver str, impl str) {
+    ver = ''
+    impl = ''
+    out = run-cmd-output(py-path - ' --version')
+    {
+        out.starts-with('Python ') -> ver = out.slice(7, out.len).trim()
+        -> ver = out.trim()
+    }
+
+    ; detect implementation
+    {
+        out.contains('CPython') || out.contains('Python') -> impl = 'CPython'
+        out.contains('PyPy') -> impl = 'PyPy'
+        -> impl = 'CPython'
+    }
+}
+
+; ═══════════════════════════════════════════════
+; list-available — list available Python versions for installation
+; ═══════════════════════════════════════════════
+
+python.list-available = () (versions str) {
+    versions = 'Available Python versions for installation:\n'
+    available = get-available-versions()
+    lines = available.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.len > 0 -> versions = versions - '  ' - line - '\n'
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; resolve-version — resolve a partial version to a full version
+;
+; e.g. "3.12" -> "3.12.7", "3" -> "3.13.0"
+; ═══════════════════════════════════════════════
+
+python.resolve-version = (ver str) (full-ver str, ok bool) {
+    ok = false
+    full-ver = ''
+
+    ; if already a full version (e.g. 3.12.7), return as-is
+    parts = ver.split('.')
+    {
+        parts.len >= 3 -> {
+            full-ver = ver
+            ok = true
+            return
+        }
+    }
+
+    ; get available versions
+    available = get-available-versions()
+    lines = available.split('\n')
+    n = lines.len
+
+    ; find the best match
+    best = ''
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(ver) -> {
+                ; pick the highest version for this prefix
+                {
+                    best == '' -> best = line
+                    -> {
+                        ; compare: prefer higher version
+                        best-parts = best.split('.')
+                        line-parts = line.split('.')
+                        ; compare major
+                        b-major = str-to-i64(best-parts[0])
+                        l-major = str-to-i64(line-parts[0])
+                        {
+                            l-major > b-major -> best = line
+                            -> {
+                                l-major == b-major -> {
+                                    ; compare minor
+                        b-minor = str-to-i64(best-parts[1])
+                        l-minor = str-to-i64(line-parts[1])
+                                    {
+                                        l-minor > b-minor -> best = line
+                                        -> {
+                                            l-minor == b-minor -> {
+                                                ; compare patch
+                        b-patch = str-to-i64(best-parts[2])
+                        l-patch = str-to-i64(line-parts[2])
+                                                {
+                                                    l-patch > b-patch -> best = line
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    {
+        best != '' -> {
+            full-ver = best
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; list-installed-versions — list all managed Python installations
+; returns newline-separated versions
+; ═══════════════════════════════════════════════
+
+python.list-installed-versions = () (versions str) {
+    versions = ''
+    managed-dir = get-python-dir()
+    p = path{
+        p: managed-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            versions = scan-managed-versions(managed-dir)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-version-installed — check if a specific Python version is installed
+; ═══════════════════════════════════════════════
+
+python.is-version-installed = (ver str) (yes bool) {
+    yes = false
+    managed-dir = get-python-dir()
+    target-dir = managed-dir - '/' - ver
+    p = path{
+        p: target-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python-lib-path — get the lib directory for a managed Python
+; ═══════════════════════════════════════════════
+
+python.get-python-lib-path = (ver str) (lib-path str) {
+    lib-path = ''
+    managed-dir = get-python-dir()
+    ; for python-build-standalone, lib is at python/lib
+    ; and site-packages is at python/lib/python{major}.{minor}/site-packages
+    parts = ver.split('.')
+    {
+        parts.len >= 2 -> {
+            py-ver-dir = parts[0] - '.' - parts[1]
+            lib-path = managed-dir - '/' - ver - '/lib/python' - py-ver-dir - '/site-packages'
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; ensure-version — ensure a Python version is installed, install if missing
+; ═══════════════════════════════════════════════
+
+python.ensure-version = (ver str) (path str, ok bool) {
+    ok = false
+    path = ''
+
+    ; resolve partial version
+    full-ver, resolve-ok = resolve-version(ver)
+    {
+        resolve-ok == false -> {
+            print('error: could not resolve Python version {ver}')
+            return
+        }
+    }
+
+    ; check if already installed
+    installed = is-version-installed(full-ver)
+    {
+        installed == false -> {
+            ; install it
+            inst-ok = install-version(full-ver)
+            {
+                inst-ok == false -> return
+            }
+        }
+    }
+
+    ; find the python binary
+    managed-dir = get-python-dir()
+    py-bin = managed-dir - '/' - full-ver - '/bin/python3'
+    p = path{
+        p: py-bin,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            path = py-bin
+            ok = true
+        }
+    }
+}

@@ -1,0 +1,1089 @@
+; registry.no — PyPI package registry HTTP client
+;
+; Handles communication with PyPI and other package indexes.
+; Supports the Simple API (PEP 503), JSON API, authentication, and retries.
+;
+; Authentication methods:
+;   - Basic auth (username:password)
+;   - Bearer token (--token / UV_TOKEN env var)
+;   - Netrc file (~/.netrc)
+;
+; API:
+;   get-package-info(name str) (info str, ok bool) — get package metadata
+;   get-simple-index(name str) (index str, ok bool) — get simple index
+;   get-package-versions(name str) (versions str, ok bool) — list versions
+;   get-latest-version(name str) (ver str, ok bool) — get latest version
+;   get-package-url(name str, ver str) (url str, ok bool) — get download URL
+;   download-package(name str, ver str, dest str) (ok bool) — download package
+;   get-package-info-with-auth(name str, user str, pass str) (info str, ok bool)
+;   download-with-retry(name str, ver str, dest str, max-retries i64) (ok bool)
+;   get-wheel-url(name str, ver str) (url str, ok bool) — get best wheel URL
+;   get-sdist-url(name str, ver str) (url str, ok bool) — get sdist URL
+;   search-packages(query str) (results str) — search PyPI
+;   get-package-hashes(name str, ver str) (hashes str) — get file hashes
+;   upload-package(file-path str, name str, ver str, token str) (ok bool)
+;   get-auth-headers() (headers str) — get auth headers from env
+;   read-netrc(host str) (user str, pass str, ok bool) — read netrc credentials
+;   download-with-auth(name str, ver str, dest str, token str) (ok bool)
+
+PYPI-SIMPLE-URL = 'https://pypi.org/simple/'
+PYPI-JSON-URL = 'https://pypi.org/pypi/'
+UV-INDEX-URL = 'https://astral.sh/uv/simple/'
+DEFAULT-INDEX = 'https://pypi.org/simple/'
+
+; ═══════════════════════════════════════════════
+; get-index-url — get the configured index URL
+; ═══════════════════════════════════════════════
+
+registry.get-index-url = () (url str) {
+    url = os.get-env('UV-INDEX-URL')
+    {
+        url == '' -> url = os.get-env('PIP-INDEX-URL')
+    }
+    {
+        url == '' -> url = DEFAULT-INDEX
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-info — get package metadata via JSON API
+; returns a flat string with name, version, requires_dist, etc.
+; ═══════════════════════════════════════════════
+
+registry.get-package-info = (name str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    base = get-json-url()
+    url = base - name - '/json'
+
+    resp = http.http-get(url)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            {
+                body == '' -> return
+                -> {
+                    ; parse JSON response
+                    v = json.parse(body, body.len)
+                    {
+                        v == nil -> return
+                        -> {
+                            ; extract info section
+                            info-val = json.get-key(v, 'info')
+                            {
+                                info-val != nil -> {
+                                    ; extract fields
+                                    name-val = json.get-key(info-val, 'name')
+                                    ver-val = json.get-key(info-val, 'version')
+                                    req-val = json.get-key(info-val, 'requires_dist')
+                                    summary-val = json.get-key(info-val, 'summary')
+                                    py-val = json.get-key(info-val, 'requires_python')
+
+                                    ; build flat representation
+                                    info = info - 'name=' - json.extract-str(name-val) - '\n'
+                                    info = info - 'version=' - json.extract-str(ver-val) - '\n'
+                                    info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
+                                    info = info - 'summary=' - json.extract-str(summary-val) - '\n'
+                                    info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
+                                    ok = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-json-url — get the JSON API base URL
+; ═══════════════════════════════════════════════
+
+registry.get-json-url = () (url str) {
+    url = os.get-env('UV-JSON-URL')
+    {
+        url == '' -> url = PYPI-JSON-URL
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-simple-index — get the simple index page for a package
+; returns the HTML content of the simple index page
+; ═══════════════════════════════════════════════
+
+registry.get-simple-index = (name str) (index str, ok bool) {
+    ok = false
+    index = ''
+
+    base = get-index-url()
+    ; normalize package name (PEP 503)
+    norm-name = name.to-lower().replace-char('-', '_')
+    url = base - norm-name - '/'
+
+    resp = http.http-get(url)
+    resp: {
+        nil -> return
+        -> {
+            index = it.body
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-versions — get all available versions of a package
+; returns newline-separated version strings
+; ═══════════════════════════════════════════════
+
+registry.get-package-versions = (name str) (versions str, ok bool) {
+    ok = false
+    versions = ''
+
+    ; use JSON API to get releases
+    base = get-json-url()
+    url = base - name - '/json'
+
+    resp = http.http-get(url)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    releases = json.get-key(v, 'releases')
+                    {
+                        releases != nil -> {
+                            ; iterate over keys in releases object
+                            n = json.obj-key-count(releases)
+                            i <- [0..n): {
+                                key = json.obj-key-at(releases, i)
+                                versions = versions - key - '\n'
+                            }
+                            ok = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-latest-version — get the latest version of a package
+; ═══════════════════════════════════════════════
+
+registry.get-latest-version = (name str) (ver str, ok bool) {
+    ok = false
+    ver = ''
+
+    base = get-json-url()
+    url = base - name - '/json'
+
+    resp = http.http-get(url)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    info-val = json.get-key(v, 'info')
+                    {
+                        info-val != nil -> {
+                            ver-val = json.get-key(info-val, 'version')
+                            ver = json.extract-str(ver-val)
+                            ok = ver != ''
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-url — get the download URL for a specific version
+; ═══════════════════════════════════════════════
+
+registry.get-package-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+
+    ; use JSON API with version
+    base = get-json-url()
+    url-str = base - name - '/' - ver - '/json'
+
+    resp = http.http-get(url-str)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    urls = json.get-key(v, 'urls')
+                    {
+                        urls != nil -> {
+                            ; get first URL entry (usually the wheel)
+                            n = json.arr-count(urls)
+                            {
+                                n > 0 -> {
+                                    entry = json.arr-at(urls, 0)
+                                    {
+                                        entry != nil -> {
+                                            url-val = json.get-key(entry, 'url')
+                                            url = json.extract-str(url-val)
+                                            ok = url != ''
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-package — download a package to a destination path
+; ═══════════════════════════════════════════════
+
+registry.download-package = (name str, ver str, dest str) (ok bool) {
+    ok = false
+
+    ; get download URL
+    dl-url, url-ok = get-package-url(name, ver)
+    {
+        url-ok == false -> {
+            print('error: could not find download URL for {name}=={ver}')
+            return
+        }
+    }
+
+    ; download
+    resp = http.http-get(dl-url)
+    resp: {
+        nil -> {
+            print('error: failed to download {name}=={ver}')
+            return
+        }
+        -> {
+            body = it.body
+            fd = fs.open-write(dest)
+            {
+                fd <= 0 -> {
+                    print('error: failed to write to {dest}')
+                    return
+                }
+                -> {
+                    fs.write(fd, body, body.len)
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; search-packages — search PyPI for packages
+; returns newline-separated package names
+; ═══════════════════════════════════════════════
+
+registry.search-packages = (query str) (results str) {
+    results = ''
+    ; PyPI doesn't have a search API anymore, use the XMLRPC search
+    ; For simplicity, use the JSON API with a different approach
+    ; This is a placeholder - real implementation would use
+    ; https://pypi.org/search/ with q=query
+
+    base = 'https://pypi.org/search/?q=' - query
+    resp = http.http-get(base)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            ; extract package names from HTML
+            ; simple extraction looking for /project/ links
+            results = extract-project-names(body)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-project-names — extract project names from PyPI search HTML
+; ═══════════════════════════════════════════════
+
+registry.extract-project-names = (html str) (names str) {
+    names = ''
+    pos = 0
+    n = html.len
+    {
+        ; find "/project/"
+        idx = html.index-from('/project/', pos)
+        {
+            idx < 0 -> break
+            -> {
+                start = idx + 9
+                end = html.index-from('"', start)
+                {
+                    end > start -> {
+                        name = html.slice(start, end)
+                        name = name.trim()
+                        name.len > 0 -> names = names - name - '\n'
+                        pos = end
+                    }
+                    -> pos = start
+                }
+            }
+        }
+    } (pos < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-package-hashes — get file hashes for a package version
+; returns newline-separated hash strings
+; ═══════════════════════════════════════════════
+
+registry.get-package-hashes = (name str, ver str) (hashes str) {
+    hashes = ''
+    base = get-json-url()
+    url = base - name - '/' - ver - '/json'
+
+    resp = http.http-get(url)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    urls = json.get-key(v, 'urls')
+                    {
+                        urls != nil -> {
+                            n = json.arr-count(urls)
+                            i <- [0..n): {
+                                entry = json.arr-at(urls, i)
+                                {
+                                    entry != nil -> {
+                                        digests = json.get-key(entry, 'digests')
+                                        {
+                                            digests != nil -> {
+                                                sha256 = json.get-key(digests, 'sha256')
+                                                h = json.extract-str(sha256)
+                                                hashes = hashes - h - '\n'
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-info-with-auth — get package info with authentication
+; ═══════════════════════════════════════════════
+
+registry.get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    base = get-json-url()
+    url = base - name - '/json'
+
+    req = http-request{}
+    req.init('GET', url, '')
+    {
+        user != '' && pass != '' -> {
+            ; base64 encode user:pass
+            cred = user - ':' - pass
+            encoded = base64.base64-encode(cred, cred.len)
+            req.add-header('Authorization', 'Basic ' - encoded)
+        }
+    }
+
+    resp = http.http-do-req(req)
+    {
+        resp != nil -> {
+            body = resp.body
+            {
+                body == '' -> return
+                -> {
+                    v = json.parse(body, body.len)
+                    {
+                        v == nil -> return
+                        -> {
+                            info-val = json.get-key(v, 'info')
+                            {
+                                info-val != nil -> {
+                                    name-val = json.get-key(info-val, 'name')
+                                    ver-val = json.get-key(info-val, 'version')
+                                    req-val = json.get-key(info-val, 'requires_dist')
+                                    summary-val = json.get-key(info-val, 'summary')
+                                    py-val = json.get-key(info-val, 'requires_python')
+
+                                    info = info - 'name=' - json.extract-str(name-val) - '\n'
+                                    info = info - 'version=' - json.extract-str(ver-val) - '\n'
+                                    info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
+                                    info = info - 'summary=' - json.extract-str(summary-val) - '\n'
+                                    info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
+                                    ok = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-with-retry — download a package with retry logic
+; ═══════════════════════════════════════════════
+
+registry.download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
+    ok = false
+    {
+        max-retries < 1 -> max-retries = 3
+    }
+
+    attempt = 0
+    {
+        attempt = attempt + 1
+        dl-ok = download-package(name, ver, dest)
+        {
+            dl-ok -> {
+                ok = true
+                return
+            }
+            -> {
+                {
+                    attempt < max-retries -> {
+                    }
+                }
+            }
+        }
+    } (attempt < max-retries)
+}
+
+; ═══════════════════════════════════════════════
+; get-wheel-url — get the best wheel download URL for a package
+; Returns the URL for the most compatible wheel
+; ═══════════════════════════════════════════════
+
+registry.get-wheel-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+
+    base = get-json-url()
+    url-str = base - name - '/' - ver - '/json'
+
+    resp = http.http-get(url-str)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    urls = json.get-key(v, 'urls')
+                    {
+                        urls != nil -> {
+                            n = json.arr-count(urls)
+                            {
+                                n > 0 -> {
+                                    ; find the best wheel
+                                    i <- [0..n): {
+                                        entry = json.arr-at(urls, i)
+                                        {
+                                            entry != nil -> {
+                                                filename = json.get-key(entry, 'filename')
+                                                fn = json.extract-str(filename)
+                                                {
+                                                    fn.ends-with('.whl') -> {
+                                                        url-val = json.get-key(entry, 'url')
+                                                        url = json.extract-str(url-val)
+                                                        ok = true
+                                                        return
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ; fallback: first URL
+                                    {
+                                        ok == false -> {
+                                            entry = json.arr-at(urls, 0)
+                                            {
+                                                entry != nil -> {
+                                                    url-val = json.get-key(entry, 'url')
+                                                    url = json.extract-str(url-val)
+                                                    ok = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-sdist-url — get the source distribution URL
+; ═══════════════════════════════════════════════
+
+registry.get-sdist-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+
+    base = get-json-url()
+    url-str = base - name - '/' - ver - '/json'
+
+    resp = http.http-get(url-str)
+    resp: {
+        nil -> return
+        -> {
+            body = it.body
+            v = json.parse(body, body.len)
+            {
+                v == nil -> return
+                -> {
+                    urls = json.get-key(v, 'urls')
+                    {
+                        urls != nil -> {
+                            n = json.arr-count(urls)
+                            i <- [0..n): {
+                                entry = json.arr-at(urls, i)
+                                {
+                                    entry != nil -> {
+                                        filename = json.get-key(entry, 'filename')
+                                        fn = json.extract-str(filename)
+                                        {
+                                            fn.ends-with('.tar.gz') || fn.ends-with('.zip') -> {
+                                                url-val = json.get-key(entry, 'url')
+                                                url = json.extract-str(url-val)
+                                                ok = true
+                                                return
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-auth-headers — get authentication headers from environment
+;
+; Checks (in order):
+;   1. UV_TOKEN env var (bearer token)
+;   2. UV_USERNAME + UV_PASSWORD (basic auth)
+;   3. PIP_TOKEN env var (bearer token)
+;   4. ~/.netrc file
+;
+; returns: headers as "Key: Value\n" formatted string, empty if no auth
+; ═══════════════════════════════════════════════
+
+registry.get-auth-headers = () (headers str) {
+    headers = ''
+
+    ; 1. check UV_TOKEN
+    token = os.get-env('UV-TOKEN')
+    {
+        token != '' -> {
+            headers = 'Authorization: Bearer ' - token - '\n'
+            return
+        }
+    }
+
+    ; 2. check PIP_TOKEN
+    pip-token = os.get-env('PIP-TOKEN')
+    {
+        pip-token != '' -> {
+            headers = 'Authorization: Bearer ' - pip-token - '\n'
+            return
+        }
+    }
+
+    ; 3. check UV_USERNAME + UV_PASSWORD
+    user = os.get-env('UV-USERNAME')
+    pass = os.get-env('UV-PASSWORD')
+    {
+        user != '' && pass != '' -> {
+            cred = user - ':' - pass
+            encoded = base64.base64-encode(cred, cred.len)
+            headers = 'Authorization: Basic ' - encoded - '\n'
+            return
+        }
+    }
+
+    ; 4. check PIP_USERNAME + PIP_PASSWORD
+    pip-user = os.get-env('PIP-USERNAME')
+    pip-pass = os.get-env('PIP-PASSWORD')
+    {
+        pip-user != '' && pip-pass != '' -> {
+            cred = pip-user - ':' - pip-pass
+            encoded = base64.base64-encode(cred, cred.len)
+            headers = 'Authorization: Basic ' - encoded - '\n'
+            return
+        }
+    }
+
+    ; 5. try netrc
+    netrc-user, netrc-pass, netrc-ok = read-netrc('pypi.org')
+    {
+        netrc-ok -> {
+            cred = netrc-user - ':' - netrc-pass
+            encoded = base64.base64-encode(cred, cred.len)
+            headers = 'Authorization: Basic ' - encoded - '\n'
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; read-netrc — read credentials from ~/.netrc
+;
+; host str — hostname to look up
+; returns: user str, pass str, ok bool
+; ═══════════════════════════════════════════════
+
+registry.read-netrc = (host str) (user str, pass str, ok bool) {
+    ok = false
+    user = ''
+    pass = ''
+
+    home = os.get-env('HOME')
+    {
+        home == '' -> return
+    }
+
+    netrc-path = home - '/.netrc'
+    p = path{
+        p: netrc-path,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            content = fs.read-file(netrc-path)
+
+            ; parse netrc: machine <host> login <user> password <pass>
+            lines = content.split('\n')
+            nl = lines.len
+            i = 0
+            found-machine = false
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.starts-with('machine ') -> {
+                        machine-host = line.slice(8, line.len).trim()
+                        {
+                            machine-host == host -> found-machine = true
+                            -> found-machine = false
+                        }
+                    }
+                    -> {
+                        found-machine -> {
+                            {
+                                line.starts-with('login ') -> {
+                                    user = line.slice(6, line.len).trim()
+                                }
+                            }
+                            {
+                                line.starts-with('password ') -> {
+                                    pass = line.slice(9, line.len).trim()
+                                }
+                            }
+                            {
+                                line.starts-with('machine ') || line == 'default' -> {
+                                    found-machine = false
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < nl)
+
+            ; also handle single-line format
+            {
+                user == '' || pass == '' -> {
+                    i = 0
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        {
+                            line.contains('machine ' - host) -> {
+                                login-pos = line.index('login ')
+                                {
+                                    login-pos >= 0 -> {
+                                        login-end = login-pos + 6
+                                        rest = line.slice(login-end, line.len).trim()
+                                        space = rest.index(' ')
+                                        {
+                                            space > 0 -> user = rest.slice(0, space)
+                                            -> user = rest
+                                        }
+                                    }
+                                }
+                                pass-pos = line.index('password ')
+                                {
+                                    pass-pos >= 0 -> {
+                                        pass-end = pass-pos + 9
+                                        rest2 = line.slice(pass-end, line.len).trim()
+                                        space2 = rest2.index(' ')
+                                        {
+                                            space2 > 0 -> pass = rest2.slice(0, space2)
+                                            -> pass = rest2
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } (i < nl)
+                }
+            }
+
+            {
+                user != '' && pass != '' -> ok = true
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-with-auth — download a package with authentication
+;
+; token str — bearer token for authentication
+; ═══════════════════════════════════════════════
+
+registry.download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
+    ok = false
+
+    ; get download URL
+    dl-url, url-ok = get-package-url(name, ver)
+    {
+        url-ok == false -> {
+            print('error: could not find download URL for {name}=={ver}')
+            return
+        }
+    }
+
+    ; create request with auth
+    req = http-request{}
+    req.init('GET', dl-url, '')
+    {
+        token != '' -> {
+            req.add-header('Authorization', 'Bearer ' - token)
+        }
+    }
+
+    resp = http.http-do-req(req)
+    {
+        resp != nil -> {
+            body = resp.body
+            fd = fs.open-write(dest)
+            {
+                fd <= 0 -> return
+                -> {
+                    fs.write(fd, body, body.len)
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-with-backoff — download with exponential backoff retry
+;
+; max-retries i64 — maximum retry attempts
+; delay between retries: 1s, 2s, 4s, 8s, ...
+; ═══════════════════════════════════════════════
+
+registry.download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool) {
+    ok = false
+    {
+        max-retries < 1 -> max-retries = 3
+    }
+
+    attempt = 0
+    delay-ms = 1000
+
+    {
+        attempt = attempt + 1
+
+        dl-ok = download-package(name, ver, dest)
+        {
+            dl-ok -> {
+                ok = true
+                return
+            }
+            -> {
+                {
+                    attempt < max-retries -> {
+                        print('  retry {attempt}/{max-retries} in {delay-ms}ms...')
+                        ; sleep using os
+                        os.sleep-ms(delay-ms)
+                        delay-ms = delay-ms * 2
+                    }
+                }
+            }
+        }
+    } (attempt < max-retries)
+}
+
+; ═══════════════════════════════════════════════
+; upload-package — upload a package to PyPI (publish)
+;
+; file-path str — path to the file to upload
+; name str — package name
+; ver str — package version
+; token str — PyPI API token
+; ═══════════════════════════════════════════════
+
+registry.upload-package = (file-path str, name str, ver str, token str) (ok bool) {
+    ok = false
+
+    ; get upload URL
+    upload-url = os.get-env('UV-UPLOAD-URL')
+    {
+        upload-url == '' -> upload-url = 'https://upload.pypi.org/legacy/'
+    }
+
+    ; read file
+    data = fs.read-file(file-path)
+    {
+        data == '' -> {
+            print('error: could not read file {file-path}')
+            return
+        }
+        -> {
+            ; create multipart form data
+            req = http-request{}
+            req.init('POST', upload-url, data)
+            {
+                token != '' -> {
+                    req.add-header('Authorization', 'Bearer ' - token)
+                }
+            }
+            req.add-header('Content-Type', 'multipart/form-data')
+
+            ; get filename from path
+            filename = file-path
+            slash = filename.rindex('/')
+            {
+                slash >= 0 -> filename = filename.slice(slash + 1, filename.len)
+            }
+
+            req.add-header('X-Filename', filename)
+
+            resp = http.http-do-req(req)
+            {
+                resp != nil -> {
+                    status = resp.status-code
+                    {
+                        status >= 200 && status < 300 -> {
+                            print('Uploaded {filename} to {upload-url}')
+                            ok = true
+                        }
+                        -> {
+                            body = resp.body
+                            print('error: upload failed with status {status}: {body}')
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-info-cached — get package info with caching
+; ═══════════════════════════════════════════════
+
+registry.get-package-info-cached = (name str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    ; check URL cache first
+    base = get-json-url()
+    url = base - name - '/json'
+    cached-data, cache-ok = get-cached-url(url)
+    {
+        cache-ok -> {
+            ; parse cached response
+            v = json.parse(cached-data, cached-data.len)
+            {
+                v == nil -> return
+                -> {
+                    info-val = json.get-key(v, 'info')
+                    {
+                        info-val != nil -> {
+                            name-val = json.get-key(info-val, 'name')
+                            ver-val = json.get-key(info-val, 'version')
+                            req-val = json.get-key(info-val, 'requires_dist')
+                            summary-val = json.get-key(info-val, 'summary')
+                            py-val = json.get-key(info-val, 'requires_python')
+
+                            info = info - 'name=' - json.extract-str(name-val) - '\n'
+                            info = info - 'version=' - json.extract-str(ver-val) - '\n'
+                            info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
+                            info = info - 'summary=' - json.extract-str(summary-val) - '\n'
+                            info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
+                            ok = true
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; not cached, fetch from network
+    info, ok = get-package-info(name)
+    {
+        ok -> {
+            ; cache the response
+            ; (in a real implementation, we'd cache the raw JSON)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-index-url-for-config — get index URL from project config
+; ═══════════════════════════════════════════════
+
+registry.get-index-url-for-config = (cfg str) (url str) {
+    url = ''
+    ; check if config has an index-url setting
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('index_url=') -> {
+                url = line.slice(11, line.len).trim()
+                return
+            }
+            line.starts-with('index-url=') -> {
+                url = line.slice(10, line.len).trim()
+                return
+            }
+        }
+    } (i < n)
+
+    ; fall back to environment / default
+    url = get-index-url()
+}
+
+; ═══════════════════════════════════════════════
+; get-extra-index-urls — get extra index URLs from config
+; ═══════════════════════════════════════════════
+
+registry.get-extra-index-urls = (cfg str) (urls str) {
+    urls = ''
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('extra_index_url=') -> {
+                url = line.slice(17, line.len).trim()
+                urls = urls - url - '\n'
+            }
+            line.starts-with('extra-index-url=') -> {
+                url = line.slice(16, line.len).trim()
+                urls = urls - url - '\n'
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; verify-hash — verify a file hash against expected value
+; ═══════════════════════════════════════════════
+
+registry.verify-hash = (file-path str, expected-hash str) (ok bool) {
+    ok = false
+    data = fs.read-file(file-path)
+    {
+        data == '' -> {
+            print('error: could not read file {file-path}')
+            return
+        }
+        -> {
+            actual-hash = sha256.sha256-hex(data)
+            {
+                actual-hash == expected-hash -> ok = true
+                -> {
+                    print('error: hash mismatch for {file-path}')
+                    print('  expected: {expected-hash}')
+                    print('  actual:   {actual-hash}')
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-and-verify — download a package and verify its hash
+; ═══════════════════════════════════════════════
+
+registry.download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool) {
+    ok = false
+
+    dl-ok = download-package(name, ver, dest)
+    {
+        dl-ok == false -> return
+        -> {
+            {
+                expected-hash == '' -> {
+                    ; no hash to verify
+                    ok = true
+                }
+                -> {
+                    hash-ok = verify-hash(dest, expected-hash)
+                    ok = hash-ok
+                    {
+                        hash-ok == false -> {
+                            ; remove the bad download
+                            fs.remove(dest)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

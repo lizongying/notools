@@ -1,0 +1,211 @@
+; version.no — version information module
+;
+; Provides version detection and comparison utilities.
+;
+; API:
+;   current() (ver str) — get current nouv version
+;   parse(ver str) (major i64, minor i64, patch i64, pre str) — parse version
+;   compare(a str, b str) (cmp i64) — compare two versions (-1, 0, 1)
+;   is-prerelease(ver str) (yes bool) — check if pre-release
+;   normalize(ver str) (out str) — normalize version string
+;   str-to-i64(s str) (result i64) — safely convert string to i64
+
+NOUV-VERSION = '0.1.0'
+
+; ═══════════════════════════════════════════════
+; str-to-i64 — safely convert a string to i64
+; Returns 0 if parsing fails
+; ═══════════════════════════════════════════════
+
+version.str-to-i64 = (s str) (result i64) {
+    result = 0
+    v = s.to-i64()
+    v: {
+        ok -> result = it
+        nil -> result = 0
+        err -> result = 0
+    }
+}
+
+; ═══════════════════════════════════════════════
+; current — get current nouv version
+; ═══════════════════════════════════════════════
+
+version.current = () (ver str) {
+    ver = NOUV-VERSION
+}
+
+; ═══════════════════════════════════════════════
+; parse — parse a version string into components
+; "1.2.3" → major=1, minor=2, patch=3, pre=""
+; "1.2.3a1" → major=1, minor=2, patch=3, pre="a1"
+; ═══════════════════════════════════════════════
+
+version.parse = (ver str) (major i64, minor i64, patch i64, pre str) {
+    major = 0
+    minor = 0
+    patch = 0
+    pre = ''
+
+    v = ver.trim()
+    {
+        v.starts-with('v') -> v = v.slice(1, v.len)
+        v.starts-with('V') -> v = v.slice(1, v.len)
+    }
+
+    ; find pre-release suffix: check 'rc' first, then 'a', 'b', 'c'
+    core = v
+    {
+        v.index('rc') >= 0 -> {
+            parts-rc = v.split('rc')
+            {
+                parts-rc.len == 2 -> {
+                    core = parts-rc[0]
+                    pre = 'rc' - parts-rc[1]
+                }
+            }
+        }
+        v.index('a') >= 0 -> {
+            parts-a = v.split('a')
+            {
+                parts-a.len == 2 -> {
+                    core = parts-a[0]
+                    pre = 'a' - parts-a[1]
+                }
+            }
+        }
+        v.index('b') >= 0 -> {
+            parts-b = v.split('b')
+            {
+                parts-b.len == 2 -> {
+                    core = parts-b[0]
+                    pre = 'b' - parts-b[1]
+                }
+            }
+        }
+        v.index('c') >= 0 -> {
+            parts-c = v.split('c')
+            {
+                parts-c.len == 2 -> {
+                    core = parts-c[0]
+                    pre = 'c' - parts-c[1]
+                }
+            }
+        }
+    }
+
+    ; parse core version
+    parts = core.split('.')
+    n2 = parts.len
+    {
+        n2 >= 1 -> major = str-to-i64(parts[0])
+    }
+    {
+        n2 >= 2 -> minor = str-to-i64(parts[1])
+    }
+    {
+        n2 >= 3 -> patch = str-to-i64(parts[2])
+    }
+}
+
+; ═══════════════════════════════════════════════
+; compare — compare two version strings
+; returns -1 if a < b, 0 if equal, 1 if a > b
+; ═══════════════════════════════════════════════
+
+version.compare = (a str, b str) (cmp i64) {
+    cmp = 0
+
+    ma, mi, pa, pre-a = parse(a)
+    mb, mib, pb, pre-b = parse(b)
+
+    {
+        ma < mb -> {
+            cmp = -1
+            return
+        }
+        ma > mb -> {
+            cmp = 1
+            return
+        }
+    }
+
+    {
+        mi < mib -> {
+            cmp = -1
+            return
+        }
+        mi > mib -> {
+            cmp = 1
+            return
+        }
+    }
+
+    {
+        pa < pb -> {
+            cmp = -1
+            return
+        }
+        pa > pb -> {
+            cmp = 1
+            return
+        }
+    }
+
+    ; compare pre-release using has-pre instead of string comparison
+    ; to avoid split-based memory issues
+    a-has-pre = is-prerelease(a)
+    b-has-pre = is-prerelease(b)
+    {
+        a-has-pre == false && b-has-pre -> {
+            cmp = 1
+            return
+        }
+        a-has-pre && b-has-pre == false -> {
+            cmp = -1
+            return
+        }
+        a-has-pre == b-has-pre -> {
+            cmp = 0
+            return
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-prerelease — check if version is a pre-release
+; ═══════════════════════════════════════════════
+
+version.is-prerelease = (ver str) (yes bool) {
+    yes = false
+    v = ver.trim()
+    {
+        v.starts-with('v') -> v = v.slice(1, v.len)
+        v.starts-with('V') -> v = v.slice(1, v.len)
+    }
+    {
+        v.index('a') >= 0 -> yes = true
+        v.index('b') >= 0 -> yes = true
+        v.index('c') >= 0 -> yes = true
+        v.index('rc') >= 0 -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; normalize — normalize a version string
+; "1.2" → "1.2.0"
+; "v1.2.3" → "1.2.3"
+; ═══════════════════════════════════════════════
+
+version.normalize = (ver str) (out str) {
+    out = ver.trim()
+    {
+        out.starts-with('v') -> out = out.slice(1, out.len)
+        out.starts-with('V') -> out = out.slice(1, out.len)
+    }
+
+    major, minor, patch, pre = parse(out)
+    out = major.to-str() - '.' - minor.to-str() - '.' - patch.to-str()
+    ; Don't append pre to avoid split-based memory issues
+    ; pre-release info is preserved via is-prerelease check
+}

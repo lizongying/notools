@@ -1,0 +1,530 @@
+# /nouv/src/utils
+
+; cache.no — global cache management
+;
+; Manages the global cache for downloaded packages and wheel files.
+; This provides disk-space efficiency through deduplication.
+; Supports: wheel cache, sdist cache, URL cache, git cache, and pruning.
+
+CACHE-BASE = '.cache/nouv'
+
+; ═══════════════════════════════════════════════
+; get-cache-dir — get the global cache directory
+; ═══════════════════════════════════════════════
+
+cache.get-cache-dir = () (dir str) {
+    home = os.get-env('HOME')
+    {
+        home == '' -> home = '/tmp'
+    }
+
+    ; check for UV_CACHE_DIR env var
+    custom = os.get-env('UV-CACHE-DIR')
+    {
+        custom != '' -> dir = custom
+        -> dir = home - '/' - CACHE-BASE
+    }
+}
+
+; ═══════════════════════════════════════════════
+; clean-cache — remove all cached files
+; ═══════════════════════════════════════════════
+
+cache.clean-cache = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            ok = true
+            return
+        }
+        -> {
+            rm-rf(cache-dir)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; cache-size — get total cache size in bytes
+; ═══════════════════════════════════════════════
+
+cache.cache-size = () (size i64) {
+    size = 0
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            kb = du-sk(cache-dir)
+            size = kb * 1024
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-cache — get the cache path for a package
+; ═══════════════════════════════════════════════
+
+cache.get-package-cache = (name str, ver str) (path str) {
+    cache-dir = get-cache-dir()
+    norm-name = name.to-lower().replace-char('-', '_')
+    path = cache-dir - '/' - norm-name - '-' - ver - '.whl'
+}
+
+; ═══════════════════════════════════════════════
+; is-cached — check if a package is in the cache
+; ═══════════════════════════════════════════════
+
+cache.is-cached = (name str, ver str) (yes bool) {
+    yes = false
+    cache-path = get-package-cache(name, ver)
+    p = path{
+        p: cache-path,
+    }
+    exists = p.exists()
+    {
+        exists -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; cache-package — store a package in the cache
+; ═══════════════════════════════════════════════
+
+cache.cache-package = (name str, ver str, data str) (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    mk = p.make-dir()
+
+    cache-path = get-package-cache(name, ver)
+    fd = fs.open-write(cache-path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, data, data.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; ensure-cache-dir — ensure cache directory exists
+; ═══════════════════════════════════════════════
+
+cache.ensure-cache-dir = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    mk = p.make-dir()
+    ok = mk
+}
+
+; ═══════════════════════════════════════════════
+; prune — remove stale/orphaned cache entries
+; ═══════════════════════════════════════════════
+
+cache.prune = () (ok bool) {
+    ok = true
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            ; remove empty directories
+            run-cmd('find ' - cache-dir - ' -type d -empty -delete')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cache-info — get detailed cache information
+; ═══════════════════════════════════════════════
+
+cache.get-cache-info = () (info str) {
+    info = ''
+    cache-dir = get-cache-dir()
+    size = cache-size()
+
+    info = info - 'Cache directory: ' - cache-dir - '\n'
+    info = info - 'Cache size: ' - size.to-str() - ' bytes\n'
+
+    ; count cached packages
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            cnt = count-files(cache-dir)
+            info = info - 'Cached files: ' - cnt.to-str() - '\n'
+        }
+        -> info = info - 'Cache is empty\n'
+    }
+}
+
+; ═══════════════════════════════════════════════
+; remove-package — remove a specific package from cache
+; ═══════════════════════════════════════════════
+
+cache.remove-package = (name str, ver str) (ok bool) {
+    ok = false
+    cache-path = get-package-cache(name, ver)
+    p = path{
+        p: cache-path,
+    }
+    exists = p.exists()
+    {
+        exists -> fs.remove(cache-path)
+    }
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; clean-git-cache — clean git repository cache
+; ═══════════════════════════════════════════════
+
+cache.clean-git-cache = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    git-dir = cache-dir - '/git'
+    p = path{
+        p: git-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            rm-rf(git-dir)
+            ok = true
+        }
+        -> ok = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; clean-url-cache — clean URL download cache
+; ═══════════════════════════════════════════════
+
+cache.clean-url-cache = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    url-dir = cache-dir - '/urls'
+    p = path{
+        p: url-dir,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            rm-rf(url-dir)
+            ok = true
+        }
+        -> ok = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cache-entries — list all cache entries
+; ═══════════════════════════════════════════════
+
+cache.get-cache-entries = () (entries str) {
+    entries = ''
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            entries = ls(cache-dir)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-sdist-cache — get the sdist cache path for a package
+; ═══════════════════════════════════════════════
+
+cache.get-sdist-cache = (name str, ver str) (path str) {
+    cache-dir = get-cache-dir()
+    norm-name = name.to-lower().replace-char('-', '_')
+    path = cache-dir - '/' - norm-name - '-' - ver - '.tar.gz'
+}
+
+; ═══════════════════════════════════════════════
+; cache-sdist — store an sdist in the cache
+; ═══════════════════════════════════════════════
+
+cache.cache-sdist = (name str, ver str, data str) (ok bool) {
+    ok = false
+    dir-ok = ensure-cache-dir()
+    cache-path = get-sdist-cache(name, ver)
+    fd = fs.open-write(cache-path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, data, data.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-sdist-cached — check if an sdist is in the cache
+; ═══════════════════════════════════════════════
+
+cache.is-sdist-cached = (name str, ver str) (yes bool) {
+    yes = false
+    cache-path = get-sdist-cache(name, ver)
+    p = path{
+        p: cache-path,
+    }
+    exists = p.exists()
+    {
+        exists -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cache-key — generate a cache key for a package+format
+; ═══════════════════════════════════════════════
+
+cache.get-cache-key = (name str, ver str, fmt str) (key str) {
+    norm-name = name.to-lower().replace-char('-', '_')
+    {
+        fmt == 'sdist' -> key = norm-name - '-' - ver - '.tar.gz'
+        -> key = norm-name - '-' - ver - '.whl'
+    }
+}
+
+; ═══════════════════════════════════════════════
+; prune-stale — remove cache entries older than max-age-days
+; ═══════════════════════════════════════════════
+
+cache.prune-stale = (max-age-days i64) (ok bool) {
+    ok = true
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            ; use find with mtime to delete old files
+            run-cmd('find ' - cache-dir - ' -type f -mtime +' - max-age-days.to-str() - ' -delete')
+            ; also clean up empty directories
+            run-cmd('find ' - cache-dir - ' -type d -empty -delete')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-size — get the size of a cached package in bytes
+; ═══════════════════════════════════════════════
+
+cache.get-package-size = (name str, ver str) (size i64) {
+    size = 0
+    cache-path = get-package-cache(name, ver)
+    p = path{
+        p: cache-path,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            sz = fs.stat-size(cache-path)
+            size = sz
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; list-cache-by-package — list all cache entries for a specific package
+; ═══════════════════════════════════════════════
+
+cache.list-cache-by-package = (name str) (entries str) {
+    entries = ''
+    cache-dir = get-cache-dir()
+    norm-name = name.to-lower().replace-char('-', '_')
+
+    p = path{
+        p: cache-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            out = ls(cache-dir)
+            lines = out.split('\n')
+            n2 = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.starts-with(norm-name) -> {
+                        entries = entries - line - '\n'
+                    }
+                }
+            } (i < n2)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; clean-wheels — clean only wheel cache files
+; ═══════════════════════════════════════════════
+
+cache.clean-wheels = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    run-cmd('find ' - cache-dir - ' -name "*.whl" -type f -delete')
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; clean-sdists — clean only sdist cache files
+; ═══════════════════════════════════════════════
+
+cache.clean-sdists = () (ok bool) {
+    ok = false
+    cache-dir = get-cache-dir()
+    run-cmd('find ' - cache-dir - ' -name "*.tar.gz" -type f -delete')
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; cache-url — cache a downloaded URL
+; ═══════════════════════════════════════════════
+
+cache.cache-url = (url str, data str) (ok bool) {
+    ok = false
+    dir-ok = ensure-cache-dir()
+    cache-dir = get-cache-dir()
+    url-dir = cache-dir - '/urls'
+    p = path{
+        p: url-dir,
+    }
+    mk = p.make-dir()
+
+    ; hash the URL for the filename
+    hash-hex = sha256.sha256-hex(url)
+    cache-path = url-dir - '/' - hash-hex
+
+    fd = fs.open-write(cache-path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, data, data.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cached-url — get cached URL data if available
+; ═══════════════════════════════════════════════
+
+cache.get-cached-url = (url str) (data str, ok bool) {
+    ok = false
+    data = ''
+    cache-dir = get-cache-dir()
+    url-dir = cache-dir - '/urls'
+    hash-hex = sha256.sha256-hex(url)
+    cache-path = url-dir - '/' - hash-hex
+
+    p = path{
+        p: cache-path,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            data = fs.read-file(cache-path)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; cache-git-clone — cache a git repository clone
+; ═══════════════════════════════════════════════
+
+cache.cache-git-clone = (url str, rev str) (clone-dir str, ok bool) {
+    ok = false
+    clone-dir = ''
+    cache-dir = get-cache-dir()
+    git-dir = cache-dir - '/git'
+    p = path{
+        p: git-dir,
+    }
+    mk = p.make-dir()
+
+    ; hash the URL for the directory name
+    hash-hex = sha256.sha256-hex(url - '@' - rev)
+    clone-dir = git-dir - '/' - hash-hex
+
+    ; check if already cloned
+    p2 = path{
+        p: clone-dir,
+    }
+    exists = p2.exists()
+    {
+        exists -> {
+            ok = true
+            return
+        }
+        -> {
+            ; clone the repo
+            run-cmd('git clone ' - url - ' ' - clone-dir)
+            {
+                rev != '' -> {
+                    run-cmd('git -C ' - clone-dir - ' checkout ' - rev)
+                }
+            }
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cache-stats — get detailed cache statistics
+; ═══════════════════════════════════════════════
+
+cache.get-cache-stats = () (stats str) {
+    stats = ''
+    cache-dir = get-cache-dir()
+    size = cache-size()
+
+    stats = stats - 'Cache directory: ' - cache-dir - '\n'
+    stats = stats - 'Total size: ' - size.to-str() - ' bytes\n'
+
+    ; count wheels
+    wheel-out = run-cmd-output('find ' - cache-dir - ' -name "*.whl" | wc -l')
+    stats = stats - 'Wheel files: ' - wheel-out.trim() - '\n'
+
+    ; count sdists
+    sdist-out = run-cmd-output('find ' - cache-dir - ' -name "*.tar.gz" | wc -l')
+    stats = stats - 'Sdist files: ' - sdist-out.trim() - '\n'
+
+    ; count other files
+    total-out = run-cmd-output('find ' - cache-dir - ' -type f | wc -l')
+    stats = stats - 'Total files: ' - total-out.trim() - '\n'
+}

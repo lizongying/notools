@@ -1,0 +1,550 @@
+; wheel.no — wheel file format handling
+;
+; Handles parsing and creation of wheel (`.whl`) files.
+
+# /nouv/src/venv
+# /nouv/src/cache
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; install — install a wheel file into a virtual environment
+; ═══════════════════════════════════════════════
+
+wheel.install = (venv-path str, wheel-path str, no-cache bool) (ok bool) {
+    ok = false
+
+    ; read wheel file
+    data = fs.read-file(wheel-path)
+    {
+        data == '' -> {
+            print('error: could not read wheel file: {wheel-path}')
+            return
+        }
+        -> {
+            ; wheel is a zip file
+            archive = zip{
+                data: data,
+            }
+            count = archive.count()
+            {
+                count == 0 -> {
+                    print('error: empty wheel file')
+                    return
+                }
+                -> {
+                    sp-dir = get-site-packages(venv-path)
+                    p = path{
+                        p: sp-dir,
+                    }
+                    mk = p.make-dir()
+
+                    ; parse dist-info directory name
+                    dist-info-dir = ''
+                    i <- [0..count): {
+                        name = archive.name(i)
+                        {
+                            name.ends-with('.dist-info/') -> {
+                                dist-info-dir = name.slice(0, name.len - 1)
+                                break
+                            }
+                        }
+                    }
+
+                    ; extract each file
+                    i <- [0..count): {
+                        name = archive.name(i)
+                        content = archive.extract(i)
+
+                        {
+                            name.ends-with('/') == false -> {
+                                out-path = sp-dir - '/' - name
+                                p2 = path{
+                                    p: out-path,
+                                }
+
+                                slash = name.rindex('/')
+                                {
+                                    slash >= 0 -> {
+                                        parent-dir = sp-dir - '/' - name.slice(0, slash)
+                                        p3 = path{
+                                            p: parent-dir,
+                                        }
+                                        mk2 = p3.make-dir()
+                                    }
+                                }
+
+                                wfd = fs.open-write(out-path)
+                                {
+                                    wfd > 0 -> {
+                                        fs.write(wfd, content, content.len)
+                                        fs.close(wfd)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ; create entry point scripts
+                    {
+                        dist-info-dir != '' -> {
+                            ep-path = sp-dir - '/' - dist-info-dir - '/entry_points.txt'
+                            p4 = path{
+                                p: ep-path,
+                            }
+                            ep-exists = p4.exists()
+                            {
+                                ep-exists -> {
+                                    ep-data = fs.read-file(ep-path)
+                                    ep-ok = create-entry-point-scripts(venv-path, ep-data)
+                                }
+                            }
+                        }
+                    }
+
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-metadata — parse METADATA file from wheel
+; ═══════════════════════════════════════════════
+
+wheel.parse-metadata = (metadata-content str) (metadata str, ok bool) {
+    ok = false
+    metadata = ''
+
+    lines = metadata-content.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line == '' -> break
+            -> {
+                colon = line.index(':')
+                {
+                    colon >= 0 -> {
+                        key = line.slice(0, colon).trim().to-lower()
+                        val = line.slice(colon + 1, line.len).trim()
+                        {
+                            key == 'name' -> metadata = metadata - 'name=' - val - '\n'
+                            key == 'version' -> metadata = metadata - 'version=' - val - '\n'
+                            key == 'summary' -> metadata = metadata - 'summary=' - val - '\n'
+                            key == 'requires-python' -> metadata = metadata - 'requires-python=' - val - '\n'
+                            key == 'license' -> metadata = metadata - 'license=' - val - '\n'
+                            key == 'author' -> metadata = metadata - 'author=' - val - '\n'
+                            key == 'home-page' -> metadata = metadata - 'home-page=' - val - '\n'
+                            key == 'requires-dist' -> metadata = metadata - 'requires-dist=' - val - '\n'
+                            key == 'requires-external' -> metadata = metadata - 'requires-external=' - val - '\n'
+                            key == 'project-url' -> metadata = metadata - 'project-url=' - val - '\n'
+                            key == 'classifier' -> metadata = metadata - 'classifier=' - val - '\n'
+                            key == 'provides-extra' -> metadata = metadata - 'provides-extra=' - val - '\n'
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ok = metadata != ''
+}
+
+; ═══════════════════════════════════════════════
+; parse-wheel-file — parse WHEEL file
+; ═══════════════════════════════════════════════
+
+wheel.parse-wheel-file = (wheel-content str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    lines = wheel-content.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line == '' -> break
+            -> {
+                colon = line.index(':')
+                {
+                    colon >= 0 -> {
+                        key = line.slice(0, colon).trim().to-lower()
+                        val = line.slice(colon + 1, line.len).trim()
+                        info = info - key - '=' - val - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ok = info != ''
+}
+
+; ═══════════════════════════════════════════════
+; parse-entry-points — parse entry_points.txt
+; ═══════════════════════════════════════════════
+
+wheel.parse-entry-points = (content str) (eps str) {
+    eps = ''
+    current-section = ''
+
+    lines = content.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line == '' -> continue
+            line.starts-with('[') && line.ends-with(']') -> {
+                current-section = line.slice(1, line.len - 1)
+            }
+            -> {
+                eq = line.index('=')
+                {
+                    eq >= 0 -> {
+                        name = line.slice(0, eq).trim()
+                        target = line.slice(eq + 1, line.len).trim()
+                        eps = eps - current-section - ':' - name - '=' - target - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-entry-points — get entry points from a wheel file
+; ═══════════════════════════════════════════════
+
+wheel.get-entry-points = (wheel-path str) (eps str, ok bool) {
+    ok = false
+    eps = ''
+
+    data = fs.read-file(wheel-path)
+    {
+        data == '' -> return
+        -> {
+            archive = zip{
+                data: data,
+            }
+            count = archive.count()
+
+            i <- [0..count): {
+                name = archive.name(i)
+                {
+                    name.ends-with('entry_points.txt') -> {
+                        content = archive.extract(i)
+                        eps = parse-entry-points(content)
+                        ok = true
+                        return
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; create-entry-point-scripts — create executable scripts from entry points
+; ═══════════════════════════════════════════════
+
+wheel.create-entry-point-scripts = (venv-path str, ep-content str) (ok bool) {
+    ok = false
+    eps = parse-entry-points(ep-content)
+    {
+        eps == '' -> {
+            ok = true
+            return
+        }
+        -> {
+            bin-dir = get-bin(venv-path)
+            p = path{
+                p: bin-dir,
+            }
+            mk = p.make-dir()
+
+            lines = eps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.len > 0 -> {
+                        colon1 = line.index(':')
+                        {
+                            colon1 >= 0 -> {
+                                ep-type = line.slice(0, colon1)
+                                rest = line.slice(colon1 + 1, line.len)
+                                eq = rest.index('=')
+                                {
+                                    eq >= 0 -> {
+                                        ep-name = rest.slice(0, eq)
+                                        ep-target = rest.slice(eq + 1, rest.len)
+
+                                        {
+                                            ep-type == 'console_scripts' || ep-type == 'gui_scripts' -> {
+                                                script-path = bin-dir - '/' - ep-name
+                                                wfd = fs.open-write(script-path)
+                                                {
+                                                    wfd > 0 -> {
+                                                        script = ''
+                                                        script = script - '#!{venv-path}/bin/python3\n'
+                                                        script = script - '# -*- coding: utf-8 -*-\n'
+                                                        script = script - 'import sys\n'
+                                                        script = script - 'from {ep-target}\n'
+                                                        script = script - 'if __name__ == "__main__":\n'
+                                                        script = script - '    sys.exit(main())\n'
+                                                        fs.write(wfd, script, script.len)
+                                                        fs.close(wfd)
+                                                        chmod(script-path, '755')
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; build-wheel-file-record — build RECORD file content
+; ═══════════════════════════════════════════════
+
+wheel.build-wheel-file-record = (files str, base-dir str) (record str) {
+    record = ''
+    lines = files.split('\n')
+    n = lines.len
+    i = 0
+    {
+        file = lines[i]
+        i = i + 1
+        file = file.trim()
+        {
+            file.len > 0 -> {
+                full-path = base-dir - '/' - file
+                content = fs.read-file(full-path)
+                {
+                    content != '' -> {
+                        hash-hex = sha256.sha256-hex(content)
+                        sz = content.len
+                        record = record - file - ',sha256:' - hash-hex - ',' - sz.to-str() - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+    ; add RECORD itself (empty hash)
+    record = record - 'RECORD,,\n'
+}
+
+; ═══════════════════════════════════════════════
+; get-name-version — parse a wheel filename to extract name and version
+; ═══════════════════════════════════════════════
+
+wheel.get-name-version = (filename str) (name str, ver str) {
+    name = ''
+    ver = ''
+
+    {
+        filename.ends-with('.whl') -> filename = filename.slice(0, filename.len - 4)
+    }
+
+    parts = filename.split('-')
+    {
+        parts.len >= 2 -> {
+            name = parts[0]
+            ver = parts[1]
+        }
+    }
+
+    name = name.replace-char('_', '-')
+}
+
+; ═══════════════════════════════════════════════
+; is-wheel — check if a filename is a wheel
+; ═══════════════════════════════════════════════
+
+wheel.is-wheel = (filename str) (yes bool) {
+    yes = false
+    {
+        filename.ends-with('.whl') -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python-tag — get python compatibility tag from wheel filename
+; ═══════════════════════════════════════════════
+
+wheel.get-python-tag = (filename str) (tag str) {
+    tag = ''
+    {
+        filename.ends-with('.whl') -> filename = filename.slice(0, filename.len - 4)
+    }
+    parts = filename.split('-')
+    {
+        parts.len >= 5 -> tag = parts[2]
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-compatible — check if wheel is compatible with the current platform
+; ═══════════════════════════════════════════════
+
+wheel.is-compatible = (filename str) (yes bool) {
+    yes = false
+
+    py-tag = get-python-tag(filename)
+
+    {
+        py-tag == 'py3' || py-tag == 'py2.py3' -> yes = true
+        py-tag.starts-with('cp3') -> yes = true
+    }
+
+    {
+        yes -> {
+            {
+                filename.ends-with('any.whl') -> yes = true
+                filename.ends-with('linux_x86_64.whl') -> {
+                    sys = get-platform-system()
+                    {
+                        sys == 'Linux' -> {
+                            arch = get-platform-machine()
+                            {
+                                arch == 'x86_64' -> yes = true
+                                -> yes = false
+                            }
+                        }
+                        -> yes = false
+                    }
+                }
+                filename.ends-with('macosx_x86_64.whl') -> {
+                    sys = get-platform-system()
+                    {
+                        sys == 'Darwin' -> {
+                            arch = get-platform-machine()
+                            {
+                                arch == 'x86_64' -> yes = true
+                                -> yes = false
+                            }
+                        }
+                        -> yes = false
+                    }
+                }
+                filename.ends-with('macosx_arm64.whl') -> {
+                    sys = get-platform-system()
+                    {
+                        sys == 'Darwin' -> {
+                            arch = get-platform-machine()
+                            {
+                                arch == 'arm64' -> yes = true
+                                -> yes = false
+                            }
+                        }
+                        -> yes = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; build-record-for-installation — build a RECORD file for installed wheel
+; ═══════════════════════════════════════════════
+
+wheel.build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pkg-ver str) (ok bool) {
+    ok = false
+
+    record-content = ''
+    dist-info-path = sp-dir - '/' - dist-info-dir
+
+    out = run-cmd-output('find ' - dist-info-path - ' -type f')
+    lines = out.split('\n')
+    nl = lines.len
+    i = 0
+    {
+        fpath = lines[i]
+        i = i + 1
+        fpath = fpath.trim()
+        {
+            fpath.len > 0 -> {
+                rel = fpath.slice(sp-dir.len + 1, fpath.len)
+                content = fs.read-file(fpath)
+                {
+                    content != '' -> {
+                        hash-hex = sha256.sha256-hex(content)
+                        sz = content.len
+                        {
+                            record-content.len > 0 -> record-content = record-content - '\n'
+                        }
+                        record-content = record-content - rel - ',sha256:' - hash-hex - ',' - sz.to-str()
+                    }
+                }
+            }
+        }
+    } (i < nl)
+
+    ; also list package files
+    norm-name = pkg-name.replace-char('-', '_')
+    pkg-dir = sp-dir - '/' - norm-name
+    p2 = path{
+        p: pkg-dir,
+    }
+    pkg-exists = p2.exists()
+    {
+        pkg-exists -> {
+            out2 = run-cmd-output('find ' - pkg-dir - ' -type f')
+            pkg-lines = out2.split('\n')
+            pln = pkg-lines.len
+            i = 0
+            {
+                fpath = pkg-lines[i]
+                i = i + 1
+                fpath = fpath.trim()
+                {
+                    fpath.len > 0 -> {
+                        rel = fpath.slice(sp-dir.len + 1, fpath.len)
+                        content = fs.read-file(fpath)
+                        {
+                            content != '' -> {
+                                hash-hex = sha256.sha256-hex(content)
+                                sz = content.len
+                                {
+                                    record-content.len > 0 -> record-content = record-content - '\n'
+                                }
+                                record-content = record-content - rel - ',sha256:' - hash-hex - ',' - sz.to-str()
+                            }
+                        }
+                    }
+                }
+            } (i < pln)
+        }
+    }
+
+    ; write RECORD file
+    record-path = dist-info-path - '/RECORD'
+    wfd = fs.open-write(record-path)
+    {
+        wfd > 0 -> {
+            fs.write(wfd, record-content, record-content.len)
+            fs.close(wfd)
+            ok = true
+        }
+    }
+}

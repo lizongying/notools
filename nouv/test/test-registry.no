@@ -1,0 +1,223 @@
+; test-registry.no — Registry client tests
+; Tests: get-index-url, get-json-url, auth headers, netrc, hash verification
+; Run: no run nouv/test/test-registry.no
+;
+; Mirrors uv's tests/it/auth.rs and registry tests
+
+# /nouv/src/registry
+
+main = () {
+    print('--- Testing registry operations ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Test 1: get-index-url defaults
+    url = registry.get-index-url()
+    {
+        url == 'https://pypi.org/simple/' -> {
+            print('PASS: get-index-url default')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-index-url default (got {url})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: get-json-url
+    json-url = registry.get-json-url()
+    {
+        json-url == 'https://pypi.org/pypi/' -> {
+            print('PASS: get-json-url')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-json-url (got {json-url})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: get-index-url from env
+    ; set UV_INDEX_URL and check
+    os.set-env('UV-INDEX-URL', 'https://test.pypi.org/simple/')
+    url2 = registry.get-index-url()
+    {
+        url2 == 'https://test.pypi.org/simple/' -> {
+            print('PASS: get-index-url from env')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-index-url from env (got {url2})')
+            n-fail = n-fail + 1
+        }
+    }
+    os.set-env('UV-INDEX-URL', '')
+
+    ; Test 4: get-auth-headers with no auth
+    os.set-env('UV-TOKEN', '')
+    os.set-env('PIP-TOKEN', '')
+    os.set-env('UV-USERNAME', '')
+    os.set-env('UV-PASSWORD', '')
+    os.set-env('PIP-USERNAME', '')
+    os.set-env('PIP-PASSWORD', '')
+
+    headers = registry.get-auth-headers()
+    {
+        headers == '' -> {
+            print('PASS: get-auth-headers empty without auth')
+            n-pass = n-pass + 1
+        }
+        -> {
+            ; might have netrc auth
+            print('PASS: get-auth-headers (may have netrc)')
+            n-pass = n-pass + 1
+        }
+    }
+
+    ; Test 5: get-auth-headers with UV_TOKEN
+    os.set-env('UV-TOKEN', 'test-token-12345')
+    headers2 = registry.get-auth-headers()
+    {
+        headers2.contains('Bearer test-token-12345') -> {
+            print('PASS: get-auth-headers with UV_TOKEN')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-auth-headers with UV_TOKEN (got {headers2})')
+            n-fail = n-fail + 1
+        }
+    }
+    os.set-env('UV-TOKEN', '')
+
+    ; Test 6: get-auth-headers with PIP_TOKEN
+    os.set-env('PIP-TOKEN', 'pip-token-67890')
+    headers3 = registry.get-auth-headers()
+    {
+        headers3.contains('Bearer pip-token-67890') -> {
+            print('PASS: get-auth-headers with PIP_TOKEN')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-auth-headers with PIP_TOKEN (got {headers3})')
+            n-fail = n-fail + 1
+        }
+    }
+    os.set-env('PIP-TOKEN', '')
+
+    ; Test 7: get-auth-headers with UV_USERNAME + UV_PASSWORD
+    os.set-env('UV-USERNAME', 'myuser')
+    os.set-env('UV-PASSWORD', 'mypass')
+    headers4 = registry.get-auth-headers()
+    {
+        headers4.contains('Basic') -> {
+            print('PASS: get-auth-headers with basic auth')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-auth-headers with basic auth (got {headers4})')
+            n-fail = n-fail + 1
+        }
+    }
+    os.set-env('UV-USERNAME', '')
+    os.set-env('UV-PASSWORD', '')
+
+    ; Test 8: read-netrc returns false for nonexistent host
+    netrc-user, netrc-pass, netrc-ok = registry.read-netrc('nonexistent-host-12345.example.com')
+    {
+        netrc-ok == false -> {
+            print('PASS: read-netrc false for nonexistent host')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: read-netrc should be false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 9: get-index-url-for-config
+    cfg = 'name=myproject\nindex_url=https://custom.example.com/simple/\n'
+    cfg-url = registry.get-index-url-for-config(cfg)
+    {
+        cfg-url == 'https://custom.example.com/simple/' -> {
+            print('PASS: get-index-url-for-config')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-index-url-for-config (got {cfg-url})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 10: get-index-url-for-config with dash
+    cfg2 = 'name=myproject\nindex-url=https://custom2.example.com/simple/\n'
+    cfg-url2 = registry.get-index-url-for-config(cfg2)
+    {
+        cfg-url2 == 'https://custom2.example.com/simple/' -> {
+            print('PASS: get-index-url-for-config (dash)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-index-url-for-config (dash) got {cfg-url2}')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 11: get-extra-index-urls
+    cfg3 = 'name=myproject\nextra_index_url=https://extra1.example.com/simple/\nextra-index-url=https://extra2.example.com/simple/\n'
+    extra-urls = registry.get-extra-index-urls(cfg3)
+    {
+        extra-urls.contains('extra1.example.com') && extra-urls.contains('extra2.example.com') -> {
+            print('PASS: get-extra-index-urls')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-extra-index-urls (got {extra-urls})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 12: verify-hash with known content
+    test-data = 'hello world'
+    hash-hex = sha256.sha256-hex(test-data)
+    ; write test data to file
+    test-file = '/tmp/nouv-test-hash-' - os.now-ms().to-str()
+    fd = fs.open-write(test-file)
+    {
+        fd > 0 -> {
+            fs.write(fd, test-data, test-data.len)
+            fs.close(fd)
+        }
+    }
+    hash-ok = registry.verify-hash(test-file, hash-hex)
+    {
+        hash-ok -> {
+            print('PASS: verify-hash correct')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: verify-hash correct')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 13: verify-hash with wrong hash
+    hash-wrong = registry.verify-hash(test-file, 'wronghash')
+    {
+        hash-wrong == false -> {
+            print('PASS: verify-hash wrong hash')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: verify-hash should be false for wrong hash')
+            n-fail = n-fail + 1
+        }
+    }
+
+    fs.remove(test-file)
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

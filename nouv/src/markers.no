@@ -1,0 +1,596 @@
+; markers.no — PEP 508 environment marker evaluation
+;
+; Evaluates environment markers used in dependency specifications.
+; Supports all PEP 508/PEP 345 marker variables and comparison operators.
+;
+; Marker variables:
+;   python_version, python_full_version, platform_system, platform_machine,
+;   sys_platform, implementation_name, extra, os_name, os.name,
+;   platform_release, platform_version, platform.python_implementation
+;
+; Operators: ==, !=, <, <=, >, >=, ~=, in, not in, and, or
+;
+; API:
+;   evaluate(marker str, extras str) (ok bool) — evaluate marker
+;   evaluate-expression(marker str, env str) (result bool, ok bool)
+;   get-env-value(name str) (val str) — get environment variable value
+;   tokenize(marker str) (tokens str) — tokenize marker expression
+
+# /nouv/src/settings
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; evaluate — evaluate a marker expression
+;
+; marker str — e.g. "python_version>='3.8' and platform_system=='Linux'"
+; extras str — the extras being evaluated (for 'extra' variable)
+; returns: ok bool — whether the marker is satisfied
+; ═══════════════════════════════════════════════
+
+markers.evaluate = (marker str, extras str) (ok bool) {
+    ok = true
+    {
+        marker == '' -> return
+    }
+
+    ; parse and evaluate the expression
+    result, eval-ok = eval-or(marker, extras)
+    {
+        eval-ok -> ok = result
+        -> ok = false
+    }
+}
+
+; ═══════════════════════════════════════════════
+; eval-or — evaluate OR expression (lowest precedence)
+; "expr1 or expr2 or expr3"
+; ═══════════════════════════════════════════════
+
+markers.eval-or = (expr str, extras str) (result bool, ok bool) {
+    ok = true
+    result = false
+
+    ; split by " or " at top level (not inside quotes/parens)
+    parts = split-top-level(expr, ' or ')
+    n = parts.len
+    {
+        n == 0 -> return
+        -> {
+            i <- [0..n): {
+                part = parts[i].trim()
+                {
+                    part.len > 0 -> {
+                        r, part-ok = eval-and(part, extras)
+                        {
+                            part-ok -> {
+                                {
+                                    r -> {
+                                        result = true
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; eval-and — evaluate AND expression
+; "expr1 and expr2 and expr3"
+; ═══════════════════════════════════════════════
+
+markers.eval-and = (expr str, extras str) (result bool, ok bool) {
+    ok = true
+    result = true
+
+    parts = split-top-level(expr, ' and ')
+    n = parts.len
+    {
+        n == 0 -> return
+        -> {
+            i <- [0..n): {
+                part = parts[i].trim()
+                {
+                    part.len > 0 -> {
+                        r, part-ok = eval-comparison(part, extras)
+                        {
+                            part-ok -> {
+                                {
+                                    r == false -> {
+                                        result = false
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; eval-comparison — evaluate a single comparison expression
+; "python_version>='3.8'" or "(expr)" for parenthesized groups
+; ═══════════════════════════════════════════════
+
+markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
+    ok = false
+    result = false
+
+    s = expr.trim()
+    {
+        s == '' -> return
+    }
+
+    ; handle parenthesized expression
+    {
+        s.starts-with('(') -> {
+            ; find matching close paren
+            n = s.len
+            depth = 0
+            i = 0
+            close = -1
+            {
+                c = s[i]
+                {
+                    c == 40 -> depth = depth + 1  ; (
+                    c == 41 -> {  ; )
+                        depth = depth - 1
+                        {
+                            depth == 0 -> {
+                                close = i
+                                break
+                            }
+                        }
+                    }
+                }
+                i = i + 1
+            } (i < n)
+            {
+                close >= 0 -> {
+                    inner = s.slice(1, close)
+                    ; check if there's more after close paren
+                    rest = s.slice(close + 1, n).trim()
+                    {
+                        rest == '' -> {
+                            ; just a parenthesized expression
+                            result, ok = eval-or(inner, extras)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; find comparison operator
+    op, left, right = find-comparison-op(s)
+    {
+        op == '' -> {
+            ; no operator — check for truthiness
+            {
+                s == 'true' -> {
+                    result = true
+                    ok = true
+                    return
+                }
+                s == 'false' -> {
+                    result = false
+                    ok = true
+                    return
+                }
+            }
+            return
+        }
+    }
+
+    ; resolve left side (variable)
+    left = left.trim()
+    left-val = resolve-value(left, extras)
+
+    ; resolve right side (constant, usually quoted)
+    right = right.trim()
+    right-val = right
+    {
+        right.starts-with('"') && right.ends-with('"') -> right-val = right.slice(1, right.len - 1)
+        right.starts-with("'") && right.ends-with("'") -> right-val = right.slice(1, right.len - 1)
+    }
+
+    ; evaluate comparison
+    result, ok = compare-values(left-val, op, right-val)
+}
+
+; ═══════════════════════════════════════════════
+; find-comparison-op — find the comparison operator in an expression
+; returns: op str, left str, right str
+; ═══════════════════════════════════════════════
+
+markers.find-comparison-op = (s str) (op str, left str, right str) {
+    op = ''
+    left = s
+    right = ''
+
+    ; try operators in order of length (longest first)
+    {
+        pos = find-op-pos(s, ' not in ')
+        pos >= 0 -> {
+            op = 'not in'
+            left = s.slice(0, pos)
+            right = s.slice(pos + 8, s.len)
+            return
+        }
+    }
+    {
+        pos = find-op-pos(s, ' in ')
+        pos >= 0 -> {
+            op = 'in'
+            left = s.slice(0, pos)
+            right = s.slice(pos + 4, s.len)
+            return
+        }
+    }
+
+    ; comparison operators
+    ops = '=== ~= >= <= == != > <'
+    op-list = ops.split(' ')
+    n = op-list.len
+    i <- [0..n): {
+        candidate = op-list[i]
+        {
+            candidate.len > 0 -> {
+                pos = find-op-pos(s, candidate)
+                {
+                    pos >= 0 -> {
+                        op = candidate
+                        left = s.slice(0, pos)
+                        right = s.slice(pos + candidate.len, s.len)
+                        return
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; find-op-pos — find operator position (not inside quotes)
+; ═══════════════════════════════════════════════
+
+markers.find-op-pos = (s str, op-str str) (pos i64) {
+    pos = -1
+    n = s.len
+    in-str = false
+    str-char = 0
+    i = 0
+    {
+        c = s[i]
+        {
+            in-str -> {
+                c == str-char -> in-str = false
+            }
+            -> {
+                {
+                    c == 34 || c == 39 -> {
+                        in-str = true
+                        str-char = c
+                    }
+                }
+            }
+        }
+        {
+            in-str == false -> {
+                ; try to match op-str at position i
+                {
+                    i + op-str.len <= n -> {
+                        candidate = s.slice(i, i + op-str.len)
+                        {
+                            candidate == op-str -> {
+                                pos = i
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; resolve-value — resolve a marker variable to its value
+; ═══════════════════════════════════════════════
+
+markers.resolve-value = (name str, extras str) (val str) {
+    val = ''
+    n = name.trim()
+
+    ; remove quotes if it's a string literal
+    {
+        n.starts-with('"') && n.ends-with('"') -> {
+            val = n.slice(1, n.len - 1)
+            return
+        }
+        n.starts-with("'") && n.ends-with("'") -> {
+            val = n.slice(1, n.len - 1)
+            return
+        }
+    }
+
+    ; resolve variable
+    n: {
+        'python_version' -> val = get-python-version()
+        'python_full_version' -> val = get-python-full-version()
+        'platform_system' -> val = get-platform-system()
+        'platform_machine' -> val = get-platform-machine()
+        'sys_platform' -> val = get-sys-platform()
+        'os.name' -> val = get-os-name()
+        'os_name' -> val = get-os-name()
+        'implementation_name' -> val = get-implementation-name()
+        'platform_release' -> val = get-platform-release()
+        'platform_version' -> val = get-platform-version()
+        'platform.python_implementation' -> val = get-python-implementation()
+        'extra' -> {
+            ; 'extra' variable checks if a specific extra is being installed
+            val = extras
+        }
+        -> val = n
+    }
+}
+
+; ═══════════════════════════════════════════════
+; compare-values — compare values using the operator
+; ═══════════════════════════════════════════════
+
+markers.compare-values = (left str, op str, right str) (result bool, ok bool) {
+    ok = true
+    result = false
+
+    op: {
+        '==' -> result = left == right
+        '!=' -> result = left != right
+        '>=' -> result = version-gte(left, right)
+        '<=' -> result = version-lte(left, right)
+        '>' -> result = version-gt(left, right)
+        '<' -> result = version-lt(left, right)
+        '~=' -> result = version-compat(left, right)
+        '===' -> result = left == right
+        'in' -> result = right.contains(left)
+        'not in' -> {
+            result = right.contains(left) == false
+        }
+        -> ok = false
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Version comparison helpers
+; ═══════════════════════════════════════════════
+
+markers.version-gte = (a str, b str) (result bool) {
+    result = false
+    cmp = version-cmp(a, b)
+    result = cmp >= 0
+}
+
+markers.version-lte = (a str, b str) (result bool) {
+    result = false
+    cmp = version-cmp(a, b)
+    result = cmp <= 0
+}
+
+markers.version-gt = (a str, b str) (result bool) {
+    result = false
+    cmp = version-cmp(a, b)
+    result = cmp > 0
+}
+
+markers.version-lt = (a str, b str) (result bool) {
+    result = false
+    cmp = version-cmp(a, b)
+    result = cmp < 0
+}
+
+markers.version-compat = (a str, b str) (result bool) {
+    result = false
+    ; ~= operator: >= b and < (b with last component + 1)
+    cmp = version-cmp(a, b)
+    {
+        cmp < 0 -> return
+    }
+    ; compute upper bound
+    parts = b.split('.')
+    n = parts.len
+    {
+        n < 2 -> {
+            result = true
+            return
+        }
+        -> {
+            major = parts[0]
+            minor = str-to-i64(parts[1])
+            upper = major - '.' - (minor + 1).to-str() - '.0'
+            cmp2 = version-cmp(a, upper)
+            result = cmp2 < 0
+        }
+    }
+}
+
+markers.version-cmp = (a str, b str) (cmp i64) {
+    cmp = 0
+    a-parts = a.split('.')
+    b-parts = b.split('.')
+    a-n = a-parts.len
+    b-n = b-parts.len
+    max-n = a-n
+    {
+        b-n > max-n -> max-n = b-n
+    }
+
+    i <- [0..max-n): {
+        a-val = 0
+        b-val = 0
+        {
+            i < a-n -> a-val = str-to-i64(a-parts[i])
+        }
+        {
+            i < b-n -> b-val = str-to-i64(b-parts[i])
+        }
+        {
+            a-val < b-val -> {
+                cmp = -1
+                return
+            }
+            a-val > b-val -> {
+                cmp = 1
+                return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; split-top-level — split expression by separator at top level
+; (not inside quotes or parentheses)
+; ═══════════════════════════════════════════════
+
+markers.split-top-level = (expr str, sep str) (parts str) {
+    parts = expr
+    n = expr.len
+    in-str = false
+    str-char = 0
+    depth = 0
+    i = 0
+
+    {
+        c = expr[i]
+        {
+            in-str -> {
+                c == str-char -> in-str = false
+            }
+            -> {
+                {
+                    c == 34 || c == 39 -> {
+                        in-str = true
+                        str-char = c
+                    }
+                    c == 40 -> depth = depth + 1  ; (
+                    c == 41 -> depth = depth - 1  ; )
+                }
+            }
+        }
+        {
+            in-str == false && depth == 0 -> {
+                {
+                    i + sep.len <= n -> {
+                        candidate = expr.slice(i, i + sep.len)
+                        {
+                            candidate == sep -> {
+                                ; replace separator with newline
+                                before = expr.slice(0, i)
+                                after = expr.slice(i + sep.len, n)
+                                expr = before - '\n' - after
+                                n = expr.len
+                                i = i  ; re-check this position
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    } (i < n)
+
+    parts = expr
+}
+
+; ═══════════════════════════════════════════════
+; Environment variable getters
+; ═══════════════════════════════════════════════
+
+markers.get-python-version = () (ver str) {
+    ver = ''
+    out = run-cmd-output('python3 -c "import sys; print(f\\"{sys.version_info.major}.{sys.version_info.minor}\\")"')
+    ver = out.trim()
+    {
+        ver == '' -> {
+            ; fallback
+            out2 = run-cmd-output('python3 --version')
+            ; "Python 3.12.0" → "3.12"
+            {
+                out2.starts-with('Python ') -> {
+                    full = out2.slice(7, out2.len).trim()
+                    parts = full.split('.')
+                    {
+                        parts.len >= 2 -> ver = parts[0] - '.' - parts[1]
+                    }
+                }
+            }
+        }
+    }
+}
+
+markers.get-python-full-version = () (ver str) {
+    ver = ''
+    out = run-cmd-output('python3 --version')
+    {
+        out.starts-with('Python ') -> ver = out.slice(7, out.len).trim()
+        -> ver = out.trim()
+    }
+}
+
+markers.get-platform-system = () (sys str) {
+    sys = ''
+    out = run-cmd-output('uname -s')
+    sys = out.trim()
+}
+
+markers.get-platform-machine = () (arch str) {
+    arch = ''
+    out = run-cmd-output('uname -m')
+    arch = out.trim()
+}
+
+markers.get-sys-platform = () (plat str) {
+    plat = get-platform-system()
+    {
+        plat == 'Darwin' -> plat = 'darwin'
+        plat == 'Linux' -> plat = 'linux'
+    }
+}
+
+markers.get-os-name = () (name str) {
+    name = ''
+    sys = get-platform-system()
+    {
+        sys == 'Darwin' -> name = 'posix'
+        sys == 'Linux' -> name = 'posix'
+        -> name = 'posix'
+    }
+}
+
+markers.get-implementation-name = () (name str) {
+    name = 'cpython'
+}
+
+markers.get-platform-release = () (rel str) {
+    rel = ''
+    out = run-cmd-output('uname -r')
+    rel = out.trim()
+}
+
+markers.get-platform-version = () (ver str) {
+    ver = ''
+    out = run-cmd-output('uname -v')
+    ver = out.trim()
+}
+
+markers.get-python-implementation = () (impl str) {
+    impl = 'CPython'
+}

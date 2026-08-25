@@ -27,6 +27,7 @@ jobs:
       needs-notools: ${{ steps.detect.outputs.needs-notools }}
       needs-nogit: ${{ steps.detect.outputs.needs-nogit }}
       needs-noimg: ${{ steps.detect.outputs.needs-noimg }}
+      needs-nouv: ${{ steps.detect.outputs.needs-nouv }}
       last-tag: ${{ steps.detect.outputs.last-tag }}
     steps:
       - name: Detect changed subprojects via GitHub API
@@ -105,11 +106,12 @@ jobs:
           echo ""
 
           # ── 4. 判断每个子项目是否有变更 ──
-          # 子项目路径前缀：notools/  nogit/  noimg/
+          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/
           # 额外：根目录的 .github/workflows/ 或 package.jsonc 变更也触发全部构建
           NEEDS_NOTOOLS=false
           NEEDS_NOGIT=false
           NEEDS_NOIMG=false
+          NEEDS_NOUV=false
 
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -120,6 +122,7 @@ jobs:
                 NEEDS_NOTOOLS=true
                 NEEDS_NOGIT=true
                 NEEDS_NOIMG=true
+                NEEDS_NOUV=true
                 echo "  [root-config] $f → triggers all"
                 continue
                 ;;
@@ -139,6 +142,10 @@ jobs:
                 NEEDS_NOIMG=true
                 echo "  [noimg] $f"
                 ;;
+              nouv/*)
+                NEEDS_NOUV=true
+                echo "  [nouv] $f"
+                ;;
             esac
           done <<< "$CHANGED_FILES"
 
@@ -149,12 +156,14 @@ jobs:
           echo "  notools: $NEEDS_NOTOOLS"
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
+          echo "  nouv:    $NEEDS_NOUV"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
           echo "needs-notools=$NEEDS_NOTOOLS" >> "$GITHUB_OUTPUT"
           echo "needs-nogit=$NEEDS_NOGIT"     >> "$GITHUB_OUTPUT"
           echo "needs-noimg=$NEEDS_NOIMG"     >> "$GITHUB_OUTPUT"
+          echo "needs-nouv=$NEEDS_NOUV"        >> "$GITHUB_OUTPUT"
           echo "last-tag=$LAST_TAG"           >> "$GITHUB_OUTPUT"
 
   # ── 构建 notools ──────────────────────────────────────────────────
@@ -627,10 +636,148 @@ jobs:
           path: dist/noimg-*
           if-no-files-found: warn
 
+  # ── 构建 nouv ───────────────────────────────────────────────────
+  build-nouv:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nouv == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          echo "Injecting VERSION='$VER' (from tag '$TAG')"
+          sed -i "s/VERSION = '0.1.0'/VERSION = '$VER'/" nouv/main.no
+          grep -n '^VERSION' nouv/main.no
+
+      - name: Build nouv for multiple platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.27
+        with:
+          version: "0.2.27"
+          entry: nouv/main.no
+          name: nouv
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          cc: zig
+          fail-on-error: "true"
+
+      - name: Build report
+        if: always()
+        shell: bash
+        env:
+          BINARIES: ${{ steps.build.outputs.binaries }}
+          FAILED: ${{ steps.build.outputs.failed }}
+          NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+        run: |
+          echo "============================================"
+          echo "  nouv Build Report"
+          echo "============================================"
+          echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo ""
+          echo "--- Built successfully ---"
+          if [ -n "$BINARIES" ]; then
+            printf '  %s\n' $BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- Failed targets ---"
+          if [ -n "$FAILED" ]; then
+            printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+
+      - name: Smoke test nouv (linux/amd64)
+        run: |
+          set -e
+          BIN="dist/nouv-linux-amd64"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::nouv linux/amd64 binary not found — critical build failure"
+            exit 1
+          fi
+          chmod +x "$BIN"
+
+          PASS=0; FAIL=0
+
+          check() {
+            local desc="$1" actual="$2" expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "  PASS: $desc"
+              PASS=$((PASS+1))
+            else
+              echo "  FAIL: $desc"
+              echo "    expected: '$expected'"
+              echo "    actual:   '$actual'"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          echo "=== nouv version ==="
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          out=$("$BIN" version)
+          check "version" "$out" "nouv $VER"
+
+          echo "=== nouv help ==="
+          out=$("$BIN" help | head -1)
+          check "help" "$out" "nouv — pure Nolang implementation of uv"
+
+          echo "=== nouv init ==="
+          rm -rf /tmp/nouv-smoke-test
+          out=$("$BIN" init /tmp/nouv-smoke-test 2>&1)
+          if [ -f /tmp/nouv-smoke-test/pyproject.toml ]; then
+            echo "  PASS: pyproject.toml created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: pyproject.toml missing"; FAIL=$((FAIL+1))
+          fi
+          if [ -f /tmp/nouv-smoke-test/README.md ]; then
+            echo "  PASS: README.md created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: README.md missing"; FAIL=$((FAIL+1))
+          fi
+          if [ -f /tmp/nouv-smoke-test/.gitignore ]; then
+            echo "  PASS: .gitignore created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: .gitignore missing"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== nouv cache dir ==="
+          out=$("$BIN" cache dir 2>&1)
+          if echo "$out" | grep -q "nouv"; then
+            echo "  PASS: cache dir returned"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: cache dir unexpected: $out"; FAIL=$((FAIL+1))
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "  nouv Smoke test: $PASS passed, $FAIL failed"
+          echo "============================================"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      - name: Upload nouv artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nouv-binaries
+          path: dist/nouv-*
+          if-no-files-found: warn
+
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv]
     runs-on: ubuntu-latest
     steps:
       - name: Download notools artifacts
@@ -654,6 +801,13 @@ jobs:
           name: noimg-binaries
           path: artifacts
 
+      - name: Download nouv artifacts
+        if: needs.detect-changes.outputs.needs-nouv == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nouv-binaries
+          path: artifacts
+
       - name: Generate checksums and build release notes
         id: prep
         shell: bash
@@ -661,6 +815,7 @@ jobs:
           NEEDS_NOTOOLS: ${{ needs.detect-changes.outputs.needs-notools }}
           NEEDS_NOGIT: ${{ needs.detect-changes.outputs.needs-nogit }}
           NEEDS_NOIMG: ${{ needs.detect-changes.outputs.needs-noimg }}
+          NEEDS_NOUV: ${{ needs.detect-changes.outputs.needs-nouv }}
           LAST_TAG: ${{ needs.detect-changes.outputs.last-tag }}
           REPO: ${{ github.repository }}
         run: |
@@ -673,6 +828,7 @@ jobs:
           echo "  notools: $NEEDS_NOTOOLS"
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
+          echo "  nouv:    $NEEDS_NOUV"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
@@ -691,6 +847,7 @@ jobs:
           [ "$NEEDS_NOTOOLS" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### notools\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/notools-linux-amd64) 下载。\n\n"
           [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64) 下载。\n\n"
           [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64) 下载。\n\n"
+          [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64) 下载。\n\n"
 
           # 输出到 GITHUB_ENV 供 release step 的 body 引用
           {
@@ -706,11 +863,12 @@ jobs:
             artifacts/notools-*
             artifacts/nogit-*
             artifacts/noimg-*
+            artifacts/nouv-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
@@ -729,6 +887,11 @@ jobs:
             curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noimg-linux-amd64
             chmod +x noimg
             sudo mv noimg /usr/local/bin/noimg
+
+            # nouv (纯 Nolang Python 包管理器，uv 兼容)
+            curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nouv-linux-amd64
+            chmod +x nouv
+            sudo mv nouv /usr/local/bin/nouv
             ```
 
             ### 校验

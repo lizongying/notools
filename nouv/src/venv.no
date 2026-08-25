@@ -1,0 +1,440 @@
+; venv.no — virtual environment management
+;
+; Creates and manages Python virtual environments (similar to uv venv / virtualenv).
+; Creates venv by invoking Python's venv module or by copying the base Python.
+; Supports: --seed, --upgrade-deps, --system-site-packages, --prompt,
+;           --clear, --upgrade, --python, --bare
+
+# /nouv/src/python
+# /nouv/src/utils
+
+VENV-DEFAULT-NAME = '.venv'
+
+; ═══════════════════════════════════════════════
+; create-venv — create a virtual environment
+; ═══════════════════════════════════════════════
+
+venv.create-venv = (path str, py-path str) (ok bool) {
+    ok = false
+
+    ; check if venv already exists
+    p = path{
+        p: path,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            print('error: virtual environment already exists at {path}')
+            return
+        }
+    }
+
+    print('Creating virtual environment at: {path}')
+
+    ; create parent directory
+    p2 = path{
+        p: path,
+    }
+    mk = p2.make-dir()
+
+    ; run python -m venv
+    code = run-cmd(py-path - ' ' - '-m venv ' - path)
+    {
+        code != 0 -> {
+            print('error: failed to create venv')
+            return
+        }
+    }
+
+    ; verify venv was created
+    py-bin = get-python-bin-path(path)
+    p4 = path{
+        p: py-bin,
+    }
+    py-exists = p4.exists()
+    {
+        py-exists == false -> {
+            print('error: venv creation verification failed')
+            return
+        }
+    }
+
+    ; create pyvenv.cfg if not present
+    cfg-path = path - '/pyvenv.cfg'
+    p5 = path{
+        p: cfg-path,
+    }
+    cfg-exists = p5.exists()
+    {
+        cfg-exists == false -> {
+            write-pyvenv-cfg(path, py-path)
+        }
+    }
+
+    ok = true
+    print('Created virtual environment at: {path}')
+}
+
+; ═══════════════════════════════════════════════
+; write-pyvenv-cfg — write pyvenv.cfg file
+; ═══════════════════════════════════════════════
+
+venv.write-pyvenv-cfg = (venv-path str, py-path str) {
+    cfg-path = venv-path - '/pyvenv.cfg'
+    content = ''
+    content = content - 'home = ' - py-path - '\n'
+    content = content - 'implementation = CPython\n'
+    content = content - 'uv-build = 0.1.0\n'
+    content = content - 'version_info = 3.12.0\n'
+
+    fd = fs.open-write(cfg-path)
+    {
+        fd > 0 -> {
+            fs.write(fd, content, content.len)
+            fs.close(fd)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python-bin-path — get the Python binary path in venv
+; ═══════════════════════════════════════════════
+
+venv.get-python-bin-path = (venv-path str) (py-path str) {
+    py-path = venv-path - '/bin/python3'
+}
+
+; ═══════════════════════════════════════════════
+; find-venv — find an existing virtual environment
+; ═══════════════════════════════════════════════
+
+venv.find-venv = (dir str) (venv-path str) {
+    venv-path = ''
+
+    ; check .venv in this directory
+    candidate = dir - '/' - VENV-DEFAULT-NAME
+    p = path{
+        p: candidate,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            venv-path = candidate
+            return
+        }
+    }
+
+    ; check for VIRTUAL_ENV env var
+    venv-env = os.get-env('VIRTUAL-ENV')
+    {
+        venv-env != '' -> {
+            venv-path = venv-env
+            return
+        }
+    }
+
+    ; walk up directory tree
+    current = dir
+    {
+        current == '/' || current == '' -> break
+        -> {
+            candidate2 = current - '/' - VENV-DEFAULT-NAME
+            p2 = path{
+                p: candidate2,
+            }
+            e2 = p2.exists()
+            {
+                e2 -> {
+                    venv-path = candidate2
+                    return
+                }
+            }
+            ; go to parent
+            p3 = path{
+                p: current,
+            }
+            p3.dir()
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; find-or-create-default — find or create .venv
+; ═══════════════════════════════════════════════
+
+venv.find-or-create-default = (dir str) (venv-path str) {
+    venv-path = find-venv(dir)
+    {
+        venv-path != '' -> return
+        -> {
+            venv-path = dir - '/' - VENV-DEFAULT-NAME
+            py-path, py-ok = find-python('')
+            {
+                py-ok -> {
+                    ok = create-venv(venv-path, py-path)
+                    {
+                        ok == false -> venv-path = ''
+                    }
+                }
+                -> venv-path = ''
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python — get the Python binary path from venv
+; ═══════════════════════════════════════════════
+
+venv.get-python = (venv-path str) (py-path str, ok bool) {
+    ok = false
+    py-path = get-python-bin-path(venv-path)
+    p = path{
+        p: py-path,
+    }
+    exists = p.exists()
+    {
+        exists -> ok = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-bin — get venv bin directory
+; ═══════════════════════════════════════════════
+
+venv.get-bin = (venv-path str) (bin-dir str) {
+    bin-dir = venv-path - '/bin'
+}
+
+; ═══════════════════════════════════════════════
+; get-site-packages — get site-packages directory
+; ═══════════════════════════════════════════════
+
+venv.get-site-packages = (venv-path str) (sp-dir str) {
+    sp-dir = venv-path - '/lib/python3.12/site-packages'
+}
+
+; ═══════════════════════════════════════════════
+; is-active — check if a venv is the active one
+; ═══════════════════════════════════════════════
+
+venv.is-active = (venv-path str) (yes bool) {
+    yes = false
+    venv-env = os.get-env('VIRTUAL-ENV')
+    {
+        venv-env == venv-path -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; remove-venv — remove a virtual environment
+; ═══════════════════════════════════════════════
+
+venv.remove-venv = (venv-path str) (ok bool) {
+    ok = false
+    p = path{
+        p: venv-path,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            code = run-cmd('rm -rf ' - venv-path)
+            {
+                code == 0 -> ok = true
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; activate-hint — print activation hint
+; ═══════════════════════════════════════════════
+
+venv.activate-hint = (venv-path str) {
+    print('To activate this environment, use:')
+    print('  source ' - venv-path - '/bin/activate')
+}
+
+; ═══════════════════════════════════════════════
+; create-venv-with-options — create venv with advanced options
+; ═══════════════════════════════════════════════
+
+venv.create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
+    ok = false
+
+    ; handle --clear
+    {
+        opts.contains('clear') -> {
+            p = path{
+                p: path,
+            }
+            exists = p.exists()
+            {
+                exists -> remove-venv(path)
+            }
+        }
+    }
+
+    ; build venv creation args
+    venv-args = '-m venv'
+    {
+        opts.contains('system-site-packages') -> venv-args = venv-args - ' --system-site-packages'
+    }
+    {
+        opts.contains('clear') -> venv-args = venv-args - ' --clear'
+    }
+    {
+        opts.contains('upgrade') -> venv-args = venv-args - ' --upgrade'
+    }
+    {
+        opts.contains('bare') == false -> venv-args = venv-args - ' --seed'
+    }
+
+    ; create parent directory
+    p = path{
+        p: path,
+    }
+    mk = p.make-dir()
+
+    ; run python -m venv
+    full-args = venv-args - ' ' - path
+    code = run-cmd(py-path - ' ' - full-args)
+    {
+        code != 0 -> {
+            print('error: failed to create venv')
+            return
+        }
+    }
+
+    ; verify venv was created
+    py-bin = get-python-bin-path(path)
+    p3 = path{
+        p: py-bin,
+    }
+    py-exists = p3.exists()
+    {
+        py-exists == false -> {
+            print('error: venv creation verification failed')
+            return
+        }
+    }
+
+    ; create pyvenv.cfg
+    cfg-path = path - '/pyvenv.cfg'
+    p4 = path{
+        p: cfg-path,
+    }
+    cfg-exists = p4.exists()
+    {
+        cfg-exists == false -> write-pyvenv-cfg(path, py-path)
+    }
+
+    ; seed packages if requested
+    {
+        opts.contains('seed') && opts.contains('bare') == false -> {
+            seed-ok = seed-pip(path, py-path)
+        }
+    }
+
+    ok = true
+    print('Created virtual environment at: {path}')
+}
+
+; ═══════════════════════════════════════════════
+; seed-pip — install seed packages (pip, setuptools, wheel)
+; ═══════════════════════════════════════════════
+
+venv.seed-pip = (venv-path str, py-path str) (ok bool) {
+    ok = false
+
+    py-bin = get-python-bin-path(venv-path)
+    code = run-cmd(py-bin - ' ' - '-m ensurepip --upgrade')
+    {
+        code != 0 -> {
+            print('warning: ensurepip failed')
+            return
+        }
+    }
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; get-py-version — get Python version from venv
+; ═══════════════════════════════════════════════
+
+venv.get-py-version = (venv-path str) (ver str) {
+    ver = ''
+    py-bin = get-python-bin-path(venv-path)
+    p = path{
+        p: py-bin,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            out = run-cmd-output(py-bin - ' ' - '--version')
+            {
+                out.starts-with('Python ') -> ver = out.slice(7, out.len).trim()
+                -> ver = out.trim()
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-site-packages-dynamic — dynamically find site-packages dir
+; ═══════════════════════════════════════════════
+
+venv.get-site-packages-dynamic = (venv-path str) (sp-dir str) {
+    sp-dir = ''
+    py-bin = get-python-bin-path(venv-path)
+    p = path{
+        p: py-bin,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            out = run-cmd-output(py-bin - ' ' - '-c "import site; print(site.getsitepackages()[0])"')
+            sp-dir = out.trim()
+        }
+    }
+
+    ; fallback to hardcoded path
+    {
+        sp-dir == '' -> sp-dir = get-site-packages(venv-path)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; upgrade-deps — upgrade pip and setuptools in venv
+; ═══════════════════════════════════════════════
+
+venv.upgrade-deps = (venv-path str) (ok bool) {
+    ok = false
+    py-bin = get-python-bin-path(venv-path)
+    code = run-cmd(py-bin - ' ' - '-m pip install --upgrade pip setuptools wheel')
+    {
+        code == 0 -> ok = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; set-prompt — set the prompt name for the venv
+; ═══════════════════════════════════════════════
+
+venv.set-prompt = (venv-path str, prompt-name str) {
+    cfg-path = venv-path - '/pyvenv.cfg'
+    content = fs.read-file(cfg-path)
+    {
+        content != '' -> {
+            content = content - 'prompt = "' - prompt-name - '"\n'
+            wfd = fs.open-write(cfg-path)
+            {
+                wfd > 0 -> {
+                    fs.write(wfd, content, content.len)
+                    fs.close(wfd)
+                }
+            }
+        }
+    }
+}

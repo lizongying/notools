@@ -1,0 +1,198 @@
+; test-venv.no — Virtual environment management tests
+; Tests: venv creation, clear, find, python discovery, site-packages
+; Run: no run nouv/test/test-venv.no
+;
+; Mirrors uv's tests/python/venv.rs
+
+# /nouv/src/venv
+# /nouv/src/python
+
+main = () {
+    print('--- Testing venv operations ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Test 1: create a venv
+    test-dir = '/tmp/nouv-test-venv-' - os.now-ms().to-str()
+    venv-path = test-dir - '/.venv'
+
+    py-path, py-ok = python.find-system-python()
+    {
+        py-ok == false -> {
+            print('SKIP: no system Python found')
+            return
+        }
+    }
+
+    create-ok = venv.create-venv(venv-path, py-path)
+    {
+        create-ok -> {
+            print('PASS: create-venv')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: create-venv')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: verify venv directory exists
+    p = path{
+        p: venv-path,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            print('PASS: venv directory exists')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: venv directory exists')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: verify python binary exists in venv
+    py-bin = venv.get-python-bin-path(venv-path)
+    p2 = path{
+        p: py-bin,
+    }
+    py-exists = p2.exists()
+    {
+        py-exists -> {
+            print('PASS: venv python binary exists')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: venv python binary exists at {py-bin}')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: create-venv fails on existing venv
+    create2-ok = venv.create-venv(venv-path, py-path)
+    {
+        create2-ok == false -> {
+            print('PASS: create-venv fails on existing')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: create-venv should fail on existing')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: create-venv-with-options --clear replaces existing
+    clear-ok = venv.create-venv-with-options(venv-path, py-path, 'clear')
+    {
+        clear-ok -> {
+            print('PASS: create-venv-with-options --clear')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: create-venv-with-options --clear')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: find-venv finds the venv
+    found = venv.find-venv(test-dir)
+    {
+        found == venv-path -> {
+            print('PASS: find-venv')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: find-venv (got {found})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: get-python returns valid path
+    got-py, got-ok = venv.get-python(venv-path)
+    {
+        got-ok && got-py == py-bin -> {
+            print('PASS: get-python')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-python (got {got-py}, ok={got-ok})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 8: get-bin returns bin directory
+    bin-dir = venv.get-bin(venv-path)
+    {
+        bin-dir == venv-path - '/bin' -> {
+            print('PASS: get-bin')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-bin (got {bin-dir})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 9: get-site-packages returns valid path
+    sp-dir = venv.get-site-packages(venv-path)
+    {
+        sp-dir.contains('site-packages') -> {
+            print('PASS: get-site-packages')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-site-packages (got {sp-dir})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 10: get-py-version returns version string
+    ver = venv.get-py-version(venv-path)
+    {
+        ver.starts-with('3.') -> {
+            print('PASS: get-py-version')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-py-version (got {ver})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 11: remove-venv works
+    rm-ok = venv.remove-venv(venv-path)
+    {
+        rm-ok -> {
+            p3 = path{
+                p: venv-path,
+            }
+            still-exists = p3.exists()
+            {
+                still-exists == false -> {
+                    print('PASS: remove-venv')
+                    n-pass = n-pass + 1
+                }
+                -> {
+                    print('FAIL: remove-venv still exists')
+                    n-fail = n-fail + 1
+                }
+            }
+        }
+        -> {
+            print('FAIL: remove-venv returned false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    p4 = process{}
+    p4.start('rm', '-rf ' - test-dir)
+    p4.wait()
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

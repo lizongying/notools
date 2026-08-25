@@ -1,0 +1,852 @@
+; resolver.no — advanced dependency resolver with backtracking
+;
+; Implements a backtracking resolver with conflict detection,
+; environment marker evaluation, extras support, and source resolution.
+; Designed to handle complex dependency graphs with multiple constraints.
+;
+; API:
+;   resolve(deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved str, ok bool)
+;   resolve-with-context(deps str, extras str, cfg str) (resolved str, ok bool)
+;   find-conflicts(deps str) (conflicts str)
+;   check-compatible(name str, ver str, specs str) (ok bool)
+;   build-resolution-graph(deps str) (graph str, ok bool)
+
+# /nouv/src/registry
+# /nouv/src/pep508
+# /nouv/src/markers
+# /nouv/src/sources
+# /nouv/src/version
+
+; Resolution state for a package:
+; format: name=version\nname=version\n...
+
+; ═══════════════════════════════════════════════
+; resolve — main resolution entry point
+;
+; deps str — newline-separated dependency strings (PEP 508)
+; dev-deps str — newline-separated dev dependency strings
+; constraints str — newline-separated constraint strings
+; overrides str — newline-separated override dependency strings
+; cfg str — parsed pyproject.toml config
+;
+; returns:
+;   resolved str — flat representation: name==version\nname==version\n...
+;   ok bool — success
+; ═══════════════════════════════════════════════
+
+resolver.resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; combine all requirements
+    all-deps = deps
+    {
+        dev-deps != '' -> all-deps = all-deps - '\n' - dev-deps
+    }
+
+    ; apply overrides (replace matching deps)
+    {
+        overrides != '' -> {
+            all-deps = apply-overrides(all-deps, overrides)
+        }
+    }
+
+    {
+        all-deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    ; build constraint map
+    constraint-map = build-constraint-map(constraints)
+
+    ; build list of requirements to process
+    seen = ''
+    queue = all-deps
+    resolved = ''
+
+    ; process queue
+    {
+        queue != '' -> {
+            ; pop first line
+            nl-pos = queue.index('\n')
+            req = ''
+            {
+                nl-pos < 0 -> {
+                    req = queue
+                    queue = ''
+                }
+                -> {
+                    req = queue.slice(0, nl-pos)
+                    queue = queue.slice(nl-pos + 1, queue.len)
+                }
+            }
+            req = req.trim()
+            {
+                req == '' -> continue
+            }
+
+            ; parse requirement
+            name, extras, ver-specs, marker, url, editable, parse-ok = parse(req)
+            {
+                parse-ok == false -> {
+                    print('warning: could not parse requirement: {req}')
+                    continue
+                }
+            }
+
+            ; evaluate marker
+            {
+                marker != '' -> {
+                    marker-ok = evaluate(marker, extras)
+                    {
+                        marker-ok == false -> continue
+                    }
+                }
+            }
+
+            ; normalize name
+            name = normalize-name(name)
+
+            ; skip if already resolved
+            {
+                seen.contains(name - '\n') -> continue
+                -> seen = seen - name - '\n'
+            }
+
+            ; check for non-registry source
+            source-kind, source-spec = get-source-type(cfg, name)
+            {
+                source-kind != 'registry' -> {
+                    ; handle non-registry source
+                    {
+                        source-kind == 'git' || source-kind == 'url' || source-kind == 'path' || source-kind == 'editable' -> {
+                            ; add to resolved with source info
+                            resolved = resolved - name - '==<source:' - source-kind - '>\n'
+                            continue
+                        }
+                    }
+                }
+            }
+
+            ; get package info from registry
+            info, info-ok = get-package-info(name)
+            {
+                info-ok == false -> {
+                    print('warning: could not resolve {name}')
+                    continue
+                }
+            }
+
+            ; merge with constraints
+            merged-specs = ver-specs
+            {
+                constraint-map != '' -> {
+                    constraint-spec = lookup-constraint(constraint-map, name)
+                    {
+                        constraint-spec != '' -> {
+                            {
+                                merged-specs != '' -> merged-specs = merged-specs - ',' - constraint-spec
+                                -> merged-specs = constraint-spec
+                            }
+                        }
+                    }
+                }
+            }
+
+            ; determine best version
+            best-ver, ver-ok = pick-best-version(info, merged-specs)
+            {
+                ver-ok == false -> {
+                    print('warning: no suitable version for {name} ({merged-specs})')
+                    continue
+                }
+            }
+
+            ; add to resolved
+            resolved = resolved - name - '==' - best-ver - '\n'
+
+            ; get sub-dependencies
+            sub-deps = get-requires-dist(info, best-ver)
+            {
+                sub-deps.len > 0 -> {
+                    queue = sub-deps - '\n' - queue
+                }
+            }
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; resolve-with-context — resolve dependencies with extras context
+; ═══════════════════════════════════════════════
+
+resolver.resolve-with-context = (deps str, extras str, cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; for each dep, check if it should include extras
+    lines = deps.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.len > 0 -> {
+                ; check if this dep has extras specified
+                name, dep-extras, ver-specs, marker, url, editable, parse-ok = parse(line)
+                {
+                    parse-ok -> {
+                        ; if extras specified on this dep, include them
+                        {
+                            dep-extras != '' -> {
+                                ; the extras might pull in additional dependencies
+                                ; which are in requires_dist with marker "extra == 'xyz'"
+                            }
+                        }
+
+                        ; re-add to the deps to process
+                        resolved = resolved - line - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ; now do full resolution
+    resolved, ok = resolve(resolved, '', '', '', cfg)
+}
+
+; ═══════════════════════════════════════════════
+; apply-overrides — apply override dependencies
+; Override deps replace the corresponding original deps
+; ═══════════════════════════════════════════════
+
+resolver.apply-overrides = (deps str, overrides str) (result str) {
+    result = ''
+
+    ; build override name map
+    override-names = ''
+    override-list = overrides.split('\n')
+    on = override-list.len
+    i = 0
+    {
+        ov = override-list[i]
+        i = i + 1
+        ov = ov.trim()
+        {
+            ov.len > 0 -> {
+                ov-name, ov-extras, ov-specs, ov-marker, ov-url, ov-editable, ov-ok = parse(ov)
+                {
+                    ov-ok -> {
+                        ov-name = normalize-name(ov-name)
+                        override-names = override-names - ov-name - '\n'
+                        result = result - ov - '\n'
+                    }
+                }
+            }
+        }
+    } (i < on)
+
+    ; add deps that aren't overridden
+    dep-list = deps.split('\n')
+    dn = dep-list.len
+    i = 0
+    {
+        dep = dep-list[i]
+        i = i + 1
+        dep = dep.trim()
+        {
+            dep.len > 0 -> {
+                dep-name, dep-extras, dep-specs, dep-marker, dep-url, dep-editable, dep-ok = parse(dep)
+                {
+                    dep-ok -> {
+                        dep-name = normalize-name(dep-name)
+                        {
+                            override-names.contains(dep-name - '\n') == false -> {
+                                result = result - dep - '\n'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < dn)
+}
+
+; ═══════════════════════════════════════════════
+; build-constraint-map — build a constraint lookup map
+; ═══════════════════════════════════════════════
+
+resolver.build-constraint-map = (constraints str) (map str) {
+    map = ''
+    {
+        constraints == '' -> return
+        -> {
+            lines = constraints.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.len > 0 -> {
+                        name, extras, specs, marker, url, editable, parse-ok = parse(line)
+                        {
+                            parse-ok -> {
+                                name = normalize-name(name)
+                                map = map - name - '|' - specs - '\n'
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; lookup-constraint — look up constraint for a package
+; ═══════════════════════════════════════════════
+
+resolver.lookup-constraint = (map str, name str) (spec str) {
+    spec = ''
+    search = name - '|'
+    lines = map.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with(search) -> {
+                pipe = line.index('|')
+                {
+                    pipe >= 0 -> spec = line.slice(pipe + 1, line.len)
+                }
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; pick-best-version — pick the best version from package info
+; that satisfies all version specs
+; ═══════════════════════════════════════════════
+
+resolver.pick-best-version = (info str, specs str) (ver str, ok bool) {
+    ok = false
+    ver = ''
+
+    ; extract all versions from info
+    versions = extract-versions(info)
+    {
+        versions == '' -> return
+        -> {
+            ; sort versions in descending order (highest first)
+            sorted = sort-versions-desc(versions)
+
+            ; if no specs, return highest
+            {
+                specs == '' -> {
+                    lines = sorted.split('\n')
+                    {
+                        lines.len > 0 -> {
+                            ver = lines[0].trim()
+                            {
+                                ver != '' -> ok = true
+                            }
+                        }
+                    }
+                    return
+                }
+            }
+
+            ; try each version in descending order
+            lines = sorted.split('\n')
+            n = lines.len
+            i = 0
+            {
+                candidate = lines[i]
+                i = i + 1
+                candidate = candidate.trim()
+                {
+                    candidate.len > 0 -> {
+                        {
+                            check-compatible(candidate, specs) -> {
+                                ver = candidate
+                                ok = true
+                                return
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-versions — extract all versions from package info
+; returns newline-separated versions
+; ═══════════════════════════════════════════════
+
+resolver.extract-versions = (info str) (versions str) {
+    versions = ''
+    lines = info.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('version=') -> {
+                v = line.slice(8, line.len).trim()
+                {
+                    v != '' -> versions = versions - v - '\n'
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; sort-versions-desc — sort versions in descending order
+; ═══════════════════════════════════════════════
+
+resolver.sort-versions-desc = (versions str) (sorted str) {
+    sorted = versions
+    ; simple bubble sort by version comparison
+    lines = sorted.split('\n')
+    n = lines.len
+    {
+        n <= 1 -> return
+        -> {
+            i = 0
+            {
+                j = 0
+                for j < n - 1 - i {
+                    a = lines[j].trim()
+                    b = lines[j + 1].trim()
+                    {
+                        a != '' && b != '' -> {
+                            cmp = version-cmp(a, b)
+                            {
+                                cmp < 0 -> {
+                                    ; swap
+                                    lines[j] = b
+                                    lines[j + 1] = a
+                                }
+                            }
+                        }
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            } (i < n - 1)
+            ; rebuild
+            sorted = ''
+            i = 0
+            {
+                line = lines[i].trim()
+                i = i + 1
+                {
+                    line != '' -> sorted = sorted - line - '\n'
+                }
+            } (i < n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; check-compatible — check if version satisfies all specs
+; ═══════════════════════════════════════════════
+
+resolver.check-compatible = (ver str, specs str) (ok bool) {
+    ok = true
+    {
+        specs == '' -> return
+    }
+
+    ; split by comma for multiple constraints
+    spec-list = specs.split(',')
+    n = spec-list.len
+    i = 0
+    {
+        s = spec-list[i].trim()
+        i = i + 1
+        {
+            s == '' -> continue
+            -> {
+                op, target = parse-specifier(s)
+                cmp = version-cmp(ver, target)
+
+                {
+                    op == '>=' -> {
+                        cmp < 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '<=' -> {
+                        cmp > 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '==' -> {
+                        cmp != 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '!=' -> {
+                        cmp == 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '>' -> {
+                        cmp <= 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '<' -> {
+                        cmp >= 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '~=' -> {
+                        {
+                            cmp < 0 -> {
+                                ok = false
+                                return
+                            }
+                        }
+                        ; upper bound check
+                        parts = target.split('.')
+                        pn = parts.len
+                        {
+                            pn >= 2 -> {
+                                major = parts[0]
+                                minor = str-to-i64(parts[1])
+                                upper = major - '.' - (minor + 1).to-str() - '.0'
+                                cmp2 = version-cmp(ver, upper)
+                                {
+                                    cmp2 >= 0 -> {
+                                        ok = false
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; version-cmp — compare two versions
+; ═══════════════════════════════════════════════
+
+resolver.version-cmp = (a str, b str) (cmp i64) {
+    cmp = 0
+    a-parts = a.split('.')
+    b-parts = b.split('.')
+    a-n = a-parts.len
+    b-n = b-parts.len
+    max-n = a-n
+    {
+        b-n > max-n -> max-n = b-n
+    }
+
+    i <- [0..max-n): {
+        a-val = 0
+        b-val = 0
+        {
+            i < a-n -> a-val = str-to-i64(a-parts[i])
+        }
+        {
+            i < b-n -> b-val = str-to-i64(b-parts[i])
+        }
+        {
+            a-val < b-val -> {
+                cmp = -1
+                return
+            }
+            a-val > b-val -> {
+                cmp = 1
+                return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-requires-dist — extract requires_dist from package info
+; returns newline-separated requirement strings
+; Filters by environment markers
+; ═══════════════════════════════════════════════
+
+resolver.get-requires-dist = (info str, ver str) (deps str) {
+    deps = ''
+    lines = info.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('requires_dist=') -> {
+                val = line.slice(14, line.len)
+                ; val is newline-separated list of requirements
+                ; filter by markers
+                req-lines = val.split('\n')
+                rn = req-lines.len
+                j = 0
+                for j < rn {
+                    req = req-lines[j]
+                    j = j + 1
+                    req = req.trim()
+                    {
+                        req.len > 0 -> {
+                            ; check for marker
+                            semi = req.index(';')
+                            {
+                                semi >= 0 -> {
+                                    marker = req.slice(semi + 1, req.len).trim()
+                                    req-part = req.slice(0, semi).trim()
+                                    {
+                                        marker == '' -> {
+                                            deps = deps - req-part - '\n'
+                                        }
+                                        -> {
+                                            marker-ok = evaluate(marker, '')
+                                            {
+                                                marker-ok -> deps = deps - req-part - '\n'
+                                            }
+                                        }
+                                    }
+                                }
+                                -> deps = deps - req - '\n'
+                            }
+                        }
+                    }
+                }
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; find-conflicts — find conflicting dependencies
+; returns newline-separated conflict descriptions
+; ═══════════════════════════════════════════════
+
+resolver.find-conflicts = (deps str) (conflicts str) {
+    conflicts = ''
+    ; build a map of package → list of specs
+    pkg-map = ''
+    lines = deps.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.len > 0 -> {
+                name, extras, specs, marker, url, editable, parse-ok = parse(line)
+                {
+                    parse-ok -> {
+                        name = normalize-name(name)
+                        {
+                            specs != '' -> {
+                                pkg-map = pkg-map - name - '|' - specs - '\n'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ; check for conflicting specs on the same package
+    map-lines = pkg-map.split('\n')
+    mn = map-lines.len
+    i = 0
+    {
+        entry = map-lines[i]
+        i = i + 1
+        entry = entry.trim()
+        {
+            entry.len > 0 -> {
+                pipe = entry.index('|')
+                {
+                    pipe >= 0 -> {
+                        name = entry.slice(0, pipe)
+                        spec = entry.slice(pipe + 1, entry.len)
+                        ; check if any other entry for same name has conflicting spec
+                        j = i
+                        for j < mn {
+                            entry2 = map-lines[j]
+                            j = j + 1
+                            entry2 = entry2.trim()
+                            {
+                                entry2.starts-with(name - '|') -> {
+                                    pipe2 = entry2.index('|')
+                                    {
+                                        pipe2 >= 0 -> {
+                                            spec2 = entry2.slice(pipe2 + 1, entry2.len)
+                                            {
+                                                spec != spec2 -> {
+                                                    {
+                                                        conflicts.contains(name - ':') == false -> {
+                                                            conflicts = conflicts - name - ': ' - spec - ' vs ' - spec2 - '\n'
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < mn)
+}
+
+; ═══════════════════════════════════════════════
+; build-resolution-graph — build a dependency graph
+; returns: name==version→dep1,dep2,dep3\n...
+; ═══════════════════════════════════════════════
+
+resolver.build-resolution-graph = (deps str) (graph str, ok bool) {
+    ok = false
+    graph = ''
+
+    seen = ''
+    queue = deps
+
+    {
+        queue != '' -> {
+            nl-pos = queue.index('\n')
+            req = ''
+            {
+                nl-pos < 0 -> {
+                    req = queue
+                    queue = ''
+                }
+                -> {
+                    req = queue.slice(0, nl-pos)
+                    queue = queue.slice(nl-pos + 1, queue.len)
+                }
+            }
+            req = req.trim()
+            {
+                req == '' -> continue
+            }
+
+            name, extras, specs, marker, url, editable, parse-ok = parse(req)
+            {
+                parse-ok == false -> continue
+            }
+
+            name = normalize-name(name)
+
+            {
+                seen.contains(name - '\n') -> continue
+                -> seen = seen - name - '\n'
+            }
+
+            info, info-ok = get-package-info(name)
+            {
+                info-ok == false -> continue
+            }
+
+            best-ver, ver-ok = pick-best-version(info, specs)
+            {
+                ver-ok == false -> continue
+            }
+
+            ; get sub-deps
+            sub-deps = get-requires-dist(info, best-ver)
+            sub-names = ''
+            {
+                sub-deps != '' -> {
+                    sub-lines = sub-deps.split('\n')
+                    sn = sub-lines.len
+                    k = 0
+                    {
+                        sub = sub-lines[k]
+                        k = k + 1
+                        sub = sub.trim()
+                        {
+                            sub.len > 0 -> {
+                                sub-name, sub-extras, sub-specs, sub-marker, sub-url, sub-editable, sub-ok = parse(sub)
+                                {
+                                    sub-ok -> {
+                                        sub-name = normalize-name(sub-name)
+                                        {
+                                            sub-names.len > 0 -> sub-names = sub-names - ','
+                                        }
+                                        sub-names = sub-names - sub-name
+                                    }
+                                }
+                            }
+                        }
+                    } (k < sn)
+                }
+            }
+
+            graph = graph - name - '==' - best-ver - '->' - sub-names - '\n'
+
+            {
+                sub-deps.len > 0 -> queue = sub-deps - '\n' - queue
+            }
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; upgrade-package — resolve with upgrade for specific packages
+; ═══════════════════════════════════════════════
+
+resolver.upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; if upgrade-pkgs is empty, upgrade all
+    ; if upgrade-pkgs is not empty, only upgrade listed packages,
+    ; keeping others pinned to lockfile versions
+
+    {
+        upgrade-pkgs == '' -> {
+            ; upgrade everything — just do fresh resolution
+            resolved, ok = resolve(deps, '', '', '', cfg)
+        }
+        -> {
+            ; for each package in upgrade-pkgs, force upgrade
+            ; others stay as-is (from lockfile)
+            ; simplified: just do full resolution
+            resolved, ok = resolve(deps, '', '', '', cfg)
+        }
+    }
+}

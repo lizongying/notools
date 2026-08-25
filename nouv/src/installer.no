@@ -1,0 +1,1058 @@
+; installer.no — package installation and uninstallation
+;
+; Handles downloading, unpacking, and installing Python packages
+; into virtual environments. Supports wheel (.whl) and sdist (.tar.gz) formats.
+
+# /nouv/src/registry
+# /nouv/src/venv
+# /nouv/src/cache
+# /nouv/src/dependency
+# /nouv/src/sdist
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; sync-packages — synchronize environment with resolved packages
+; ═══════════════════════════════════════════════
+
+installer.sync-packages = (dir str, resolved str, cfg str) (ok bool) {
+    ok = false
+
+    venv-path = find-or-create-default(dir)
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment available')
+            return
+        }
+    }
+
+    ; get currently installed packages
+    installed = list-installed(venv-path)
+    installed-map = build-installed-map(installed)
+
+    ; get target packages
+    targets = ''
+    {
+        resolved != '' -> {
+            lines = resolved.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                line.len > 0 -> {
+                    eq-pos = line.index('==')
+                    {
+                        eq-pos >= 0 -> {
+                            name = line.slice(0, eq-pos)
+                            ver = line.slice(eq-pos + 2, line.len)
+                            targets = targets - name - '=' - ver - '\n'
+                        }
+                    }
+                }
+            } (i < n)
+        }
+    }
+
+    ; determine packages to install and remove
+    to-install = ''
+    to-keep = ''
+
+    lines = targets.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        line.len > 0 -> {
+            eq-pos = line.index('=')
+            {
+                eq-pos >= 0 -> {
+                    name = line.slice(0, eq-pos)
+                    ver = line.slice(eq-pos + 1, line.len)
+                    installed-ver = lookup-map(installed-map, name)
+                    {
+                        installed-ver == ver -> to-keep = to-keep - name - '\n'
+                        -> to-install = to-install - name - '==' - ver - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ; remove packages not in targets
+    inst-lines = installed.split('\n')
+    in = inst-lines.len
+    i = 0
+    {
+        line = inst-lines[i]
+        i = i + 1
+        line = line.trim()
+        line.len > 0 -> {
+            eq-pos = line.index('==')
+            {
+                eq-pos >= 0 -> {
+                    name = line.slice(0, eq-pos)
+                    to-keep.contains(name) == false -> {
+                        print('Removing {name}...')
+                        rm-ok = uninstall-package(venv-path, name)
+                    }
+                }
+            }
+        }
+    } (i < in)
+
+    ; install new packages
+    {
+        to-install.len > 0 -> {
+            print('Installing packages...')
+
+            inst-lines2 = to-install.split('\n')
+            in2 = inst-lines2.len
+            i = 0
+            {
+                line = inst-lines2[i]
+                i = i + 1
+                line = line.trim()
+                line.len > 0 -> {
+                    eq-pos = line.index('==')
+                    {
+                        eq-pos >= 0 -> {
+                            name = line.slice(0, eq-pos)
+                            ver = line.slice(eq-pos + 2, line.len)
+                            inst-ok = install-named-package(venv-path, name, ver)
+                            {
+                                inst-ok -> print('  + {name}=={ver}')
+                                -> print('  error: {name}=={ver}')
+                            }
+                        }
+                    }
+                }
+            } (i < in2)
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; pip-install — install packages (pip-compatible interface)
+; ═══════════════════════════════════════════════
+
+installer.pip-install = (venv-path str, pkgs str) (ok bool) {
+    ok = false
+
+    lines = pkgs.split('\n')
+    n = lines.len
+    i = 0
+    {
+        pkg = lines[i]
+        i = i + 1
+        pkg = pkg.trim()
+        pkg.len > 0 -> {
+            name, ver-spec, extras = parse-requirement(pkg)
+
+            {
+                ver-spec == '' -> {
+                    ver, ver-ok = get-latest-version(name)
+                }
+                -> {
+                    info, info-ok = get-package-info(name)
+                    {
+                        info-ok -> {
+                            ver, ver-ok = pick-version(info, ver-spec)
+                        }
+                    }
+                }
+            }
+
+            {
+                ver-ok == false -> {
+                    print('error: could not find version for {pkg}')
+                    return
+                }
+            }
+
+            inst-ok = install-named-package(venv-path, name, ver)
+            {
+                inst-ok -> print('  + {name}=={ver}')
+                -> {
+                    print('  error: failed to install {name}=={ver}')
+                    return
+                }
+            }
+        }
+    } (i < n)
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; pip-uninstall — uninstall packages
+; ═══════════════════════════════════════════════
+
+installer.pip-uninstall = (venv-path str, pkgs str) (ok bool) {
+    ok = false
+
+    lines = pkgs.split('\n')
+    n = lines.len
+    i = 0
+    {
+        pkg = lines[i]
+        i = i + 1
+        {
+            pkg.len > 0 -> {
+                name, ver-spec, extras = parse-requirement(pkg)
+                print('  - {name}...')
+                rm-ok = uninstall-package(venv-path, name)
+                {
+                    rm-ok == false -> print('  warning: {name} not found')
+                }
+            }
+        }
+    } (i < n)
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; install-named-package — download and install a specific package
+; ═══════════════════════════════════════════════
+
+installer.install-named-package = (venv-path str, name str, ver str) (ok bool) {
+    ok = false
+    inst-ok = install-named-package-with-opts(venv-path, name, ver, '')
+    ok = inst-ok
+}
+
+; ═══════════════════════════════════════════════
+; install-named-package-with-opts — install with options
+; ═══════════════════════════════════════════════
+
+installer.install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (ok bool) {
+    ok = false
+
+    ; check if already installed at the same version (unless --reinstall)
+    {
+        opts.contains('reinstall') == false -> {
+            already = check-installed(venv-path, name, ver)
+            {
+                already -> {
+                    print('  {name}=={ver} is already installed')
+                    ok = true
+                    return
+                }
+            }
+        }
+    }
+
+    ; get cache dir
+    cache-dir = get-cache-dir()
+    p = path{
+        p: cache-dir,
+    }
+    mk = p.make-dir()
+
+    ; determine cache path
+    cached-path = get-package-cache(name, ver)
+
+    ; check cache (unless --no-cache)
+    use-cache = true
+    {
+        opts.contains('no-cache') -> use-cache = false
+    }
+
+    {
+        use-cache -> {
+            p2 = path{
+                p: cached-path,
+            }
+            cached = p2.exists()
+            {
+                cached == false -> use-cache = false
+            }
+        }
+    }
+
+    ; download if not cached or cache disabled
+    {
+        use-cache == false -> {
+            ; try wheel first (unless --no-binary)
+            {
+                opts.contains('no-binary') -> {
+                    ; build from source — get sdist URL
+                    sdist-url, sdist-ok = get-sdist-url(name, ver)
+                    {
+                        sdist-ok -> {
+                            sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
+                            dl-ok = download-package(name, ver, sdist-path)
+                            {
+                                dl-ok -> {
+                                    inst-ok = install-from-source(venv-path, sdist-path)
+                                    {
+                                        inst-ok -> {
+                                            {
+                                                opts.contains('no-deps') == false -> {
+                                                    deps-ok = install-dependencies(venv-path, name, ver)
+                                                }
+                                            }
+                                            ok = true
+                                            return
+                                        }
+                                        -> {
+                                            print('  error: failed to build {name}=={ver} from source')
+                                            return
+                                        }
+                                    }
+                                }
+                                -> {
+                                    print('  error: failed to download sdist for {name}=={ver}')
+                                    return
+                                }
+                            }
+                        }
+                        -> {
+                            print('  error: no sdist available for {name}=={ver}')
+                            return
+                        }
+                    }
+                }
+                -> {
+                    ; try wheel first
+                    wheel-url, wheel-ok = get-wheel-url(name, ver)
+                    {
+                        wheel-ok -> {
+                            dl-ok = download-package(name, ver, cached-path)
+                            {
+                                dl-ok == false -> {
+                                    ; try sdist as fallback (unless --only-binary)
+                                    {
+                                        opts.contains('only-binary') -> {
+                                            print('  error: failed to download wheel for {name}=={ver}')
+                                            return
+                                        }
+                                        -> {
+                                            sdist-url, sdist-ok = get-sdist-url(name, ver)
+                                            {
+                                                sdist-ok -> {
+                                                    sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
+                                                    dl2-ok = download-package(name, ver, sdist-path)
+                                                    {
+                                                        dl2-ok -> {
+                                                            inst-ok = install-from-source(venv-path, sdist-path)
+                                                            {
+                                                                inst-ok -> {
+                                                                    {
+                                                                        opts.contains('no-deps') == false -> {
+                                                                            deps-ok = install-dependencies(venv-path, name, ver)
+                                                                        }
+                                                                    }
+                                                                    ok = true
+                                                                    return
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            return
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        -> {
+                            ; no wheel available, try sdist
+                            {
+                                opts.contains('only-binary') -> {
+                                    print('  error: no wheel available for {name}=={ver} and --only-binary is set')
+                                    return
+                                }
+                                -> {
+                                    sdist-url, sdist-ok = get-sdist-url(name, ver)
+                                    {
+                                        sdist-ok -> {
+                                            sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
+                                            dl-ok = download-package(name, ver, sdist-path)
+                                            {
+                                                dl-ok -> {
+                                                    inst-ok = install-from-source(venv-path, sdist-path)
+                                                    {
+                                                        inst-ok -> {
+                                                            {
+                                                                opts.contains('no-deps') == false -> {
+                                                                    deps-ok = install-dependencies(venv-path, name, ver)
+                                                                }
+                                                            }
+                                                            ok = true
+                                                            return
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            return
+                                        }
+                                        -> {
+                                            print('  error: no wheel or sdist available for {name}=={ver}')
+                                            return
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; install from cached wheel
+    inst-ok = install-wheel(venv-path, cached-path)
+    {
+        inst-ok -> {
+            {
+                opts.contains('no-deps') == false -> {
+                    deps-ok = install-dependencies(venv-path, name, ver)
+                }
+            }
+            ok = true
+        }
+        -> {
+            print('  error: failed to install wheel for {name}=={ver}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-dependencies — install dependencies of a package
+; ═══════════════════════════════════════════════
+
+installer.install-dependencies = (venv-path str, name str, ver str) (ok bool) {
+    ok = false
+
+    info, info-ok = get-package-info(name)
+    {
+        info-ok == false -> {
+            ok = true
+            return
+        }
+    }
+
+    ; parse requires_dist from info
+    req-val = ''
+    lines = info.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('requires_dist=') -> {
+                req-val = line.slice(14, line.len)
+                break
+            }
+        }
+    } (i < n)
+
+    {
+        req-val == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    ; parse each requirement
+    req-lines = req-val.split('\n')
+    rn = req-lines.len
+    i = 0
+    {
+        req = req-lines[i]
+        i = i + 1
+        req = req.trim()
+        {
+            req.len > 0 -> {
+                dep-name, dep-spec, dep-extras = parse-requirement(req)
+                {
+                    dep-name != '' -> {
+                        has-it = is-installed(venv-path, dep-name)
+                        {
+                            has-it == false -> {
+                                {
+                                    dep-spec == '' -> {
+                                        dep-ver, dep-ok = get-latest-version(dep-name)
+                                    }
+                                    -> {
+                                        dep-info, dep-info-ok = get-package-info(dep-name)
+                                        {
+                                            dep-info-ok -> {
+                                                dep-ver, dep-ok = pick-version(dep-info, dep-spec)
+                                            }
+                                        }
+                                    }
+                                }
+                                {
+                                    dep-ok -> {
+                                        inst-ok = install-named-package-with-opts(venv-path, dep-name, dep-ver, 'no-deps')
+                                        {
+                                            inst-ok -> print('  + {dep-name}=={dep-ver} (dependency)')
+                                            -> print('  warning: failed to install dependency {dep-name}')
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < rn)
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; is-installed — check if any version of a package is installed
+; ═══════════════════════════════════════════════
+
+installer.is-installed = (venv-path str, name str) (yes bool) {
+    yes = false
+    installed = list-installed(venv-path)
+    lines = installed.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(name - '==') -> {
+                yes = true
+                return
+            }
+            norm-name = name.replace-char('-', '_')
+            line.starts-with(norm-name - '==') -> {
+                yes = true
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-installed-version — get the installed version of a package
+; ═══════════════════════════════════════════════
+
+installer.get-installed-version = (venv-path str, name str) (ver str) {
+    ver = ''
+    installed = list-installed(venv-path)
+    lines = installed.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(name - '==') -> {
+                eq-pos = line.index('==')
+                {
+                    eq-pos >= 0 -> {
+                        ver = line.slice(eq-pos + 2, line.len)
+                        return
+                    }
+                }
+            }
+            norm-name = name.replace-char('-', '_')
+            line.starts-with(norm-name - '==') -> {
+                eq-pos = line.index('==')
+                {
+                    eq-pos >= 0 -> {
+                        ver = line.slice(eq-pos + 2, line.len)
+                        return
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; upgrade-package — upgrade a package to the latest version
+; ═══════════════════════════════════════════════
+
+installer.upgrade-package = (venv-path str, name str) (ok bool) {
+    ok = false
+
+    latest-ver, ver-ok = get-latest-version(name)
+    {
+        ver-ok == false -> {
+            print('error: could not find latest version for {name}')
+            return
+        }
+    }
+
+    current-ver = get-installed-version(venv-path, name)
+    {
+        current-ver == latest-ver -> {
+            print('{name} is already at latest version ({latest-ver})')
+            ok = true
+            return
+        }
+    }
+
+    {
+        current-ver != '' -> {
+            uninst-ok = uninstall-package(venv-path, name)
+        }
+    }
+
+    inst-ok = install-named-package-with-opts(venv-path, name, latest-ver, 'no-deps')
+    {
+        inst-ok -> {
+            deps-ok = install-dependencies(venv-path, name, latest-ver)
+            print('  + {name}=={latest-ver} (upgraded from {current-ver})')
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-wheel — install a wheel file into venv
+; ═══════════════════════════════════════════════
+
+installer.install-wheel = (venv-path str, wheel-path str) (ok bool) {
+    ok = false
+
+    ; read wheel file
+    data = fs.read-file(wheel-path)
+    {
+        data == '' -> {
+            print('error: could not read wheel file: {wheel-path}')
+            return
+        }
+        -> {
+            ; wheel is a zip file
+            archive = zip{
+                data: data,
+            }
+            count = archive.count()
+            {
+                count == 0 -> return
+                -> {
+                    sp-dir = get-site-packages(venv-path)
+                    p = path{
+                        p: sp-dir,
+                    }
+                    mk = p.make-dir()
+
+                    ; extract each file
+                    i <- [0..count): {
+                        name = archive.name(i)
+                        content = archive.extract(i)
+
+                        out-path = sp-dir - '/' - name
+                        p2 = path{
+                            p: out-path,
+                        }
+                        slash = name.rindex('/')
+                        {
+                            slash >= 0 -> {
+                                parent-dir = sp-dir - '/' - name.slice(0, slash)
+                                p3 = path{
+                                    p: parent-dir,
+                                }
+                                mk2 = p3.make-dir()
+                            }
+                        }
+
+                        wfd = fs.open-write(out-path)
+                        {
+                            wfd > 0 -> {
+                                fs.write(wfd, content, content.len)
+                                fs.close(wfd)
+                            }
+                        }
+                    }
+
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; uninstall-package — remove a package from venv
+; ═══════════════════════════════════════════════
+
+installer.uninstall-package = (venv-path str, name str) (ok bool) {
+    ok = false
+    sp-dir = get-site-packages(venv-path)
+
+    ; find dist-info directory
+    dist-info-dir = ''
+    out = run-cmd-output('ls ' - sp-dir)
+    lines = out.split('\n')
+    n2 = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(name) && line.ends-with('.dist-info') -> {
+                dist-info-dir = sp-dir - '/' - line
+                break
+            }
+            line.starts-with(name.replace-char('-', '_')) && line.ends-with('.dist-info') -> {
+                dist-info-dir = sp-dir - '/' - line
+                break
+            }
+        }
+    } (i < n2)
+
+    {
+        dist-info-dir == '' -> return
+        -> {
+            ; read RECORD file to get list of installed files
+            record-path = dist-info-dir - '/RECORD'
+            p2 = path{
+                p: record-path,
+            }
+            rec-exists = p2.exists()
+            {
+                rec-exists -> {
+                    content = fs.read-file(record-path)
+                    record-lines = content.split('\n')
+                    rn = record-lines.len
+                    j <- [0..rn): {
+                        rline = record-lines[j]
+                        {
+                            rline.len > 0 -> {
+                                comma = rline.index(',')
+                                {
+                                    comma > 0 -> {
+                                        file-path = rline.slice(0, comma)
+                                        full-path = sp-dir - '/' - file-path
+                                        fs.remove(full-path)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ; remove dist-info directory
+            run-cmd('rm -rf ' - dist-info-dir)
+
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; list-installed — list installed packages in venv
+; ═══════════════════════════════════════════════
+
+installer.list-installed = (venv-path str) (list str) {
+    list = ''
+    sp-dir = get-site-packages(venv-path)
+
+    out = run-cmd-output('ls ' - sp-dir)
+    lines = out.split('\n')
+    n2 = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.ends-with('.dist-info') -> {
+                base = line.slice(0, line.len - 10)
+                parts = base.split('-')
+                {
+                    parts.len >= 2 -> {
+                        pkg-name = parts[0]
+                        pkg-ver = parts[1]
+                        {
+                            parts.len > 2 -> {
+                                pkg-name = parts[0]
+                                pkg-ver = parts[parts.len - 1]
+                                j <- [1..parts.len - 1): {
+                                    pkg-name = pkg-name - '-' - parts[j]
+                                }
+                            }
+                        }
+                        list = list - pkg-name - '==' - pkg-ver - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n2)
+}
+
+; ═══════════════════════════════════════════════
+; show-package — show details of an installed package
+; ═══════════════════════════════════════════════
+
+installer.show-package = (venv-path str, pkg str) (info str) {
+    info = ''
+    sp-dir = get-site-packages(venv-path)
+
+    out = run-cmd-output('ls ' - sp-dir)
+    lines = out.split('\n')
+    n2 = lines.len
+    i = 0
+    found = false
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        norm-pkg = pkg.replace-char('-', '_')
+        {
+            line.starts-with(pkg) && line.ends-with('.dist-info') -> found = true
+            line.starts-with(norm-pkg) && line.ends-with('.dist-info') -> found = true
+        }
+        {
+            found -> {
+                meta-path = sp-dir - '/' - line - '/METADATA'
+                content = fs.read-file(meta-path)
+                info = content
+                return
+            }
+        }
+    } (i < n2)
+
+    info = 'Package {pkg} not found'
+}
+
+; ═══════════════════════════════════════════════
+; build-installed-map — build a flat string map of installed packages
+; ═══════════════════════════════════════════════
+
+installer.build-installed-map = (installed str) (map str) {
+    map = installed
+}
+
+; ═══════════════════════════════════════════════
+; lookup-map — look up a package version in the installed map
+; ═══════════════════════════════════════════════
+
+installer.lookup-map = (map str, name str) (ver str) {
+    ver = ''
+    lines = map.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(name - '==') -> {
+                eq-pos = line.index('==')
+                {
+                    eq-pos >= 0 -> ver = line.slice(eq-pos + 2, line.len)
+                }
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; install-editable — install a package in editable (development) mode
+; ═══════════════════════════════════════════════
+
+installer.install-editable = (venv-path str, src-dir str, pkg-name str) (ok bool) {
+    ok = false
+    edit-ok = build-editable(src-dir, venv-path, pkg-name)
+    ok = edit-ok
+}
+
+; ═══════════════════════════════════════════════
+; install-from-source — build and install a package from sdist
+; ═══════════════════════════════════════════════
+
+installer.install-from-source = (venv-path str, sdist-path str) (ok bool) {
+    ok = false
+    inst-ok = install-sdist(sdist-path, venv-path)
+    ok = inst-ok
+}
+
+; ═══════════════════════════════════════════════
+; reinstall-package — force reinstall a package
+; ═══════════════════════════════════════════════
+
+installer.reinstall-package = (venv-path str, name str, ver str) (ok bool) {
+    ok = false
+    uninst-ok = uninstall-package(venv-path, name)
+    {
+        uninst-ok == false -> {
+        }
+    }
+    inst-ok = install-named-package(venv-path, name, ver)
+    ok = inst-ok
+}
+
+; ═══════════════════════════════════════════════
+; pip-install-with-options — install packages with options
+; ═══════════════════════════════════════════════
+
+installer.pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
+    ok = false
+
+    lines = pkgs.split('\n')
+    n = lines.len
+    i = 0
+    {
+        pkg = lines[i]
+        i = i + 1
+        pkg = pkg.trim()
+        {
+            pkg.len > 0 -> {
+                {
+                    opts.contains('editable') || pkg.starts-with('-e ') -> {
+                        pkg-path = pkg
+                        {
+                            pkg-path.starts-with('-e ') -> pkg-path = pkg-path.slice(3, pkg-path.len).trim()
+                        }
+                        {
+                            pkg-path.starts-with('--editable ') -> pkg-path = pkg-path.slice(11, pkg-path.len).trim()
+                        }
+                        pkg-name = pkg-path
+                        slash = pkg-name.rindex('/')
+                        {
+                            slash >= 0 -> pkg-name = pkg-name.slice(slash + 1, pkg-name.len)
+                        }
+                        inst-ok = install-editable(venv-path, pkg-path, pkg-name)
+                        {
+                            inst-ok -> print('  + (editable) ' - pkg-path)
+                            -> {
+                                print('  error: failed to install editable {pkg-path}')
+                                return
+                            }
+                        }
+                    }
+                    -> {
+                        name, ver-spec, extras = parse-requirement(pkg)
+
+                        {
+                            opts.contains('reinstall') || opts.contains('force-reinstall') -> {
+                                ver = ver-spec
+                                {
+                                    ver-spec.starts-with('==') -> ver = ver-spec.slice(2, ver-spec.len)
+                                    -> {
+                                        info, info-ok = get-package-info(name)
+                                        {
+                                            info-ok -> {
+                                                ver, v-ok = pick-version(info, ver-spec)
+                                            }
+                                        }
+                                    }
+                                }
+                                {
+                                    inst-ok = reinstall-package(venv-path, name, ver)
+                                }
+                            }
+                            -> {
+                                {
+                                    opts.contains('upgrade') && ver-spec == '' -> {
+                                        inst-ok = upgrade-package(venv-path, name)
+                                        {
+                                            inst-ok == false -> {
+                                                print('  error: failed to upgrade {name}')
+                                                return
+                                            }
+                                        }
+                                    }
+                                    -> {
+                                        {
+                                            ver-spec == '' -> {
+                                                ver, ver-ok = get-latest-version(name)
+                                            }
+                                            -> {
+                                                info, info-ok = get-package-info(name)
+                                                {
+                                                    info-ok -> {
+                                                        ver, ver-ok = pick-version(info, ver-spec)
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        {
+                                            ver == '' -> {
+                                                print('error: could not find version for {pkg}')
+                                                return
+                                            }
+                                        }
+
+                                        inst-opts = ''
+                                        {
+                                            opts.contains('no-cache') -> inst-opts = inst-opts - 'no-cache '
+                                        }
+                                        {
+                                            opts.contains('no-deps') -> inst-opts = inst-opts - 'no-deps '
+                                        }
+                                        {
+                                            opts.contains('only-binary') -> inst-opts = inst-opts - 'only-binary '
+                                        }
+                                        {
+                                            opts.contains('no-binary') -> inst-opts = inst-opts - 'no-binary '
+                                        }
+
+                                        inst-ok = install-named-package-with-opts(venv-path, name, ver, inst-opts)
+                                        {
+                                            inst-ok -> print('  + {name}=={ver}')
+                                            -> {
+                                                print('  error: failed to install {name}=={ver}')
+                                                return
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; check-installed — check if a package is installed at a specific version
+; ═══════════════════════════════════════════════
+
+installer.check-installed = (venv-path str, name str, ver str) (yes bool) {
+    yes = false
+    installed = list-installed(venv-path)
+    target = name - '==' - ver
+    lines = installed.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.trim() == target -> {
+                yes = true
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; install-with-link-mode — install using a specific link mode
+; ═══════════════════════════════════════════════
+
+installer.install-with-link-mode = (venv-path str, name str, ver str, link-mode str) (ok bool) {
+    ok = false
+    inst-ok = install-named-package(venv-path, name, ver)
+    ok = inst-ok
+}

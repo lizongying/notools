@@ -1,0 +1,224 @@
+; test-python.no — Python version management tests
+; Tests: find, install, list, pin, resolve-version, platform detection
+; Run: no run nouv/test/test-python.no
+;
+; Mirrors uv's tests/python/*.rs
+
+# /nouv/src/python
+
+main = () {
+    print('--- Testing Python version management ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Test 1: find-system-python
+    sys-path, sys-ok = python.find-system-python()
+    {
+        sys-ok && sys-path != '' -> {
+            print('PASS: find-system-python')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: find-system-python')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: find-python with empty version (any)
+    py-path, py-ok = python.find-python('')
+    {
+        py-ok && py-path != '' -> {
+            print('PASS: find-python (any)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: find-python (any)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: detect-platform
+    plat = python.detect-platform()
+    {
+        plat == 'x86_64-macos' || plat == 'aarch64-macos' || plat == 'x86_64-linux' || plat == 'aarch64-linux' -> {
+            print('PASS: detect-platform ({plat})')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: detect-platform (got {plat})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: get-python-dir
+    py-dir = python.get-python-dir()
+    {
+        py-dir.contains('python') && py-dir.contains('/') -> {
+            print('PASS: get-python-dir')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-python-dir (got {py-dir})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: pin-version and get-pinned-version
+    test-dir = '/tmp/nouv-test-py-' - os.now-ms().to-str()
+    p = path{
+        p: test-dir,
+    }
+    mk = p.make-dir()
+
+    pin-ok = python.pin-version(test-dir, '3.12.7')
+    {
+        pin-ok -> {
+            print('PASS: pin-version')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: pin-version')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: get-pinned-version returns the pinned version
+    pinned = python.get-pinned-version(test-dir)
+    pinned: {
+        ok -> {
+            it == '3.12.7' -> {
+                print('PASS: get-pinned-version')
+                n-pass = n-pass + 1
+            }
+            -> {
+                print('FAIL: get-pinned-version (got {it})')
+                n-fail = n-fail + 1
+            }
+        }
+        -> {
+            print('FAIL: get-pinned-version returned nil')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: get-pinned-version returns nil when no pin file
+    no-pin = python.get-pinned-version('/tmp')
+    no-pin: {
+        ok -> {
+            print('FAIL: get-pinned-version should return nil without pin')
+            n-fail = n-fail + 1
+        }
+        -> {
+            print('PASS: get-pinned-version returns nil when no pin')
+            n-pass = n-pass + 1
+        }
+    }
+
+    ; Test 8: resolve-version with full version
+    full-ver, resolve-ok = python.resolve-version('3.12.7')
+    {
+        resolve-ok && full-ver == '3.12.7' -> {
+            print('PASS: resolve-version (full)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: resolve-version (full) got {full-ver}')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 9: resolve-version with partial version
+    partial-ver, partial-ok = python.resolve-version('3.12')
+    {
+        partial-ok && partial-ver.starts-with('3.12.') -> {
+            print('PASS: resolve-version (partial 3.12 -> {partial-ver})')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: resolve-version (partial 3.12)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 10: resolve-version with major only
+    major-ver, major-ok = python.resolve-version('3')
+    {
+        major-ok && major-ver.starts-with('3.') -> {
+            print('PASS: resolve-version (major 3 -> {major-ver})')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: resolve-version (major 3)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 11: get-available-versions
+    available = python.get-available-versions()
+    lines = available.split('\n')
+    has-312 = false
+    n = lines.len
+    i = 0
+    for i < n {
+        line = lines[i]
+        i = i + 1
+        {
+            line.trim() == '3.12.7' -> has-312 = true
+        }
+    }
+    {
+        has-312 -> {
+            print('PASS: get-available-versions contains 3.12.7')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-available-versions missing 3.12.7')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 12: get-version-info from system python
+    sys-path2, sys-ok2 = python.find-system-python()
+    {
+        sys-ok2 -> {
+            ver, impl = python.get-version-info(sys-path2)
+            {
+                ver.starts-with('3.') && impl == 'CPython' -> {
+                    print('PASS: get-version-info')
+                    n-pass = n-pass + 1
+                }
+                -> {
+                    print('FAIL: get-version-info (ver={ver}, impl={impl})')
+                    n-fail = n-fail + 1
+                }
+            }
+        }
+        -> {
+            print('SKIP: get-version-info (no system python)')
+        }
+    }
+
+    ; Test 13: is-version-installed for a non-installed version
+    installed = python.is-version-installed('0.0.0')
+    {
+        installed == false -> {
+            print('PASS: is-version-installed false for uninstalled')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-version-installed should be false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    p2 = process{}
+    p2.start('rm', '-rf ' - test-dir)
+    p2.wait()
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

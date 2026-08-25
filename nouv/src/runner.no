@@ -1,0 +1,577 @@
+; runner.no — script and command execution
+;
+; Runs commands in the project's virtual environment, with support
+; for inline script dependencies, entry points, and arbitrary commands.
+
+# /nouv/src/venv
+# /nouv/src/config
+# /nouv/src/installer
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; run-command — run a command in the project environment
+; ═══════════════════════════════════════════════
+
+runner.run-command = (dir str, cmd-args str, cfg str) (ok bool) {
+    ok = false
+
+    ; find venv
+    venv-path = find-or-create-default(dir)
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment available')
+            return
+        }
+    }
+
+    ; get venv bin directory
+    bin-dir = get-bin(venv-path)
+    py-path, py-ok = get-python(venv-path)
+
+    ; check for entry points in config
+    name = get-name(cfg)
+
+    ; split command args
+    args = cmd-args.trim()
+    {
+        args == '' -> {
+            ; try to run the project itself
+            {
+                py-ok -> {
+                    ; run as module
+                    code = run-cmd('"' - py-path - '" -m ' - name)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+            return
+        }
+    }
+
+    ; determine command to run
+    cmd-name = args
+    cmd-rest = ''
+    space-pos = args.index(' ')
+    {
+        space-pos >= 0 -> {
+            cmd-name = args.slice(0, space-pos)
+            cmd-rest = args.slice(space-pos + 1, args.len)
+        }
+    }
+
+    ; check if cmd-name is an entry point
+    ep-path = bin-dir - '/' - cmd-name
+    p = path{
+        p: ep-path,
+    }
+    ep-exists = p.exists()
+
+    {
+        ep-exists -> {
+            ; run entry point directly
+            full-cmd = '"' - ep-path - '"'
+            {
+                cmd-rest != '' -> full-cmd = full-cmd - ' ' - cmd-rest
+            }
+            code = run-cmd(full-cmd)
+            {
+                code == 0 -> ok = true
+            }
+        }
+        -> {
+            ; not an entry point, try running as Python script/module
+            {
+                py-ok -> {
+                    code = run-cmd('"' - py-path - '" ' - args)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-script — run a Python script with inline dependency metadata
+; ═══════════════════════════════════════════════
+
+runner.run-script = (dir str, script-path str, cfg str) (ok bool) {
+    ok = false
+
+    ; check for inline metadata (PEP 723)
+    deps, has-meta = parse-inline-metadata(script-path)
+
+    {
+        has-meta -> {
+            ; create ephemeral venv and install deps
+            print('Reading inline script metadata from: {script-path}')
+            tmp-venv = dir - '/.nouv-tmp-venv'
+
+            py-path, py-ok = find-python('')
+            {
+                py-ok == false -> {
+                    print('error: no Python installation found')
+                    return
+                }
+                -> {
+                    venv-ok = create-venv(tmp-venv, py-path)
+                    {
+                        venv-ok == false -> return
+                        -> {
+                            ; install deps
+                            inst-ok = pip-install(tmp-venv, deps)
+                            {
+                                inst-ok == false -> return
+                                -> {
+                                    ; run script
+                                    py-bin, p-ok = get-python(tmp-venv)
+                                    {
+                                        p-ok -> {
+                                            code = run-cmd('"' - py-bin - '" ' - script-path)
+                                            {
+                                                code == 0 -> ok = true
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        -> {
+            ; no inline metadata, run with project venv
+            venv-path = find-or-create-default(dir)
+            py-bin, py-ok = get-python(venv-path)
+            {
+                py-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - script-path)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-inline-metadata — parse PEP 723 inline script metadata
+; ═══════════════════════════════════════════════
+
+runner.parse-inline-metadata = (path str) (deps str, ok bool) {
+    ok = false
+    deps = ''
+
+    content = fs.read-file(path)
+    {
+        content == '' -> return
+        -> {
+            ; find script block
+            lines = content.split('\n')
+            n = lines.len
+            i = 0
+            in-block = false
+            py-ver = ''
+            dep-list = ''
+
+            {
+                line = lines[i]
+                i = i + 1
+
+                {
+                    line == '# /// script' -> {
+                        in-block = true
+                        continue
+                    }
+                }
+
+                {
+                    in-block -> {
+                        {
+                            line == '# ///' -> {
+                                in-block = false
+                                break
+                            }
+                            -> {
+                                ; parse key = value
+                                {
+                                    line.starts-with('# ') -> {
+                                        content-part = line.slice(2, line.len)
+                                        content-part = content-part.trim()
+                                        eq-pos = content-part.index('=')
+                                        {
+                                            eq-pos >= 0 -> {
+                                                key = content-part.slice(0, eq-pos)
+                                                val = content-part.slice(eq-pos + 1, content-part.len)
+                                                key = key.trim()
+                                                val = val.trim()
+
+                                                {
+                                                    key == 'dependencies' -> {
+                                                        ; parse array
+                                                        dep-list = parse-array(val)
+                                                    }
+                                                    key == 'requires-python' -> {
+                                                        py-ver = val
+                                                        {
+                                                            py-ver.starts-with('"') && py-ver.ends-with('"') -> py-ver = py-ver.slice(1, py-ver.len - 1)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+
+            {
+                dep-list != '' -> {
+                    deps = dep-list
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-entry-point — run a console entry point
+; ═══════════════════════════════════════════════
+
+runner.run-entry-point = (dir str, entry str, cfg str) (ok bool) {
+    ok = false
+    venv-path = find-or-create-default(dir)
+    bin-dir = get-bin(venv-path)
+    ep-path = bin-dir - '/' - entry
+
+    p = path{
+        p: ep-path,
+    }
+    exists = p.exists()
+    {
+        exists -> {
+            code = run-cmd('"' - ep-path - '"')
+            {
+                code == 0 -> ok = true
+            }
+        }
+        -> {
+            print('error: entry point {entry} not found')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-with — run a command with additional packages
+; ═══════════════════════════════════════════════
+
+runner.run-with = (dir str, cmd-args str, with-pkgs str, cfg str) (ok bool) {
+    ok = false
+
+    ; create ephemeral environment
+    tmp-id = os.now-ms()
+    tmp-venv = dir - '/.nouv-tmp-' - tmp-id.to-str()
+
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install project dependencies if cfg exists
+            {
+                cfg != '' -> {
+                    resolved, resolve-ok = resolve-all(cfg)
+                    {
+                        resolve-ok -> {
+                            resolved != '' -> {
+                                proj-inst-ok = pip-install(tmp-venv, resolved)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ; install --with packages
+            {
+                with-pkgs != '' -> {
+                    with-ok = pip-install(tmp-venv, with-pkgs)
+                    {
+                        with-ok == false -> {
+                            print('warning: some --with packages failed to install')
+                        }
+                    }
+                }
+            }
+
+            ; run command
+            py-bin, p-ok = get-python(tmp-venv)
+            {
+                p-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - cmd-args)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+
+            ; clean up
+            remove-venv(tmp-venv)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-with-python — run a command with a specific Python version
+; ═══════════════════════════════════════════════
+
+runner.run-with-python = (dir str, cmd-args str, py-ver str, cfg str) (ok bool) {
+    ok = false
+
+    ; find specific Python version
+    py-path, py-ok = find-python(py-ver)
+    {
+        py-ok == false -> {
+            print('error: Python {py-ver} not found')
+            os.exit(1)
+        }
+        -> {
+            ; find or create venv with this Python
+            venv-path = find-or-create-default(dir)
+            {
+                venv-path == '' -> {
+                    print('error: no virtual environment available')
+                    return
+                }
+                -> {
+                    py-bin, p-ok = get-python(venv-path)
+                    {
+                        p-ok -> {
+                            code = run-cmd('"' - py-bin - '" ' - cmd-args)
+                            {
+                                code == 0 -> ok = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-with-extras — run a command with optional dependency extras
+; ═══════════════════════════════════════════════
+
+runner.run-with-extras = (dir str, cmd-args str, extras str, cfg str) (ok bool) {
+    ok = false
+
+    venv-path = find-or-create-default(dir)
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment available')
+            return
+        }
+        -> {
+            ; install extras
+            {
+                extras != '' -> {
+                    extra-lines = extras.split('\n')
+                    en = extra-lines.len
+                    i = 0
+                    {
+                        extra = extra-lines[i].trim()
+                        i = i + 1
+                        {
+                            extra.len > 0 -> {
+                                ; install the project with this extra
+                                name = get-name(cfg)
+                                pkg = name - '[' - extra - ']'
+                                e-ok = pip-install(venv-path, pkg)
+                            }
+                        }
+                    } (i < en)
+                }
+            }
+
+            ; run command
+            py-bin, p-ok = get-python(venv-path)
+            {
+                p-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - cmd-args)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-with-group — run a command with a dependency group
+; ═══════════════════════════════════════════════
+
+runner.run-with-group = (dir str, cmd-args str, group str, cfg str) (ok bool) {
+    ok = false
+
+    venv-path = find-or-create-default(dir)
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment available')
+            return
+        }
+        -> {
+            ; install group dependencies
+            {
+                group != '' -> {
+                    group-deps = get-group-dependencies(cfg, group)
+                    {
+                        group-deps != '' -> {
+                            g-ok = pip-install(venv-path, group-deps)
+                        }
+                    }
+                }
+            }
+
+            ; run command
+            py-bin, p-ok = get-python(venv-path)
+            {
+                p-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - cmd-args)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-ephemeral — run a command in a fully ephemeral environment
+; ═══════════════════════════════════════════════
+
+runner.run-ephemeral = (dir str, cmd-args str, cfg str) (ok bool) {
+    ok = false
+
+    tmp-id = os.now-ms()
+    tmp-venv = dir - '/.nouv-ephemeral-' - tmp-id.to-str()
+
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install project dependencies
+            {
+                cfg != '' -> {
+                    resolved, resolve-ok = resolve-all(cfg)
+                    {
+                        resolve-ok -> {
+                            resolved != '' -> {
+                                inst-ok = pip-install(tmp-venv, resolved)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ; run command
+            py-bin, p-ok = get-python(tmp-venv)
+            {
+                p-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - cmd-args)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+
+            ; clean up
+            remove-venv(tmp-venv)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-pep723 — run a script with PEP 723 inline metadata
+; ═══════════════════════════════════════════════
+
+runner.run-pep723 = (dir str, script-path str, with-pkgs str) (ok bool) {
+    ok = false
+
+    ; parse inline metadata
+    deps, has-meta = parse-inline-metadata(script-path)
+
+    ; combine with --with packages
+    {
+        with-pkgs != '' -> {
+            {
+                deps != '' -> deps = deps - '\n' - with-pkgs
+                -> deps = with-pkgs
+            }
+        }
+    }
+
+    ; create ephemeral venv
+    tmp-venv = dir - '/.nouv-tmp-venv'
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install deps if any
+            {
+                deps != '' -> {
+                    inst-ok = pip-install(tmp-venv, deps)
+                    {
+                        inst-ok == false -> return
+                    }
+                }
+            }
+
+            ; run script
+            py-bin, p-ok = get-python(tmp-venv)
+            {
+                p-ok -> {
+                    code = run-cmd('"' - py-bin - '" ' - script-path)
+                    {
+                        code == 0 -> ok = true
+                    }
+                }
+            }
+
+            ; clean up
+            remove-venv(tmp-venv)
+        }
+    }
+}

@@ -1,0 +1,135 @@
+; test-sdist.no — Source distribution tests
+; Tests: build-system parsing, extract sdist, build-editable
+; Run: no run nouv/test/test-sdist.no
+;
+; Mirrors uv's build/sdist tests
+
+# /nouv/src/sdist
+# /nouv/src/toml
+
+main = () {
+    print('--- Testing sdist operations ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Test 1: get-build-system from pyproject.toml
+    test-dir = '/tmp/nouv-test-sdist-' - os.now-ms().to-str()
+    p = path{
+        p: test-dir,
+    }
+    mk = p.make-dir()
+
+    pyproject = test-dir - '/pyproject.toml'
+    wfd = fs.open-write(pyproject)
+    {
+        wfd > 0 -> {
+            content = '[build-system]\nrequires = ["setuptools>=61.0", "wheel"]\nbuild-backend = "setuptools.build_meta"\n'
+            fs.write(wfd, content, content.len)
+            fs.close(wfd)
+        }
+    }
+
+    requires, backend, bs-ok = sdist.get-build-system(test-dir)
+    {
+        bs-ok -> {
+            print('PASS: get-build-system')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-build-system')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: backend is setuptools.build_meta
+    {
+        backend == 'setuptools.build_meta' -> {
+            print('PASS: build-backend is setuptools.build_meta')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: build-backend (got {backend})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: requires contains setuptools
+    {
+        requires.contains('setuptools') -> {
+            print('PASS: requires contains setuptools')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: requires should contain setuptools (got {requires})')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: get-build-system with default backend
+    test-dir2 = '/tmp/nouv-test-sdist2-' - os.now-ms().to-str()
+    p2 = path{
+        p: test-dir2,
+    }
+    mk2 = p2.make-dir()
+
+    pyproject2 = test-dir2 - '/pyproject.toml'
+    wfd2 = fs.open-write(pyproject2)
+    {
+        wfd2 > 0 -> {
+            content2 = '[project]\nname = "testpkg"\nversion = "0.1.0"\n'
+            fs.write(wfd2, content2, content2.len)
+            fs.close(wfd2)
+        }
+    }
+
+    requires2, backend2, bs-ok2 = sdist.get-build-system(test-dir2)
+    {
+        bs-ok2 -> {
+            ; should default to setuptools.build_meta
+            {
+                backend2 == 'setuptools.build_meta' -> {
+                    print('PASS: default build-backend')
+                    n-pass = n-pass + 1
+                }
+                -> {
+                    print('FAIL: default build-backend (got {backend2})')
+                    n-fail = n-fail + 1
+                }
+            }
+        }
+        -> {
+            print('FAIL: get-build-system without build-system section')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: get-build-system with no pyproject.toml
+    test-dir3 = '/tmp/nouv-test-sdist3-' - os.now-ms().to-str()
+    p3 = path{
+        p: test-dir3,
+    }
+    mk3 = p3.make-dir()
+
+    requires3, backend3, bs-ok3 = sdist.get-build-system(test-dir3)
+    {
+        bs-ok3 == false -> {
+            print('PASS: get-build-system fails without pyproject.toml')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: should fail without pyproject.toml')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    p4 = process{}
+    p4.start('rm', '-rf ' - test-dir - ' ' - test-dir2 - ' ' - test-dir3)
+    p4.wait()
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

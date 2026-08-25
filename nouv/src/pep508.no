@@ -1,0 +1,387 @@
+; pep508.no — PEP 508 dependency specification parser
+;
+; Parses PEP 508 dependency specifications (requirement strings) into
+; components: name, extras, version specifier, marker, URL, and editable flag.
+;
+; Examples:
+;   "requests>=2.20.0" → name="requests", specs=[">=2.20.0"]
+;   "flask[async]>=2.0,<3.0; python_version>='3.8'" → full parse
+;   "package @ https://example.com/pkg-1.0.tar.gz ; python_version>='3.10'"
+;   "-e ./local-pkg"
+;
+; API:
+;   parse(req str) (name str, extras str, ver-specs str, marker str, url str, editable bool, ok bool)
+;   parse-name(s str) (name str, rest str) — extract package name
+;   parse-extras(s str) (extras str, rest str) — parse [extra1,extra2]
+;   parse-version-specifiers(s str) (specs str, rest str) — parse version constraints
+;   normalize-name(name str) (normalized str) — PEP 503 normalization
+;   parse-url(s str) (url str, rest str) — parse @ URL
+
+; ═══════════════════════════════════════════════
+; parse — parse a full PEP 508 requirement string
+;
+; returns:
+;   name str — package name (normalized)
+;   extras str — newline-separated extras
+;   ver-specs str — version specifiers (e.g. ">=2.0,<3.0")
+;   marker str — environment marker (e.g. "python_version>='3.8'")
+;   url str — direct URL (if present)
+;   editable bool — editable install flag
+;   ok bool — parse success
+; ═══════════════════════════════════════════════
+
+pep508.parse = (req str) (name str, extras str, ver-specs str, marker str, url str, editable bool, ok bool) {
+    ok = false
+    name = ''
+    extras = ''
+    ver-specs = ''
+    marker = ''
+    url = ''
+    editable = false
+
+    s = req.trim()
+
+    ; check for editable flag
+    {
+        s.starts-with('-e ') -> {
+            editable = true
+            s = s.slice(3, s.len).trim()
+        }
+        s.starts-with('--editable ') -> {
+            editable = true
+            s = s.slice(11, s.len).trim()
+        }
+    }
+
+    ; extract marker (after ;)
+    semi = find-unquoted(s, ';')
+    {
+        semi >= 0 -> {
+            marker = s.slice(semi + 1, s.len).trim()
+            s = s.slice(0, semi).trim()
+        }
+    }
+
+    ; extract URL (after @)
+    at = find-unquoted(s, '@')
+    {
+        at >= 0 -> {
+            url = s.slice(at + 1, s.len).trim()
+            s = s.slice(0, at).trim()
+        }
+    }
+
+    ; parse name and extras
+    name, rest = parse-name(s)
+    {
+        rest.len > 0 -> {
+            extras, rest2 = parse-extras(rest)
+            ver-specs = parse-version-specifiers(rest2)
+        }
+    }
+
+    ; normalize name
+    name = normalize-name(name)
+
+    ok = name != ''
+}
+
+; ═══════════════════════════════════════════════
+; parse-name — extract the package name from the start
+; Returns name and the rest of the string
+; ═══════════════════════════════════════════════
+
+pep508.parse-name = (s str) (name str, rest str) {
+    name = ''
+    rest = s
+
+    n = s.len
+    i = 0
+    ; skip leading whitespace
+    {
+        i = i + 1
+    } (i < n && (s[i] == 32 || s[i] == 9))
+
+    ; package name: letters, digits, -, _, .
+    start = i
+    {
+        c = s[i]
+        {
+            ; A-Z, a-z, 0-9, -, _, .
+            (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95 || c == 46 -> {
+                i = i + 1
+            }
+            -> break
+        }
+    } (i < n)
+
+    {
+        i > start -> {
+            name = s.slice(start, i)
+            rest = s.slice(i, n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-extras — parse [extra1,extra2] syntax
+; Returns newline-separated extras and the rest
+; ═══════════════════════════════════════════════
+
+pep508.parse-extras = (s str) (extras str, rest str) {
+    extras = ''
+    rest = s
+
+    s = s.trim()
+    {
+        s.starts-with('[') == false -> return
+        -> {
+            ; find closing bracket
+            n = s.len
+            i = 1
+            depth = 1
+            {
+                c = s[i]
+                {
+                    c == 91 -> depth = depth + 1  ; [
+                    c == 93 -> {  ; ]
+                        depth = depth - 1
+                        {
+                            depth == 0 -> {
+                                inner = s.slice(1, i)
+                                ; split by comma
+                                parts = inner.split(',')
+                                pn = parts.len
+                                j = 0
+                                for j < pn {
+                                    p = parts[j].trim()
+                                    j = j + 1
+                                    {
+                                        p.len > 0 -> {
+                                            {
+                                                extras.len > 0 -> extras = extras - '\n'
+                                            }
+                                            extras = extras - p
+                                        }
+                                    }
+                                }
+                                rest = s.slice(i + 1, n).trim()
+                                return
+                            }
+                        }
+                    }
+                }
+                i = i + 1
+            } (i < n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-version-specifiers — parse version specifiers
+; ">=2.0,<3.0" returns the same string normalized
+; ═══════════════════════════════════════════════
+
+pep508.parse-version-specifiers = (s str) (specs str) {
+    specs = s.trim()
+
+    ; remove surrounding parens if present
+    {
+        specs.starts-with('(') && specs.ends-with(')') -> {
+            specs = specs.slice(1, specs.len - 1).trim()
+        }
+    }
+
+    ; normalize whitespace
+    specs = specs.replace-str(' ', '')
+}
+
+; ═══════════════════════════════════════════════
+; normalize-name — PEP 503 name normalization
+; "My_Package" → "my-package"
+; ═══════════════════════════════════════════════
+
+pep508.normalize-name = (name str) (normalized str) {
+    normalized = name.to-lower()
+    ; replace runs of -, _ with single -
+    n = normalized.len
+    i = 0
+    result = ''
+    prev-sep = false
+    {
+        c = normalized[i]
+        {
+            c == 45 || c == 95 -> {  ; - or _
+                {
+                    prev-sep == false -> {
+                        result = result - '-'
+                    }
+                }
+                prev-sep = true
+            }
+            -> {
+                result = result - normalized.slice(i, i + 1)
+                prev-sep = false
+            }
+        }
+        i = i + 1
+    } (i < n)
+    normalized = result
+}
+
+; ═══════════════════════════════════════════════
+; find-unquoted — find a character not inside quotes
+; ═══════════════════════════════════════════════
+
+pep508.find-unquoted = (s str, ch i64) (pos i64) {
+    pos = -1
+    n = s.len
+    i = 0
+    in-str = false
+    str-char = 0
+    {
+        c = s[i]
+        {
+            in-str -> {
+                c == str-char -> in-str = false
+            }
+            -> {
+                {
+                    c == 34 || c == 39 -> {  ; " or '
+                        in-str = true
+                        str-char = c
+                    }
+                    c == ch -> {
+                        pos = i
+                        return
+                    }
+                }
+            }
+        }
+        i = i + 1
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; parse-specifier — parse a single version specifier
+; ">=2.0" → op=">=", version="2.0"
+; ═══════════════════════════════════════════════
+
+pep508.parse-specifier = (spec str) (op str, version str) {
+    op = ''
+    version = spec.trim()
+
+    {
+        starts-with('>=') -> {
+            op = '>='
+            version = slice(2, version.len).trim()
+        }
+        starts-with('<=') -> {
+            op = '<='
+            version = slice(2, version.len).trim()
+        }
+        starts-with('==') -> {
+            op = '=='
+            version = slice(2, version.len).trim()
+        }
+        starts-with('!=') -> {
+            op = '!='
+            version = slice(2, version.len).trim()
+        }
+        starts-with('~=') -> {
+            op = '~='
+            version = slice(2, version.len).trim()
+        }
+        starts-with('>') -> {
+            op = '>'
+            version = slice(1, version.len).trim()
+        }
+        starts-with('<') -> {
+            op = '<'
+            version = slice(1, version.len).trim()
+        }
+        starts-with('===') -> {
+            op = '==='
+            version = slice(3, version.len).trim()
+        }
+        -> {
+            ; bare version, treat as ==
+            op = '=='
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; split-specifiers — split version specifiers by comma
+; ">=2.0,<3.0" → ">=2.0\n<3.0"
+; ═══════════════════════════════════════════════
+
+pep508.split-specifiers = (specs str) (list str) {
+    list = ''
+    parts = specs.split(',')
+    n = parts.len
+    i = 0
+    {
+        p = parts[i].trim()
+        i = i + 1
+        {
+            p.len > 0 -> {
+                {
+                    list.len > 0 -> list = list - '\n'
+                }
+                list = list - p
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; is-extras-string — check if a string looks like extras
+; ═══════════════════════════════════════════════
+
+pep508.has-extras = (req str) (yes bool) {
+    yes = false
+    n = req.len
+    i = 0
+    {
+        c = req[i]
+        {
+            c == 91 -> {  ; [
+                yes = true
+                return
+            }
+            ; version operators indicate we're past extras
+            c == 61 || c == 60 || c == 62 || c == 33 || c == 126 -> return
+        }
+        i = i + 1
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; format-requirement — format a requirement back to PEP 508 string
+; ═══════════════════════════════════════════════
+
+pep508.format-requirement = (name str, extras str, ver-specs str, marker str, url str) (req str) {
+    req = name
+    {
+        extras != '' -> {
+            req = req - '[' - extras.replace-str('\n', ',') - ']'
+        }
+    }
+    {
+        url != '' -> {
+            req = req - ' @ ' - url
+        }
+        {
+            ver-specs != '' -> {
+                specs = ver-specs.replace-str('\n', ',')
+                req = req - specs
+            }
+        }
+    }
+    {
+        marker != '' -> {
+            req = req - ' ; ' - marker
+        }
+    }
+}

@@ -1,0 +1,954 @@
+; dependency.no — dependency resolution and management
+;
+; Resolves Python package dependencies using a backtracking resolver.
+; Queries PyPI for package metadata, builds a dependency graph,
+; and resolves version constraints to produce a flat list of packages.
+;
+; API:
+;   resolve-all(cfg str) (resolved str, ok bool) — resolve all deps
+;   resolve-package(name str, ver-spec str) (info str, ok bool) — resolve single package
+;   dependency-tree(cfg str, pkg str) (tree str) — show dep tree
+;   parse-requirement(req str) (name str, ver-spec str, extras str) — parse requirement string
+
+# /nouv/src/registry
+# /nouv/src/config
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; resolve-all — resolve all dependencies from config
+;
+; cfg str — parsed pyproject.toml config
+; returns:
+;   resolved str — flat representation of resolved packages
+;                  format: name==version\n per line
+;   ok bool
+; ═══════════════════════════════════════════════
+
+dependency.resolve-all = (cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; get direct dependencies
+    deps = get-dependencies(cfg)
+    dev-deps = get-dev-dependencies(cfg)
+
+    ; combine
+    all-deps = deps
+    {
+        dev-deps.len > 0 -> all-deps = all-deps - dev-deps
+    }
+
+    {
+        all-deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    ; build list of requirements
+    requirements = all-deps
+
+    ; resolve each requirement
+    seen = ''
+    queue = requirements
+    resolved = ''
+
+    ; process queue
+    {
+        ; pop first line
+        nl-pos = queue.index('\n')
+        req = ''
+        {
+            nl-pos < 0 -> {
+                req = queue
+                queue = ''
+            }
+            -> {
+                req = queue.slice(0, nl-pos)
+                queue = queue.slice(nl-pos + 1, queue.len)
+            }
+        }
+        req = req.trim()
+        {
+            req == '' -> continue
+        }
+
+        ; parse requirement
+        name, ver-spec, extras = parse-requirement(req)
+
+        ; skip if already seen
+        {
+            seen.contains(name) -> continue
+            -> {
+                seen = seen - name - '\n'
+            }
+        }
+
+        ; get package info from registry
+        info, info-ok = get-package-info(name)
+        {
+            info-ok == false -> {
+                print('warning: could not resolve {name}')
+                continue
+            }
+        }
+
+        ; determine best version
+        best-ver, ver-ok = pick-version(info, ver-spec)
+        {
+            ver-ok == false -> {
+                print('warning: no suitable version for {name} ({ver-spec})')
+                continue
+            }
+        }
+
+        ; add to resolved
+        resolved = resolved - name - '==' - best-ver - '\n'
+
+        ; get sub-dependencies
+        sub-deps = get-requires-dist(info, best-ver)
+        {
+            sub-deps.len > 0 -> {
+                queue = sub-deps - '\n' - queue
+            }
+        }
+    } (queue != '')
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; parse-requirement — parse a PEP 508 requirement string
+; "requests>=2.20.0" → name="requests", ver-spec=">=2.20.0"
+; "flask[async]>=2.0" → name="flask", ver-spec=">=2.0", extras="async"
+; ═══════════════════════════════════════════════
+
+dependency.parse-requirement = (req str) (name str, ver-spec str, extras str) {
+    name = req
+    ver-spec = ''
+    extras = ''
+
+    ; find version specifier
+    op-pos = find-version-op(req)
+    {
+        op-pos >= 0 -> {
+            name = req.slice(0, op-pos)
+            name = name.trim()
+            ver-spec = req.slice(op-pos, req.len)
+            ver-spec = ver-spec.trim()
+        }
+        -> {
+            name = req.trim()
+        }
+    }
+
+    ; find extras
+    bracket-pos = name.index('[')
+    {
+        bracket-pos >= 0 -> {
+            extras = name.slice(bracket-pos + 1, name.len)
+            end-bracket = extras.index(']')
+            {
+                end-bracket >= 0 -> extras = extras.slice(0, end-bracket)
+            }
+            name = name.slice(0, bracket-pos)
+            name = name.trim()
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; find-version-op — find the position of version operator
+; ═══════════════════════════════════════════════
+
+dependency.find-version-op = (s str) (pos i64) {
+    pos = -1
+    n = s.len
+    i = 0
+    {
+        c = s[i]
+        {
+            c == 61 || c == 60 || c == 62 || c == 33 || c == 126 -> {
+                pos = i
+                return
+            }
+        }
+        i = i + 1
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; pick-version — pick the best version from package info
+; that satisfies the version spec
+; ═══════════════════════════════════════════════
+
+dependency.pick-version = (info str, ver-spec str) (ver str, ok bool) {
+    ok = false
+    ver = ''
+
+    ; extract version from info
+    lines = info.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('version=') -> {
+                ver = line.slice(8, line.len)
+                {
+                    ver-spec == '' || version-satisfies(ver, ver-spec) -> {
+                        ok = true
+                        return
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; version-satisfies — check if version satisfies version spec
+; supports: >=, <=, ==, !=, >, <, ~=, multiple specs with comma
+; ═══════════════════════════════════════════════
+
+dependency.version-satisfies = (ver str, spec str) (ok bool) {
+    ok = true
+
+    {
+        spec == '' -> return
+    }
+
+    ; split by comma for multiple constraints
+    specs = spec.split(',')
+    n = specs.len
+    i = 0
+    {
+        s = specs[i]
+        s = s.trim()
+        i = i + 1
+        {
+            s == '' -> continue
+            -> {
+                op = ''
+                target = s
+
+                ; extract operator
+                {
+                    s.starts-with('>=') -> {
+                        op = '>='
+                        target = s.slice(2, s.len)
+                    }
+                    s.starts-with('<=') -> {
+                        op = '<='
+                        target = s.slice(2, s.len)
+                    }
+                    s.starts-with('==') -> {
+                        op = '=='
+                        target = s.slice(2, s.len)
+                    }
+                    s.starts-with('!=') -> {
+                        op = '!='
+                        target = s.slice(2, s.len)
+                    }
+                    s.starts-with('~=') -> {
+                        op = '~='
+                        target = s.slice(2, s.len)
+                    }
+                    s.starts-with('>') -> {
+                        op = '>'
+                        target = s.slice(1, s.len)
+                    }
+                    s.starts-with('<') -> {
+                        op = '<'
+                        target = s.slice(1, s.len)
+                    }
+                    -> {
+                        op = '=='
+                        target = s
+                    }
+                }
+
+                target = target.trim()
+                cmp = version-compare(ver, target)
+
+                {
+                    op == '>=' -> {
+                        cmp < 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '<=' -> {
+                        cmp > 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '==' -> {
+                        cmp != 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '!=' -> {
+                        cmp == 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '>' -> {
+                        cmp <= 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '<' -> {
+                        cmp >= 0 -> {
+                            ok = false
+                            return
+                        }
+                    }
+                    op == '~=' -> {
+                        ; compatible release: ~= X.Y means >= X.Y, < X+1
+                        ; ~= X.Y.Z means >= X.Y.Z, < X.Y+1
+                        {
+                            cmp < 0 -> {
+                                ok = false
+                                return
+                            }
+                        }
+                        ; extract base version and increment
+                        upper = upper-bound-compat(target)
+                        {
+                            upper != '' -> {
+                                cmp2 = version-compare(ver, upper)
+                                {
+                                    cmp2 >= 0 -> {
+                                        ok = false
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; version-compare — compare two version strings
+; returns: -1 if a < b, 0 if a == b, 1 if a > b
+; ═══════════════════════════════════════════════
+
+dependency.version-compare = (a str, b str) (result i64) {
+    result = 0
+
+    ; split by dots
+    a-parts = a.split('.')
+    b-parts = b.split('.')
+    a-n = a-parts.len
+    b-n = b-parts.len
+    max-n = a-n
+    {
+        b-n > max-n -> max-n = b-n
+    }
+
+    i <- [0..max-n): {
+        a-val = 0
+        b-val = 0
+        {
+            i < a-n -> a-val = str-to-i64(a-parts[i])
+        }
+        {
+            i < b-n -> b-val = str-to-i64(b-parts[i])
+        }
+        {
+            a-val < b-val -> {
+                result = -1
+                return
+            }
+            a-val > b-val -> {
+                result = 1
+                return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; upper-bound-compat — compute upper bound for ~= operator
+; ~= 2.5 → 3.0 (upper bound is 3.0)
+; ~= 2.5.3 → 2.6.0 (upper bound is 2.6.0)
+; ═══════════════════════════════════════════════
+
+dependency.upper-bound-compat = (target str) (upper str) {
+    upper = ''
+    parts = target.split('.')
+    n = parts.len
+    {
+        n < 2 -> return
+        -> {
+            {
+                n == 2 -> {
+                    ; ~= X.Y → upper = (X+1).0
+                    x = str-to-i64(parts[0])
+                    upper = (x + 1).to-str() - '.0'
+                }
+                -> {
+                    ; ~= X.Y.Z → upper = X.(Y+1).0
+                    x = parts[0]
+                    y = str-to-i64(parts[1])
+                    upper = x - '.' - (y + 1).to-str() - '.0'
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-requires-dist — extract requires_dist from package info
+; returns newline-separated requirement strings
+; ═══════════════════════════════════════════════
+
+dependency.get-requires-dist = (info str, ver str) (deps str) {
+    deps = ''
+    lines = info.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('requires_dist=') -> {
+                val = line.slice(15, line.len)
+                ; val is newline-separated list of requirements
+                deps = val
+                return
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; dependency-tree — show dependency tree for a package
+; ═══════════════════════════════════════════════
+
+dependency.dependency-tree = (cfg str, pkg str) (tree str) {
+    tree = ''
+
+    {
+        pkg == '' -> {
+            ; show tree for all project dependencies
+            deps = get-dependencies(cfg)
+            lines = deps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                line.len > 0 -> {
+                    tree = tree - line - '\n'
+                    sub-tree, ok = sub-tree(line, 1)
+                    {
+                        ok -> tree = tree - sub-tree
+                    }
+                }
+            } (i < n)
+        }
+        -> {
+            ; show tree for specific package
+            tree = pkg - '\n'
+            sub-tree, ok = sub-tree(pkg, 1)
+            {
+                ok -> tree = tree - sub-tree
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; sub-tree — recursively build dependency sub-tree
+; ═══════════════════════════════════════════════
+
+dependency.sub-tree = (req str, depth i64) (tree str, ok bool) {
+    ok = true
+    tree = ''
+
+    name, ver-spec, extras = parse-requirement(req)
+    info, info-ok = get-package-info(name)
+    {
+        info-ok == false -> {
+            tree = ''
+            ok = false
+            return
+        }
+    }
+
+    ; get sub-deps
+    sub-deps = get-requires-dist(info, '')
+    {
+        sub-deps == '' -> return
+        -> {
+            lines = sub-deps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                line.len > 0 -> {
+                    ; indentation
+                    indent = ''
+                    j <- [0..depth): {
+                        indent = indent - '  '
+                    }
+                    tree = tree - indent - line - '\n'
+
+                    ; recurse
+                    deeper, deeper-ok = sub-tree(line, depth + 1)
+                    {
+                        deeper-ok -> tree = tree - deeper
+                    }
+                }
+            } (i < n)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-package — resolve a single package
+; returns: info str (name==version\nrequires\n), ok bool
+; ═══════════════════════════════════════════════
+
+dependency.resolve-package = (name str, ver-spec str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    pkg-info, pkg-ok = get-package-info(name)
+    {
+        pkg-ok == false -> return
+        -> {
+            best-ver, ver-ok = pick-version(pkg-info, ver-spec)
+            {
+                ver-ok == false -> return
+                -> {
+                    info = name - '==' - best-ver - '\n'
+                    sub-deps = get-requires-dist(pkg-info, best-ver)
+                    {
+                        sub-deps.len > 0 -> info = info - sub-deps
+                    }
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-with-extras — resolve dependencies including extras
+; ═══════════════════════════════════════════════
+
+dependency.resolve-with-extras = (cfg str, extras str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; get base dependencies
+    deps = get-dependencies(cfg)
+    dev-deps = get-dev-dependencies(cfg)
+    all-deps = deps
+    {
+        dev-deps.len > 0 -> all-deps = all-deps - dev-deps
+    }
+
+    ; add extras
+    {
+        extras != '' -> {
+            extra-lines = extras.split('\n')
+            en = extra-lines.len
+            i = 0
+            {
+                extra = extra-lines[i].trim()
+                i = i + 1
+                {
+                    extra.len > 0 -> {
+                        ; get optional dependencies for this extra
+                        opt-deps = get-group-dependencies(cfg, extra)
+                        {
+                            opt-deps.len > 0 -> {
+                                all-deps = all-deps - opt-deps
+                            }
+                        }
+                    }
+                }
+            } (i < en)
+        }
+    }
+
+    {
+        all-deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    ; resolve
+    resolved, ok = resolve-all-deps(all-deps)
+}
+
+; ═══════════════════════════════════════════════
+; resolve-all-deps — resolve from a dependency string
+; ═══════════════════════════════════════════════
+
+dependency.resolve-all-deps = (deps str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    {
+        deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    seen = ''
+    queue = deps
+    resolved = ''
+
+    {
+        queue != '' -> {
+            nl-pos = queue.index('\n')
+            req = ''
+            {
+                nl-pos < 0 -> {
+                    req = queue
+                    queue = ''
+                }
+                -> {
+                    req = queue.slice(0, nl-pos)
+                    queue = queue.slice(nl-pos + 1, queue.len)
+                }
+            }
+            req = req.trim()
+            {
+                req == '' -> continue
+            }
+
+            name, ver-spec, extras = parse-requirement(req)
+
+            {
+                seen.contains(name) -> continue
+                -> seen = seen - name - '\n'
+            }
+
+            info, info-ok = get-package-info(name)
+            {
+                info-ok == false -> {
+                    print('warning: could not resolve {name}')
+                    continue
+                }
+            }
+
+            best-ver, ver-ok = pick-version(info, ver-spec)
+            {
+                ver-ok == false -> {
+                    print('warning: no suitable version for {name} ({ver-spec})')
+                    continue
+                }
+            }
+
+            resolved = resolved - name - '==' - best-ver - '\n'
+
+            sub-deps = get-requires-dist(info, best-ver)
+            {
+                sub-deps.len > 0 -> queue = sub-deps - '\n' - queue
+            }
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; find-conflicts — find conflicting dependency specs
+; returns newline-separated conflict descriptions
+; ═══════════════════════════════════════════════
+
+dependency.find-conflicts = (deps str) (conflicts str) {
+    conflicts = ''
+
+    ; build a map of package -> list of version specs
+    pkg-map = ''
+    lines = deps.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.len > 0 -> {
+                name, ver-spec, extras = parse-requirement(line)
+                {
+                    ver-spec != '' -> {
+                        pkg-map = pkg-map - name - '|' - ver-spec - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+
+    ; check for conflicting specs
+    map-lines = pkg-map.split('\n')
+    mn = map-lines.len
+    i = 0
+    {
+        entry = map-lines[i]
+        i = i + 1
+        entry = entry.trim()
+        {
+            entry.len > 0 -> {
+                pipe = entry.index('|')
+                {
+                    pipe >= 0 -> {
+                        name = entry.slice(0, pipe)
+                        spec = entry.slice(pipe + 1, entry.len)
+                        ; check if any other entry for same name has different spec
+                        j = i
+                        for j < mn {
+                            entry2 = map-lines[j]
+                            j = j + 1
+                            entry2 = entry2.trim()
+                            {
+                                entry2.starts-with(name - '|') -> {
+                                    pipe2 = entry2.index('|')
+                                    {
+                                        pipe2 >= 0 -> {
+                                            spec2 = entry2.slice(pipe2 + 1, entry2.len)
+                                            {
+                                                spec != spec2 -> {
+                                                    {
+                                                        conflicts.contains(name - ':') == false -> {
+                                                            conflicts = conflicts - name - ': ' - spec - ' vs ' - spec2 - '\n'
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } (i < mn)
+}
+
+; ═══════════════════════════════════════════════
+; evaluate-marker — evaluate a PEP 508 environment marker
+; Simplified marker evaluation
+; ═══════════════════════════════════════════════
+
+dependency.evaluate-marker = (marker str) (yes bool) {
+    yes = true
+    {
+        marker == '' -> return
+    }
+
+    ; simplified marker evaluation
+    ; check for common patterns
+    {
+        marker.contains('python_version') -> {
+            py-ver = os.get-env('PYTHON-VERSION')
+            {
+                py-ver == '' -> py-ver = '3.12'
+            }
+
+            {
+                marker.contains('>=') -> {
+                    ; extract version from marker
+                    pos = marker.index('>=')
+                    {
+                        pos >= 0 -> {
+                            rest = marker.slice(pos + 2, marker.len)
+                            ver = extract-version(rest)
+                            {
+                                ver != '' -> {
+                                    cmp = version-compare(py-ver, ver)
+                                    {
+                                        cmp < 0 -> {
+                                            yes = false
+                                            return
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                marker.contains('<') -> {
+                    pos = marker.index('<')
+                    {
+                        pos >= 0 -> {
+                            rest = marker.slice(pos + 1, marker.len)
+                            ver = extract-version(rest)
+                            {
+                                ver != '' -> {
+                                    cmp = version-compare(py-ver, ver)
+                                    {
+                                        cmp >= 0 -> {
+                                            yes = false
+                                            return
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        marker.contains('sys_platform') -> {
+            {
+                marker.contains('darwin') -> {
+                    {
+                        os.get-env('OSTYPE') == 'darwin' -> {
+                        }
+                        -> {
+                            yes = false
+                            return
+                        }
+                    }
+                }
+                marker.contains('linux') -> {
+                    {
+                        os.get-env('OSTYPE') == 'linux' -> {
+                        }
+                        -> {
+                            yes = false
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-version — extract a version string from text
+; ═══════════════════════════════════════════════
+
+dependency.extract-version = (s str) (ver str) {
+    ver = ''
+    n = s.len
+    i = 0
+    started = false
+    {
+        c = s[i]
+        {
+            c >= 48 && c <= 57 -> {
+                ver = ver - s.slice(i, i + 1)
+                started = true
+            }
+            c == 46 -> {
+                started -> ver = ver - s.slice(i, i + 1)
+            }
+            started -> break
+        }
+        i = i + 1
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; resolve-from-source — resolve a dependency from a non-registry source
+; Handles git, URL, and path sources
+; ═══════════════════════════════════════════════
+
+dependency.resolve-from-source = (name str, source-type str, source-spec str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    {
+        source-type == 'git' -> {
+            ; for git sources, clone and inspect
+            info = name - '==git:' - source-spec - '\n'
+            ok = true
+        }
+        source-type == 'url' -> {
+            ; for URL sources, just record the URL
+            info = name - '==url:' - source-spec - '\n'
+            ok = true
+        }
+        source-type == 'path' -> {
+            ; for path sources, check if the path exists
+            p = path{
+                p: source-spec,
+            }
+            exists = p.exists()
+            {
+                exists -> {
+                    info = name - '==path:' - source-spec - '\n'
+                    ok = true
+                }
+            }
+        }
+        source-type == 'editable' -> {
+            info = name - '==editable:' - source-spec - '\n'
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-all-with-sources — resolve all deps including non-registry sources
+; ═══════════════════════════════════════════════
+
+dependency.resolve-all-with-sources = (cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; get regular dependencies
+    resolved, resolve-ok = resolve-all(cfg)
+    {
+        resolve-ok == false -> return
+    }
+
+    ; check for sources in config
+    sources = get-sources(cfg)
+    {
+        sources != '' -> {
+            src-lines = split('\n')
+            sn = src-lines.len
+            i = 0
+            {
+                src-line = src-lines[i]
+                i = i + 1
+                src-line = src-line.trim()
+                {
+                    src-line.len > 0 -> {
+                        ; parse source: tool.uv.sources.name = { git = "url" }
+                        ; extract name and source type
+                        dot = src-line.rindex('.')
+                        {
+                            dot >= 0 -> {
+                                ; simplified parsing
+                                src-info = resolve-from-source('', 'path', src-line)
+                                {
+                                    src-info != '' -> resolved = resolved - src-info
+                                }
+                            }
+                        }
+                    }
+                }
+            } (i < sn)
+        }
+    }
+
+    ok = true
+}

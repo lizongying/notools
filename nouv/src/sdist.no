@@ -1,0 +1,345 @@
+; sdist.no — source distribution handling
+;
+; Handles building and installing packages from source distributions (sdist).
+; Supports PEP 517 build backend interface for building wheels from sdists.
+
+# /nouv/src/config
+# /nouv/src/toml
+# /nouv/src/installer
+# /nouv/src/venv
+# /nouv/src/wheel
+# /nouv/src/python
+# /nouv/src/utils
+
+; ═══════════════════════════════════════════════
+; build-from-source — build a wheel from a source directory
+; ═══════════════════════════════════════════════
+
+sdist.build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
+    ok = false
+    wheel-path = ''
+
+    requires, backend, bs-ok = get-build-system(src-dir)
+    {
+        bs-ok == false -> {
+            print('error: no build-system defined in pyproject.toml')
+            return
+        }
+    }
+
+    env-ok = prepare-build-env(venv-path, requires)
+    {
+        env-ok == false -> {
+            print('error: failed to prepare build environment')
+            return
+        }
+    }
+
+    wheel-path, ok = build-with-backend(src-dir, backend, venv-path)
+}
+
+; ═══════════════════════════════════════════════
+; build-with-backend — build a wheel using a PEP 517 build backend
+; ═══════════════════════════════════════════════
+
+sdist.build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path str, ok bool) {
+    ok = false
+    wheel-path = ''
+
+    py-bin, py-ok = get-python(venv-path)
+    {
+        py-ok == false -> {
+            print('error: no Python in build venv')
+            return
+        }
+    }
+
+    out-dir = src-dir - '/dist'
+    p = path{
+        p: out-dir,
+    }
+    mk = p.make-dir()
+
+    ; call build backend via python -c
+    script = 'import sys; sys.path.insert(0, "' - src-dir - '"); from ' - backend - ' import build_wheel; print(build_wheel("' - out-dir - '"))'
+    code = run-cmd('"' - py-bin - '" -c "' - script - '"')
+
+    {
+        code != 0 -> {
+            print('error: build failed')
+            return
+        }
+        -> {
+            ; read build output from temp file to get wheel filename
+            out = run-cmd-output('ls ' - out-dir - '/*.whl')
+            wheel-name = out.trim()
+            {
+                wheel-name != '' -> {
+                    wheel-path = out-dir - '/' - wheel-name
+                    p3 = path{
+                        p: wheel-path,
+                    }
+                    exists = p3.exists()
+                    {
+                        exists -> ok = true
+                        -> print('error: wheel file not found after build')
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-sdist — extract a source distribution archive
+; ═══════════════════════════════════════════════
+
+sdist.extract-sdist = (archive-path str, dest str) (ok bool) {
+    ok = false
+
+    p = path{
+        p: dest,
+    }
+    mk = p.make-dir()
+
+    {
+        archive-path.ends-with('.tar.gz') || archive-path.ends-with('.tgz') -> {
+            ; extract tar.gz using system tar
+            code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
+            {
+                code == 0 -> ok = true
+                -> print('error: failed to extract tar.gz')
+            }
+        }
+        archive-path.ends-with('.zip') -> {
+            ; extract zip using system unzip
+            code = run-cmd('unzip -o ' - archive-path - ' -d ' - dest)
+            {
+                code == 0 -> ok = true
+                -> print('error: failed to extract zip')
+            }
+        }
+        -> {
+            print('error: unsupported archive format: {archive-path}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-build-system — get build system info from pyproject.toml
+; ═══════════════════════════════════════════════
+
+sdist.get-build-system = (src-dir str) (requires str, backend str, ok bool) {
+    ok = false
+    requires = ''
+    backend = ''
+
+    pyproject = src-dir - '/pyproject.toml'
+    p = path{
+        p: pyproject,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            content = fs.read-file(pyproject)
+            cfg = parse(content)
+
+            ; get build-system.requires
+            req-val = get-value(cfg, 'build-system.requires')
+            req-val: {
+                nil -> {}
+                err -> {}
+                ok -> requires = parse-array(it)
+            }
+
+            ; get build-system.build-backend
+            backend-val = get-value(cfg, 'build-system.build-backend')
+            backend-val: {
+                nil -> {}
+                err -> {}
+                ok -> {
+                    v = it
+                    {
+                        v.starts-with('"') && v.ends-with('"') -> backend = v.slice(1, v.len - 1)
+                        v.starts-with("'") && v.ends-with("'") -> backend = v.slice(1, v.len - 1)
+                        -> backend = v
+                    }
+                }
+            }
+
+            ; defaults
+            {
+                backend == '' -> backend = 'setuptools.build_meta'
+            }
+            {
+                requires == '' -> requires = 'setuptools>=61.0\nwheel'
+            }
+
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; prepare-build-env — prepare a build environment with build dependencies
+; ═══════════════════════════════════════════════
+
+sdist.prepare-build-env = (venv-path str, requires str) (ok bool) {
+    ok = false
+
+    {
+        requires == '' -> {
+            ok = true
+            return
+        }
+        -> {
+            inst-ok = pip-install(venv-path, requires)
+            ok = inst-ok
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-sdist — build and install a source distribution
+; ═══════════════════════════════════════════════
+
+sdist.install-sdist = (archive-path str, venv-path str) (ok bool) {
+    ok = false
+
+    ; create temp directory
+    tmp-id = os.now-ms()
+    tmp-dir = '/tmp/nouv-sdist-' - tmp-id.to-str()
+
+    ; extract sdist
+    extract-ok = extract-sdist(archive-path, tmp-dir)
+    {
+        extract-ok == false -> {
+            print('error: failed to extract sdist')
+            return
+        }
+    }
+
+    ; find the extracted source directory (usually a subdirectory)
+    src-dir = tmp-dir
+    out = run-cmd-output('ls ' - tmp-dir)
+    lines = out.split('\n')
+    {
+        lines.len == 1 -> {
+            subdir = lines[0].trim()
+            {
+                subdir != '' -> src-dir = tmp-dir - '/' - subdir
+            }
+        }
+    }
+
+    ; check for pyproject.toml
+    pyproject = src-dir - '/pyproject.toml'
+    p2 = path{
+        p: pyproject,
+    }
+    has-pyproject = p2.exists()
+    {
+        has-pyproject == false -> {
+            print('error: no pyproject.toml in extracted sdist')
+            return
+        }
+    }
+
+    ; create build venv
+    build-venv = tmp-dir - '-build'
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+        -> {
+            venv-ok = create-venv(build-venv, py-path)
+            {
+                venv-ok == false -> {
+                    print('error: failed to create build venv')
+                    return
+                }
+                -> {
+                    ; build wheel from source
+                    wheel-path, build-ok = build-from-source(src-dir, build-venv)
+                    {
+                        build-ok == false -> {
+                            print('error: failed to build from source')
+                            return
+                        }
+                        -> {
+                            ; install the built wheel
+                            inst-ok = install(venv-path, wheel-path, false)
+                            ok = inst-ok
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; clean up
+    run-cmd('rm -rf ' - tmp-dir - ' ' - build-venv)
+}
+
+; ═══════════════════════════════════════════════
+; build-editable — build an editable (development) installation
+; ═══════════════════════════════════════════════
+
+sdist.build-editable = (src-dir str, venv-path str, pkg-name str) (ok bool) {
+    ok = false
+
+    ; create .pth file in site-packages
+    sp-dir = get-site-packages(venv-path)
+    norm-name = pkg-name.replace-char('-', '_')
+
+    ; create .pth file
+    pth-path = sp-dir - '/' - norm-name - '.pth'
+    wfd = fs.open-write(pth-path)
+    {
+        wfd <= 0 -> return
+        -> {
+            src-pkg = src-dir - '/src'
+            fs.write(wfd, src-pkg, src-pkg.len)
+            fs.close(wfd)
+            ok = true
+        }
+    }
+
+    ; also create a dist-info directory
+    {
+        ok -> {
+            dist-info-dir = sp-dir - '/' - norm-name - '-0.0.0.dist-info'
+            p = path{
+                p: dist-info-dir,
+            }
+            mk = p.make-dir()
+
+            ; write METADATA
+            meta-path = dist-info-dir - '/METADATA'
+            wfd2 = fs.open-write(meta-path)
+            {
+                wfd2 > 0 -> {
+                    meta = 'Metadata-Version: 2.1\nName: ' - pkg-name - '\nVersion: 0.0.0\n'
+                    fs.write(wfd2, meta, meta.len)
+                    fs.close(wfd2)
+                }
+            }
+
+            ; write RECORD
+            record-path = dist-info-dir - '/RECORD'
+            wfd3 = fs.open-write(record-path)
+            {
+                wfd3 > 0 -> {
+                    record = norm-name - '.pth,,\n'
+                    record = record - 'METADATA,,\n'
+                    record = record - 'RECORD,,\n'
+                    fs.write(wfd3, record, record.len)
+                    fs.close(wfd3)
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,514 @@
+; settings.no — global uv settings and configuration
+;
+; Manages global configuration through environment variables, config files,
+; and pyproject.toml [tool.uv] sections. Mirrors uv's settings hierarchy:
+;   1. Command-line flags (handled in main.no)
+;   2. Environment variables (UV_*)
+;   3. pyproject.toml [tool.uv] section
+;   4. Default values
+;
+; API:
+;   get-index-url() (url str) — primary index URL
+;   get-extra-index-urls() (urls str) — extra index URLs
+;   get-cache-dir() (dir str) — cache directory
+;   get-python-version() (ver str) — required Python version
+;   get-python-install-dir() (dir str) — managed Python directory
+;   get-tool-dir() (dir str) — tool installation directory
+;   get-no-sync() (yes bool) — whether to skip sync
+;   get-frozen() (yes bool) — frozen mode (no lockfile updates)
+;   get-locked() (yes bool) — locked mode (require up-to-date lockfile)
+;   get-no-cache() (yes bool) — disable cache
+;   get-reinstall() (yes bool) — reinstall all packages
+;   get-link-mode() (mode str) — link mode (clone, copy, symlink, hardlink)
+;   get-concurrent-downloads() (n i64) — concurrent download limit
+;   get-index-strategy() (mode str) — index strategy (first-index, unsafe-best-match)
+;   get-publish-url() (url str) — publish URL
+;   get-keyring-provider() (mode str) — keyring provider (disabled, subprocess, enabled)
+;   get-config-file() (path str) — config file path
+;   load-config-file() (settings str, ok bool) — load config file
+;   get-index-auth(url str) (user str, pass str) — get index credentials
+
+# /nouv/src/toml
+# /nouv/src/utils
+
+DEFAULT-INDEX = 'https://pypi.org/simple/'
+DEFAULT-PUBLISH-URL = 'https://upload.pypi.org/legacy/'
+DEFAULT-LINK-MODE = 'clone'
+DEFAULT-INDEX-STRATEGY = 'first-index'
+DEFAULT-CONCURRENT-DOWNLOADS = 50
+
+; ═══════════════════════════════════════════════
+; get-index-url — get the primary index URL
+; Priority: UV_INDEX_URL env > PIP_INDEX_URL env > tool.uv.index-url config > default
+; ═══════════════════════════════════════════════
+
+settings.get-index-url = () (url str) {
+    url = os.get-env('UV-INDEX-URL')
+    {
+        url == '' -> url = os.get-env('UV-DEFAULT-INDEX')
+    }
+    {
+        url == '' -> url = os.get-env('PIP-INDEX-URL')
+    }
+    {
+        url == '' -> url = DEFAULT-INDEX
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-extra-index-urls — get extra index URLs
+; returns newline-separated URLs
+; ═══════════════════════════════════════════════
+
+settings.get-extra-index-urls = () (urls str) {
+    urls = os.get-env('UV-EXTRA-INDEX-URL')
+    {
+        urls == '' -> urls = os.get-env('PIP-EXTRA-INDEX-URL')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-cache-dir — get cache directory
+; Priority: UV_CACHE_DIR env > tool.uv.cache-dir config > default
+; ═══════════════════════════════════════════════
+
+settings.get-cache-dir = () (dir str) {
+    dir = os.get-env('UV-CACHE-DIR')
+    {
+        dir == '' -> {
+            home = os.get-env('HOME')
+            {
+                home == '' -> home = '/tmp'
+            }
+            dir = home - '/.cache/nouv'
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python-version — get required Python version
+; Priority: UV_PYTHON env > .python-version file > tool.uv.python-version config
+; ═══════════════════════════════════════════════
+
+settings.get-python-version = () (ver str) {
+    ver = os.get-env('UV-PYTHON')
+    {
+        ver == '' -> {
+            ; check .python-version file
+            p = path{
+                p: '.python-version',
+            }
+            exists = p.exists()
+            {
+                exists -> {
+                    content = fs.read-file('.python-version')
+                    ver = content.trim()
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-python-install-dir — get managed Python installation directory
+; Priority: UV_PYTHON_INSTALL_DIR env > default
+; ═══════════════════════════════════════════════
+
+settings.get-python-install-dir = () (dir str) {
+    dir = os.get-env('UV-PYTHON-INSTALL-DIR')
+    {
+        dir == '' -> {
+            home = os.get-env('HOME')
+            {
+                home == '' -> home = '/tmp'
+            }
+            ; XDG data directory
+            xdg = os.get-env('XDG-DATA-HOME')
+            {
+                xdg != '' -> dir = xdg - '/nouv/python'
+                -> dir = home - '/.local/share/nouv/python'
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-tool-dir — get tool installation directory
+; Priority: UV_TOOL_DIR env > default
+; ═══════════════════════════════════════════════
+
+settings.get-tool-dir = () (dir str) {
+    dir = os.get-env('UV-TOOL-DIR')
+    {
+        dir == '' -> {
+            home = os.get-env('HOME')
+            {
+                home == '' -> home = '/tmp'
+            }
+            xdg = os.get-env('XDG-DATA-HOME')
+            {
+                xdg != '' -> dir = xdg - '/nouv/tools'
+                -> dir = home - '/.local/share/nouv/tools'
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Boolean settings from environment variables
+; ═══════════════════════════════════════════════
+
+settings.get-no-sync = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-NO-SYNC')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+settings.get-frozen = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-FROZEN')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+settings.get-locked = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-LOCKED')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+settings.get-no-cache = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-NO-CACHE')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+settings.get-reinstall = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-REINSTALL')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Link mode — how packages are linked into venv
+; Priority: UV_LINK_MODE env > default
+; ═══════════════════════════════════════════════
+
+settings.get-link-mode = () (mode str) {
+    mode = os.get-env('UV-LINK-MODE')
+    {
+        mode == '' -> mode = DEFAULT-LINK-MODE
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Concurrent downloads
+; ═══════════════════════════════════════════════
+
+settings.get-concurrent-downloads = () (n i64) {
+    n = DEFAULT-CONCURRENT-DOWNLOADS
+    v = os.get-env('UV-CONCURRENT-DOWNLOADS')
+    {
+        v != '' -> n = str-to-i64(v)
+    }
+    {
+        n < 1 -> n = 1
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Index strategy
+; Priority: UV_INDEX_STRATEGY env > default
+; ═══════════════════════════════════════════════
+
+settings.get-index-strategy = () (mode str) {
+    mode = os.get-env('UV-INDEX-STRATEGY')
+    {
+        mode == '' -> mode = DEFAULT-INDEX-STRATEGY
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Publish URL
+; ═══════════════════════════════════════════════
+
+settings.get-publish-url = () (url str) {
+    url = os.get-env('UV-PUBLISH-URL')
+    {
+        url == '' -> url = DEFAULT-PUBLISH-URL
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Keyring provider
+; ═══════════════════════════════════════════════
+
+settings.get-keyring-provider = () (mode str) {
+    mode = os.get-env('UV-KEYRING-PROVIDER')
+    {
+        mode == '' -> mode = 'disabled'
+    }
+}
+
+; ═══════════════════════════════════════════════
+; Config file path
+; Priority: UV_CONFIG_FILE env > default
+; ═══════════════════════════════════════════════
+
+settings.get-config-file = () (path str) {
+    path = os.get-env('UV-CONFIG-FILE')
+    {
+        path == '' -> {
+            ; check for local config
+            p = path{
+                p: '.nouv-config.toml',
+            }
+            exists = p.exists()
+            {
+                exists -> path = '.nouv-config.toml'
+                -> path = ''
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; load-config-file — load the uv config file
+; returns: parsed config (flat key=value), ok bool
+; ═══════════════════════════════════════════════
+
+settings.load-config-file = () (cfg str, ok bool) {
+    ok = false
+    cfg = ''
+    cfg-path = get-config-file()
+    {
+        cfg-path == '' -> return
+        -> {
+            p = path{
+                p: cfg-path,
+            }
+            exists = p.exists()
+            {
+                exists == false -> return
+                -> {
+                    content = fs.read-file(cfg-path)
+                    cfg = parse(content)
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-index-auth — get authentication for an index URL
+; Checks UV_INDEX_USERNAME/PASSWORD and netrc
+; ═══════════════════════════════════════════════
+
+settings.get-index-auth = (url str) (user str, pass str) {
+    user = os.get-env('UV-INDEX-USERNAME')
+    pass = os.get-env('UV-INDEX-PASSWORD')
+    {
+        user == '' -> user = os.get-env('PIP-USER')
+    }
+    {
+        pass == '' -> pass = os.get-env('PIP-PASSWORD')
+    }
+
+    ; try netrc if no env vars
+    {
+        user == '' -> {
+            netrc-user, netrc-pass = parse-netrc(url)
+            user = netrc-user
+            pass = netrc-pass
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-netrc — parse .netrc for credentials
+; ═══════════════════════════════════════════════
+
+settings.parse-netrc = (url str) (user str, pass str) {
+    user = ''
+    pass = ''
+    home = os.get-env('HOME')
+    {
+        home == '' -> return
+        -> {
+            netrc-path = home - '/.netrc'
+            p = path{
+                p: netrc-path,
+            }
+            exists = p.exists()
+            {
+                exists == false -> {
+                    ; try _netrc on Windows
+                    netrc-path = home - '/_netrc'
+                    p2 = path{
+                        p: netrc-path,
+                    }
+                    e2 = p2.exists()
+                    {
+                        e2 == false -> return
+                    }
+                }
+                -> {
+                    content = fs.read-file(netrc-path)
+
+                    ; extract hostname from URL
+                    host = extract-host(url)
+
+                    ; parse netrc: machine <host> login <user> password <pass>
+                    lines = content.split('\n')
+                    nl = lines.len
+                    i = 0
+                    found-machine = false
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        tokens = line.split(' ')
+                        tn = tokens.len
+                        j = 0
+                        for j < tn {
+                            tok = tokens[j]
+                            tok = tok.trim()
+                            j = j + 1
+                            {
+                                tok == 'machine' -> {
+                                    {
+                                        j < tn -> {
+                                            h = tokens[j].trim()
+                                            {
+                                                h == host -> found-machine = true
+                                            }
+                                        }
+                                    }
+                                }
+                                found-machine -> {
+                                    tok == 'login' -> {
+                                        {
+                                            j < tn -> user = tokens[j].trim()
+                                        }
+                                    }
+                                    tok == 'password' -> {
+                                        {
+                                            j < tn -> pass = tokens[j].trim()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        {
+                            found-machine && user != '' && pass != '' -> break
+                        }
+                    } (i < nl)
+                }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-host — extract hostname from a URL
+; ═══════════════════════════════════════════════
+
+settings.extract-host = (url str) (host str) {
+    host = url
+    ; remove protocol
+    {
+        host.starts-with('https://') -> host = host.slice(8, host.len)
+        host.starts-with('http://') -> host = host.slice(7, host.len)
+    }
+    ; remove path
+    slash = host.index('/')
+    {
+        slash >= 0 -> host = host.slice(0, slash)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-project-config-value — get a value from [tool.uv] section
+; ═══════════════════════════════════════════════
+
+settings.get-project-config-value = (cfg str, key str) (val ?str) {
+    val = nil
+    full-key = 'tool.uv.' - key
+    val = get-value(cfg, full-key)
+}
+
+; ═══════════════════════════════════════════════
+; get-quiet — check if quiet mode is enabled
+; ═══════════════════════════════════════════════
+
+settings.get-quiet = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-QUIET')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-verbose — get verbosity level
+; ═══════════════════════════════════════════════
+
+settings.get-verbose = () (level i64) {
+    level = 0
+    v = os.get-env('UV-VERBOSE')
+    {
+        v == '1' -> level = 1
+        v == '2' -> level = 2
+        v == '-1' -> level = -1
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-color — check if color output is enabled
+; ═══════════════════════════════════════════════
+
+settings.get-color = () (yes bool) {
+    yes = true
+    v = os.get-env('UV-NO-COLOR')
+    {
+        v == '1' || v == 'true' -> yes = false
+    }
+    v2 = os.get-env('NO-COLOR')
+    {
+        v2 == '1' || v2 == 'true' -> yes = false
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-native-tls — check if native TLS is used
+; ═══════════════════════════════════════════════
+
+settings.get-native-tls = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-NATIVE-TLS')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-preview — check if preview features are enabled
+; ═══════════════════════════════════════════════
+
+settings.get-preview = () (yes bool) {
+    yes = false
+    v = os.get-env('UV-PREVIEW')
+    {
+        v == '1' || v == 'true' -> yes = true
+    }
+}

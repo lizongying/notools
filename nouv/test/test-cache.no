@@ -1,0 +1,269 @@
+; test-cache.no — Cache management tests
+; Tests: get-cache-dir, cache-package, is-cached, remove-package, prune, stats
+; Run: no run nouv/test/test-cache.no
+;
+; Mirrors uv's tests/build/cache*.rs
+
+# /nouv/src/cache
+
+main = () {
+    print('--- Testing cache operations ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Test 1: get-cache-dir
+    cache-dir = cache.get-cache-dir()
+    {
+        cache-dir != '' && cache-dir.contains('nouv') -> {
+            print('PASS: get-cache-dir')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cache-dir (got ' - cache-dir - ')')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: ensure-cache-dir
+    dir-ok = cache.ensure-cache-dir()
+    {
+        dir-ok -> {
+            print('PASS: ensure-cache-dir')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: ensure-cache-dir')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: cache-package
+    test-data = 'fake wheel data for testing'
+    cache-ok = cache.cache-package('test-pkg', '1.0.0', test-data)
+    {
+        cache-ok -> {
+            print('PASS: cache-package')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: cache-package')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: is-cached
+    cached = cache.is-cached('test-pkg', '1.0.0')
+    {
+        cached -> {
+            print('PASS: is-cached')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-cached')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: is-cached false for uncached
+    cached2 = cache.is-cached('test-pkg', '2.0.0')
+    {
+        cached2 == false -> {
+            print('PASS: is-cached false for uncached')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-cached should be false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: get-package-cache path
+    cache-path = cache.get-package-cache('test-pkg', '1.0.0')
+    {
+        cache-path.contains('test_pkg') && cache-path.ends-with('.whl') -> {
+            print('PASS: get-package-cache path')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-package-cache path (got ' - cache-path - ')')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: remove-package
+    rm-ok = cache.remove-package('test-pkg', '1.0.0')
+    {
+        rm-ok -> {
+            still-cached = cache.is-cached('test-pkg', '1.0.0')
+            {
+                still-cached == false -> {
+                    print('PASS: remove-package')
+                    n-pass = n-pass + 1
+                }
+                -> {
+                    print('FAIL: remove-package still cached')
+                    n-fail = n-fail + 1
+                }
+            }
+        }
+        -> {
+            print('FAIL: remove-package returned false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 8: cache-sdist
+    sdist-data = 'fake sdist data'
+    sdist-ok = cache.cache-sdist('test-pkg', '1.0.0', sdist-data)
+    {
+        sdist-ok -> {
+            print('PASS: cache-sdist')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: cache-sdist')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 9: is-sdist-cached
+    sdist-cached = cache.is-sdist-cached('test-pkg', '1.0.0')
+    {
+        sdist-cached -> {
+            print('PASS: is-sdist-cached')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-sdist-cached')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 10: get-cache-key for wheel
+    key-wheel = cache.get-cache-key('test-pkg', '1.0.0', 'wheel')
+    {
+        key-wheel == 'test_pkg-1.0.0.whl' -> {
+            print('PASS: get-cache-key (wheel)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cache-key (wheel) got ' - key-wheel)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 11: get-cache-key for sdist
+    key-sdist = cache.get-cache-key('test-pkg', '1.0.0', 'sdist')
+    {
+        key-sdist == 'test_pkg-1.0.0.tar.gz' -> {
+            print('PASS: get-cache-key (sdist)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cache-key (sdist) got ' - key-sdist)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 12: cache-url
+    url-ok = cache.cache-url('https://example.com/test', 'url cached data')
+    {
+        url-ok -> {
+            print('PASS: cache-url')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: cache-url')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 13: get-cached-url
+    url-data, url-found = cache.get-cached-url('https://example.com/test')
+    {
+        url-found && url-data == 'url cached data' -> {
+            print('PASS: get-cached-url')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cached-url')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 14: cache-size
+    size = cache.cache-size()
+    {
+        size >= 0 -> {
+            print('PASS: cache-size (' - size.to-str() - ' bytes)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: cache-size')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 15: get-cache-info
+    info = cache.get-cache-info()
+    {
+        info.contains('Cache directory') && info.contains('Cache size') -> {
+            print('PASS: get-cache-info')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cache-info')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 16: prune (should not error)
+    prune-ok = cache.prune()
+    {
+        prune-ok -> {
+            print('PASS: prune')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: prune')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 17: list-cache-by-package
+    entries = cache.list-cache-by-package('test-pkg')
+    {
+        entries.contains('test_pkg') -> {
+            print('PASS: list-cache-by-package')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: list-cache-by-package')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 18: get-cache-stats
+    stats = cache.get-cache-stats()
+    {
+        stats.contains('Total files') && stats.contains('Wheel files') -> {
+            print('PASS: get-cache-stats')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-cache-stats')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup: remove test entries
+    rm1 = cache.remove-package('test-pkg', '1.0.0')
+    rm2 = cache.clean-url-cache()
+    rm3 = cache.clean-sdists()
+
+    print('')
+    print('Results: ' - n-pass.to-str() - ' passed, ' - n-fail.to-str() - ' failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

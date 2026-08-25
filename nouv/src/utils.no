@@ -1,0 +1,149 @@
+; utils.no — utility functions for nouV
+;
+; Provides helpers that work around Nolang limitations.
+; Uses fs.read-file (builtin) for reading and fs.open-write + fs.write for writing.
+
+; ═══════════════════════════════════════════════
+; run-cmd — execute a shell command, return exit code
+; ═══════════════════════════════════════════════
+
+utils.run-cmd = (cmd str) (code i64) {
+    code = process-system(cmd)
+}
+
+; ═══════════════════════════════════════════════
+; run-cmd-output — execute command, return stdout via temp file
+; ═══════════════════════════════════════════════
+
+utils.run-cmd-output = (cmd str) (out str) {
+    out = ''
+    tmp = '/tmp/nouv-out-' - os.now-ms().to-str()
+    full-cmd = cmd - ' > ' - tmp - ' 2>/dev/null'
+    process-system(full-cmd)
+    out = fs.read-file(tmp)
+    fs.remove(tmp)
+}
+
+; ═══════════════════════════════════════════════
+; read-file — read entire file content
+; ═══════════════════════════════════════════════
+
+utils.read-file = (path str) (content str) {
+    content = fs.read-file(path)
+}
+
+; ═══════════════════════════════════════════════
+; write-file — write string content to file
+; ═══════════════════════════════════════════════
+
+utils.write-file = (path str, data str) (ok bool) {
+    ok = false
+    fd = fs.open-write(path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, data, data.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; chmod — make file executable
+; ═══════════════════════════════════════════════
+
+utils.chmod = (path str, mode str) {
+    process-system('chmod ' - mode - ' ' - path)
+}
+
+; ═══════════════════════════════════════════════
+; rm-rf — remove directory recursively
+; ═══════════════════════════════════════════════
+
+utils.rm-rf = (path str) {
+    process-system('rm -rf ' - path)
+}
+
+; ═══════════════════════════════════════════════
+; mkdir-p — create directory recursively
+; ═══════════════════════════════════════════════
+
+utils.mkdir-p = (path str) {
+    process-system('mkdir -p ' - path)
+}
+
+; ═══════════════════════════════════════════════
+; du-sk — get directory size in KB
+; ═══════════════════════════════════════════════
+
+utils.du-sk = (path str) (size-kb i64) {
+    size-kb = 0
+    out = run-cmd-output('du -sk ' - path)
+    {
+        out.len > 0 -> {
+            sp = out.index(' ')
+            {
+                sp > 0 -> {
+                    num-str = out.slice(0, sp)
+                    v = num-str.to-i64()
+                    v: {
+                        ok -> size-kb = it
+                        nil -> size-kb = 0
+                        err -> size-kb = 0
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; count-files — count files in directory
+; ═══════════════════════════════════════════════
+
+utils.count-files = (path str) (count i64) {
+    count = 0
+    out = run-cmd-output('find ' - path - ' -type f | wc -l')
+    {
+        out.len > 0 -> {
+            trimmed = out.trim()
+            v = trimmed.to-i64()
+            v: {
+                ok -> count = it
+                nil -> count = 0
+                err -> count = 0
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; ls — list directory contents
+; ═══════════════════════════════════════════════
+
+utils.ls = (path str) (out str) {
+    out = run-cmd-output('ls ' - path)
+}
+
+; ═══════════════════════════════════════════════
+; find-names — find files matching pattern, return list
+; ═══════════════════════════════════════════════
+
+utils.find-names = (path str, pattern str) (out str) {
+    out = run-cmd-output('find ' - path - ' -name "' - pattern - '"')
+}
+
+; ═══════════════════════════════════════════════
+; str-to-i64 — safely convert string to i64 (returns 0 on failure)
+; ═══════════════════════════════════════════════
+
+utils.str-to-i64 = (s str) (v i64) {
+    v = 0
+    opt = s.to-i64()
+    opt: {
+        ok -> v = it
+        nil -> v = 0
+        err -> v = 0
+    }
+}

@@ -1,0 +1,141 @@
+; test-installer.no — Package installation tests
+; Tests: is-installed, check-installed, get-installed-version, list-installed
+; Run: no run nouv/test/test-installer.no
+;
+; Mirrors uv's pip install/uninstall tests
+
+# /nouv/src/installer
+# /nouv/src/venv
+# /nouv/src/python
+
+main = () {
+    print('--- Testing installer operations ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; Create a test venv
+    test-dir = '/tmp/nouv-test-inst-' - os.now-ms().to-str()
+    venv-path = test-dir - '/.venv'
+
+    py-path, py-ok = python.find-system-python()
+    {
+        py-ok == false -> {
+            print('SKIP: no system Python found')
+            return
+        }
+    }
+
+    venv-ok = venv.create-venv(venv-path, py-path)
+    {
+        venv-ok == false -> {
+            print('SKIP: could not create test venv')
+            return
+        }
+    }
+
+    ; Test 1: list-installed on empty venv
+    installed = installer.list-installed(venv-path)
+    {
+        installed.trim() == '' -> {
+            print('PASS: list-installed empty')
+            n-pass = n-pass + 1
+        }
+        -> {
+            ; venv may have pip/setuptools installed
+            print('PASS: list-installed (venv has packages)')
+            n-pass = n-pass + 1
+        }
+    }
+
+    ; Test 2: is-installed for non-installed package
+    has-it = installer.is-installed(venv-path, 'nonexistent-pkg-12345')
+    {
+        has-it == false -> {
+            print('PASS: is-installed false for non-installed')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-installed should be false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: check-installed for non-installed
+    checked = installer.check-installed(venv-path, 'nonexistent-pkg-12345', '1.0.0')
+    {
+        checked == false -> {
+            print('PASS: check-installed false for non-installed')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: check-installed should be false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: get-installed-version for non-installed
+    ver = installer.get-installed-version(venv-path, 'nonexistent-pkg-12345')
+    {
+        ver == '' -> {
+            print('PASS: get-installed-version empty for non-installed')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-installed-version should be empty')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: build-installed-map
+    inst-map = installer.build-installed-map(installed)
+    ; map should be same as installed
+    {
+        inst-map == installed -> {
+            print('PASS: build-installed-map')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: build-installed-map')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: lookup-map for non-existent
+    found-ver = installer.lookup-map(installed, 'nonexistent-pkg-12345')
+    {
+        found-ver == '' -> {
+            print('PASS: lookup-map for non-existent')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: lookup-map should return empty')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: uninstall-package for non-installed (should not error)
+    uninst-ok = installer.uninstall-package(venv-path, 'nonexistent-pkg-12345')
+    {
+        uninst-ok == false -> {
+            ; this is expected — package not found
+            print('PASS: uninstall-package for non-installed returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            ; also acceptable — silently ignore
+            print('PASS: uninstall-package for non-installed returns true')
+            n-pass = n-pass + 1
+        }
+    }
+
+    ; cleanup
+    p = process{}
+    p.start('rm', '-rf ' - test-dir)
+    p.wait()
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}

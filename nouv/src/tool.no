@@ -1,0 +1,657 @@
+; tool.no — tool management (uvx/pipx compatible)
+;
+; Runs and installs command-line tools provided by Python packages.
+; Each tool gets its own isolated environment.
+;
+; API:
+;   run-tool(cmd str) (ok bool) — run a tool in ephemeral environment
+;   install-tool(pkg str) (ok bool) — install a tool
+;   list-tools() (list str) — list installed tools
+;   upgrade-tool(pkg str) (ok bool) — upgrade a tool
+;   uninstall-tool(pkg str) (ok bool) — uninstall a tool
+;   get-tool-dir() (dir str) — get tool installation directory
+;   get-tool-venv(tool-name str) (venv-path str) — get tool's venv
+
+# /nouv/src/venv
+# /nouv/src/installer
+# /nouv/src/registry
+# /nouv/src/utils
+
+TOOL-BASE = '.local/share/nouv/tools'
+
+; ═══════════════════════════════════════════════
+; run-tool — run a tool in an ephemeral environment
+;
+; Similar to uvx/pipx run. Creates a temporary venv,
+; installs the tool, runs it, then cleans up.
+; ═══════════════════════════════════════════════
+
+tool.run-tool = (cmd str) (ok bool) {
+    ok = false
+
+    ; parse command: first token is the package, rest are args
+    space-pos = cmd.index(' ')
+    pkg = cmd
+    args = ''
+    {
+        space-pos >= 0 -> {
+            pkg = cmd.slice(0, space-pos)
+            args = cmd.slice(space-pos + 1, cmd.len)
+        }
+    }
+    pkg = pkg.trim()
+    args = args.trim()
+
+    ; check if tool is already installed
+    tool-venv = get-tool-venv(pkg)
+    p = path{
+        p: tool-venv,
+    }
+    installed = p.exists()
+
+    {
+        installed -> {
+            ; run from existing venv
+            bin-dir = get-bin(tool-venv)
+            ep-path = bin-dir - '/' - pkg
+            p2 = path{
+                p: ep-path,
+            }
+            ep-exists = p2.exists()
+            {
+                ep-exists -> {
+                    full-cmd = ep-path
+                    {
+                        args != '' -> full-cmd = full-cmd - ' ' - args
+                    }
+                    code = run-cmd('"' - full-cmd - '"')
+                    {
+                        code == 0 -> ok = true
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    ; create ephemeral environment
+    tmp-id = os.now-ms()
+    tmp-venv = '/tmp/nouv-tool-' - tmp-id.to-str()
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    print('Resolved 1 package')
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install the package
+            inst-ok = pip-install(tmp-venv, pkg)
+            {
+                inst-ok == false -> {
+                    print('error: failed to install {pkg}')
+                    return
+                }
+                -> {
+                    print('Installed {pkg}')
+
+                    ; find entry point
+                    bin-dir = get-bin(tmp-venv)
+                    out = run-cmd-output('ls' - ' ' - bin-dir)
+                    lines = out.split('\n')
+                    n2 = lines.len
+                    ep-name = ''
+                    i = 0
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        line = line.trim()
+                        {
+                            line != 'python' && line != 'python3' && line != 'pip' && line != 'pip3' && line != 'activate' && line != 'Activate.ps1' -> {
+                                {
+                                    line.starts-with('python') == false && line.starts-with('pip') == false -> {
+                                        ep-name = line
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    } (i < n2)
+
+                    {
+                        ep-name == '' -> ep-name = pkg
+                    }
+
+                    ; run the tool
+                    ep-path = bin-dir - '/' - ep-name
+                    code = run-cmd(ep-path - ' ' - args)
+
+                    ; clean up
+                    remove-venv(tmp-venv)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-tool — install a tool permanently
+; ═══════════════════════════════════════════════
+
+tool.install-tool = (pkg str) (ok bool) {
+    ok = false
+
+    tool-dir = get-tool-dir()
+    p = path{
+        p: tool-dir,
+    }
+    mk = p.make-dir()
+
+    tool-venv = get-tool-venv(pkg)
+
+    ; check if already installed
+    p2 = path{
+        p: tool-venv,
+    }
+    exists = p2.exists()
+    {
+        exists -> {
+            print('{pkg} is already installed')
+            return
+        }
+    }
+
+    ; create venv
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    venv-ok = create-venv(tool-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install the package
+            inst-ok = pip-install(tool-venv, pkg)
+            {
+                inst-ok == false -> return
+                -> {
+                    ; create symlink to entry point in bin dir
+                    bin-dir = get-bin(tool-venv)
+                    ; find entry points
+                    out = run-cmd-output('ls' - ' ' - bin-dir)
+                    lines = out.split('\n')
+                    n2 = lines.len
+                    i = 0
+                    count = 0
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        line = line.trim()
+                        {
+                            line != 'python' && line != 'python3' && line != 'pip' && line != 'pip3' && line.starts-with('python') == false && line.starts-with('pip') == false && line != 'activate' && line != 'Activate.ps1' -> {
+                                ep-path = bin-dir - '/' - line
+                                link-path = tool-dir - '/bin/' - line
+                                run-cmd('ln' - ' ' - '-sf ' - ep-path - ' ' - link-path)
+                                count = count + 1
+                                print('Installed executable: {line}')
+                            }
+                        }
+                    } (i < n2)
+
+                    ok = true
+                    {
+                        count == 0 -> print('warning: no executables found')
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; list-tools — list installed tools
+; ═══════════════════════════════════════════════
+
+tool.list-tools = () (list str) {
+    list = ''
+    tool-dir = get-tool-dir()
+    p = path{
+        p: tool-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            list = 'No tools installed'
+            return
+        }
+        -> {
+            ; list venvs
+            out = run-cmd-output('ls' - ' ' - tool-dir)
+            lines = out.split('\n')
+            n2 = lines.len
+            i = 0
+            list = 'Installed tools:\n'
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.len > 0 && line != 'bin' -> {
+                        list = list - '  ' - line - '\n'
+                    }
+                }
+            } (i < n2)
+            {
+                list == 'Installed tools:\n' -> list = 'No tools installed'
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; upgrade-tool — upgrade an installed tool
+; ═══════════════════════════════════════════════
+
+tool.upgrade-tool = (pkg str) (ok bool) {
+    ok = false
+    tool-venv = get-tool-venv(pkg)
+
+    p = path{
+        p: tool-venv,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            print('error: tool {pkg} not installed')
+            return
+        }
+    }
+
+    ; upgrade by reinstalling
+    inst-ok = pip-install(tool-venv, pkg - ' --upgrade')
+    {
+        inst-ok -> {
+            print('Upgraded {pkg}')
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; uninstall-tool — remove an installed tool
+; ═══════════════════════════════════════════════
+
+tool.uninstall-tool = (pkg str) (ok bool) {
+    ok = false
+    tool-venv = get-tool-venv(pkg)
+
+    p = path{
+        p: tool-venv,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            print('error: tool {pkg} not installed')
+            return
+        }
+    }
+
+    ; remove venv
+    rm-ok = remove-venv(tool-venv)
+
+    ; remove symlinks
+    tool-dir = get-tool-dir()
+    bin-dir = tool-dir - '/bin'
+    run-cmd('find' - ' ' - bin-dir - ' -type l -lname "*' - tool-venv - '*" -delete')
+
+    ok = rm-ok
+    {
+        ok -> print('Uninstalled tool: {pkg}')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-tool-dir — get tool installation directory
+; ═══════════════════════════════════════════════
+
+tool.get-tool-dir = () (dir str) {
+    home = os.get-env('HOME')
+    {
+        home == '' -> home = '/tmp'
+    }
+    dir = home - '/' - TOOL-BASE
+}
+
+; ═══════════════════════════════════════════════
+; get-tool-venv — get a tool's venv path
+; ═══════════════════════════════════════════════
+
+tool.get-tool-venv = (tool-name str) (venv-path str) {
+    tool-dir = get-tool-dir()
+    venv-path = tool-dir - '/' - tool-name
+}
+
+; ═══════════════════════════════════════════════
+; run-tool-from — run a tool from a specific package
+; Uses --from to specify the package to install,
+; while running a different command.
+; ═══════════════════════════════════════════════
+
+tool.run-tool-from = (from-pkg str, cmd-args str, with-pkgs str) (ok bool) {
+    ok = false
+
+    ; parse command: first token is the command name, rest are args
+    space-pos = cmd-args.index(' ')
+    cmd-name = cmd-args
+    args = ''
+    {
+        space-pos >= 0 -> {
+            cmd-name = cmd-args.slice(0, space-pos)
+            args = cmd-args.slice(space-pos + 1, cmd-args.len)
+        }
+    }
+    cmd-name = cmd-name.trim()
+    args = args.trim()
+
+    ; create ephemeral environment
+    tmp-id = os.now-ms()
+    tmp-venv = '/tmp/nouv-tool-' - tmp-id.to-str()
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    print('Resolved 1 package')
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install the from-pkg
+            inst-ok = pip-install(tmp-venv, from-pkg)
+            {
+                inst-ok == false -> {
+                    print('error: failed to install {from-pkg}')
+                    remove-venv(tmp-venv)
+                    return
+                }
+                -> {
+                    ; install --with packages
+                    {
+                        with-pkgs != '' -> {
+                            with-ok = pip-install(tmp-venv, with-pkgs)
+                            {
+                                with-ok == false -> {
+                                    print('warning: some --with packages failed to install')
+                                }
+                            }
+                        }
+                    }
+
+                    ; find entry point
+                    bin-dir = get-bin(tmp-venv)
+                    ep-path = bin-dir - '/' - cmd-name
+                    p = path{
+                        p: ep-path,
+                    }
+                    ep-exists = p.exists()
+
+                    {
+                        ep-exists -> {
+                            code = run-cmd(ep-path - ' ' - args)
+                        }
+                        -> {
+                            ; try running as module
+                            py-bin, p-ok = get-python(tmp-venv)
+                            {
+                                p-ok -> {
+                                    code = run-cmd(py-bin - ' -m ' - cmd-name - ' ' - args)
+                                }
+                            }
+                        }
+                    }
+
+                    ; clean up
+                    remove-venv(tmp-venv)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; run-tool-with — run a tool with additional packages
+; ═══════════════════════════════════════════════
+
+tool.run-tool-with = (cmd-args str, with-pkgs str) (ok bool) {
+    ok = false
+
+    ; parse command
+    space-pos = cmd-args.index(' ')
+    pkg = cmd-args
+    args = ''
+    {
+        space-pos >= 0 -> {
+            pkg = cmd-args.slice(0, space-pos)
+            args = cmd-args.slice(space-pos + 1, cmd-args.len)
+        }
+    }
+    pkg = pkg.trim()
+    args = args.trim()
+
+    ; create ephemeral environment
+    tmp-id = os.now-ms()
+    tmp-venv = '/tmp/nouv-tool-' - tmp-id.to-str()
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    pkgs-lines = with-pkgs.split('\n')
+    pkgs-count = pkgs-lines.len
+    print('Resolved {pkgs-count + 1} packages')
+    venv-ok = create-venv(tmp-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install the main package
+            inst-ok = pip-install(tmp-venv, pkg)
+            {
+                inst-ok == false -> {
+                    print('error: failed to install {pkg}')
+                    remove-venv(tmp-venv)
+                    return
+                }
+                -> {
+                    ; install --with packages
+                    with-ok = pip-install(tmp-venv, with-pkgs)
+                    {
+                        with-ok == false -> {
+                            print('warning: some --with packages failed to install')
+                        }
+                    }
+
+                    ; find entry point
+                    bin-dir = get-bin(tmp-venv)
+                    ep-path = bin-dir - '/' - pkg
+                    out = run-cmd-output('ls' - ' ' - bin-dir)
+                    lines = out.split('\n')
+                    n2 = lines.len
+                    ep-name = ''
+                    i = 0
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        line = line.trim()
+                        {
+                            line != 'python' && line != 'python3' && line != 'pip' && line != 'pip3' && line != 'activate' && line != 'Activate.ps1' -> {
+                                {
+                                    line.starts-with('python') == false && line.starts-with('pip') == false -> {
+                                        ep-name = line
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    } (i < n2)
+                    {
+                        ep-name == '' -> ep-name = pkg
+                    }
+
+                    ; run the tool
+                    ep-path = bin-dir - '/' - ep-name
+                    code = run-cmd(ep-path - ' ' - args)
+
+                    ; clean up
+                    remove-venv(tmp-venv)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; install-tool-with — install a tool with additional packages
+; ═══════════════════════════════════════════════
+
+tool.install-tool-with = (pkg str, with-pkgs str) (ok bool) {
+    ok = false
+
+    tool-dir = get-tool-dir()
+    p = path{
+        p: tool-dir,
+    }
+    mk = p.make-dir()
+
+    tool-venv = get-tool-venv(pkg)
+
+    ; create venv
+    py-path, py-ok = find-python('')
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            return
+        }
+    }
+
+    venv-ok = create-venv(tool-venv, py-path)
+    {
+        venv-ok == false -> return
+        -> {
+            ; install the main package
+            inst-ok = pip-install(tool-venv, pkg)
+            {
+                inst-ok == false -> return
+                -> {
+                    ; install --with packages
+                    with-ok = pip-install(tool-venv, with-pkgs)
+                    {
+                        with-ok == false -> {
+                            print('warning: some --with packages failed to install')
+                        }
+                    }
+
+                    ; create symlinks to entry points
+                    bin-dir = get-bin(tool-venv)
+                    out = run-cmd-output('ls' - ' ' - bin-dir)
+                    lines = out.split('\n')
+                    n2 = lines.len
+                    i = 0
+                    count = 0
+                    {
+                        line = lines[i]
+                        i = i + 1
+                        line = line.trim()
+                        {
+                            line != 'python' && line != 'python3' && line != 'pip' && line != 'pip3' && line.starts-with('python') == false && line.starts-with('pip') == false && line != 'activate' && line != 'Activate.ps1' -> {
+                                ep-path = bin-dir - '/' - line
+                                link-path = tool-dir - '/bin/' - line
+                                run-cmd('ln' - ' ' - '-sf ' - ep-path - ' ' - link-path)
+                                count = count + 1
+                                print('Installed executable: {line}')
+                            }
+                        }
+                    } (i < n2)
+
+                    ok = true
+                    {
+                        count == 0 -> print('warning: no executables found')
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; upgrade-all-tools — upgrade all installed tools
+; ═══════════════════════════════════════════════
+
+tool.upgrade-all-tools = () (ok bool) {
+    ok = true
+    tool-dir = get-tool-dir()
+    p = path{
+        p: tool-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            ; list all tool venvs
+            out = run-cmd-output('ls' - ' ' - tool-dir)
+            lines = out.split('\n')
+            n2 = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.len > 0 && line != 'bin' -> {
+                        print('Upgrading {line}...')
+                        ug-ok = upgrade-tool(line)
+                        {
+                            ug-ok == false -> {
+                                print('warning: failed to upgrade {line}')
+                                ok = false
+                            }
+                        }
+                    }
+                }
+            } (i < n2)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; clear-all-tools — remove all installed tools
+; ═══════════════════════════════════════════════
+
+tool.clear-all-tools = () (ok bool) {
+    ok = false
+    tool-dir = get-tool-dir()
+    p = path{
+        p: tool-dir,
+    }
+    exists = p.exists()
+    {
+        exists == false -> {
+            ok = true
+            return
+        }
+        -> {
+            code = run-cmd('rm' - ' ' - '-rf ' - tool-dir)

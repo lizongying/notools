@@ -1,0 +1,555 @@
+; sources.no — dependency source management
+;
+; Supports multiple dependency source types:
+;   - Registry (PyPI and custom indexes)
+;   - Git repositories (with branch/tag/commit/rev)
+;   - Local paths (directories and files)
+;   - Direct URLs (archive files)
+;   - Editable installs (development mode)
+;
+; API:
+;   parse-source(spec str) (source str, kind str, ok bool) — parse source spec
+;   is-git-source(spec str) (yes bool) — check if git source
+;   is-url-source(spec str) (yes bool) — check if URL source
+;   is-path-source(spec str) (yes bool) — check if path source
+;   parse-git-url(url str) (repo str, ref str, subpath str) — parse git URL
+;   clone-git(repo str, ref str, dest str) (ok bool) — clone git repo
+;   resolve-source(source str, kind str) (path str, ok bool) — resolve to local path
+;   get-source-type(cfg str, name str) (kind str, spec str) — get source from config
+
+# /nouv/src/settings
+# /nouv/src/utils
+
+; Source type constants
+SOURCE-REGISTRY = 'registry'
+SOURCE-GIT = 'git'
+SOURCE-URL = 'url'
+SOURCE-PATH = 'path'
+SOURCE-EDITABLE = 'editable'
+
+; ═══════════════════════════════════════════════
+; parse-source — parse a dependency specification to determine source type
+;
+; Supported formats:
+;   "requests>=2.0"         → registry, "requests"
+;   "requests @ git+https://github.com/psf/requests" → git, full URL
+;   "requests @ https://example.com/pkg-1.0.tar.gz" → url, URL
+;   "requests @ file:///path/to/pkg" → path, file path
+;   "requests @ ./local-pkg" → path, relative path
+;   "-e ./local-pkg" → editable, path
+; ═══════════════════════════════════════════════
+
+sources.parse-source = (spec str) (source str, kind str, ok bool) {
+    ok = false
+    source = ''
+    kind = SOURCE-REGISTRY
+
+    s = spec.trim()
+
+    ; check for editable install
+    {
+        s.starts-with('-e ') || s.starts-with('--editable ') -> {
+            kind = SOURCE-EDITABLE
+            {
+                s.starts-with('-e ') -> source = s.slice(3, s.len).trim()
+                -> source = s.slice(11, s.len).trim()
+            }
+            ok = true
+            return
+        }
+    }
+
+    ; check for " @ " separator (PEP 508 direct reference)
+    at-pos = s.index(' @ ')
+    {
+        at-pos >= 0 -> {
+            source = s.slice(at-pos + 3, s.len).trim()
+            {
+                ; git+ prefix
+                source.starts-with('git+') -> kind = SOURCE-GIT
+                source.starts-with('git+ssh://') -> kind = SOURCE-GIT
+                source.starts-with('git+https://') -> kind = SOURCE-GIT
+                source.starts-with('git+http://') -> kind = SOURCE-GIT
+                source.starts-with('git+file://') -> kind = SOURCE-GIT
+
+                ; http(s) URL (archive)
+                source.starts-with('https://') -> kind = SOURCE-URL
+                source.starts-with('http://') -> kind = SOURCE-URL
+
+                ; file URL or local path
+                source.starts-with('file://') -> kind = SOURCE-PATH
+                source.starts-with('/') -> kind = SOURCE-PATH
+                source.starts-with('./') -> kind = SOURCE-PATH
+                source.starts-with('../') -> kind = SOURCE-PATH
+                source.starts-with('.') -> kind = SOURCE-PATH
+
+                ; ssh git URL (git@github.com:user/repo)
+                source.starts-with('git@') -> kind = SOURCE-GIT
+
+                ; default: registry
+                -> kind = SOURCE-REGISTRY
+            }
+            ok = true
+            return
+        }
+    }
+
+    ; check for git+ prefix without @
+    {
+        s.starts-with('git+') -> {
+            kind = SOURCE-GIT
+            source = s
+            ok = true
+            return
+        }
+    }
+
+    ; check for direct URL (starts with http)
+    {
+        s.starts-with('https://') || s.starts-with('http://') -> {
+            kind = SOURCE-URL
+            source = s
+            ok = true
+            return
+        }
+    }
+
+    ; check for local path (starts with / or . or file://)
+    {
+        s.starts-with('/') || s.starts-with('./') || s.starts-with('../') || s.starts-with('file://') -> {
+            kind = SOURCE-PATH
+            {
+                s.starts-with('file://') -> source = s.slice(7, s.len)
+                -> source = s
+            }
+            ok = true
+            return
+        }
+    }
+
+    ; default: registry
+    kind = SOURCE-REGISTRY
+    source = s
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; is-git-source — check if a spec is a git source
+; ═══════════════════════════════════════════════
+
+sources.is-git-source = (spec str) (yes bool) {
+    yes = false
+    {
+        spec.starts-with('git+') -> yes = true
+        spec.starts-with('git@') -> yes = true
+        spec.contains(' @ git+') -> yes = true
+        spec.contains(' @ git@') -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-url-source — check if a spec is a direct URL source
+; ═══════════════════════════════════════════════
+
+sources.is-url-source = (spec str) (yes bool) {
+    yes = false
+    {
+        spec.starts-with('https://') -> yes = true
+        spec.starts-with('http://') -> yes = true
+        spec.contains(' @ https://') -> yes = true
+        spec.contains(' @ http://') -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-path-source — check if a spec is a local path source
+; ═══════════════════════════════════════════════
+
+sources.is-path-source = (spec str) (yes bool) {
+    yes = false
+    {
+        spec.starts-with('/') -> yes = true
+        spec.starts-with('./') -> yes = true
+        spec.starts-with('../') -> yes = true
+        spec.starts-with('file://') -> yes = true
+        spec.starts-with('. ') -> yes = true
+        spec.contains(' @ ./') -> yes = true
+        spec.contains(' @ ../') -> yes = true
+        spec.contains(' @ /') -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-git-url — parse a git URL into components
+;
+; Supported formats:
+;   git+https://github.com/user/repo.git@v1.0#subpath
+;   git+ssh://git@github.com/user/repo.git@main
+;   git+https://github.com/user/repo.git@abcdef123#subpath
+;
+; returns: repo URL, ref (branch/tag/commit), subpath
+; ═══════════════════════════════════════════════
+
+sources.parse-git-url = (url str) (repo str, ref str, subpath str) {
+    repo = url
+    ref = ''
+    subpath = ''
+
+    ; remove git+ prefix
+    {
+        repo.starts-with('git+') -> repo = repo.slice(4, repo.len)
+    }
+
+    ; handle ssh URL format: ssh://git@host/path or git@host:path
+    {
+        repo.starts-with('ssh://') -> {
+            ; keep as is
+        }
+        repo.starts-with('git@') -> {
+            ; convert git@host:path to ssh://git@host/path
+            colon = repo.index(':')
+            {
+                colon > 0 -> {
+                    host = repo.slice(4, colon)
+                    path-part = repo.slice(colon + 1, repo.len)
+                    repo = 'ssh://git@' - host - '/' - path-part
+                }
+            }
+        }
+    }
+
+    ; extract subpath (after #)
+    hash-pos = repo.index('#')
+    {
+        hash-pos >= 0 -> {
+            subpath = repo.slice(hash-pos + 1, repo.len)
+            repo = repo.slice(0, hash-pos)
+        }
+    }
+
+    ; extract ref (after @)
+    at-pos = repo.index('@')
+    {
+        at-pos >= 0 -> {
+            ref = repo.slice(at-pos + 1, repo.len)
+            repo = repo.slice(0, at-pos)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; clone-git — clone a git repository
+;
+; repo str — git URL (without git+ prefix)
+; ref str — branch, tag, or commit (empty = default branch)
+; dest str — destination directory
+; ═══════════════════════════════════════════════
+
+sources.clone-git = (repo str, ref str, dest str) (ok bool) {
+    ok = false
+
+    ; ensure dest parent exists
+    p = path{
+        p: dest,
+    }
+    mk = p.make-dir()
+
+    ; clone the repository
+    {
+        ref == '' -> {
+            ; shallow clone without ref
+            code = run-cmd('git clone --depth 1 ' - repo - ' ' - dest)
+        }
+        -> {
+            ; clone with specific ref
+            code = run-cmd('git clone --depth 1 --branch ' - ref - ' ' - repo - ' ' - dest)
+        }
+    }
+    {
+        code != 0 -> {
+            print('error: git clone failed')
+            return
+        }
+    }
+
+    ; checkout specific commit if ref looks like a hash
+    {
+        ref != '' -> {
+            ; if it's a full hex hash (40 chars), checkout
+            {
+                ref.len == 40 && ref.is-hex() -> {
+                    code2 = run-cmd('git -C ' - dest - ' checkout ' - ref)
+                    {
+                        code2 != 0 -> {
+                            print('warning: could not checkout commit ' - ref)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; remove .git directory to save space
+    run-cmd('rm' - ' ' - '-rf ' - dest - '/.git')
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; resolve-source — resolve a source to a local path
+;
+; For registry sources: returns empty (handled by registry/installer)
+; For git sources: clones to cache and returns path
+; For URL sources: downloads to cache and returns path
+; For path sources: returns the resolved path
+; For editable sources: returns the path as-is
+; ═══════════════════════════════════════════════
+
+sources.resolve-source = (source str, kind str) (path str, ok bool) {
+    ok = false
+    path = ''
+
+    kind: {
+        SOURCE-REGISTRY -> {
+            ; registry sources are handled by the registry module
+            return
+        }
+        SOURCE-GIT -> {
+            ; parse git URL
+            repo, ref, subpath = parse-git-url(source)
+            cache-dir = get-cache-dir() - '/git'
+
+            ; create a hash of the repo+ref for the directory name
+            dir-name = repo.replace-char('/', '_').replace-char(':', '_') - '-' - ref
+
+            ; for ref-less, use a generic name
+            {
+                ref == '' -> dir-name = repo.replace-char('/', '_').replace-char(':', '_') - '-default'
+            }
+
+            dest = cache-dir - '/' - dir-name
+            p = path{
+                p: dest,
+            }
+            exists = p.exists()
+            {
+                exists == false -> {
+                    clone-ok = clone-git(repo, ref, dest)
+                    {
+                        clone-ok == false -> return
+                    }
+                }
+            }
+
+            {
+                subpath != '' -> path = dest - '/' - subpath
+                -> path = dest
+            }
+            ok = true
+        }
+        SOURCE-URL -> {
+            ; download to cache
+            cache-dir = get-cache-dir() - '/urls'
+            p = path{
+                p: cache-dir,
+            }
+            mk = p.make-dir()
+
+            ; extract filename from URL
+            filename = source
+            slash = filename.rindex('/')
+            {
+                slash >= 0 -> filename = filename.slice(slash + 1, filename.len)
+            }
+            {
+                filename == '' -> filename = 'download'
+            }
+
+            dest = cache-dir - '/' - filename
+            p2 = path{
+                p: dest,
+            }
+            exists = p2.exists()
+            {
+                exists == false -> {
+                    resp = http.http-get(source)
+                    {
+                        resp == nil -> {
+                            print('error: failed to download from {source}')
+                            return
+                        }
+                        -> {
+                            body = resp.body
+                            fd = fs.open-write(dest)
+                            {
+                                fd <= 0 -> return
+                                -> {
+                                    fs.write(fd, body, body.len)
+                                    fs.close(fd)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            path = dest
+            ok = true
+        }
+        SOURCE-PATH -> {
+            ; resolve relative path
+            path = source
+            {
+                path.starts-with('file://') -> path = path.slice(7, path.len)
+            }
+            ok = true
+        }
+        SOURCE-EDITABLE -> {
+            path = source
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-source-type — get source configuration from [tool.uv.sources]
+;
+; In pyproject.toml:
+;   [tool.uv.sources]
+;   requests = { git = "https://github.com/psf/requests", tag = "v2.31.0" }
+;   my-package = { path = "./local-pkg" }
+;   another = { url = "https://example.com/pkg-1.0.tar.gz" }
+; ═══════════════════════════════════════════════
+
+sources.get-source-type = (cfg str, name str) (kind str, spec str) {
+    kind = SOURCE-REGISTRY
+    spec = ''
+
+    ; look for tool.uv.sources.<name>
+    key = 'tool.uv.sources.' - name
+    val = get-value(cfg, key)
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            ; parse inline table: { git = "...", tag = "..." }
+            ; or { path = "..." }
+            ; or { url = "..." }
+
+            {
+                v.contains('git = ') -> {
+                    kind = SOURCE-GIT
+                    spec = extract-inline-value(v, 'git')
+                    tag = extract-inline-value(v, 'tag')
+                    branch = extract-inline-value(v, 'branch')
+                    rev = extract-inline-value(v, 'rev')
+                    {
+                        tag != '' -> spec = spec - '@' - tag
+                        branch != '' -> spec = spec - '@' - branch
+                        rev != '' -> spec = spec - '@' - rev
+                    }
+                    sub = extract-inline-value(v, 'subdirectory')
+                    {
+                        sub != '' -> spec = spec - '#' - sub
+                    }
+                }
+                v.contains('path = ') -> {
+                    kind = SOURCE-PATH
+                    spec = extract-inline-value(v, 'path')
+                }
+                v.contains('url = ') -> {
+                    kind = SOURCE-URL
+                    spec = extract-inline-value(v, 'url')
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-inline-value — extract a value from an inline table string
+; e.g. from "{ git = 'https://...', tag = 'v1.0' }" extract git value
+; ═══════════════════════════════════════════════
+
+sources.extract-inline-value = (table str, key str) (val str) {
+    val = ''
+    search = key - ' = '
+    pos = table.index(search)
+    {
+        pos < 0 -> {
+            search = key - '='
+            pos = table.index(search)
+        }
+    }
+    {
+        pos < 0 -> return
+        -> {
+            start = pos + search.len
+            ; skip whitespace
+            {
+                start = start + 1
+            } (start < table.len && (table[start] == 32 || table[start] == 9))
+            {
+                start < table.len -> {
+                    c = table[start]
+                    {
+                        c == 34 -> {
+                            ; double-quoted
+                            end = table.index-from('"', start + 1)
+                            {
+                                end > start -> val = table.slice(start + 1, end)
+                            }
+                        }
+                        c == 39 -> {
+                            ; single-quoted
+                            end = table.index-from("'", start + 1)
+                            {
+                                end > start -> val = table.slice(start + 1, end)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-git-ref — extract the ref from a parsed git source
+; ═══════════════════════════════════════════════
+
+sources.get-git-ref = (cfg str, name str) (ref str) {
+    ref = ''
+    key = 'tool.uv.sources.' - name
+    val = get-value(cfg, key)
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                tag = extract-inline-value(v, 'tag')
+                {
+                    tag != '' -> ref = tag
+                }
+            }
+            {
+                ref == '' -> {
+                    branch = extract-inline-value(v, 'branch')
+                    {
+                        branch != '' -> ref = branch
+                    }
+                }
+            }
+            {
+                ref == '' -> {
+                    rev = extract-inline-value(v, 'rev')
+                    {
+                        rev != '' -> ref = rev
+                    }
+                }
+            }
+        }
+    }
+}

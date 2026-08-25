@@ -1,0 +1,1670 @@
+; main — uv CLI entry point and command dispatcher
+;
+; Pure Nolang implementation of uv (astral-sh/uv).
+; Commands: init, add, remove, sync, lock, run, build, publish,
+;           pip (install/uninstall/freeze/list/show/compile/sync),
+;           venv, python (install/uninstall/list/dir/find/pin),
+;           tool (run/install/list/upgrade/uninstall/dir/clear),
+;           uvx (shortcut for tool run),
+;           tree, cache (clean/dir/prune),
+;           self (version/update),
+;           export, version, help
+;
+; Global options:
+;   --no-cache         Disable cache
+;   --no-sync          Don't sync after add/remove
+;   --frozen           No lockfile updates
+;   --locked           Require up-to-date lockfile
+;   --index-url URL    Primary index URL
+;   --extra-index-url  Extra index URLs
+;   --python VER       Python version to use
+;   --quiet, -q        Quiet output
+;   --verbose, -v      Verbose output
+;   --no-color         Disable colored output
+;   --native-tls       Use native TLS
+;   --preview          Enable preview features
+;
+; Usage: no run nouv <command> [args...]
+
+# /nouv/src/config
+# /nouv/src/python
+# /nouv/src/venv
+# /nouv/src/dependency
+# /nouv/src/registry
+# /nouv/src/installer
+# /nouv/src/lockfile
+# /nouv/src/workspace
+# /nouv/src/build
+# /nouv/src/runner
+# /nouv/src/tool
+# /nouv/src/toml
+# /nouv/src/version
+# /nouv/src/cache
+# /nouv/src/settings
+# /nouv/src/requirements
+
+VERSION = '0.1.0'
+
+; ═══════════════════════════════════════════════
+; main entry
+; ═══════════════════════════════════════════════
+
+main = () {
+    argc = os.args() - 1
+    argc < 1 -> {
+        print-usage()
+        return
+    }
+    cmd = os.arg(1)
+
+    cmd: {
+        'init' -> cmd-init(argc)
+        'add' -> cmd-add(argc)
+        'remove' -> cmd-remove(argc)
+        'rm' -> cmd-remove(argc)
+        'sync' -> cmd-sync(argc)
+        'lock' -> cmd-lock(argc)
+        'run' -> cmd-run(argc)
+        'build' -> cmd-build(argc)
+        'publish' -> cmd-publish(argc)
+        'pip' -> cmd-pip(argc)
+        'venv' -> cmd-venv(argc)
+        'python' -> cmd-python(argc)
+        'tool' -> cmd-tool(argc)
+        'toolchain' -> cmd-python(argc)
+        'uvx' -> cmd-uvx(argc)
+        'tree' -> cmd-tree(argc)
+        'cache' -> cmd-cache(argc)
+        'export' -> cmd-export(argc)
+        'self' -> cmd-self(argc)
+        'version' -> print-version()
+        '--version' -> print-version()
+        '-V' -> print-version()
+        'help' -> print-usage()
+        '--help' -> print-usage()
+        '-h' -> print-usage()
+        -> {
+            print('error: unknown command: {cmd}')
+            print('')
+            print-usage()
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; usage
+; ═══════════════════════════════════════════════
+
+print-usage = () {
+    print('nouv — pure Nolang implementation of uv')
+    print('')
+    print('An extremely fast Python package and project manager.')
+    print('')
+    print('Usage: nouv [OPTIONS] <command> [ARGS]')
+    print('')
+    print('Commands:')
+    print('')
+    print('  Project:')
+    print('    init [path]            Create a new Python project')
+    print('    add <pkg> [pkg...]     Add dependencies to the project')
+    print('    remove <pkg> [pkg...]  Remove dependencies')
+    print('    sync                   Sync dependencies with the environment')
+    print('    lock                   Generate a lockfile')
+    print('    run <cmd>              Run a command in the project environment')
+    print('    build                  Build the project into distributions')
+    print('    publish                Publish the project to a package index')
+    print('    export                 Export the lockfile to requirements format')
+    print('    tree [pkg]             Show dependency tree')
+    print('')
+    print('  Python:')
+    print('    python install <ver>    Install a Python version')
+    print('    python uninstall <ver>  Uninstall a Python version')
+    print('    python list             List installed Python versions')
+    print('    python dir              Show the Python installation directory')
+    print('    python find <ver>       Find an available Python version')
+    print('    python pin <ver>        Pin a Python version for the project')
+    print('')
+    print('  pip (pip-compatible interface):')
+    print('    pip install <pkg>       Install packages')
+    print('    pip uninstall <pkg>    Uninstall packages')
+    print('    pip freeze             List installed packages')
+    print('    pip list               List installed packages')
+    print('    pip show <pkg>         Show package details')
+    print('    pip compile <file>     Compile requirements to a lockfile')
+    print('    pip sync <file>        Sync environment with requirements file')
+    print('')
+    print('  venv:')
+    print('    venv [path]            Create a virtual environment')
+    print('')
+    print('  tool:')
+    print('    tool run <cmd>         Run a tool in an ephemeral environment')
+    print('    tool install <pkg>    Install a tool')
+    print('    tool list              List installed tools')
+    print('    tool upgrade [pkg]    Upgrade tools (--all for all)')
+    print('    tool uninstall <pkg>  Uninstall a tool')
+    print('    tool dir               Show the tool installation directory')
+    print('    tool clear             Remove all tools')
+    print('')
+    print('  uvx <pkg> [args...]     Run a tool (shortcut for tool run)')
+    print('')
+    print('  cache:')
+    print('    cache clean             Clean the cache')
+    print('    cache dir               Show the cache directory')
+    print('    cache prune             Prune stale cache entries')
+    print('')
+    print('  self version             Show version')
+    print('  self update              Update nouv')
+    print('  version                  Show version')
+    print('  help                     Show this help message')
+    print('')
+    print('Global Options:')
+    print('    -V, --version          Show version')
+    print('    -h, --help            Show help')
+    print('    -q, --quiet           Quiet output')
+    print('    -v, --verbose         Verbose output')
+    print('    --no-cache            Disable cache')
+    print('    --no-sync             Dont sync after changes')
+    print('    --frozen              No lockfile updates')
+    print('    --locked              Require up-to-date lockfile')
+    print('    --index-url URL       Primary index URL')
+    print('    --extra-index-url URL  Extra index URL')
+    print('    --python VER          Python version to use')
+    print('    --no-color            Disable colored output')
+    print('    --native-tls          Use native TLS')
+    print('    --preview             Enable preview features')
+}
+
+print-version = () {
+    print('nouv {VERSION}')
+}
+
+; ═══════════════════════════════════════════════
+; command: init
+; ═══════════════════════════════════════════════
+
+cmd-init = (argc i64) {
+    path = '.'
+    name = ''
+    py-ver = '>=3.8'
+    build-backend = ''
+    {
+        argc >= 2 -> path = os.arg(2)
+    }
+
+    ; parse options
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--name=') -> name = a.slice(7, a.len)
+            a == '--name' -> {
+                i = i + 1
+                {
+                    i <= argc -> name = os.arg(i)
+                }
+            }
+            a.starts-with('--python=') -> py-ver = a.slice(9, a.len)
+            a == '--python' -> {
+                i = i + 1
+                {
+                    i <= argc -> py-ver = os.arg(i)
+                }
+            }
+            a.starts-with('--build-backend=') -> build-backend = a.slice(15, a.len)
+            a == '--build-backend' -> {
+                i = i + 1
+                {
+                    i <= argc -> build-backend = os.arg(i)
+                }
+            }
+            a.starts-with('-') -> {
+            }
+            -> path = a
+        }
+    }
+
+    ; check if already initialized
+    pyproject-path = path - '/pyproject.toml'
+    p = path{
+        p: pyproject-path,
+    }
+    p.exists() -> {
+        print('error: project already exists at {pyproject-path}')
+        os.exit(1)
+    }
+
+    ; determine project name
+    {
+        name == '' -> {
+            {
+                path != '.' -> {
+                    ; use the directory name as project name
+                    p2 = path{
+                        p: path,
+                    }
+                    name = p2.base()
+                }
+                -> name = 'my-project'
+            }
+        }
+    }
+
+    ; create directory if needed
+    {
+        path != '.' -> {
+            p3 = path{
+                p: path,
+            }
+            ok = p3.make-dir()
+            ok == false -> {
+                print('error: failed to create directory {path}')
+                os.exit(1)
+            }
+        }
+    }
+
+    ; create pyproject.toml
+    {
+        build-backend != '' -> {
+            ok = init-project-with-options(path, name, py-ver, build-backend)
+        }
+        -> {
+            ok = init-project(path, name)
+        }
+    }
+    ok == false -> {
+        print('error: failed to create pyproject.toml')
+        os.exit(1)
+    }
+
+    ; create src layout
+    src-dir = path - '/src/' - name
+    p4 = path{
+        p: src-dir,
+    }
+    ok2 = p4.make-dir()
+
+    ; create __init__.py
+    init-file = src-dir - '/__init__.py'
+    wfd = fs.open-write(init-file)
+    {
+        wfd > 0 -> {
+            fs.write(wfd, '', 0)
+            fs.close(wfd)
+        }
+    }
+
+    ; create README.md
+    readme = path - '/README.md'
+    wfd2 = fs.open-write(readme)
+    {
+        wfd2 > 0 -> {
+            content = '# ' - name - '\n'
+            fs.write(wfd2, content, content.len)
+            fs.close(wfd2)
+        }
+    }
+
+    ; create .gitignore
+    gitignore = path - '/.gitignore'
+    wfd3 = fs.open-write(gitignore)
+    {
+        wfd3 > 0 -> {
+            content = '__pycache__/\n*.pyc\n.venv/\ndist/\n*.egg-info/\n'
+            fs.write(wfd3, content, content.len)
+            fs.close(wfd3)
+        }
+    }
+
+    print('Initialized project {name} at {path}')
+}
+
+; ═══════════════════════════════════════════════
+; command: add
+; ═══════════════════════════════════════════════
+
+cmd-add = (argc i64) {
+    {
+        argc < 2 -> {
+            print('error: `nouv add` requires at least one package')
+            os.exit(1)
+        }
+    }
+
+    ; parse add-specific options
+    group = ''
+    dev = false
+    editable = false
+    no-sync = false
+    pkgs = ''
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a == '--dev' -> dev = true
+            a == '--editable' || a == '-e' -> editable = true
+            a == '--no-sync' -> no-sync = true
+            a.starts-with('--group=') -> group = a.slice(8, a.len)
+            a == '--group' -> {
+                i = i + 1
+                {
+                    i <= argc -> group = os.arg(i)
+                }
+            }
+            a.starts-with('--extra=') -> {
+            }
+            a.starts-with('-') -> {
+                ; skip other options
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    pkgs.len == 0 -> {
+        print('error: no packages specified')
+        os.exit(1)
+    }
+
+    ; load config
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found. Run `nouv init` first.')
+        os.exit(1)
+    }
+
+    ; add each package to dependencies
+    lines = pkgs.split('\n')
+    n = lines.len
+    i <- [0..n): {
+        pkg = lines[i]
+        pkg.len > 0 -> {
+            {
+                editable -> pkg = '-e ' - pkg
+            }
+            {
+                dev -> {
+                    cfg, added = add-dev-dependency(cfg, pkg)
+                }
+                group != '' -> {
+                    cfg, added = add-group-dependency(cfg, group, pkg)
+                }
+                -> {
+                    cfg, added = add-dependency(cfg, pkg)
+                }
+            }
+            added == false -> {
+                print('warning: {pkg} already in dependencies')
+            }
+        }
+    }
+
+    ; save config
+    ok2 = save-config('.', cfg)
+    ok2 == false -> {
+        print('error: failed to save pyproject.toml')
+        os.exit(1)
+    }
+
+    ; check --no-sync
+    {
+        no-sync || get-no-sync() -> {
+            print('Added dependencies (sync skipped)')
+            return
+        }
+    }
+
+    ; resolve and sync
+    print('Resolving dependencies...')
+    resolved, resolve-ok = resolve-all(cfg)
+    {
+        resolve-ok == false -> {
+            print('error: failed to resolve dependencies')
+            os.exit(1)
+        }
+        -> {
+            print('Resolved {resolved.len} packages')
+            print('Installing...')
+            install-ok = sync-packages('.', resolved, cfg)
+            {
+                install-ok == false -> {
+                    print('error: failed to install packages')
+                    os.exit(1)
+                }
+                -> {
+                    print('Installed packages successfully')
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: remove
+; ═══════════════════════════════════════════════
+
+cmd-remove = (argc i64) {
+    {
+        argc < 2 -> {
+            print('error: `nouv remove` requires at least one package')
+            os.exit(1)
+        }
+    }
+
+    pkgs = ''
+    no-sync = false
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a == '--no-sync' -> no-sync = true
+            a.starts-with('-') -> {
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    pkgs.len == 0 -> {
+        print('error: no packages specified')
+        os.exit(1)
+    }
+
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    lines = pkgs.split('\n')
+    n = lines.len
+    i <- [0..n): {
+        pkg = lines[i]
+        pkg.len > 0 -> {
+            cfg, removed = remove-dependency(cfg, pkg)
+            removed == false -> {
+                print('warning: {pkg} not found in dependencies')
+            }
+        }
+    }
+
+    ok2 = save-config('.', cfg)
+    ok2 == false -> {
+        print('error: failed to save pyproject.toml')
+        os.exit(1)
+    }
+
+    {
+        no-sync || get-no-sync() -> {
+            print('Removed dependencies (sync skipped)')
+            return
+        }
+    }
+
+    print('Removed dependencies')
+    print('Syncing...')
+    sync-ok = sync-packages('.', '', cfg)
+    {
+        sync-ok -> print('Synced environment')
+        -> print('warning: sync had issues')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: sync
+; ═══════════════════════════════════════════════
+
+cmd-sync = (argc i64) {
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    ; check for --frozen / --locked
+    frozen = get-frozen()
+    locked = get-locked()
+
+    {
+        frozen -> {
+            ; use lockfile as-is, don't re-resolve
+            lock, lock-ok = load('.')
+            {
+                lock-ok -> {
+                    resolved = get-packages(lock)
+                    print('Syncing from frozen lockfile...')
+                    sync-ok = sync-packages('.', resolved, cfg)
+                    {
+                        sync-ok -> print('Synced environment')
+                        -> {
+                            print('error: failed to sync environment')
+                            os.exit(1)
+                        }
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    {
+        locked -> {
+            ; require up-to-date lockfile
+            lock, lock-ok = load('.')
+            {
+                lock-ok == false -> {
+                    print('error: no lockfile found. Run `nouv lock` first.')
+                    os.exit(1)
+                }
+                -> {
+                    up-to-date = is-up-to-date('.', cfg)
+                    {
+                        up-to-date == false -> {
+                            print('error: lockfile is out of date. Run `nouv lock` to update.')
+                            os.exit(1)
+                        }
+                    }
+                    resolved = get-packages(lock)
+                    print('Syncing from lockfile...')
+                    sync-ok = sync-packages('.', resolved, cfg)
+                    {
+                        sync-ok -> print('Synced environment')
+                        -> {
+                            print('error: failed to sync environment')
+                            os.exit(1)
+                        }
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    print('Resolving dependencies...')
+    resolved, resolve-ok = resolve-all(cfg)
+    {
+        resolve-ok == false -> {
+            print('error: failed to resolve dependencies')
+            os.exit(1)
+        }
+        -> {
+            print('Resolved {resolved.len} packages')
+            print('Syncing...')
+            sync-ok = sync-packages('.', resolved, cfg)
+            {
+                sync-ok -> print('Synced environment')
+                -> {
+                    print('error: failed to sync environment')
+                    os.exit(1)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: lock
+; ═══════════════════════════════════════════════
+
+cmd-lock = (argc i64) {
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    print('Resolving dependencies...')
+    resolved, resolve-ok = resolve-all(cfg)
+    {
+        resolve-ok == false -> {
+            print('error: failed to resolve dependencies')
+            os.exit(1)
+        }
+        -> {
+            lock-ok = generate('.', resolved, cfg)
+            {
+                lock-ok -> print('Resolved and locked dependencies')
+                -> {
+                    print('error: failed to generate lockfile')
+                    os.exit(1)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: run
+; ═══════════════════════════════════════════════
+
+cmd-run = (argc i64) {
+    {
+        argc < 2 -> {
+            print('error: `nouv run` requires a command')
+            os.exit(1)
+        }
+    }
+
+    ; collect command args
+    cmd-args = ''
+    i <- [2..argc): {
+        a = os.arg(i)
+        cmd-args = cmd-args - a - ' '
+    }
+
+    cfg, ok = load-config('.')
+    {
+        ok == false -> {
+            ; no pyproject.toml, try running directly
+            run-ok = run-command('.', cmd-args, '')
+            {
+                run-ok == false -> {
+                    print('error: command failed')
+                    os.exit(1)
+                }
+            }
+            return
+        }
+    }
+
+    run-ok = run-command('.', cmd-args, cfg)
+    {
+        run-ok == false -> {
+            print('error: command failed')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: build
+; ═══════════════════════════════════════════════
+
+cmd-build = (argc i64) {
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    ; parse build options
+    build-sdist-only = false
+    build-wheel-only = false
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a == '--sdist' -> build-sdist-only = true
+            a == '--wheel' -> build-wheel-only = true
+        }
+    }
+
+    print('Building...')
+    {
+        build-sdist-only -> {
+            build-ok, dist-dir = build-sdist('.', cfg)
+        }
+        build-wheel-only -> {
+            build-ok, dist-dir = build-wheel('.', cfg)
+        }
+        -> {
+            build-ok, dist-dir = build-project('.', cfg)
+        }
+    }
+    {
+        build-ok -> {
+            print('Built dist at {dist-dir}')
+        }
+        -> {
+            print('error: failed to build project')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: publish
+; ═══════════════════════════════════════════════
+
+cmd-publish = (argc i64) {
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    ; check for token
+    token = os.get-env('UV-PUBLISH-TOKEN')
+    {
+        token == '' -> {
+            token = os.get-env('UV-INDEX-USERNAME')
+            {
+                token == '' -> {
+                    token = os.get-env('PYPI-TOKEN')
+                }
+            }
+        }
+    }
+    {
+        token == '' -> {
+            print('error: no publish token found. Set UV_PUBLISH_TOKEN or PYPI_TOKEN')
+            os.exit(1)
+        }
+    }
+
+    print('Publishing...')
+    pub-ok = publish-project('.', cfg, token)
+    {
+        pub-ok -> print('Published project successfully')
+        -> {
+            print('error: failed to publish project')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: pip
+; ═══════════════════════════════════════════════
+
+cmd-pip = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv pip <subcommand> [args]')
+            print('Subcommands: install, uninstall, freeze, list, show, compile, sync')
+            os.exit(1)
+        }
+    }
+
+    subcmd = os.arg(2)
+    subcmd: {
+        'install' -> pip-install(argc)
+        'uninstall' -> pip-uninstall(argc)
+        'freeze' -> pip-freeze(argc)
+        'list' -> pip-list(argc)
+        'show' -> pip-show(argc)
+        'compile' -> pip-compile(argc)
+        'sync' -> pip-sync(argc)
+        -> {
+            print('error: unknown pip subcommand: {subcmd}')
+            os.exit(1)
+        }
+    }
+}
+
+pip-install = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv pip install <package> [package...]')
+            os.exit(1)
+        }
+    }
+
+    pkgs = ''
+    opts = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a == '--reinstall' -> opts = opts - 'reinstall '
+            a == '--no-cache' -> opts = opts - 'no-cache '
+            a == '--no-deps' -> opts = opts - 'no-deps '
+            a == '--upgrade' -> opts = opts - 'upgrade '
+            a == '--force-reinstall' -> opts = opts - 'force-reinstall '
+            a == '--editable' || a == '-e' -> opts = opts - 'editable '
+            a.starts-with('-') -> {
+                ; skip other options
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    ; find or create venv
+    venv-path = find-or-create-default('.')
+    {
+        opts == '' -> {
+            ok = pip-install(venv-path, pkgs)
+        }
+        -> {
+            ok = pip-install-with-options(venv-path, pkgs, opts)
+        }
+    }
+    {
+        ok -> print('Installed packages')
+        -> {
+            print('error: failed to install packages')
+            os.exit(1)
+        }
+    }
+}
+
+pip-uninstall = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv pip uninstall <package> [package...]')
+            os.exit(1)
+        }
+    }
+
+    pkgs = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('-') -> {
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    venv-path = find-or-create-default('.')
+    ok = pip-uninstall(venv-path, pkgs)
+    {
+        ok -> print('Uninstalled packages')
+        -> {
+            print('error: failed to uninstall packages')
+            os.exit(1)
+        }
+    }
+}
+
+pip-freeze = (argc i64) {
+    venv-path = find-venv('.')
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment found')
+            os.exit(1)
+        }
+    }
+    installed = list-installed(venv-path)
+    print(installed)
+}
+
+pip-list = (argc i64) {
+    venv-path = find-venv('.')
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment found')
+            os.exit(1)
+        }
+    }
+    installed = list-installed(venv-path)
+    print(installed)
+}
+
+pip-show = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv pip show <package>')
+            os.exit(1)
+        }
+    }
+    pkg = os.arg(3)
+    venv-path = find-venv('.')
+    {
+        venv-path == '' -> {
+            print('error: no virtual environment found')
+            os.exit(1)
+        }
+    }
+    info = show-package(venv-path, pkg)
+    print(info)
+}
+
+; ═══════════════════════════════════════════════
+; pip compile — compile requirements to a lock file
+; ═══════════════════════════════════════════════
+
+pip-compile = (argc i64) {
+    input-file = ''
+    output-file = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--output=') -> output-file = a.slice(9, a.len)
+            a == '-o' -> {
+                i = i + 1
+                {
+                    i <= argc -> output-file = os.arg(i)
+                }
+            }
+            a.starts-with('-') -> {
+            }
+            -> input-file = a
+        }
+    }
+
+    {
+        input-file == '' -> {
+            ; try to use pyproject.toml
+            cfg, ok = load-config('.')
+            {
+                ok == false -> {
+                    print('error: no input file or pyproject.toml found')
+                    os.exit(1)
+                }
+                -> {
+                    print('Compiling from pyproject.toml...')
+                    resolved, resolve-ok = resolve-all(cfg)
+                    {
+                        resolve-ok == false -> {
+                            print('error: failed to resolve dependencies')
+                            os.exit(1)
+                        }
+                        -> {
+                            {
+                                output-file == '' -> output-file = 'requirements.txt'
+                            }
+                            output = export-requirements(resolved, cfg)
+                            fd = fs.open-write(output-file)
+                            {
+                                fd > 0 -> {
+                                    fs.write(fd, output, output.len)
+                                    fs.close(fd)
+                                    print('Compiled requirements to {output-file}')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return
+        }
+    }
+
+    ; parse requirements file
+    reqs, parse-ok = parse(input-file)
+    {
+        parse-ok == false -> {
+            print('error: failed to parse {input-file}')
+            os.exit(1)
+        }
+    }
+
+    print('Compiling {input-file}...')
+    {
+        output-file == '' -> output-file = 'requirements.txt'
+    }
+    output = export-requirements(reqs, '')
+    fd = fs.open-write(output-file)
+    {
+        fd > 0 -> {
+            fs.write(fd, output, output.len)
+            fs.close(fd)
+            print('Compiled requirements to {output-file}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; pip sync — sync environment with requirements file
+; ═══════════════════════════════════════════════
+
+pip-sync = (argc i64) {
+    input-file = 'requirements.txt'
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('-') -> {
+            }
+            -> input-file = a
+        }
+    }
+
+    reqs, parse-ok = parse(input-file)
+    {
+        parse-ok == false -> {
+            print('error: failed to parse {input-file}')
+            os.exit(1)
+        }
+    }
+
+    venv-path = find-or-create-default('.')
+    sync-ok = sync-packages('.', reqs, '')
+    {
+        sync-ok -> print('Synced environment with {input-file}')
+        -> {
+            print('error: failed to sync environment')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: venv
+; ═══════════════════════════════════════════════
+
+cmd-venv = (argc i64) {
+    path = '.venv'
+    opts = ''
+    py-ver = ''
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a == '--seed' -> opts = opts - 'seed '
+            a == '--system-site-packages' -> opts = opts - 'system-site-packages '
+            a == '--clear' -> opts = opts - 'clear '
+            a == '--upgrade' -> opts = opts - 'upgrade '
+            a == '--bare' -> opts = opts - 'bare '
+            a == '--upgrade-deps' -> opts = opts - 'upgrade-deps '
+            a.starts-with('--python=') -> py-ver = a.slice(9, a.len)
+            a == '--python' -> {
+                i = i + 1
+                {
+                    i <= argc -> py-ver = os.arg(i)
+                }
+            }
+            a.starts-with('--prompt=') -> opts = opts - 'prompt '
+            a.starts-with('-') -> {
+            }
+            -> path = a
+        }
+    }
+
+    ; find python
+    py-path, py-ok = find-python(py-ver)
+    {
+        py-ok == false -> {
+            print('error: no Python installation found')
+            os.exit(1)
+        }
+        -> {
+            {
+                opts == '' -> {
+                    ok = create-venv(path, py-path)
+                }
+                -> {
+                    ok = create-venv-with-options(path, py-path, opts)
+                }
+            }
+            {
+                ok -> print('Created virtual environment at {path}')
+                -> {
+                    print('error: failed to create virtual environment')
+                    os.exit(1)
+                }
+            }
+            ; upgrade deps if requested
+            {
+                opts.contains('upgrade-deps') -> {
+                    ug-ok = upgrade-deps(path)
+                    {
+                        ug-ok -> print('Upgraded pip, setuptools, wheel')
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: python
+; ═══════════════════════════════════════════════
+
+cmd-python = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv python <subcommand> [args]')
+            print('Subcommands: install, uninstall, list, dir, find, pin')
+            os.exit(1)
+        }
+    }
+
+    subcmd = os.arg(2)
+    subcmd: {
+        'install' -> python-install(argc)
+        'uninstall' -> python-uninstall(argc)
+        'list' -> python-list(argc)
+        'dir' -> python-dir(argc)
+        'find' -> python-find(argc)
+        'pin' -> python-pin(argc)
+        -> {
+            print('error: unknown python subcommand: {subcmd}')
+            os.exit(1)
+        }
+    }
+}
+
+python-install = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv python install <version> [version...]')
+            os.exit(1)
+        }
+    }
+
+    i <- [3..argc): {
+        ver = os.arg(i)
+        {
+            ver.starts-with('-') -> {
+            }
+            -> {
+                print('Installing Python {ver}...')
+                ok = install-version(ver)
+                {
+                    ok -> print('Installed Python {ver}')
+                    -> {
+                        print('error: failed to install Python {ver}')
+                        os.exit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+python-uninstall = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv python uninstall <version>')
+            os.exit(1)
+        }
+    }
+
+    i <- [3..argc): {
+        ver = os.arg(i)
+        {
+            ver.starts-with('-') -> {
+            }
+            -> {
+                ok = uninstall-version(ver)
+                {
+                    ok == false -> {
+                        print('error: failed to uninstall Python {ver}')
+                        os.exit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+python-list = (argc i64) {
+    versions = list-versions()
+    print('Installed Python versions:')
+    print(versions)
+}
+
+python-dir = (argc i64) {
+    dir = get-python-dir()
+    print(dir)
+}
+
+python-find = (argc i64) {
+    ver = ''
+    {
+        argc >= 3 -> ver = os.arg(3)
+    }
+    path, ok = find-python(ver)
+    {
+        ok -> print(path)
+        -> {
+            {
+                ver == '' -> {
+                    print('error: no Python installation found')
+                }
+                -> {
+                    print('error: Python {ver} not found')
+                }
+            }
+            os.exit(1)
+        }
+    }
+}
+
+python-pin = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv python pin <version>')
+            os.exit(1)
+        }
+    }
+    ver = os.arg(3)
+    ok = pin-version('.', ver)
+    {
+        ok -> print('Pinned Python {ver}')
+        -> {
+            print('error: failed to pin Python version')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: tool
+; ═══════════════════════════════════════════════
+
+cmd-tool = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv tool <subcommand> [args]')
+            print('Subcommands: run, install, list, upgrade, uninstall, dir, clear')
+            os.exit(1)
+        }
+    }
+
+    subcmd = os.arg(2)
+    subcmd: {
+        'run' -> tool-run(argc)
+        'install' -> tool-install(argc)
+        'list' -> tool-list(argc)
+        'upgrade' -> tool-upgrade(argc)
+        'uninstall' -> tool-uninstall(argc)
+        'dir' -> tool-dir(argc)
+        'clear' -> tool-clear(argc)
+        -> {
+            print('error: unknown tool subcommand: {subcmd}')
+            os.exit(1)
+        }
+    }
+}
+
+tool-run = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv tool run <command> [args...]')
+            os.exit(1)
+        }
+    }
+
+    ; parse options
+    from-pkg = ''
+    with-pkgs = ''
+    cmd-str = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--from=') -> from-pkg = a.slice(7, a.len)
+            a == '--from' -> {
+                i = i + 1
+                {
+                    i <= argc -> from-pkg = os.arg(i)
+                }
+            }
+            a.starts-with('--with=') -> with-pkgs = with-pkgs - a.slice(7, a.len) - '\n'
+            a == '--with' -> {
+                i = i + 1
+                {
+                    i <= argc -> with-pkgs = with-pkgs - os.arg(i) - '\n'
+                }
+            }
+            a.starts-with('-') -> {
+            }
+            -> {
+                cmd-str = cmd-str - a - ' '
+            }
+        }
+    }
+
+    {
+        from-pkg != '' -> {
+            ok = run-tool-from(from-pkg, cmd-str, with-pkgs)
+        }
+        -> {
+            {
+                with-pkgs != '' -> {
+                    ok = run-tool-with(cmd-str, with-pkgs)
+                }
+                -> {
+                    ok = run-tool(cmd-str)
+                }
+            }
+        }
+    }
+    {
+        ok == false -> {
+            os.exit(1)
+        }
+    }
+}
+
+tool-install = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv tool install <package>')
+            os.exit(1)
+        }
+    }
+
+    ; parse options
+    with-pkgs = ''
+    pkgs = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--with=') -> with-pkgs = with-pkgs - a.slice(7, a.len) - '\n'
+            a == '--with' -> {
+                i = i + 1
+                {
+                    i <= argc -> with-pkgs = with-pkgs - os.arg(i) - '\n'
+                }
+            }
+            a.starts-with('-') -> {
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    lines = pkgs.split('\n')
+    n = lines.len
+    i <- [0..n): {
+        pkg = lines[i]
+        pkg.len > 0 -> {
+            {
+                with-pkgs != '' -> {
+                    ok = install-tool-with(pkg, with-pkgs)
+                }
+                -> {
+                    ok = install-tool(pkg)
+                }
+            }
+            {
+                ok -> print('Installed tool: {pkg}')
+                -> {
+                    print('error: failed to install tool')
+                    os.exit(1)
+                }
+            }
+        }
+    }
+}
+
+tool-list = (argc i64) {
+    tools = list-tools()
+    print(tools)
+}
+
+tool-upgrade = (argc i64) {
+    ; check for --all
+    upgrade-all = false
+    pkgs = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        {
+            a == '--all' -> upgrade-all = true
+            a.starts-with('-') -> {
+            }
+            -> {
+                pkgs = pkgs - a - '\n'
+            }
+        }
+    }
+
+    {
+        upgrade-all -> {
+            ok = upgrade-all-tools()
+            {
+                ok -> print('Upgraded all tools')
+                -> {
+                    print('error: failed to upgrade all tools')
+                    os.exit(1)
+                }
+            }
+        }
+        -> {
+            {
+                pkgs == '' -> {
+                    print('Usage: nouv tool upgrade <package> or --all')
+                    os.exit(1)
+                }
+            }
+            lines = pkgs.split('\n')
+            n = lines.len
+            i <- [0..n): {
+                pkg = lines[i]
+                pkg.len > 0 -> {
+                    ok = upgrade-tool(pkg)
+                    {
+                        ok -> print('Upgraded tool: {pkg}')
+                        -> {
+                            print('error: failed to upgrade tool')
+                            os.exit(1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+tool-uninstall = (argc i64) {
+    {
+        argc < 3 -> {
+            print('Usage: nouv tool uninstall <package>')
+            os.exit(1)
+        }
+    }
+
+    i <- [3..argc): {
+        pkg = os.arg(i)
+        {
+            pkg.starts-with('-') == false -> {
+                ok = uninstall-tool(pkg)
+                {
+                    ok -> print('Uninstalled tool: {pkg}')
+                    -> {
+                        print('error: failed to uninstall tool')
+                        os.exit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+tool-dir = (argc i64) {
+    dir = get-tool-dir()
+    print(dir)
+}
+
+tool-clear = (argc i64) {
+    ok = clear-all-tools()
+    {
+        ok -> print('Removed all tools')
+        -> {
+            print('error: failed to clear tools')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: uvx — shortcut for tool run
+; ═══════════════════════════════════════════════
+
+cmd-uvx = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv uvx <package> [args...]')
+            print('  Runs a tool in an ephemeral environment (shortcut for `nouv tool run`)')
+            os.exit(1)
+        }
+    }
+
+    cmd-str = ''
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            i == 2 && a.starts-with('-') == false -> {
+                cmd-str = cmd-str - a
+            }
+            -> {
+                cmd-str = cmd-str - ' ' - a
+            }
+        }
+    }
+
+    ok = run-tool(cmd-str)
+    {
+        ok == false -> {
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: tree
+; ═══════════════════════════════════════════════
+
+cmd-tree = (argc i64) {
+    pkg = ''
+    {
+        argc >= 2 -> {
+            arg2 = os.arg(2)
+            {
+                arg2.starts-with('-') == false -> pkg = arg2
+            }
+        }
+    }
+
+    cfg, ok = load-config('.')
+    {
+        ok -> {
+            tree-str = dependency-tree(cfg, pkg)
+            print(tree-str)
+        }
+        -> {
+            tree-str = dependency-tree('', pkg)
+            print(tree-str)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: cache
+; ═══════════════════════════════════════════════
+
+cmd-cache = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv cache <subcommand>')
+            print('Subcommands: clean, dir, prune')
+            os.exit(1)
+        }
+    }
+
+    subcmd = os.arg(2)
+    subcmd: {
+        'clean' -> {
+            ok = clean-cache()
+            {
+                ok -> print('Cache cleaned')
+                -> {
+                    print('error: failed to clean cache')
+                    os.exit(1)
+                }
+            }
+        }
+        'dir' -> {
+            dir = get-cache-dir()
+            print(dir)
+        }
+        'prune' -> {
+            ok = prune()
+            {
+                ok -> print('Cache pruned')
+                -> {
+                    print('error: failed to prune cache')
+                    os.exit(1)
+                }
+            }
+        }
+        'info' -> {
+            info = get-cache-info()
+            print(info)
+        }
+        -> {
+            print('error: unknown cache subcommand: {subcmd}')
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: export
+; ═══════════════════════════════════════════════
+
+cmd-export = (argc i64) {
+    cfg, ok = load-config('.')
+    ok == false -> {
+        print('error: no pyproject.toml found')
+        os.exit(1)
+    }
+
+    ; parse format option
+    format = 'requirements'
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--format=') -> format = a.slice(9, a.len)
+            a == '--format' -> {
+                i = i + 1
+                {
+                    i <= argc -> format = os.arg(i)
+                }
+            }
+        }
+    }
+
+    ; check for --frozen/--locked to use lockfile
+    frozen = get-frozen()
+    locked = get-locked()
+    {
+        frozen || locked -> {
+            lock, lock-ok = load('.')
+            {
+                lock-ok == false -> {
+                    print('error: no lockfile found')
+                    os.exit(1)
+                }
+                -> {
+                    resolved = get-packages(lock)
+                    output = export-requirements-format(resolved, cfg, format)
+                    print(output)
+                    return
+                }
+            }
+        }
+    }
+
+    resolved, resolve-ok = resolve-all(cfg)
+    {
+        resolve-ok == false -> {
+            print('error: failed to resolve dependencies')
+            os.exit(1)
+        }
+        -> {
+            output = export-requirements-format(resolved, cfg, format)
+            print(output)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: self
+; ═══════════════════════════════════════════════
+
+cmd-self = (argc i64) {
+    {
+        argc < 2 -> {
+            print('Usage: nouv self <subcommand>')
+            print('Subcommands: version, update')
+            os.exit(1)
+        }
+    }
+
+    subcmd = os.arg(2)
+    subcmd: {
+        'version' -> print-version()
+        'update' -> {
+            print('Self-update is not yet implemented in this version')
+        }
+        -> {
+            print('error: unknown self subcommand: {subcmd}')
+            os.exit(1)
+        }
+    }
+}

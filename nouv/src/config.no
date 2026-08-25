@@ -1,0 +1,761 @@
+; config.no — pyproject.toml configuration management
+;
+; Handles reading and writing pyproject.toml files for Python projects.
+; Supports the [project] table with name, version, description, dependencies,
+; optional-dependencies, and the [tool.uv] section with:
+;   - dev-dependencies (and dependency groups)
+;   - sources (git, URL, path)
+;   - index, extra-index-url
+;   - override-dependencies
+;   - constraint-dependencies
+;   - workspace
+;
+; API:
+;   load-config(dir str) (cfg str, ok bool) — load pyproject.toml
+;   save-config(dir str, cfg str) (ok bool) — save pyproject.toml
+;   init-project(dir str, name str) (ok bool) — create new project
+;   get-name(cfg str) (name str) — get project name
+;   get-version(cfg str) (ver str) — get project version
+;   get-dependencies(cfg str) (deps str) — get dependency list
+;   get-dev-dependencies(cfg str) (deps str) — get dev dependencies
+;   get-group-dependencies(cfg str, group str) (deps str) — get dependency group
+;   get-all-dependencies(cfg str) (deps str) — get all deps (main+dev+groups)
+;   add-dependency(cfg str, pkg str) (new-cfg str, ok bool) — add dep
+;   add-dev-dependency(cfg str, pkg str) (new-cfg str, ok bool) — add dev dep
+;   add-group-dependency(cfg str, group str, pkg str) (new-cfg str, ok bool) — add group dep
+;   remove-dependency(cfg str, pkg str) (new-cfg str, ok bool) — remove dep
+;   get-python-version(cfg str) (ver str) — get required Python version
+;   get-metadata(cfg str) (meta str) — get project metadata as flat string
+;   get-override-dependencies(cfg str) (deps str) — get override deps
+;   get-constraint-dependencies(cfg str) (deps str) — get constraint deps
+;   get-index(cfg str) (index str) — get [tool.uv.index] config
+;   get-sources(cfg str) (sources str) — get [tool.uv.sources] config
+;   get-build-backend(cfg str) (backend str) — get build backend
+;   get-entry-points(cfg str) (eps str) — get [project.scripts]
+
+# /nouv/src/toml
+
+; ═══════════════════════════════════════════════
+; load-config — read and parse pyproject.toml
+; ═══════════════════════════════════════════════
+
+config.load-config = (dir str) (cfg str, ok bool) {
+    ok = false
+    cfg = ''
+    path = dir - '/pyproject.toml'
+    p = path{
+        p: path,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            content = fs.read-file(path)
+            cfg = parse(content)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; save-config — serialize and write pyproject.toml
+; ═══════════════════════════════════════════════
+
+config.save-config = (dir str, cfg str) (ok bool) {
+    ok = false
+    path = dir - '/pyproject.toml'
+    content = serialize(cfg)
+    fd = fs.open-write(path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, content, content.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; init-project — create a new pyproject.toml
+; ═══════════════════════════════════════════════
+
+config.init-project = (dir str, name str) (ok bool) {
+    ok = false
+    path = dir - '/pyproject.toml'
+    content = ''
+    content = content - '[project]\n'
+    content = content - 'name = "' - name - '"\n'
+    content = content - 'version = "0.1.0"\n'
+    content = content - 'description = "' - name - ' project"\n'
+    content = content - 'readme = "README.md"\n'
+    content = content - 'requires-python = ">=3.8"\n'
+    content = content - 'dependencies = []\n'
+    content = content - '\n'
+    content = content - '[build-system]\n'
+    content = content - 'requires = ["setuptools>=61.0"]\n'
+    content = content - 'build-backend = "setuptools.build_meta"\n'
+    content = content - '\n'
+    content = content - '[tool.uv]\n'
+    content = content - 'dev-dependencies = []\n'
+
+    fd = fs.open-write(path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, content, content.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-name — get project name
+; ═══════════════════════════════════════════════
+
+config.get-name = (cfg str) (name str) {
+    name = ''
+    val = get-value(cfg, 'project.name')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> name = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> name = v.slice(1, v.len - 1)
+                -> name = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-version — get project version
+; ═══════════════════════════════════════════════
+
+config.get-version = (cfg str) (ver str) {
+    ver = ''
+    val = get-value(cfg, 'project.version')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> ver = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> ver = v.slice(1, v.len - 1)
+                -> ver = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-dependencies — get all dependencies as newline-separated list
+; ═══════════════════════════════════════════════
+
+config.get-dependencies = (cfg str) (deps str) {
+    deps = ''
+    val = get-value(cfg, 'project.dependencies')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> deps = parse-array(it)
+        -> {
+            ; no dependencies
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-dev-dependencies — get dev dependencies
+; ═══════════════════════════════════════════════
+
+config.get-dev-dependencies = (cfg str) (deps str) {
+    deps = ''
+    val = get-value(cfg, 'tool.uv.dev-dependencies')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> deps = parse-array(it)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; add-dependency — add a package to dependencies
+; returns: new-cfg str, ok bool (false if already present)
+; ═══════════════════════════════════════════════
+
+config.add-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
+    ok = false
+    new-cfg = cfg
+
+    ; get current dependencies
+    deps = get-dependencies(cfg)
+
+    ; check if already present
+    {
+        deps.contains(pkg) -> return
+        -> {
+            ; check for prefix match (e.g. "requests" matches "requests>=2.0")
+            lines = deps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.starts-with(pkg) -> return
+                }
+            } (i < n)
+        }
+    }
+
+    ; add new dependency
+    {
+        deps.len > 0 -> deps = deps - pkg - '\n'
+        -> deps = pkg - '\n'
+    }
+
+    ; create new array value
+    arr-val = make-array-value(deps)
+
+    ; update config
+    new-cfg = set-value(cfg, 'project.dependencies', arr-val)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; remove-dependency — remove a package from dependencies
+; returns: new-cfg str, ok bool (false if not found)
+; ═══════════════════════════════════════════════
+
+config.remove-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
+    ok = false
+    new-cfg = cfg
+
+    deps = get-dependencies(cfg)
+    new-deps = ''
+    found = false
+
+    lines = deps.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with(pkg) -> {
+                found = true
+            }
+            line.len > 0 -> {
+                new-deps = new-deps - line - '\n'
+            }
+        }
+    } (i < n)
+
+    found == false -> return
+
+    arr-val = make-array-value(new-deps)
+    new-cfg = set-value(cfg, 'project.dependencies', arr-val)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; get-python-version — get required Python version
+; ═══════════════════════════════════════════════
+
+config.get-python-version = (cfg str) (ver str) {
+    ver = ''
+    val = get-value(cfg, 'project.requires-python')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> ver = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> ver = v.slice(1, v.len - 1)
+                -> ver = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-metadata — get project metadata as a flat string
+; returns a newline-separated list of key=value pairs
+; ═══════════════════════════════════════════════
+
+config.get-metadata = (cfg str) (meta str) {
+    meta = ''
+    name = get-name(cfg)
+    ver = get-version(cfg)
+    deps = get-dependencies(cfg)
+    py-ver = get-python-version(cfg)
+    meta = meta - 'name=' - name - '\n'
+    meta = meta - 'version=' - ver - '\n'
+    meta = meta - 'python=' - py-ver - '\n'
+    meta = meta - 'dependencies:\n' - deps
+}
+
+; ═══════════════════════════════════════════════
+; get-description — get project description
+; ═══════════════════════════════════════════════
+
+config.get-description = (cfg str) (desc str) {
+    desc = ''
+    val = get-value(cfg, 'project.description')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> desc = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> desc = v.slice(1, v.len - 1)
+                -> desc = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-optional-dependencies — get optional dependencies (extras)
+; returns a flat representation: group:name\n for each
+; ═══════════════════════════════════════════════
+
+config.get-optional-dependencies = (cfg str) (deps str) {
+    deps = ''
+    ; Look for project.optional-dependencies section
+    ; In the flat format, keys would be like:
+    ; project.optional-dependencies.dev=['ruff', 'pytest']
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('project.optional-dependencies.') -> {
+                deps = deps - line - '\n'
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-group-dependencies — get dependencies for a specific group
+; [tool.uv.dependency-groups]
+; dev = ["ruff", "pytest"]
+; test = ["pytest-cov"]
+; ═══════════════════════════════════════════════
+
+config.get-group-dependencies = (cfg str, group str) (deps str) {
+    deps = ''
+    key = 'tool.uv.dependency-groups.' - group
+    val = get-value(cfg, key)
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> deps = parse-array(it)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-all-dependencies — get all dependencies (main + dev + groups)
+; ═══════════════════════════════════════════════
+
+config.get-all-dependencies = (cfg str) (deps str) {
+    deps = get-dependencies(cfg)
+    dev-deps = get-dev-dependencies(cfg)
+    {
+        dev-deps != '' -> deps = deps - '\n' - dev-deps
+    }
+
+    ; also get optional-dependencies
+    opt-deps = get-optional-dependencies(cfg)
+    {
+        opt-deps != '' -> deps = deps - '\n' - opt-deps
+    }
+
+    ; also get all dependency groups
+    ; scan for tool.uv.dependency-groups.* keys
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('tool.uv.dependency-groups.') -> {
+                eq = line.index('=')
+                {
+                    eq >= 0 -> {
+                        val = line.slice(eq + 1, line.len).trim()
+                        group-deps = parse-array(val)
+                        {
+                            group-deps != '' -> deps = deps - '\n' - group-deps
+                        }
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; add-dev-dependency — add a package to dev-dependencies
+; ═══════════════════════════════════════════════
+
+config.add-dev-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
+    ok = false
+    new-cfg = cfg
+
+    ; get current dev dependencies
+    deps = get-dev-dependencies(cfg)
+
+    ; check if already present
+    {
+        deps.contains(pkg) -> return
+        -> {
+            lines = deps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.starts-with(pkg) -> return
+                }
+            } (i < n)
+        }
+    }
+
+    ; add new dependency
+    {
+        deps.len > 0 -> deps = deps - pkg - '\n'
+        -> deps = pkg - '\n'
+    }
+
+    arr-val = make-array-value(deps)
+    new-cfg = set-value(cfg, 'tool.uv.dev-dependencies', arr-val)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; add-group-dependency — add a package to a dependency group
+; ═══════════════════════════════════════════════
+
+config.add-group-dependency = (cfg str, group str, pkg str) (new-cfg str, ok bool) {
+    ok = false
+    new-cfg = cfg
+
+    ; get current group dependencies
+    deps = get-group-dependencies(cfg, group)
+
+    ; check if already present
+    {
+        deps.contains(pkg) -> return
+        -> {
+            lines = deps.split('\n')
+            n = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = line.trim()
+                {
+                    line.starts-with(pkg) -> return
+                }
+            } (i < n)
+        }
+    }
+
+    ; add new dependency
+    {
+        deps.len > 0 -> deps = deps - pkg - '\n'
+        -> deps = pkg - '\n'
+    }
+
+    key = 'tool.uv.dependency-groups.' - group
+    arr-val = make-array-value(deps)
+    new-cfg = set-value(cfg, key, arr-val)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; get-override-dependencies — get override dependencies
+; [tool.uv]
+; override-dependencies = ["requests==2.30.0"]
+; ═══════════════════════════════════════════════
+
+config.get-override-dependencies = (cfg str) (deps str) {
+    deps = ''
+    val = get-value(cfg, 'tool.uv.override-dependencies')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> deps = parse-array(it)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-constraint-dependencies — get constraint dependencies
+; [tool.uv]
+; constraint-dependencies = ["requests<3.0"]
+; ═══════════════════════════════════════════════
+
+config.get-constraint-dependencies = (cfg str) (deps str) {
+    deps = ''
+    val = get-value(cfg, 'tool.uv.constraint-dependencies')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> deps = parse-array(it)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-index — get [tool.uv.index] configuration
+; returns flat key=value pairs
+; ═══════════════════════════════════════════════
+
+config.get-index = (cfg str) (index str) {
+    index = ''
+    val = get-value(cfg, 'tool.uv.index')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> index = it
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-sources — get [tool.uv.sources] configuration
+; returns flat representation of sources
+; ═══════════════════════════════════════════════
+
+config.get-sources = (cfg str) (sources str) {
+    sources = ''
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('tool.uv.sources.') -> sources = sources - line - '\n'
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-build-backend — get build backend from pyproject.toml
+; ═══════════════════════════════════════════════
+
+config.get-build-backend = (cfg str) (backend str) {
+    backend = ''
+    val = get-value(cfg, 'build-system.build-backend')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> backend = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> backend = v.slice(1, v.len - 1)
+                -> backend = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-entry-points — get [project.scripts] entry points
+; returns: name=module:func\n...
+; ═══════════════════════════════════════════════
+
+config.get-entry-points = (cfg str) (eps str) {
+    eps = ''
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('project.scripts.') -> {
+                ; format: project.scripts.name = "module:func"
+                dot = line.rindex('.')
+                eq = line.index('=')
+                {
+                    eq > dot -> {
+                        ep-name = line.slice(dot + 1, eq).trim()
+                        ep-val = line.slice(eq + 1, line.len).trim()
+                        {
+                            ep-val.starts-with('"') && ep-val.ends-with('"') -> ep-val = ep-val.slice(1, ep-val.len - 1)
+                            ep-val.starts-with("'") && ep-val.ends-with("'") -> ep-val = ep-val.slice(1, ep-val.len - 1)
+                        }
+                        eps = eps - ep-name - '=' - ep-val - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-requires-python — get requires-python from project
+; ═══════════════════════════════════════════════
+
+config.get-requires-python = (cfg str) (ver str) {
+    ver = ''
+    val = get-value(cfg, 'project.requires-python')
+    val: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            v = it
+            {
+                v.starts-with('"') && v.ends-with('"') -> ver = v.slice(1, v.len - 1)
+                v.starts-with("'") && v.ends-with("'") -> ver = v.slice(1, v.len - 1)
+                -> ver = v
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-optional-dependency-groups — list all optional-dependency group names
+; ═══════════════════════════════════════════════
+
+config.get-optional-dependency-groups = (cfg str) (groups str) {
+    groups = ''
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('project.optional-dependencies.') -> {
+                dot = line.rindex('.')
+                eq = line.index('=')
+                {
+                    eq > dot -> {
+                        group = line.slice(dot + 1, eq).trim()
+                        {
+                            group.starts-with('"') && group.ends-with('"') -> group = group.slice(1, group.len - 1)
+                            group.starts-with("'") && group.ends-with("'") -> group = group.slice(1, group.len - 1)
+                        }
+                        groups = groups - group - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; get-dependency-groups — list all dependency group names
+; [tool.uv.dependency-groups]
+; ═══════════════════════════════════════════════
+
+config.get-dependency-groups = (cfg str) (groups str) {
+    groups = ''
+    lines = cfg.split('\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        {
+            line.starts-with('tool.uv.dependency-groups.') -> {
+                ; extract group name
+                prefix = 'tool.uv.dependency-groups.'
+                rest = line.slice(prefix.len, line.len)
+                eq = rest.index('=')
+                {
+                    eq > 0 -> {
+                        group = rest.slice(0, eq).trim()
+                        {
+                            group.starts-with('"') && group.ends-with('"') -> group = group.slice(1, group.len - 1)
+                            group.starts-with("'") && group.ends-with("'") -> group = group.slice(1, group.len - 1)
+                        }
+                        groups = groups - group - '\n'
+                    }
+                }
+            }
+        }
+    } (i < n)
+}
+
+; ═══════════════════════════════════════════════
+; add-dependency-with-group — add a dependency to a specific group
+; group="" means main, group="dev" means dev-dependencies
+; ═══════════════════════════════════════════════
+
+config.add-dependency-with-group = (cfg str, pkg str, group str) (new-cfg str, ok bool) {
+    new-cfg = cfg
+    ok = false
+
+    {
+        group == '' || group == 'main' -> {
+            new-cfg, ok = add-dependency(cfg, pkg)
+        }
+        group == 'dev' -> {
+            new-cfg, ok = add-dev-dependency(cfg, pkg)
+        }
+        -> {
+            new-cfg, ok = add-group-dependency(cfg, group, pkg)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; init-project-with-options — create pyproject.toml with more options
+; ═══════════════════════════════════════════════
+
+config.init-project-with-options = (dir str, name str, py-ver str, build-backend str) (ok bool) {
+    ok = false
+    path = dir - '/pyproject.toml'
+    content = ''
+    content = content - '[project]\n'
+    content = content - 'name = "' - name - '"\n'
+    content = content - 'version = "0.1.0"\n'
+    content = content - 'description = "' - name - ' project"\n'
+    content = content - 'readme = "README.md"\n'
+    content = content - 'requires-python = "' - py-ver - '"\n'
+    content = content - 'dependencies = []\n'
+    content = content - '\n'
+    content = content - '[build-system]\n'
+    {
+        build-backend != '' -> {
+            content = content - 'requires = ["setuptools>=61.0"]\n'
+            content = content - 'build-backend = "' - build-backend - '"\n'
+        }
+        -> {
+            content = content - 'requires = ["setuptools>=61.0"]\n'
+            content = content - 'build-backend = "setuptools.build_meta"\n'
+        }
+    }
+    content = content - '\n'
+    content = content - '[tool.uv]\n'
+    content = content - 'dev-dependencies = []\n'
+
+    fd = fs.open-write(path)
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, content, content.len)
+            fs.close(fd)
+            ok = true
+        }
+    }
+}

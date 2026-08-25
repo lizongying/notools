@@ -1,0 +1,198 @@
+; workspace.no — workspace management
+;
+; Supports Cargo-style workspaces for multi-package Python projects.
+; A workspace is defined by a [tool.uv.workspace] section in the root
+; pyproject.toml, listing member packages.
+;
+; API:
+;   find-root(dir str) (root str, ok bool) — find workspace root
+;   get-members(root str) (members str, ok bool) — get member paths
+;   load-all-members(root str) (configs str, ok bool) — load all member configs
+;   is-workspace-root(dir str) (yes bool) — check if dir is workspace root
+;   get-member-config(root str, member str) (cfg str, ok bool) — load member config
+
+# /nouv/src/config
+# /nouv/src/toml
+
+; ═══════════════════════════════════════════════
+; find-root — find workspace root by walking up directories
+; ═══════════════════════════════════════════════
+
+workspace.find-root = (dir str) (root str, ok bool) {
+    ok = false
+    root = ''
+
+    current = dir
+    { } (true)
+    {
+        {
+            current == '' || current == '/' -> break
+            -> {
+                pyproject = current - '/pyproject.toml'
+                p = path{
+                    p: pyproject,
+                }
+                exists = p.exists()
+                {
+                    exists -> {
+                        ; check if it has [tool.uv.workspace]
+                        cfg, cfg-ok = load-config(current)
+                        {
+                            cfg-ok -> {
+                                members-val = get-value(cfg, 'tool.uv.workspace.members')
+                                {
+                                    members-val: {
+                                        nil -> {}
+                                        err -> {}
+                                        ok -> {
+                                            root = current
+                                            ok = true
+                                            return
+                                        }
+                                        -> {
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ; go up
+                p2 = path{
+                    p: current,
+                }
+                p2.dir()
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-members — get workspace member paths
+; returns newline-separated relative paths
+; ═══════════════════════════════════════════════
+
+workspace.get-members = (root str) (members str, ok bool) {
+    ok = false
+    members = ''
+
+    cfg, cfg-ok = load-config(root)
+    {
+        cfg-ok == false -> return
+        -> {
+            val = get-value(cfg, 'tool.uv.workspace.members')
+            val: {
+                nil -> {}
+                err -> {}
+                ok -> members = parse-array(it)
+                -> {
+                    ; no members defined
+                }
+            }
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; load-all-members — load all member configs
+; returns newline-separated dir:cfg entries
+; ═══════════════════════════════════════════════
+
+workspace.load-all-members = (root str) (configs str, ok bool) {
+    ok = false
+    configs = ''
+
+    members, members-ok = get-members(root)
+    {
+        members-ok == false -> return
+        -> {
+            lines = members.split('\n')
+            n = lines.len
+            i = 0
+            {
+                member = lines[i]
+                i = i + 1
+                member = member.trim()
+                {
+                    member.len > 0 -> {
+                        member-dir = root - '/' - member
+                        cfg, cfg-ok = load-config(member-dir)
+                        {
+                            cfg-ok -> {
+                                configs = configs - member-dir - '\n' - cfg - '\n---\n'
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-workspace-root — check if directory is a workspace root
+; ═══════════════════════════════════════════════
+
+workspace.is-workspace-root = (dir str) (yes bool) {
+    yes = false
+    cfg, ok = load-config(dir)
+    {
+        ok -> {
+            val = get-value(cfg, 'tool.uv.workspace.members')
+            val: {
+                nil -> {}
+                err -> {}
+                ok -> yes = true
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-member-config — load a specific member's config
+; ═══════════════════════════════════════════════
+
+workspace.get-member-config = (root str, member str) (cfg str, ok bool) {
+    member-dir = root - '/' - member
+    cfg, ok = load-config(member-dir)
+}
+
+; ═══════════════════════════════════════════════
+; get-all-dependencies — get all dependencies from all members
+; returns newline-separated name==version pairs
+; ═══════════════════════════════════════════════
+
+workspace.get-all-dependencies = (root str) (all-deps str, ok bool) {
+    ok = false
+    all-deps = ''
+
+    members, members-ok = get-members(root)
+    {
+        members-ok == false -> return
+        -> {
+            lines = members.split('\n')
+            n = lines.len
+            i = 0
+            {
+                member = lines[i]
+                i = i + 1
+                member = member.trim()
+                {
+                    member.len > 0 -> {
+                        member-dir = root - '/' - member
+                        cfg, cfg-ok = load-config(member-dir)
+                        {
+                            cfg-ok -> {
+                                deps = get-dependencies(cfg)
+                                all-deps = all-deps - deps
+                            }
+                        }
+                    }
+                }
+            } (i < n)
+            ok = true
+        }
+    }
+}
