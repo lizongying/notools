@@ -14,31 +14,28 @@ VENV-DEFAULT-NAME = '.venv'
 ; create-venv — create a virtual environment
 ; ═══════════════════════════════════════════════
 
-create-venv = (path str, py-path str) (ok bool) {
+create-venv = (venv-dir str, py-path str) (ok bool) {
     ok = false
 
     ; check if venv already exists
-    p = path{
-        p: path,
-    }
-    exists = p.exists()
+    is-dir = fs.is-dir(venv-dir)
     {
-        exists -> {
-            print('error: virtual environment already exists at {path}')
+        is-dir -> {
+            print('error: virtual environment already exists at {venv-dir}')
             return
         }
     }
 
-    print('Creating virtual environment at: {path}')
+    print('Creating virtual environment at: {venv-dir}')
 
     ; create parent directory
     p2 = path{
-        p: path,
+        p: venv-dir,
     }
     mk = p2.make-dir()
 
     ; run python -m venv
-    code = run-cmd(py-path - ' ' - '-m venv ' - path)
+    code = run-cmd(py-path - ' ' - '-m venv ' - venv-dir)
     {
         code != 0 -> {
             print('error: failed to create venv')
@@ -47,7 +44,7 @@ create-venv = (path str, py-path str) (ok bool) {
     }
 
     ; verify venv was created
-    py-bin = get-python-bin-path(path)
+    py-bin = get-python-bin-path(venv-dir)
     p4 = path{
         p: py-bin,
     }
@@ -60,19 +57,19 @@ create-venv = (path str, py-path str) (ok bool) {
     }
 
     ; create pyvenv.cfg if not present
-    cfg-path = path - '/pyvenv.cfg'
+    cfg-path = venv-dir - '/pyvenv.cfg'
     p5 = path{
         p: cfg-path,
     }
     cfg-exists = p5.exists()
     {
         cfg-exists == false -> {
-            write-pyvenv-cfg(path, py-path)
+            write-pyvenv-cfg(venv-dir, py-path)
         }
     }
 
     ok = true
-    print('Created virtual environment at: {path}')
+    print('Created virtual environment at: {venv-dir}')
 }
 
 ; ═══════════════════════════════════════════════
@@ -113,12 +110,9 @@ find-venv = (dir str) (venv-path str) {
 
     ; check .venv in this directory
     candidate = dir - '/' - VENV-DEFAULT-NAME
-    p = path{
-        p: candidate,
-    }
-    exists = p.exists()
+    is-dir = fs.is-dir(candidate)
     {
-        exists -> {
+        is-dir -> {
             venv-path = candidate
             return
         }
@@ -140,12 +134,9 @@ find-venv = (dir str) (venv-path str) {
         current == '' -> break
         -> {
             candidate2 = current - '/' - VENV-DEFAULT-NAME
-            p2 = path{
-                p: candidate2,
-            }
-            e2 = p2.exists()
+            is-dir2 = fs.is-dir(candidate2)
             {
-                e2 -> {
+                is-dir2 -> {
                     venv-path = candidate2
                     return
                 }
@@ -155,6 +146,7 @@ find-venv = (dir str) (venv-path str) {
                 p: current,
             }
             p3.dir()
+            current = p3.p
         }
     }
 }
@@ -233,14 +225,11 @@ is-active = (venv-path str) (yes bool) {
 
 remove-venv = (venv-path str) (ok bool) {
     ok = false
-    p = path{
-        p: venv-path,
-    }
-    exists = p.exists()
+    is-dir = fs.is-dir(venv-path)
     {
-        exists == false -> return
+        is-dir == false -> return
         -> {
-            code = run-cmd('rm -rf ' - venv-path)
+            code = process.process-system('rm -rf ' - venv-path)
             {
                 code == 0 -> ok = true
             }
@@ -261,18 +250,18 @@ activate-hint = (venv-path str) {
 ; create-venv-with-options — create venv with advanced options
 ; ═══════════════════════════════════════════════
 
-create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
+create-venv-with-options = (venv-dir str, py-path str, opts str) (ok bool) {
     ok = false
 
     ; handle --clear
     {
         opts.contains('clear') -> {
             p = path{
-                p: path,
+                p: venv-dir,
             }
             exists = p.exists()
             {
-                exists -> remove-venv(path)
+                exists -> remove-venv(venv-dir)
             }
         }
     }
@@ -289,17 +278,20 @@ create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
         opts.contains('upgrade') -> venv-args = venv-args - ' --upgrade'
     }
     {
-        opts.contains('bare') == false -> venv-args = venv-args - ' --seed'
+        opts.contains('bare') == false -> {
+            ; --seed only works on Python 3.12+
+            ; skip for older versions to avoid errors
+        }
     }
 
     ; create parent directory
     p = path{
-        p: path,
+        p: venv-dir,
     }
     mk = p.make-dir()
 
     ; run python -m venv
-    full-args = venv-args - ' ' - path
+    full-args = venv-args - ' ' - venv-dir
     code = run-cmd(py-path - ' ' - full-args)
     {
         code != 0 -> {
@@ -309,7 +301,7 @@ create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
     }
 
     ; verify venv was created
-    py-bin = get-python-bin-path(path)
+    py-bin = get-python-bin-path(venv-dir)
     p3 = path{
         p: py-bin,
     }
@@ -322,13 +314,13 @@ create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
     }
 
     ; create pyvenv.cfg
-    cfg-path = path - '/pyvenv.cfg'
+    cfg-path = venv-dir - '/pyvenv.cfg'
     p4 = path{
         p: cfg-path,
     }
     cfg-exists = p4.exists()
     {
-        cfg-exists == false -> write-pyvenv-cfg(path, py-path)
+        cfg-exists == false -> write-pyvenv-cfg(venv-dir, py-path)
     }
 
     ; seed packages if requested
@@ -336,14 +328,15 @@ create-venv-with-options = (path str, py-path str, opts str) (ok bool) {
         opts.contains('seed') -> {
             {
                 opts.contains('bare') == false -> {
-                    seed-ok = seed-pip(path, py-path)
+                    ; only seed if python version supports ensurepip
+                    seed-ok = seed-pip(venv-dir, py-path)
                 }
             }
         }
     }
 
     ok = true
-    print('Created virtual environment at: {path}')
+    print('Created virtual environment at: {venv-dir}')
 }
 
 ; ═══════════════════════════════════════════════
