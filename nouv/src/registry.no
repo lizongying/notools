@@ -35,7 +35,7 @@ DEFAULT-INDEX = 'https://pypi.org/simple/'
 ; get-index-url — get the configured index URL
 ; ═══════════════════════════════════════════════
 
-registry.get-index-url = () (url str) {
+get-index-url = () (url str) {
     url = os.get-env('UV-INDEX-URL')
     {
         url == '' -> url = os.get-env('PIP-INDEX-URL')
@@ -50,7 +50,7 @@ registry.get-index-url = () (url str) {
 ; returns a flat string with name, version, requires_dist, etc.
 ; ═══════════════════════════════════════════════
 
-registry.get-package-info = (name str) (info str, ok bool) {
+get-package-info = (name str) (info str, ok bool) {
     ok = false
     info = ''
 
@@ -102,7 +102,7 @@ registry.get-package-info = (name str) (info str, ok bool) {
 ; get-json-url — get the JSON API base URL
 ; ═══════════════════════════════════════════════
 
-registry.get-json-url = () (url str) {
+get-json-url = () (url str) {
     url = os.get-env('UV-JSON-URL')
     {
         url == '' -> url = PYPI-JSON-URL
@@ -114,13 +114,14 @@ registry.get-json-url = () (url str) {
 ; returns the HTML content of the simple index page
 ; ═══════════════════════════════════════════════
 
-registry.get-simple-index = (name str) (index str, ok bool) {
+get-simple-index = (name str) (index str, ok bool) {
     ok = false
     index = ''
 
     base = get-index-url()
     ; normalize package name (PEP 503)
-    norm-name = name.to-lower().replace-char('-', '_')
+    norm-name = name.to-lower()
+    norm-name = norm-name.replace-char(45, 95)
     url = base - norm-name - '/'
 
     resp = http.http-get(url)
@@ -138,7 +139,7 @@ registry.get-simple-index = (name str) (index str, ok bool) {
 ; returns newline-separated version strings
 ; ═══════════════════════════════════════════════
 
-registry.get-package-versions = (name str) (versions str, ok bool) {
+get-package-versions = (name str) (versions str, ok bool) {
     ok = false
     versions = ''
 
@@ -177,7 +178,7 @@ registry.get-package-versions = (name str) (versions str, ok bool) {
 ; get-latest-version — get the latest version of a package
 ; ═══════════════════════════════════════════════
 
-registry.get-latest-version = (name str) (ver str, ok bool) {
+get-latest-version = (name str) (ver str, ok bool) {
     ok = false
     ver = ''
 
@@ -211,7 +212,7 @@ registry.get-latest-version = (name str) (ver str, ok bool) {
 ; get-package-url — get the download URL for a specific version
 ; ═══════════════════════════════════════════════
 
-registry.get-package-url = (name str, ver str) (url str, ok bool) {
+get-package-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
 
@@ -231,14 +232,14 @@ registry.get-package-url = (name str, ver str) (url str, ok bool) {
                     urls = json.get-key(v, 'urls')
                     {
                         urls != nil -> {
-                            ; get first URL entry (usually the wheel)
+                            ; get first URL url-entry (usually the wheel)
                             n = json.arr-count(urls)
                             {
                                 n > 0 -> {
-                                    entry = json.arr-at(urls, 0)
+                                    url-entry = json.arr-at(urls, 0)
                                     {
-                                        entry != nil -> {
-                                            url-val = json.get-key(entry, 'url')
+                                        url-entry != nil -> {
+                                            url-val = json.get-key(url-entry, 'url')
                                             url = json.extract-str(url-val)
                                             ok = url != ''
                                         }
@@ -257,7 +258,7 @@ registry.get-package-url = (name str, ver str) (url str, ok bool) {
 ; download-package — download a package to a destination path
 ; ═══════════════════════════════════════════════
 
-registry.download-package = (name str, ver str, dest str) (ok bool) {
+download-package = (name str, ver str, dest str) (ok bool) {
     ok = false
 
     ; get download URL
@@ -298,7 +299,7 @@ registry.download-package = (name str, ver str, dest str) (ok bool) {
 ; returns newline-separated package names
 ; ═══════════════════════════════════════════════
 
-registry.search-packages = (query str) (results str) {
+search-packages = (query str) (results str) {
     results = ''
     ; PyPI doesn't have a search API anymore, use the XMLRPC search
     ; For simplicity, use the JSON API with a different approach
@@ -322,7 +323,7 @@ registry.search-packages = (query str) (results str) {
 ; extract-project-names — extract project names from PyPI search HTML
 ; ═══════════════════════════════════════════════
 
-registry.extract-project-names = (html str) (names str) {
+extract-project-names = (html str) (names str) {
     names = ''
     pos = 0
     n = html.len
@@ -353,7 +354,7 @@ registry.extract-project-names = (html str) (names str) {
 ; returns newline-separated hash strings
 ; ═══════════════════════════════════════════════
 
-registry.get-package-hashes = (name str, ver str) (hashes str) {
+get-package-hashes = (name str, ver str) (hashes str) {
     hashes = ''
     base = get-json-url()
     url = base - name - '/' - ver - '/json'
@@ -372,10 +373,10 @@ registry.get-package-hashes = (name str, ver str) (hashes str) {
                         urls != nil -> {
                             n = json.arr-count(urls)
                             i <- [0..n): {
-                                entry = json.arr-at(urls, i)
+                                url-entry = json.arr-at(urls, i)
                                 {
-                                    entry != nil -> {
-                                        digests = json.get-key(entry, 'digests')
+                                    url-entry != nil -> {
+                                        digests = json.get-key(url-entry, 'digests')
                                         {
                                             digests != nil -> {
                                                 sha256 = json.get-key(digests, 'sha256')
@@ -398,25 +399,15 @@ registry.get-package-hashes = (name str, ver str) (hashes str) {
 ; get-package-info-with-auth — get package info with authentication
 ; ═══════════════════════════════════════════════
 
-registry.get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
+get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
     ok = false
     info = ''
 
     base = get-json-url()
     url = base - name - '/json'
 
-    req = http-request{}
-    req.init('GET', url, '')
-    {
-        user != '' && pass != '' -> {
-            ; base64 encode user:pass
-            cred = user - ':' - pass
-            encoded = base64.base64-encode(cred, cred.len)
-            req.add-header('Authorization', 'Basic ' - encoded)
-        }
-    }
-
-    resp = http.http-do-req(req)
+    ; TODO: add auth header support when http-request alloca bug is fixed
+    resp = http.http-get(url)
     {
         resp != nil -> {
             body = resp.body
@@ -456,7 +447,7 @@ registry.get-package-info-with-auth = (name str, user str, pass str) (info str, 
 ; download-with-retry — download a package with retry logic
 ; ═══════════════════════════════════════════════
 
-registry.download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
+download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
     ok = false
     {
         max-retries < 1 -> max-retries = 3
@@ -486,7 +477,7 @@ registry.download-with-retry = (name str, ver str, dest str, max-retries i64) (o
 ; Returns the URL for the most compatible wheel
 ; ═══════════════════════════════════════════════
 
-registry.get-wheel-url = (name str, ver str) (url str, ok bool) {
+get-wheel-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
 
@@ -510,14 +501,14 @@ registry.get-wheel-url = (name str, ver str) (url str, ok bool) {
                                 n > 0 -> {
                                     ; find the best wheel
                                     i <- [0..n): {
-                                        entry = json.arr-at(urls, i)
+                                        url-entry = json.arr-at(urls, i)
                                         {
-                                            entry != nil -> {
-                                                filename = json.get-key(entry, 'filename')
+                                            url-entry != nil -> {
+                                                filename = json.get-key(url-entry, 'filename')
                                                 fn = json.extract-str(filename)
                                                 {
                                                     fn.ends-with('.whl') -> {
-                                                        url-val = json.get-key(entry, 'url')
+                                                        url-val = json.get-key(url-entry, 'url')
                                                         url = json.extract-str(url-val)
                                                         ok = true
                                                         return
@@ -529,10 +520,10 @@ registry.get-wheel-url = (name str, ver str) (url str, ok bool) {
                                     ; fallback: first URL
                                     {
                                         ok == false -> {
-                                            entry = json.arr-at(urls, 0)
+                                            url-entry = json.arr-at(urls, 0)
                                             {
-                                                entry != nil -> {
-                                                    url-val = json.get-key(entry, 'url')
+                                                url-entry != nil -> {
+                                                    url-val = json.get-key(url-entry, 'url')
                                                     url = json.extract-str(url-val)
                                                     ok = true
                                                 }
@@ -553,7 +544,7 @@ registry.get-wheel-url = (name str, ver str) (url str, ok bool) {
 ; get-sdist-url — get the source distribution URL
 ; ═══════════════════════════════════════════════
 
-registry.get-sdist-url = (name str, ver str) (url str, ok bool) {
+get-sdist-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
 
@@ -574,14 +565,23 @@ registry.get-sdist-url = (name str, ver str) (url str, ok bool) {
                         urls != nil -> {
                             n = json.arr-count(urls)
                             i <- [0..n): {
-                                entry = json.arr-at(urls, i)
+                                url-entry = json.arr-at(urls, i)
                                 {
-                                    entry != nil -> {
-                                        filename = json.get-key(entry, 'filename')
+                                    url-entry != nil -> {
+                                        filename = json.get-key(url-entry, 'filename')
                                         fn = json.extract-str(filename)
                                         {
-                                            fn.ends-with('.tar.gz') || fn.ends-with('.zip') -> {
-                                                url-val = json.get-key(entry, 'url')
+                                            fn.ends-with('.tar.gz') -> {
+                    url-val = json.get-key(url-entry, 'url')
+                    url = json.extract-str(url-val)
+                    ok = true
+                }
+                fn.ends-with('.zip') -> {
+                    url-val = json.get-key(url-entry, 'url')
+                    url = json.extract-str(url-val)
+                    ok = true
+                }
+                                                url-val = json.get-key(url-entry, 'url')
                                                 url = json.extract-str(url-val)
                                                 ok = true
                                                 return
@@ -610,7 +610,7 @@ registry.get-sdist-url = (name str, ver str) (url str, ok bool) {
 ; returns: headers as "Key: Value\n" formatted string, empty if no auth
 ; ═══════════════════════════════════════════════
 
-registry.get-auth-headers = () (headers str) {
+get-auth-headers = () (headers str) {
     headers = ''
 
     ; 1. check UV_TOKEN
@@ -635,11 +635,13 @@ registry.get-auth-headers = () (headers str) {
     user = os.get-env('UV-USERNAME')
     pass = os.get-env('UV-PASSWORD')
     {
-        user != '' && pass != '' -> {
-            cred = user - ':' - pass
-            encoded = base64.base64-encode(cred, cred.len)
-            headers = 'Authorization: Basic ' - encoded - '\n'
-            return
+        user != '' -> {
+            pass != '' -> {
+                cred = user - ':' - pass
+                encoded = base64.base64-encode(cred, cred.len)
+                headers = 'Authorization: Basic ' - encoded - '\n'
+                return
+            }
         }
     }
 
@@ -647,11 +649,13 @@ registry.get-auth-headers = () (headers str) {
     pip-user = os.get-env('PIP-USERNAME')
     pip-pass = os.get-env('PIP-PASSWORD')
     {
-        pip-user != '' && pip-pass != '' -> {
-            cred = pip-user - ':' - pip-pass
-            encoded = base64.base64-encode(cred, cred.len)
-            headers = 'Authorization: Basic ' - encoded - '\n'
-            return
+        pip-user != '' -> {
+            pip-pass != '' -> {
+                cred = pip-user - ':' - pip-pass
+                encoded = base64.base64-encode(cred, cred.len)
+                headers = 'Authorization: Basic ' - encoded - '\n'
+                return
+            }
         }
     }
 
@@ -673,7 +677,7 @@ registry.get-auth-headers = () (headers str) {
 ; returns: user str, pass str, ok bool
 ; ═══════════════════════════════════════════════
 
-registry.read-netrc = (host str) (user str, pass str, ok bool) {
+read-netrc = (host str) (user str, pass str, ok bool) {
     ok = false
     user = ''
     pass = ''
@@ -694,7 +698,8 @@ registry.read-netrc = (host str) (user str, pass str, ok bool) {
             content = fs.read-file(netrc-path)
 
             ; parse netrc: machine <host> login <user> password <pass>
-            lines = content.split('\n')
+            lines = cs = content
+cs = cs.split('\n')
             nl = lines.len
             i = 0
             found-machine = false
@@ -723,7 +728,10 @@ registry.read-netrc = (host str) (user str, pass str, ok bool) {
                                 }
                             }
                             {
-                                line.starts-with('machine ') || line == 'default' -> {
+                                line.starts-with('machine ') -> {
+                                    found-machine = false
+                                }
+                                line == 'default' -> {
                                     found-machine = false
                                 }
                             }
@@ -734,7 +742,7 @@ registry.read-netrc = (host str) (user str, pass str, ok bool) {
 
             ; also handle single-line format
             {
-                user == '' || pass == '' -> {
+                user == '' -> {
                     i = 0
                     {
                         line = lines[i]
@@ -772,7 +780,9 @@ registry.read-netrc = (host str) (user str, pass str, ok bool) {
             }
 
             {
-                user != '' && pass != '' -> ok = true
+                user != '' -> {
+                    pass != '' -> ok = true
+                }
             }
         }
     }
@@ -784,7 +794,7 @@ registry.read-netrc = (host str) (user str, pass str, ok bool) {
 ; token str — bearer token for authentication
 ; ═══════════════════════════════════════════════
 
-registry.download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
+download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
     ok = false
 
     ; get download URL
@@ -796,16 +806,8 @@ registry.download-with-auth = (name str, ver str, dest str, token str) (ok bool)
         }
     }
 
-    ; create request with auth
-    req = http-request{}
-    req.init('GET', dl-url, '')
-    {
-        token != '' -> {
-            req.add-header('Authorization', 'Bearer ' - token)
-        }
-    }
-
-    resp = http.http-do-req(req)
+    ; TODO: add auth header support when http-request alloca bug is fixed
+    resp = http.http-get(dl-url)
     {
         resp != nil -> {
             body = resp.body
@@ -828,7 +830,7 @@ registry.download-with-auth = (name str, ver str, dest str, token str) (ok bool)
 ; delay between retries: 1s, 2s, 4s, 8s, ...
 ; ═══════════════════════════════════════════════
 
-registry.download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool) {
+download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool) {
     ok = false
     {
         max-retries < 1 -> max-retries = 3
@@ -869,7 +871,7 @@ registry.download-with-backoff = (name str, ver str, dest str, max-retries i64) 
 ; token str — PyPI API token
 ; ═══════════════════════════════════════════════
 
-registry.upload-package = (file-path str, name str, ver str, token str) (ok bool) {
+upload-package = (file-path str, name str, ver str, token str) (ok bool) {
     ok = false
 
     ; get upload URL
@@ -886,33 +888,17 @@ registry.upload-package = (file-path str, name str, ver str, token str) (ok bool
             return
         }
         -> {
-            ; create multipart form data
-            req = http-request{}
-            req.init('POST', upload-url, data)
-            {
-                token != '' -> {
-                    req.add-header('Authorization', 'Bearer ' - token)
-                }
-            }
-            req.add-header('Content-Type', 'multipart/form-data')
-
-            ; get filename from path
-            filename = file-path
-            slash = filename.rindex('/')
-            {
-                slash >= 0 -> filename = filename.slice(slash + 1, filename.len)
-            }
-
-            req.add-header('X-Filename', filename)
-
-            resp = http.http-do-req(req)
+            ; TODO: add auth header support when http-request alloca bug is fixed
+            resp = http.http-post(upload-url, data)
             {
                 resp != nil -> {
                     status = resp.status-code
                     {
-                        status >= 200 && status < 300 -> {
-                            print('Uploaded {filename} to {upload-url}')
-                            ok = true
+                        status >= 200 -> {
+                            status < 300 -> {
+                                print('Uploaded {filename} to {upload-url}')
+                                ok = true
+                            }
                         }
                         -> {
                             body = resp.body
@@ -929,7 +915,7 @@ registry.upload-package = (file-path str, name str, ver str, token str) (ok bool
 ; get-package-info-cached — get package info with caching
 ; ═══════════════════════════════════════════════
 
-registry.get-package-info-cached = (name str) (info str, ok bool) {
+get-package-info-cached = (name str) (info str, ok bool) {
     ok = false
     info = ''
 
@@ -981,7 +967,7 @@ registry.get-package-info-cached = (name str) (info str, ok bool) {
 ; get-index-url-for-config — get index URL from project config
 ; ═══════════════════════════════════════════════
 
-registry.get-index-url-for-config = (cfg str) (url str) {
+get-index-url-for-config = (cfg str) (url str) {
     url = ''
     ; check if config has an index-url setting
     lines = cfg.split('\n')
@@ -1010,7 +996,7 @@ registry.get-index-url-for-config = (cfg str) (url str) {
 ; get-extra-index-urls — get extra index URLs from config
 ; ═══════════════════════════════════════════════
 
-registry.get-extra-index-urls = (cfg str) (urls str) {
+get-extra-index-urls = (cfg str) (urls str) {
     urls = ''
     lines = cfg.split('\n')
     n = lines.len
@@ -1035,7 +1021,7 @@ registry.get-extra-index-urls = (cfg str) (urls str) {
 ; verify-hash — verify a file hash against expected value
 ; ═══════════════════════════════════════════════
 
-registry.verify-hash = (file-path str, expected-hash str) (ok bool) {
+verify-hash = (file-path str, expected-hash str) (ok bool) {
     ok = false
     data = fs.read-file(file-path)
     {
@@ -1061,7 +1047,7 @@ registry.verify-hash = (file-path str, expected-hash str) (ok bool) {
 ; download-and-verify — download a package and verify its hash
 ; ═══════════════════════════════════════════════
 
-registry.download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool) {
+download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool) {
     ok = false
 
     dl-ok = download-package(name, ver, dest)

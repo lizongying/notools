@@ -16,7 +16,6 @@
 ;   get-env-value(name str) (val str) — get environment variable value
 ;   tokenize(marker str) (tokens str) — tokenize marker expression
 
-# /nouv/src/settings
 # /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
@@ -27,7 +26,7 @@
 ; returns: ok bool — whether the marker is satisfied
 ; ═══════════════════════════════════════════════
 
-markers.evaluate = (marker str, extras str) (ok bool) {
+evaluate = (marker str, extras str) (ok bool) {
     ok = true
     {
         marker == '' -> return
@@ -46,7 +45,7 @@ markers.evaluate = (marker str, extras str) (ok bool) {
 ; "expr1 or expr2 or expr3"
 ; ═══════════════════════════════════════════════
 
-markers.eval-or = (expr str, extras str) (result bool, ok bool) {
+eval-or = (expr str, extras str) (result bool, ok bool) {
     ok = true
     result = false
 
@@ -83,7 +82,7 @@ markers.eval-or = (expr str, extras str) (result bool, ok bool) {
 ; "expr1 and expr2 and expr3"
 ; ═══════════════════════════════════════════════
 
-markers.eval-and = (expr str, extras str) (result bool, ok bool) {
+eval-and = (expr str, extras str) (result bool, ok bool) {
     ok = true
     result = true
 
@@ -119,25 +118,25 @@ markers.eval-and = (expr str, extras str) (result bool, ok bool) {
 ; "python_version>='3.8'" or "(expr)" for parenthesized groups
 ; ═══════════════════════════════════════════════
 
-markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
+eval-comparison = (expr str, extras str) (result bool, ok bool) {
     ok = false
     result = false
 
-    s = expr.trim()
+    src = expr.trim()
     {
-        s == '' -> return
+        src == '' -> return
     }
 
     ; handle parenthesized expression
     {
-        s.starts-with('(') -> {
+        src.starts-with('(') -> {
             ; find matching close paren
-            n = s.len
+            n = src.len
             depth = 0
             i = 0
             close = -1
             {
-                c = s[i]
+                c = src[i]
                 {
                     c == 40 -> depth = depth + 1  ; (
                     c == 41 -> {  ; )
@@ -154,9 +153,10 @@ markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
             } (i < n)
             {
                 close >= 0 -> {
-                    inner = s.slice(1, close)
+                    inner = src.slice(1, close)
                     ; check if there's more after close paren
-                    rest = s.slice(close + 1, n).trim()
+                    rest = src.slice(close + 1, n)
+                    rest = rest.trim()
                     {
                         rest == '' -> {
                             ; just a parenthesized expression
@@ -170,17 +170,17 @@ markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
     }
 
     ; find comparison operator
-    op, left, right = find-comparison-op(s)
+    op, left, right = find-comparison-op(src)
     {
         op == '' -> {
             ; no operator — check for truthiness
             {
-                s == 'true' -> {
+                src == 'true' -> {
                     result = true
                     ok = true
                     return
                 }
-                s == 'false' -> {
+                src == 'false' -> {
                     result = false
                     ok = true
                     return
@@ -198,8 +198,12 @@ markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
     right = right.trim()
     right-val = right
     {
-        right.starts-with('"') && right.ends-with('"') -> right-val = right.slice(1, right.len - 1)
-        right.starts-with("'") && right.ends-with("'") -> right-val = right.slice(1, right.len - 1)
+        right.starts-with('"') -> {
+            right.ends-with('"') -> right-val = right.slice(1, right.len - 1)
+        }
+        right.starts-with("'") -> {
+            right.ends-with("'") -> right-val = right.slice(1, right.len - 1)
+        }
     }
 
     ; evaluate comparison
@@ -211,49 +215,104 @@ markers.eval-comparison = (expr str, extras str) (result bool, ok bool) {
 ; returns: op str, left str, right str
 ; ═══════════════════════════════════════════════
 
-markers.find-comparison-op = (s str) (op str, left str, right str) {
+find-comparison-op = (haystack str) (op str, left str, right str) {
     op = ''
-    left = s
+    left = haystack
     right = ''
+    hs = haystack
+    hl = hs.len
 
     ; try operators in order of length (longest first)
+    p1 = find-op-pos(hs, ' not in ')
     {
-        pos = find-op-pos(s, ' not in ')
-        pos >= 0 -> {
+        p1 >= 0 -> {
             op = 'not in'
-            left = s.slice(0, pos)
-            right = s.slice(pos + 8, s.len)
+            left = hs.slice(0, p1)
+            right = hs.slice(p1 + 8, hl)
             return
         }
     }
+    p2 = find-op-pos(hs, ' in ')
     {
-        pos = find-op-pos(s, ' in ')
-        pos >= 0 -> {
+        p2 >= 0 -> {
             op = 'in'
-            left = s.slice(0, pos)
-            right = s.slice(pos + 4, s.len)
+            left = hs.slice(0, p2)
+            right = hs.slice(p2 + 4, hl)
             return
         }
     }
 
-    ; comparison operators
-    ops = '=== ~= >= <= == != > <'
-    op-list = ops.split(' ')
-    n = op-list.len
-    i <- [0..n): {
-        candidate = op-list[i]
-        {
-            candidate.len > 0 -> {
-                pos = find-op-pos(s, candidate)
-                {
-                    pos >= 0 -> {
-                        op = candidate
-                        left = s.slice(0, pos)
-                        right = s.slice(pos + candidate.len, s.len)
-                        return
-                    }
-                }
-            }
+    ; comparison operators — try each in order
+    p3 = find-op-pos(hs, '===')
+    {
+        p3 >= 0 -> {
+            op = '==='
+            left = hs.slice(0, p3)
+            right = hs.slice(p3 + 3, hl)
+            return
+        }
+    }
+    p4 = find-op-pos(hs, '~=')
+    {
+        p4 >= 0 -> {
+            op = '~='
+            left = hs.slice(0, p4)
+            right = hs.slice(p4 + 2, hl)
+            return
+        }
+    }
+    p5 = find-op-pos(hs, '>=')
+    {
+        p5 >= 0 -> {
+            op = '>='
+            left = hs.slice(0, p5)
+            right = hs.slice(p5 + 2, hl)
+            return
+        }
+    }
+    p6 = find-op-pos(hs, '<=')
+    {
+        p6 >= 0 -> {
+            op = '<='
+            left = hs.slice(0, p6)
+            right = hs.slice(p6 + 2, hl)
+            return
+        }
+    }
+    p7 = find-op-pos(hs, '==')
+    {
+        p7 >= 0 -> {
+            op = '=='
+            left = hs.slice(0, p7)
+            right = hs.slice(p7 + 2, hl)
+            return
+        }
+    }
+    p8 = find-op-pos(hs, '!=')
+    {
+        p8 >= 0 -> {
+            op = '!='
+            left = hs.slice(0, p8)
+            right = hs.slice(p8 + 2, hl)
+            return
+        }
+    }
+    p9 = find-op-pos(hs, '>')
+    {
+        p9 >= 0 -> {
+            op = '>'
+            left = hs.slice(0, p9)
+            right = hs.slice(p9 + 1, hl)
+            return
+        }
+    }
+    p10 = find-op-pos(hs, '<')
+    {
+        p10 >= 0 -> {
+            op = '<'
+            left = hs.slice(0, p10)
+            right = hs.slice(p10 + 1, hl)
+            return
         }
     }
 }
@@ -262,40 +321,20 @@ markers.find-comparison-op = (s str) (op str, left str, right str) {
 ; find-op-pos — find operator position (not inside quotes)
 ; ═══════════════════════════════════════════════
 
-markers.find-op-pos = (s str, op-str str) (pos i64) {
+find-op-pos = (haystack str, needle str) (pos i64) {
     pos = -1
-    n = s.len
-    in-str = false
-    str-char = 0
+    hs = haystack
+    nd = needle
+    n = hs.len
+    nl = nd.len
     i = 0
     {
-        c = s[i]
-        {
-            in-str -> {
-                c == str-char -> in-str = false
-            }
-            -> {
-                {
-                    c == 34 || c == 39 -> {
-                        in-str = true
-                        str-char = c
-                    }
-                }
-            }
-        }
-        {
-            in-str == false -> {
-                ; try to match op-str at position i
-                {
-                    i + op-str.len <= n -> {
-                        candidate = s.slice(i, i + op-str.len)
-                        {
-                            candidate == op-str -> {
-                                pos = i
-                                return
-                            }
-                        }
-                    }
+        i + nl <= n -> {
+            candidate = hs.slice(i, i + nl)
+            {
+                candidate == nd -> {
+                    pos = i
+                    return
                 }
             }
         }
@@ -307,17 +346,19 @@ markers.find-op-pos = (s str, op-str str) (pos i64) {
 ; resolve-value — resolve a marker variable to its value
 ; ═══════════════════════════════════════════════
 
-markers.resolve-value = (name str, extras str) (val str) {
+resolve-value = (name str, extras str) (val str) {
     val = ''
     n = name.trim()
 
     ; remove quotes if it's a string literal
     {
-        n.starts-with('"') && n.ends-with('"') -> {
+        n.starts-with('"') -> {
             val = n.slice(1, n.len - 1)
             return
         }
-        n.starts-with("'") && n.ends-with("'") -> {
+    }
+    {
+        n.starts-with("'") -> {
             val = n.slice(1, n.len - 1)
             return
         }
@@ -348,7 +389,7 @@ markers.resolve-value = (name str, extras str) (val str) {
 ; compare-values — compare values using the operator
 ; ═══════════════════════════════════════════════
 
-markers.compare-values = (left str, op str, right str) (result bool, ok bool) {
+compare-values = (left str, op str, right str) (result bool, ok bool) {
     ok = true
     result = false
 
@@ -373,31 +414,31 @@ markers.compare-values = (left str, op str, right str) (result bool, ok bool) {
 ; Version comparison helpers
 ; ═══════════════════════════════════════════════
 
-markers.version-gte = (a str, b str) (result bool) {
+version-gte = (a str, b str) (result bool) {
     result = false
     cmp = version-cmp(a, b)
     result = cmp >= 0
 }
 
-markers.version-lte = (a str, b str) (result bool) {
+version-lte = (a str, b str) (result bool) {
     result = false
     cmp = version-cmp(a, b)
     result = cmp <= 0
 }
 
-markers.version-gt = (a str, b str) (result bool) {
+version-gt = (a str, b str) (result bool) {
     result = false
     cmp = version-cmp(a, b)
     result = cmp > 0
 }
 
-markers.version-lt = (a str, b str) (result bool) {
+version-lt = (a str, b str) (result bool) {
     result = false
     cmp = version-cmp(a, b)
     result = cmp < 0
 }
 
-markers.version-compat = (a str, b str) (result bool) {
+version-compat = (a str, b str) (result bool) {
     result = false
     ; ~= operator: >= b and < (b with last component + 1)
     cmp = version-cmp(a, b)
@@ -422,7 +463,7 @@ markers.version-compat = (a str, b str) (result bool) {
     }
 }
 
-markers.version-cmp = (a str, b str) (cmp i64) {
+version-cmp = (a str, b str) (cmp i64) {
     cmp = 0
     a-parts = a.split('.')
     b-parts = b.split('.')
@@ -460,7 +501,7 @@ markers.version-cmp = (a str, b str) (cmp i64) {
 ; (not inside quotes or parentheses)
 ; ═══════════════════════════════════════════════
 
-markers.split-top-level = (expr str, sep str) (parts str) {
+split-top-level = (expr str, sep str) (parts str) {
     parts = expr
     n = expr.len
     in-str = false
@@ -474,20 +515,24 @@ markers.split-top-level = (expr str, sep str) (parts str) {
             in-str -> {
                 c == str-char -> in-str = false
             }
-            -> {
-                {
-                    c == 34 || c == 39 -> {
-                        in-str = true
-                        str-char = c
-                    }
-                    c == 40 -> depth = depth + 1  ; (
-                    c == 41 -> depth = depth - 1  ; )
+        }
+        {
+            in-str == false -> {
+                c == 34 -> {
+                    in-str = true
+                    str-char = c
                 }
+                c == 39 -> {
+                    in-str = true
+                    str-char = c
+                }
+                c == 40 -> depth = depth + 1  ; (
+                c == 41 -> depth = depth - 1  ; )
             }
         }
         {
-            in-str == false && depth == 0 -> {
-                {
+            in-str == false -> {
+                depth == 0 -> {
                     i + sep.len <= n -> {
                         candidate = expr.slice(i, i + sep.len)
                         {
@@ -514,7 +559,7 @@ markers.split-top-level = (expr str, sep str) (parts str) {
 ; Environment variable getters
 ; ═══════════════════════════════════════════════
 
-markers.get-python-version = () (ver str) {
+get-python-version = () (ver str) {
     ver = ''
     out = run-cmd-output('python3 -c "import sys; print(f\\"{sys.version_info.major}.{sys.version_info.minor}\\")"')
     ver = out.trim()
@@ -525,7 +570,8 @@ markers.get-python-version = () (ver str) {
             ; "Python 3.12.0" → "3.12"
             {
                 out2.starts-with('Python ') -> {
-                    full = out2.slice(7, out2.len).trim()
+                    full = out2.slice(7, out2.len)
+full = full.trim()
                     parts = full.split('.')
                     {
                         parts.len >= 2 -> ver = parts[0] - '.' - parts[1]
@@ -536,28 +582,31 @@ markers.get-python-version = () (ver str) {
     }
 }
 
-markers.get-python-full-version = () (ver str) {
+get-python-full-version = () (ver str) {
     ver = ''
     out = run-cmd-output('python3 --version')
     {
-        out.starts-with('Python ') -> ver = out.slice(7, out.len).trim()
-        -> ver = out.trim()
+out.starts-with('Python ') -> {
+    ver = out.slice(7, out.len)
+    ver = ver.trim()
+}
+-> ver = out.trim()
     }
 }
 
-markers.get-platform-system = () (sys str) {
+get-platform-system = () (sys str) {
     sys = ''
     out = run-cmd-output('uname -s')
     sys = out.trim()
 }
 
-markers.get-platform-machine = () (arch str) {
+get-platform-machine = () (arch str) {
     arch = ''
     out = run-cmd-output('uname -m')
     arch = out.trim()
 }
 
-markers.get-sys-platform = () (plat str) {
+get-sys-platform = () (plat str) {
     plat = get-platform-system()
     {
         plat == 'Darwin' -> plat = 'darwin'
@@ -565,7 +614,7 @@ markers.get-sys-platform = () (plat str) {
     }
 }
 
-markers.get-os-name = () (name str) {
+get-os-name = () (name str) {
     name = ''
     sys = get-platform-system()
     {
@@ -575,22 +624,22 @@ markers.get-os-name = () (name str) {
     }
 }
 
-markers.get-implementation-name = () (name str) {
+get-implementation-name = () (name str) {
     name = 'cpython'
 }
 
-markers.get-platform-release = () (rel str) {
+get-platform-release = () (rel str) {
     rel = ''
     out = run-cmd-output('uname -r')
     rel = out.trim()
 }
 
-markers.get-platform-version = () (ver str) {
+get-platform-version = () (ver str) {
     ver = ''
     out = run-cmd-output('uname -v')
     ver = out.trim()
 }
 
-markers.get-python-implementation = () (impl str) {
+get-python-implementation = () (impl str) {
     impl = 'CPython'
 }

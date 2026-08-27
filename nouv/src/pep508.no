@@ -30,7 +30,7 @@
 ;   ok bool — parse success
 ; ═══════════════════════════════════════════════
 
-pep508.parse = (req str) (name str, extras str, ver-specs str, marker str, url str, editable bool, ok bool) {
+parse = (req str) (name str, extras str, ver-specs str, marker str, url str, editable bool, ok bool) {
     ok = false
     name = ''
     extras = ''
@@ -91,29 +91,60 @@ pep508.parse = (req str) (name str, extras str, ver-specs str, marker str, url s
 ; Returns name and the rest of the string
 ; ═══════════════════════════════════════════════
 
-pep508.parse-name = (s str) (name str, rest str) {
+is-name-char = (c i64) (yes bool) {
+    yes = false
+    {
+        c >= 65 -> {
+            c <= 90 -> yes = true
+        }
+    }
+    yes == false -> {
+        c >= 97 -> {
+            c <= 122 -> yes = true
+        }
+    }
+    yes == false -> {
+        c >= 48 -> {
+            c <= 57 -> yes = true
+        }
+    }
+    yes == false -> {
+        c == 45 -> yes = true
+    }
+    yes == false -> {
+        c == 95 -> yes = true
+    }
+    yes == false -> {
+        c == 46 -> yes = true
+    }
+}
+
+parse-name = (s str) (name str, rest str) {
     name = ''
     rest = s
 
     n = s.len
     i = 0
     ; skip leading whitespace
-    {
-        i = i + 1
-    } (i < n && (s[i] == 32 || s[i] == 9))
+    for i < n {
+        ch = s[i]
+        {
+            ch == 32 -> i = i + 1
+            ch == 9 -> i = i + 1
+            -> break
+        }
+    }
 
     ; package name: letters, digits, -, _, .
     start = i
-    {
+    for i < n {
         c = s[i]
+        ok = is-name-char(c)
         {
-            ; A-Z, a-z, 0-9, -, _, .
-            (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95 || c == 46 -> {
-                i = i + 1
-            }
+            ok -> i = i + 1
             -> break
         }
-    } (i < n)
+    }
 
     {
         i > start -> {
@@ -128,7 +159,7 @@ pep508.parse-name = (s str) (name str, rest str) {
 ; Returns newline-separated extras and the rest
 ; ═══════════════════════════════════════════════
 
-pep508.parse-extras = (s str) (extras str, rest str) {
+parse-extras = (s str) (extras str, rest str) {
     extras = ''
     rest = s
 
@@ -182,13 +213,15 @@ pep508.parse-extras = (s str) (extras str, rest str) {
 ; ">=2.0,<3.0" returns the same string normalized
 ; ═══════════════════════════════════════════════
 
-pep508.parse-version-specifiers = (s str) (specs str) {
+parse-version-specifiers = (s str) (specs str) {
     specs = s.trim()
 
     ; remove surrounding parens if present
     {
-        specs.starts-with('(') && specs.ends-with(')') -> {
-            specs = specs.slice(1, specs.len - 1).trim()
+        specs.starts-with('(') -> {
+            specs.ends-with(')') -> {
+                specs = specs.slice(1, specs.len - 1).trim()
+            }
         }
     }
 
@@ -201,7 +234,7 @@ pep508.parse-version-specifiers = (s str) (specs str) {
 ; "My_Package" → "my-package"
 ; ═══════════════════════════════════════════════
 
-pep508.normalize-name = (name str) (normalized str) {
+normalize-name = (name str) (normalized str) {
     normalized = name.to-lower()
     ; replace runs of -, _ with single -
     n = normalized.len
@@ -211,7 +244,15 @@ pep508.normalize-name = (name str) (normalized str) {
     {
         c = normalized[i]
         {
-            c == 45 || c == 95 -> {  ; - or _
+            c == 45 -> {  ; -
+                {
+                    prev-sep == false -> {
+                        result = result - '-'
+                    }
+                }
+                prev-sep = true
+            }
+            c == 95 -> {  ; _
                 {
                     prev-sep == false -> {
                         result = result - '-'
@@ -233,7 +274,7 @@ pep508.normalize-name = (name str) (normalized str) {
 ; find-unquoted — find a character not inside quotes
 ; ═══════════════════════════════════════════════
 
-pep508.find-unquoted = (s str, ch i64) (pos i64) {
+find-unquoted = (s str, ch i64) (pos i64) {
     pos = -1
     n = s.len
     i = 0
@@ -247,7 +288,11 @@ pep508.find-unquoted = (s str, ch i64) (pos i64) {
             }
             -> {
                 {
-                    c == 34 || c == 39 -> {  ; " or '
+                    c == 34 -> {  ; "
+                        in-str = true
+                        str-char = c
+                    }
+                    c == 39 -> {  ; '
                         in-str = true
                         str-char = c
                     }
@@ -267,42 +312,42 @@ pep508.find-unquoted = (s str, ch i64) (pos i64) {
 ; ">=2.0" → op=">=", version="2.0"
 ; ═══════════════════════════════════════════════
 
-pep508.parse-specifier = (spec str) (op str, version str) {
+parse-specifier = (spec str) (op str, version str) {
     op = ''
     version = spec.trim()
 
     {
-        starts-with('>=') -> {
-            op = '>='
-            version = slice(2, version.len).trim()
-        }
-        starts-with('<=') -> {
-            op = '<='
-            version = slice(2, version.len).trim()
-        }
-        starts-with('==') -> {
-            op = '=='
-            version = slice(2, version.len).trim()
-        }
-        starts-with('!=') -> {
-            op = '!='
-            version = slice(2, version.len).trim()
-        }
-        starts-with('~=') -> {
-            op = '~='
-            version = slice(2, version.len).trim()
-        }
-        starts-with('>') -> {
-            op = '>'
-            version = slice(1, version.len).trim()
-        }
-        starts-with('<') -> {
-            op = '<'
-            version = slice(1, version.len).trim()
-        }
-        starts-with('===') -> {
+        version.starts-with('===') -> {
             op = '==='
-            version = slice(3, version.len).trim()
+            version = version.slice(3, version.len).trim()
+        }
+        version.starts-with('>=') -> {
+            op = '>='
+            version = version.slice(2, version.len).trim()
+        }
+        version.starts-with('<=') -> {
+            op = '<='
+            version = version.slice(2, version.len).trim()
+        }
+        version.starts-with('==') -> {
+            op = '=='
+            version = version.slice(2, version.len).trim()
+        }
+        version.starts-with('!=') -> {
+            op = '!='
+            version = version.slice(2, version.len).trim()
+        }
+        version.starts-with('~=') -> {
+            op = '~='
+            version = version.slice(2, version.len).trim()
+        }
+        version.starts-with('>') -> {
+            op = '>'
+            version = version.slice(1, version.len).trim()
+        }
+        version.starts-with('<') -> {
+            op = '<'
+            version = version.slice(1, version.len).trim()
         }
         -> {
             ; bare version, treat as ==
@@ -316,7 +361,7 @@ pep508.parse-specifier = (spec str) (op str, version str) {
 ; ">=2.0,<3.0" → ">=2.0\n<3.0"
 ; ═══════════════════════════════════════════════
 
-pep508.split-specifiers = (specs str) (list str) {
+split-specifiers = (specs str) (list str) {
     list = ''
     parts = specs.split(',')
     n = parts.len
@@ -339,7 +384,7 @@ pep508.split-specifiers = (specs str) (list str) {
 ; is-extras-string — check if a string looks like extras
 ; ═══════════════════════════════════════════════
 
-pep508.has-extras = (req str) (yes bool) {
+has-extras = (req str) (yes bool) {
     yes = false
     n = req.len
     i = 0
@@ -350,8 +395,11 @@ pep508.has-extras = (req str) (yes bool) {
                 yes = true
                 return
             }
-            ; version operators indicate we're past extras
-            c == 61 || c == 60 || c == 62 || c == 33 || c == 126 -> return
+            c == 61 -> return
+            c == 60 -> return
+            c == 62 -> return
+            c == 33 -> return
+            c == 126 -> return
         }
         i = i + 1
     } (i < n)
@@ -361,7 +409,7 @@ pep508.has-extras = (req str) (yes bool) {
 ; format-requirement — format a requirement back to PEP 508 string
 ; ═══════════════════════════════════════════════
 
-pep508.format-requirement = (name str, extras str, ver-specs str, marker str, url str) (req str) {
+format-requirement = (name str, extras str, ver-specs str, marker str, url str) (req str) {
     req = name
     {
         extras != '' -> {
