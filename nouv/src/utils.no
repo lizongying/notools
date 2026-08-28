@@ -223,6 +223,200 @@ replace-char-str = (s str, old i64, new i64) (out str) {
 }
 
 ; ═══════════════════════════════════════════════
+; extract-zip — extract a zip/wheel file to a directory (pure Nolang)
+; Uses custom unzip-arch struct to avoid slice ownership bugs.
+; ═══════════════════════════════════════════════
+
+; custom zip archive struct (avoids std zip cross-module issues)
+nz-arch {
+    data []byte
+}
+
+nz-arch.read-u32le = (off i64) (v i64) {
+    off1 = off + 1
+    off2 = off + 2
+    off3 = off + 3
+    b0 = .data[off] & 255
+    b1 = .data[off1] & 255
+    b2 = .data[off2] & 255
+    b3 = .data[off3] & 255
+    v = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+nz-arch.read-u16le = (off i64) (v i64) {
+    off1 = off + 1
+    b0 = .data[off] & 255
+    b1 = .data[off1] & 255
+    v = b0 | (b1 << 8)
+}
+
+nz-arch.find-eocd = () (off i64) {
+    off = -1
+    n = len(.data)
+    n < 22 -> return
+    i = n - 22
+    {
+        b0 = .data[i] & 255
+        b1 = .data[i + 1] & 255
+        b2 = .data[i + 2] & 255
+        b3 = .data[i + 3] & 255
+        sig = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        {
+            sig == 101010256 -> {
+                off = i
+                return
+            }
+        }
+        i = i - 1
+    } (i >= 0)
+}
+
+nz-arch.entry-offset = (idx i64) (off i64) {
+    off = 0
+    eocd = .find-eocd()
+    eocd < 0 -> return
+    off = .read-u32le(eocd + 16)
+    j <- [0..idx): {
+        name-len = .read-u16le(off + 28)
+        extra-len = .read-u16le(off + 30)
+        comment-len = .read-u16le(off + 32)
+        off = off + 46 + name-len + extra-len + comment-len
+    }
+}
+
+nz-arch.read-name = (idx i64) (name str) {
+    off = .entry-offset(idx)
+    name-len = .read-u16le(off + 28)
+    name = ''
+    j <- [0..name-len): {
+        name = name - number.char-to-str(.data[off + 46 + j] & 255)
+    }
+}
+
+nz-arch.read-size = (idx i64) (sz i64) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+}
+
+nz-arch.read-method = (idx i64) (method i64) {
+    off = .entry-offset(idx)
+    method = .read-u16le(off + 10)
+}
+
+nz-arch.total = () (total i64) {
+    total = 0
+    eocd = .find-eocd()
+    eocd < 0 -> return
+    total = .read-u16le(eocd + 8)
+}
+
+nz-arch.extract-stored = (idx i64) (out []byte) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+    local-off = .read-u32le(off + 42)
+    name-len2 = .read-u16le(local-off + 26)
+    extra-len2 = .read-u16le(local-off + 28)
+    data-off = local-off + 30 + name-len2 + extra-len2
+    out = with-len(sz)
+    i <- [0..sz): {
+        out[i] = .data[data-off + i]
+    }
+}
+
+nz-arch.extract-deflate = (idx i64) (out []byte) {
+    off = .entry-offset(idx)
+    sz = .read-u32le(off + 24)
+    csz = .read-u32le(off + 20)
+    local-off = .read-u32le(off + 42)
+    name-len2 = .read-u16le(local-off + 26)
+    extra-len2 = .read-u16le(local-off + 28)
+    data-off = local-off + 30 + name-len2 + extra-len2
+    compressed []byte = with-len(csz)
+    i <- [0..csz): {
+        compressed[i] = .data[data-off + i]
+    }
+    out = gzip.inflate-decompress(compressed, sz)
+}
+
+; make-parent-dirs: create parent directories for a file path
+nz-make-parent-dirs = (full-path str) {
+    n = full-path.len
+    i <- [1..n): {
+        full-path[i] == '/' -> {
+            dir = full-path.slice(0, i)
+            dir.len > 0 -> {
+                fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+            }
+        }
+    }
+}
+
+extract-zip = (zip-path str, dest-dir str) (ok bool) {
+    ok = false
+
+    ; read file content
+    content = fs.read-file(zip-path)
+    {
+        content == '' -> return
+    }
+
+    ; convert str to []byte (avoid str.to-bytes() compiler bug)
+    data []byte
+    clen = content.len
+    ci <- [0..clen): {
+        data.push(content[ci])
+    }
+
+    ; create custom archive view
+    archive = nz-arch{
+        data: data,
+    }
+    count = archive.total()
+    {
+        count == 0 -> return
+        -> {
+            ; ensure dest dir exists
+            dp = path{
+                p: dest-dir,
+            }
+            mk = dp.make-dir()
+
+            ; extract each entry
+            i <- [0..count): {
+                name = archive.read-name(i)
+                method = archive.read-method(i)
+                is-dir = name.ends-with('/')
+                out-path = dest-dir - '/' - name
+
+                {
+                    is-dir -> {
+                        dp2 = path{
+                            p: out-path,
+                        }
+                        mk2 = dp2.make-dir()
+                    }
+                    -> {
+                        nz-make-parent-dirs(out-path)
+                        {
+                            method == 0 -> {
+                                out = archive.extract-stored(i)
+                                fs.write-file(out-path, out)
+                            }
+                            method == 8 -> {
+                                out = archive.extract-deflate(i)
+                                fs.write-file(out-path, out)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ok = true
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; str-to-i64 — safely convert string to i64 (returns 0 on failure)
 ; ═══════════════════════════════════════════════
 
