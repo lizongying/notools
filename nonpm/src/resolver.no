@@ -1,0 +1,310 @@
+; resolver.no — dependency resolution and conflict resolution for noNpm
+;
+; Implements the pnpm dependency resolution algorithm:
+; - Reads package.json dependencies
+; - Fetches metadata from registry
+; - Resolves version ranges to concrete versions
+; - Builds a flat dependency graph
+; - Detects and resolves version conflicts (hoisting)
+;
+; API:
+;   resolve-project(cfg config, dir str) (graph dep-graph, ok bool) — resolve all deps
+;   resolve-pkg(cfg config, name str, range str) (ver str, ok bool) — resolve single package
+;   get-deps-from-pkgjson(dir str) (deps str, dev-deps str, ok bool) — read package.json
+;   graph-to-list(graph dep-graph) (names str, versions str) — flatten graph to list
+
+# /nonpm/src/utils
+# /nonpm/src/json
+# /nonpm/src/semver
+# /nonpm/src/registry
+
+; ═══════════════════════════════════════════════
+; dep-node struct — a single resolved dependency
+; ═══════════════════════════════════════════════
+
+dep-node {
+    name str
+    version str
+    range-str str
+    resolved str
+    integrity str
+    deps []dep-node
+    dep-count i64
+    is-dev bool
+    is-optional bool
+    is-peer bool
+    depth i64
+}
+
+; ═══════════════════════════════════════════════
+; dep-graph struct — the complete dependency graph
+; ═══════════════════════════════════════════════
+
+dep-graph {
+    root dep-node
+    nodes []dep-node
+    node-count i64
+    resolved-map str
+}
+
+; ═══════════════════════════════════════════════
+; get-deps-from-pkgjson — read dependencies from package.json
+; dir str — project root directory
+; returns deps str — JSON string of dependencies
+; returns dev-deps str — JSON string of devDependencies
+; returns peer-deps str — JSON string of peerDependencies
+; returns ok bool — true if package.json found
+; ═══════════════════════════════════════════════
+
+get-deps-from-pkgjson = (dir str) (deps str, dev-deps str, peer-deps str, ok bool) {
+    deps = ''
+    dev-deps = ''
+    peer-deps = ''
+    ok = false
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                dep-obj = json.get-key(it, 'dependencies')
+                dep-obj: {
+                    ok -> {
+                        buf str = with-len(65536)
+                        n = json.stringify(dep-obj, buf)
+                        deps = buf.slice(0, n)
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+                dev-obj = json.get-key(it, 'devDependencies')
+                dev-obj: {
+                    ok -> {
+                        buf str = with-len(65536)
+                        n = json.stringify(dev-obj, buf)
+                        dev-deps = buf.slice(0, n)
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+                peer-obj = json.get-key(it, 'peerDependencies')
+                peer-obj: {
+                    ok -> {
+                        buf str = with-len(65536)
+                        n = json.stringify(peer-obj, buf)
+                        peer-deps = buf.slice(0, n)
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+                ok = true
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-pkg — resolve a single package version
+; cfg config — configuration
+; name str — package name
+; range-str str — version range (e.g. "^1.2.3")
+; returns ver str — resolved version (empty if failed)
+; returns ok bool — true if resolved
+; ═══════════════════════════════════════════════
+
+resolve-pkg = (cfg config, name str, range-str str) (ver str, ok bool) {
+    ver = ''
+    ok = false
+    meta = registry.fetch-metadata(cfg, name)
+    meta: {
+        ok -> {
+            ; get all versions
+            versions = registry.get-versions(it)
+            best = semver.max-satisfying(versions, range-str)
+            best.len > 0 -> {
+                ver = best
+                ok = true
+            }
+            -> {
+                ; try dist-tags
+                range-str == 'latest' -> {
+                    latest = registry.get-latest-version(it)
+                    latest.len > 0 -> {
+                        ver = latest
+                        ok = true
+                    }
+                }
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-project — resolve all dependencies for a project
+; cfg config — configuration
+; dir str — project root directory
+; returns graph dep-graph — resolved dependency graph
+; returns ok bool — true if resolved
+; ═══════════════════════════════════════════════
+
+resolve-project = (cfg config, dir str) (graph dep-graph, ok bool) {
+    ok = false
+    deps, dev-deps, peer-deps, pkg-ok = get-deps-from-pkgjson(dir)
+    pkg-ok == false -> return
+
+    graph.node-count = 0
+    graph.root.name = ''
+    graph.root.version = ''
+    graph.root.range-str = ''
+    graph.root.depth = 0
+    graph.resolved-map = ''
+
+    ; parse and resolve production dependencies
+    deps.len > 0 -> {
+        dep-obj = json.parse(deps, deps.len)
+        dep-obj: {
+            ok -> {
+                resolve-deps-recursive(cfg, graph, dep-obj, false, false, 1)
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+
+    ; parse and resolve dev dependencies
+    dev-deps.len > 0 -> {
+        dev-obj = json.parse(dev-deps, dev-deps.len)
+        dev-obj: {
+            ok -> {
+                resolve-deps-recursive(cfg, graph, dev-obj, true, false, 1)
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; resolve-deps-recursive — recursively resolve a set of dependencies
+; cfg config — configuration
+; graph dep-graph — graph to populate (modified in place)
+; dep-obj json-value — JSON object of name->range pairs
+; is-dev bool — whether these are dev dependencies
+; is-optional bool — whether these are optional dependencies
+; depth i64 — current depth in the tree
+; ═══════════════════════════════════════════════
+
+resolve-deps-recursive = (cfg config, graph dep-graph, dep-obj json-value, is-dev bool, is-optional bool, depth i64) {
+    keys = dep-obj.obj-keys-str()
+    n = keys.len
+    i <- [0..n): {
+        name = keys[i]
+        range-val = json.get-key(dep-obj, name)
+        range-val: {
+            ok -> {
+                range-str = it.str-val()
+                ; check if already resolved
+                already = is-resolved(graph, name, range-str)
+                already == true -> continue
+                ; resolve version
+                ver, resolve-ok = resolve-pkg(cfg, name, range-str)
+                resolve-ok == true -> {
+                    node dep-node
+                    node.name = name
+                    node.version = ver
+                    node.range-str = range-str
+                    node.is-dev = is-dev
+                    node.is-optional = is-optional
+                    node.depth = depth
+
+                    ; fetch version metadata for sub-deps
+                    vmeta = registry.fetch-version(cfg, name, ver)
+                    vmeta: {
+                        ok -> {
+                            ; get dist info
+                            url, integrity, dist-ok = registry.get-dist-info(it)
+                            dist-ok == true -> {
+                                node.resolved = url
+                                node.integrity = integrity
+                            }
+                            ; get sub-dependencies
+                            sub-deps = registry.get-deps(it)
+                            sub-deps.len > 0 -> {
+                                sub-obj = json.parse(sub-deps, sub-deps.len)
+                                sub-obj: {
+                                    ok -> {
+                                        resolve-deps-recursive(cfg, graph, sub-obj, is-dev, is-optional, depth + 1)
+                                    }
+                                    nil -> {}
+                                    err -> {}
+                                }
+                            }
+                        }
+                        nil -> {}
+                        err -> {}
+                    }
+
+                    ; add to graph
+                    graph.nodes.push(node)
+                    graph.node-count = graph.node-count + 1
+                    ; record resolution
+                    graph.resolved-map = graph.resolved-map - name - '=' - ver - '\n'
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-resolved — check if a dependency has already been resolved
+; graph dep-graph — dependency graph
+; name str — package name
+; range-str str — version range
+; returns ok bool — true if already resolved
+; ═══════════════════════════════════════════════
+
+is-resolved = (graph dep-graph, name str, range-str str) (ok bool) {
+    ok = false
+    entries = graph.resolved-map.split('\n')
+    n = entries.len
+    i <- [0..n): {
+        entry = entries[i]
+        entry.starts-with(name - '=') -> {
+            ver = entry.slice(name.len + 1, entry.len)
+            v, parse-ok = semver.parse(ver)
+            parse-ok == true -> {
+                ok = semver.satisfies(v, range-str)
+                ok == true -> return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; graph-to-list — flatten dependency graph to lists
+; graph dep-graph — dependency graph
+; returns names str — newline-separated package names
+; returns versions str — newline-separated versions
+; ═══════════════════════════════════════════════
+
+graph-to-list = (graph dep-graph) (names str, versions str) {
+    names = ''
+    versions = ''
+    n = graph.node-count
+    i <- [0..n): {
+        node = graph.nodes[i]
+        names = names - node.name - '\n'
+        versions = versions - node.version - '\n'
+    }
+}

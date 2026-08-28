@@ -1,0 +1,125 @@
+; test-tarball.no — tests for the tarball module
+;
+; Mirrors pnpm's tarball download/extract/verify tests
+; Tests: extract (via temp tarball), verify-shasum logic
+; Run: no run nonpm/tests/test-tarball.no
+
+# /nonpm/src/tarball
+# /nonpm/src/utils
+
+main = () {
+    print('--- Testing tarball module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── extract: create a real tarball and extract it ──
+    ; Create a temp source dir with package/ structure
+    tmp-src = '/tmp/nonpm-tarball-src-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - tmp-src - '/package')
+    utils.write-file(tmp-src - '/package/index.js', 'module.exports = {};')
+    utils.write-file(tmp-src - '/package/package.json', '{"name":"test-pkg","version":"1.0.0"}')
+
+    ; Create tarball
+    tgz-path = '/tmp/nonpm-tarball-test-' - os.now-ms().to-str() - '.tgz'
+    process.process-system('cd ' - tmp-src - ' && tar czf ' - tgz-path - ' .')
+
+    ; Create dest dir
+    tmp-dest = '/tmp/nonpm-tarball-dest-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - tmp-dest)
+
+    ; Extract
+    ext-ok = tarball.extract(tgz-path, tmp-dest)
+    {
+        ext-ok -> {
+            ; check that index.js was extracted
+            index-exists = utils.file-exists(tmp-dest - '/index.js')
+            {
+                index-exists -> {
+                    print('PASS: extract creates files in dest')
+                    n-pass = n-pass + 1
+                }
+                -> {
+                    print('FAIL: extract should create index.js')
+                    n-fail = n-fail + 1
+                }
+            }
+        }
+        -> {
+            print('FAIL: extract should succeed')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── extract: nonexistent tarball fails gracefully ──
+    ext-ok2 = tarball.extract('/tmp/nonpm-nonexistent-' - os.now-ms().to-str() - '.tgz', tmp-dest)
+    {
+        ext-ok2 == false -> {
+            print('PASS: extract nonexistent tarball returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: extract nonexistent tarball should return false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── verify-shasum: known content ──
+    ; Create a known file and compute its sha512
+    test-file = '/tmp/nonpm-tarball-verify-' - os.now-ms().to-str()
+    utils.write-file(test-file, 'hello world')
+    ; Compute the actual hash
+    content = fs.read-file(test-file)
+    b = content.to-bytes()
+    actual-hash = sha512.sha512-hex(b)
+    ; Verify with correct hash
+    v-ok = tarball.verify-shasum(test-file, 'sha512-' - actual-hash)
+    {
+        v-ok -> {
+            print('PASS: verify-shasum correct hash')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: verify-shasum should pass with correct hash')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── verify-shasum: wrong hash ──
+    v-ok2 = tarball.verify-shasum(test-file, 'sha512-wrongwrongwrong')
+    {
+        v-ok2 == false -> {
+            print('PASS: verify-shasum wrong hash returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: verify-shasum should fail with wrong hash')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── verify-shasum: sha1 prefix ──
+    h1 = sha1.sha1-hex(content.to-bytes())
+    v-ok3 = tarball.verify-shasum(test-file, 'sha1-' - h1)
+    {
+        v-ok3 -> {
+            print('PASS: verify-shasum sha1 fallback')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: verify-shasum sha1 fallback should pass')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    process.process-system('rm -rf ' - tmp-src - ' ' - tgz-path - ' ' - tmp-dest - ' ' - test-file)
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

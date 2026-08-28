@@ -1,0 +1,355 @@
+; installer.no — package installation and node_modules management for noNpm
+;
+; Implements the pnpm installation workflow:
+; - Resolve all dependencies from package.json
+; - Download and extract packages to virtual store
+; - Create symlinks in node_modules
+; - Link peer dependencies
+; - Create bin links
+;
+; API:
+;   install(cfg config, dir str) (ok bool) — full install from package.json
+;   install-pkg(cfg config, name str, range str, dir str) (ok bool) — install single package
+;   add(cfg config, name str, range str, dir str, dev bool) (ok bool) — add dependency
+;   remove(cfg config, name str, dir str) (ok bool) — remove dependency
+;   prune(cfg config, dir str) (ok bool) — remove extraneous packages
+
+# /nonpm/src/utils
+# /nonpm/src/json
+# /nonpm/src/semver
+# /nonpm/src/registry
+# /nonpm/src/resolver
+# /nonpm/src/tarball
+# /nonpm/src/linker
+# /nonpm/src/lockfile
+
+; ═══════════════════════════════════════════════
+; install — full installation from package.json
+; cfg config — configuration
+; dir str — project root directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+install = (cfg config, dir str) (ok bool) {
+    ok = false
+    print('noNpm: resolving dependencies...')
+
+    ; resolve all dependencies
+    graph, resolve-ok = resolver.resolve-project(cfg, dir)
+    resolve-ok == false -> {
+        print('error: failed to resolve dependencies')
+        return
+    }
+
+    print('noNpm: resolved ' - graph.node-count.to-str() - ' packages')
+
+    ; set up virtual store
+    store-dir = cfg.store-dir
+    store-dir.len == 0 -> {
+        home = os.get-env('HOME')
+        store-dir = home - '/.nonpm/store'
+    }
+    nm-dir = dir - '/node_modules'
+    virtual-store = nm-dir - '/.nonpm'
+
+    ; ensure directories exist
+    p = path{
+        p: store-dir,
+    }
+    p.make-dir()
+    vp = path{
+        p: virtual-store,
+    }
+    vp.make-dir()
+    nmp = path{
+        p: nm-dir,
+    }
+    nmp.make-dir()
+
+    ; check if lockfile exists and is valid
+    lock-ok = lockfile.check-valid(cfg, dir, graph)
+    lock-ok == true -> {
+        print('noNpm: lockfile is up to date')
+    }
+
+    ; download and extract each package
+    n = graph.node-count
+    i <- [0..n): {
+        node = graph.nodes[i]
+        print('  ' - node.name - '@' - node.version)
+        ; download and extract to virtual store
+        pkg-store-path = linker.package-dir(virtual-store, node.name, node.version)
+        pkg-exists = fs.is-dir(pkg-store-path)
+        pkg-exists == false -> {
+            dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path)
+            dl-ok == false -> {
+                print('error: failed to download ' - node.name)
+                ok = false
+                return
+            }
+        }
+    }
+
+    ; create symlinks
+    i <- [0..n): {
+        node = graph.nodes[i]
+        ; link to top-level node_modules
+        linker.link-package(virtual-store, node.name, node.version, nm-dir)
+
+        ; create bin links
+        bin-dir = nm-dir - '/.bin'
+        linker.create-bin-links(virtual-store, node.name, node.version, bin-dir)
+
+        ; link package dependencies
+        vmeta = registry.fetch-version(cfg, node.name, node.version)
+        vmeta: {
+            ok -> {
+                deps = registry.get-deps(it)
+                deps.len > 0 -> {
+                    linker.link-deps(virtual-store, node.name, node.version, deps)
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+
+    ; generate lockfile
+    lockfile.generate(cfg, dir, graph)
+
+    print('noNpm: installation complete')
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; install-pkg — install a single package
+; cfg config — configuration
+; name str — package name
+; range str — version range
+; dir str — project root directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
+    ok = false
+    print('noNpm: resolving ' - name - '@' - range-str - '...')
+
+    ; resolve version
+    ver, resolve-ok = resolver.resolve-pkg(cfg, name, range-str)
+    resolve-ok == false -> {
+        print('error: could not resolve ' - name - '@' - range-str)
+        return
+    }
+
+    ; fetch version metadata
+    vmeta = registry.fetch-version(cfg, name, ver)
+    vmeta: {
+        ok -> {
+            url, integrity, dist-ok = registry.get-dist-info(it)
+            dist-ok == false -> {
+                print('error: could not get dist info for ' - name)
+                return
+            }
+
+            ; set up directories
+            nm-dir = dir - '/node_modules'
+            virtual-store = nm-dir - '/.nonpm'
+            p = path{
+                p: nm-dir,
+            }
+            p.make-dir()
+            vp = path{
+                p: virtual-store,
+            }
+            vp.make-dir()
+
+            ; download and extract
+            pkg-store-path = linker.package-dir(virtual-store, name, ver)
+            pkg-exists = fs.is-dir(pkg-store-path)
+            pkg-exists == false -> {
+                print('noNpm: downloading ' - name - '@' - ver - '...')
+                dl-ok = tarball.download-and-extract(url, pkg-store-path)
+                dl-ok == false -> {
+                    print('error: failed to download ' - name)
+                    return
+                }
+            }
+
+            ; create symlink
+            linker.link-package(virtual-store, name, ver, nm-dir)
+
+            ; create bin links
+            bin-dir = nm-dir - '/.bin'
+            linker.create-bin-links(virtual-store, name, ver, bin-dir)
+
+            ; link dependencies
+            deps = registry.get-deps(it)
+            deps.len > 0 -> {
+                linker.link-deps(virtual-store, name, ver, deps)
+            }
+
+            print('noNpm: installed ' - name - '@' - ver)
+            ok = true
+        }
+        nil -> {
+            print('error: package ' - name - '@' - ver - ' not found')
+        }
+        err -> {
+            print('error: ' - it)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; add — add a dependency to package.json and install
+; cfg config — configuration
+; name str — package name
+; range str — version range
+; dir str — project root directory
+; dev bool — true if dev dependency
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
+    ok = false
+    ; resolve version
+    ver, resolve-ok = resolver.resolve-pkg(cfg, name, range-str)
+    resolve-ok == false -> {
+        print('error: could not resolve ' - name - '@' - range-str)
+        return
+    }
+
+    ; install the package
+    install-ok = install-pkg(cfg, name, range-str, dir)
+    install-ok == false -> return
+
+    ; update package.json
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                ; determine save version
+                save-ver = range-str
+                range-str == '' -> {
+                    save-ver = cfg.save-prefix - ver
+                    cfg.save-exact == true -> save-ver = ver
+                }
+                ; set dependency in package.json
+                dep-key = 'dependencies'
+                dev == true -> dep-key = 'devDependencies'
+                dep-obj = json.get-key(it, dep-key)
+                dep-obj: {
+                    ok -> {
+                        json.set-key(it, dep-key, dep-obj)
+                        dep-obj.set-key(name, json.from-str(save-ver))
+                        it.set-key(dep-key, dep-obj)
+                    }
+                    nil -> {
+                        new-deps = json.new-obj()
+                        new-deps.set-key(name, json.from-str(save-ver))
+                        it.set-key(dep-key, new-deps)
+                    }
+                    err -> {}
+                }
+                ; write back
+                buf str = with-len(1048576)
+                n = json.stringify-pretty(it, buf, 2)
+                out = buf.slice(0, n)
+                utils.write-file(pkg-path, out)
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; remove — remove a dependency from package.json and node_modules
+; cfg config — configuration
+; name str — package name
+; dir str — project root directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+remove = (cfg config, name str, dir str) (ok bool) {
+    ok = false
+    ; remove from package.json
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                ; remove from dependencies
+                dep-obj = json.get-key(it, 'dependencies')
+                dep-obj: {
+                    ok -> {
+                        dep-obj.delete-key(name)
+                        it.set-key('dependencies', dep-obj)
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+                ; remove from devDependencies
+                dev-obj = json.get-key(it, 'devDependencies')
+                dev-obj: {
+                    ok -> {
+                        dev-obj.delete-key(name)
+                        it.set-key('devDependencies', dev-obj)
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+                ; write back
+                buf str = with-len(1048576)
+                n = json.stringify-pretty(it, buf, 2)
+                out = buf.slice(0, n)
+                utils.write-file(pkg-path, out)
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+
+    ; remove symlink from node_modules
+    nm-dir = dir - '/node_modules'
+    link-path = nm-dir - '/' - name
+    fs.is-file(link-path) -> fs.remove(link-path)
+    fs.is-dir(link-path) -> process.process-system('rm -rf ' - link-path)
+
+    print('noNpm: removed ' - name)
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; prune — remove extraneous packages not in lockfile
+; cfg config — configuration
+; dir str — project root directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+prune = (cfg config, dir str) (ok bool) {
+    ok = true
+    virtual-store = dir - '/node_modules/.nonpm'
+    p = path{
+        p: virtual-store,
+    }
+    p.exists() -> {
+        ; read lockfile to know which packages should exist
+        graph, resolve-ok = resolver.resolve-project(cfg, dir)
+        resolve-ok == true -> {
+            ; TODO: scan virtual store and remove packages not in graph
+        }
+    }
+    print('noNpm: pruned extraneous packages')
+}

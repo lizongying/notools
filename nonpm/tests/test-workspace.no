@@ -1,0 +1,216 @@
+; test-workspace.no — comprehensive tests for the workspace module
+;
+; Mirrors pnpm's workspace fixtures (workspace-with-2-pkgs, monorepo)
+; Tests: parse-packages-field, get-package-info, is-workspace-root,
+;   expand-pattern (via file-based discovery)
+; Run: no run nonpm/tests/test-workspace.no
+
+# /nonpm/src/workspace
+# /nonpm/src/utils
+
+main = () {
+    print('--- Testing workspace module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── parse-packages-field basic ──
+    yaml1 = 'packages:\n  - "packages/*"\n  - "tools/*"\n'
+    patterns1 = workspace.parse-packages-field(yaml1)
+    {
+        patterns1.contains('packages/*') && patterns1.contains('tools/*') -> {
+            print('PASS: parse-packages-field basic')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field basic')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field with glob ──
+    yaml2 = 'packages:\n  - "packages/**"\n'
+    patterns2 = workspace.parse-packages-field(yaml2)
+    {
+        patterns2.contains('packages/**') -> {
+            print('PASS: parse-packages-field glob')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field glob')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field no quotes ──
+    yaml3 = 'packages:\n  - packages/*\n'
+    patterns3 = workspace.parse-packages-field(yaml3)
+    {
+        patterns3.contains('packages/*') -> {
+            print('PASS: parse-packages-field no quotes')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field no quotes')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field single quotes ──
+    yaml4 = 'packages:\n  - \'packages/*\'\n'
+    patterns4 = workspace.parse-packages-field(yaml4)
+    {
+        patterns4.contains('packages/*') -> {
+            print('PASS: parse-packages-field single quotes')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field single quotes')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field with non-packages key ──
+    yaml5 = 'sharedWorkspaceLockfile: true\n'
+    patterns5 = workspace.parse-packages-field(yaml5)
+    {
+        patterns5 == '' -> {
+            print('PASS: parse-packages-field ignores non-packages keys')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field should return empty for non-packages')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field empty ──
+    yaml6 = 'packages:\n'
+    patterns6 = workspace.parse-packages-field(yaml6)
+    {
+        patterns6 == '' -> {
+            print('PASS: parse-packages-field empty packages list')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field should return empty for no entries')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-packages-field multiple patterns ──
+    yaml7 = 'packages:\n  - "pkgs/*"\n  - "libs/*"\n  - "tools/*"\n'
+    patterns7 = workspace.parse-packages-field(yaml7)
+    {
+        patterns7.contains('pkgs/*') && patterns7.contains('libs/*') && patterns7.contains('tools/*') -> {
+            print('PASS: parse-packages-field multiple patterns')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-packages-field multiple patterns')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── get-package-info via temp project ──
+    test-dir = '/tmp/nonpm-test-ws-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-dir)
+    pkg-content = '{"name":"test-pkg","version":"1.2.3"}'
+    utils.write-file(test-dir - '/package.json', pkg-content)
+    name, ver, info-ok = workspace.get-package-info(test-dir)
+    {
+        info-ok && name == 'test-pkg' && ver == '1.2.3' -> {
+            print('PASS: get-package-info from package.json')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-package-info')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── get-package-info nonexistent dir ──
+    n2, v2, info-ok2 = workspace.get-package-info('/tmp/nonpm-nonexistent-' - os.now-ms().to-str())
+    {
+        info-ok2 == false -> {
+            print('PASS: get-package-info nonexistent returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-package-info nonexistent should return false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-workspace-root via pnpm-workspace.yaml ──
+    test-root1 = '/tmp/nonpm-test-wsroot-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-root1)
+    utils.write-file(test-root1 - '/pnpm-workspace.yaml', 'packages:\n  - "packages/*"\n')
+    is-root1 = workspace.is-workspace-root(test-root1)
+    {
+        is-root1 -> {
+            print('PASS: is-workspace-root with pnpm-workspace.yaml')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-workspace-root should be true for workspace yaml')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-workspace-root via package.json workspaces ──
+    test-root2 = '/tmp/nonpm-test-wsroot2-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-root2)
+    utils.write-file(test-root2 - '/package.json', '{"name":"root","workspaces":["packages/*"]}')
+    is-root2 = workspace.is-workspace-root(test-root2)
+    {
+        is-root2 -> {
+            print('PASS: is-workspace-root with package.json workspaces')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-workspace-root should be true for package.json workspaces')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-workspace-root false ──
+    test-root3 = '/tmp/nonpm-test-wsroot3-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-root3)
+    utils.write-file(test-root3 - '/package.json', '{"name":"not-a-workspace"}')
+    is-root3 = workspace.is-workspace-root(test-root3)
+    {
+        is-root3 == false -> {
+            print('PASS: is-workspace-root false for non-workspace')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-workspace-root should be false for non-workspace')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-workspace-root empty dir ──
+    is-root4 = workspace.is-workspace-root('/tmp/nonpm-empty-' - os.now-ms().to-str())
+    {
+        is-root4 == false -> {
+            print('PASS: is-workspace-root false for empty dir')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-workspace-root should be false for empty dir')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    process.process-system('rm -rf ' - test-dir - ' ' - test-root1 - ' ' - test-root2 - ' ' - test-root3)
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

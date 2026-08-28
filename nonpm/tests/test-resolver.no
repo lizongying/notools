@@ -1,0 +1,176 @@
+; test-resolver.no — tests for the resolver module
+;
+; Mirrors pnpm's resolver tests (get-deps-from-pkgjson, graph-to-list, is-resolved)
+; Tests: get-deps-from-pkgjson, graph-to-list, is-resolved logic
+; Run: no run nonpm/tests/test-resolver.no
+
+# /nonpm/src/resolver
+# /nonpm/src/utils
+
+main = () {
+    print('--- Testing resolver module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── get-deps-from-pkgjson basic ──
+    test-dir = '/tmp/nonpm-test-resolver-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-dir)
+    pkg-content = '{"name":"test","version":"1.0.0","dependencies":{"express":"^4.17.1","lodash":"^4.0.0"},"devDependencies":{"jest":"^29.0.0"}}'
+    utils.write-file(test-dir - '/package.json', pkg-content)
+    deps, dev-deps, peer-deps, ok1 = resolver.get-deps-from-pkgjson(test-dir)
+    {
+        ok1 && deps.contains('express') && deps.contains('lodash') && dev-deps.contains('jest') -> {
+            print('PASS: get-deps-from-pkgjson basic')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-deps-from-pkgjson basic')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── get-deps-from-pkgjson no deps ──
+    test-dir2 = '/tmp/nonpm-test-resolver2-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-dir2)
+    utils.write-file(test-dir2 - '/package.json', '{"name":"empty","version":"1.0.0"}')
+    deps2, dev-deps2, peer-deps2, ok2 = resolver.get-deps-from-pkgjson(test-dir2)
+    {
+        ok2 && deps2 == '' && dev-deps2 == '' -> {
+            print('PASS: get-deps-from-pkgjson no deps')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-deps-from-pkgjson no deps')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── get-deps-from-pkgjson nonexistent ──
+    d1, d2, d3, ok3 = resolver.get-deps-from-pkgjson('/tmp/nonpm-nonexistent-' - os.now-ms().to-str())
+    {
+        ok3 == false -> {
+            print('PASS: get-deps-from-pkgjson nonexistent returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-deps-from-pkgjson nonexistent should return false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── get-deps-from-pkgjson with peerDependencies ──
+    test-dir3 = '/tmp/nonpm-test-resolver3-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-dir3)
+    pkg3 = '{"name":"peer-test","version":"1.0.0","peerDependencies":{"react":">=16.0.0"}}'
+    utils.write-file(test-dir3 - '/package.json', pkg3)
+    d4, d5, peer-deps3, ok4 = resolver.get-deps-from-pkgjson(test-dir3)
+    {
+        ok4 && peer-deps3.contains('react') -> {
+            print('PASS: get-deps-from-pkgjson peerDependencies')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: get-deps-from-pkgjson peerDependencies')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── graph-to-list ──
+    graph dep-graph
+    graph.node-count = 0
+    ; Manually build a simple graph
+    node1 dep-node
+    node1.name = 'express'
+    node1.version = '4.17.1'
+    node1.is-dev = false
+    graph.nodes.push(node1)
+    graph.node-count = 1
+
+    node2 dep-node
+    node2.name = 'lodash'
+    node2.version = '4.17.21'
+    node2.is-dev = false
+    graph.nodes.push(node2)
+    graph.node-count = 2
+
+    names, versions = resolver.graph-to-list(graph)
+    {
+        names.contains('express') && names.contains('lodash') && versions.contains('4.17.1') && versions.contains('4.17.21') -> {
+            print('PASS: graph-to-list')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: graph-to-list')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── graph-to-list empty graph ──
+    graph2 dep-graph
+    graph2.node-count = 0
+    names2, versions2 = resolver.graph-to-list(graph2)
+    {
+        names2 == '' && versions2 == '' -> {
+            print('PASS: graph-to-list empty')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: graph-to-list empty should return empty strings')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-resolved ──
+    graph3 dep-graph
+    graph3.node-count = 0
+    graph3.resolved-map = 'express=4.17.1\nlodash=4.17.21\n'
+    is-r1 = resolver.is-resolved(graph3, 'express', '^4.0.0')
+    {
+        is-r1 -> {
+            print('PASS: is-resolved true for satisfied version')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-resolved should be true for express^4.0.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-resolved: wrong range ──
+    is-r2 = resolver.is-resolved(graph3, 'express', '^5.0.0')
+    {
+        is-r2 == false -> {
+            print('PASS: is-resolved false for unsatisfied version')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-resolved should be false for express^5.0.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── is-resolved: nonexistent package ──
+    is-r3 = resolver.is-resolved(graph3, 'nonexistent', '*')
+    {
+        is-r3 == false -> {
+            print('PASS: is-resolved false for nonexistent')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: is-resolved should be false for nonexistent package')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    process.process-system('rm -rf ' - test-dir - ' ' - test-dir2 - ' ' - test-dir3)
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

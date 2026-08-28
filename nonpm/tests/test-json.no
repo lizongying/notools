@@ -1,0 +1,438 @@
+; test-json.no — comprehensive tests for the json module
+;
+; Mirrors pnpm's package metadata parsing and JSON manipulation tests
+; Tests: parse, stringify, get-str, get-obj, get-arr, get-num, get-bool,
+;   obj-keys, create-obj, create-arr, set-str, set-num, set-bool, arr-push
+; Run: no run nonpm/tests/test-json.no
+
+# /nonpm/src/json
+
+main = () {
+    print('--- Testing json module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── parse basic JSON ──
+    v1 = json.parse('{"name":"foo","version":"1.0.0"}', 36)
+    {
+        v1: {
+            ok -> {
+                name = json.get-str(it, 'name')
+                {
+                    name == 'foo' -> {
+                        print('PASS: parse and get-str')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: parse and get-str, got ' - name)
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: parse should not return nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: parse should not return error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── parse invalid JSON ──
+    v2 = json.parse('not json', 8)
+    {
+        v2: {
+            ok -> {
+                print('FAIL: invalid JSON should not parse')
+                n-fail = n-fail + 1
+            }
+            nil -> {
+                print('PASS: invalid JSON returns nil')
+                n-pass = n-pass + 1
+            }
+            err -> {
+                print('PASS: invalid JSON returns error')
+                n-pass = n-pass + 1
+            }
+        }
+    }
+
+    ; ── get-num ──
+    v3 = json.parse('{"count":42}', 12)
+    {
+        v3: {
+            ok -> {
+                n = json.get-num(it, 'count')
+                {
+                    n == 42 -> {
+                        print('PASS: get-num')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-num, got ' - n.to-str())
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-num parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-num parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-bool ──
+    v4 = json.parse('{"flag":true}', 14)
+    {
+        v4: {
+            ok -> {
+                b = json.get-bool(it, 'flag')
+                {
+                    b == true -> {
+                        print('PASS: get-bool true')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-bool should be true')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-bool parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-bool parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-bool false ──
+    v5 = json.parse('{"flag":false}', 15)
+    {
+        v5: {
+            ok -> {
+                b = json.get-bool(it, 'flag')
+                {
+                    b == false -> {
+                        print('PASS: get-bool false')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-bool should be false')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-bool false parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-bool false parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-str not found ──
+    v6 = json.parse('{"a":"b"}', 9)
+    {
+        v6: {
+            ok -> {
+                s = json.get-str(it, 'nonexistent')
+                {
+                    s == '' -> {
+                        print('PASS: get-str not found returns empty')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-str not found should return empty')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-str not found parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-str not found parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-obj ──
+    v7 = json.parse('{"deps":{"foo":"^1.0.0"}}', 24)
+    {
+        v7: {
+            ok -> {
+                deps = json.get-obj(it, 'deps')
+                {
+                    deps: {
+                        ok -> {
+                            foo-ver = json.get-str(deps, 'foo')
+                            {
+                                foo-ver == '^1.0.0' -> {
+                                    print('PASS: get-obj nested')
+                                    n-pass = n-pass + 1
+                                }
+                                -> {
+                                    print('FAIL: get-obj nested value')
+                                    n-fail = n-fail + 1
+                                }
+                            }
+                        }
+                        nil -> {
+                            print('FAIL: get-obj should not be nil')
+                            n-fail = n-fail + 1
+                        }
+                        err -> {
+                            print('FAIL: get-obj should not be error')
+                            n-fail = n-fail + 1
+                        }
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-obj parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-obj parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-arr and arr-length ──
+    v8 = json.parse('{"files":["a","b","c"]}', 23)
+    {
+        v8: {
+            ok -> {
+                arr = json.get-arr(it, 'files')
+                {
+                    arr: {
+                        ok -> {
+                            len = json.arr-length(arr)
+                            {
+                                len == 3 -> {
+                                    print('PASS: get-arr and arr-length')
+                                    n-pass = n-pass + 1
+                                }
+                                -> {
+                                    print('FAIL: arr-length should be 3, got ' - len.to-str())
+                                    n-fail = n-fail + 1
+                                }
+                            }
+                        }
+                        nil -> {
+                            print('FAIL: get-arr should not be nil')
+                            n-fail = n-fail + 1
+                        }
+                        err -> {
+                            print('FAIL: get-arr should not be error')
+                            n-fail = n-fail + 1
+                        }
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-arr parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-arr parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── arr-get by index ──
+    v9 = json.parse('{"files":["a","b","c"]}', 23)
+    {
+        v9: {
+            ok -> {
+                arr = json.get-arr(it, 'files')
+                {
+                    arr: {
+                        ok -> {
+                            elem = json.arr-get(arr, 1)
+                            {
+                                elem: {
+                                    ok -> {
+                                        s = elem.str-val()
+                                        {
+                                            s == 'b' -> {
+                                                print('PASS: arr-get by index')
+                                                n-pass = n-pass + 1
+                                            }
+                                            -> {
+                                                print('FAIL: arr-get[1] should be b, got ' - s)
+                                                n-fail = n-fail + 1
+                                            }
+                                        }
+                                    }
+                                    nil -> {
+                                        print('FAIL: arr-get should not be nil')
+                                        n-fail = n-fail + 1
+                                    }
+                                    err -> {
+                                        print('FAIL: arr-get should not be error')
+                                        n-fail = n-fail + 1
+                                    }
+                                }
+                            }
+                        }
+                        nil -> {
+                            print('FAIL: get-arr for arr-get should not be nil')
+                            n-fail = n-fail + 1
+                        }
+                        err -> {
+                            print('FAIL: get-arr for arr-get should not be error')
+                            n-fail = n-fail + 1
+                        }
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: arr-get parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: arr-get parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── obj-keys ──
+    v10 = json.parse('{"a":"1","b":"2","c":"3"}', 21)
+    {
+        v10: {
+            ok -> {
+                keys = json.obj-keys(it)
+                {
+                    keys.len == 3 -> {
+                        print('PASS: obj-keys returns 3 keys')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: obj-keys should return 3 keys, got ' - keys.len.to-str())
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: obj-keys parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: obj-keys parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── stringify ──
+    v11 = json.parse('{"name":"foo"}', 15)
+    {
+        v11: {
+            ok -> {
+                s = json.stringify(it)
+                {
+                    s.contains('foo') -> {
+                        print('PASS: stringify roundtrip')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: stringify should contain foo, got ' - s)
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: stringify parse nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: stringify parse error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── create-obj and set-str ──
+    obj = json.create-obj()
+    json.set-str(obj, 'name', 'test-pkg')
+    {
+        json.get-str(obj, 'name') == 'test-pkg' -> {
+            print('PASS: create-obj and set-str')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: create-obj and set-str')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── create-arr and arr-push ──
+    arr2 = json.create-arr()
+    json.arr-push(arr2, json.new-str('item1'))
+    {
+        json.arr-length(arr2) == 1 -> {
+            print('PASS: create-arr and arr-push')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: create-arr and arr-push')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── set-num ──
+    obj2 = json.create-obj()
+    json.set-num(obj2, 'count', 100)
+    {
+        json.get-num(obj2, 'count') == 100 -> {
+            print('PASS: set-num')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: set-num')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── set-bool ──
+    obj3 = json.create-obj()
+    json.set-bool(obj3, 'enabled', true)
+    {
+        json.get-bool(obj3, 'enabled') == true -> {
+            print('PASS: set-bool')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: set-bool')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

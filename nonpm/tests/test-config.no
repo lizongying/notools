@@ -1,0 +1,348 @@
+; test-config.no — comprehensive tests for the config module
+;
+; Mirrors pnpm's config and npmrc parsing tests
+; Tests: default-config, merge-npmrc (comments, key=value, boolean, integer),
+;   parse-workspace-yaml, apply-config for various keys
+; Run: no run nonpm/tests/test-config.no
+
+# /nonpm/src/config
+
+main = () {
+    print('--- Testing config module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── default-config ──
+    cfg1 = config.default-config()
+    {
+        cfg1.registry == 'https://registry.npmjs.org/' -> {
+            print('PASS: default registry')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default registry')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.network-concurrency == 16 -> {
+            print('PASS: default concurrency')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default concurrency')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.auto-install-peers == true -> {
+            print('PASS: default auto-install-peers')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default auto-install-peers')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.hoist == true -> {
+            print('PASS: default hoist')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default hoist')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.node-linker == 'isolated' -> {
+            print('PASS: default node-linker')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default node-linker')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.save-prefix == '^' -> {
+            print('PASS: default save-prefix')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default save-prefix')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg1.fetch-retries == 2 -> {
+            print('PASS: default fetch-retries')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: default fetch-retries')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc basic ──
+    cfg2 = config.default-config()
+    config.merge-npmrc(cfg2, 'registry=https://my-registry.com/\nshamefully-hoist=true\nnetwork-concurrency=4')
+    {
+        cfg2.registry == 'https://my-registry.com/' -> {
+            print('PASS: npmrc override registry')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc override registry')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg2.shamefully-hoist == true -> {
+            print('PASS: npmrc shamefully-hoist true')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc shamefully-hoist true')
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        cfg2.network-concurrency == 4 -> {
+            print('PASS: npmrc network-concurrency override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc network-concurrency override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with comments ──
+    cfg3 = config.default-config()
+    config.merge-npmrc(cfg3, '# comment line\n; semicolon comment\nregistry=https://comment-test.com/\n\n')
+    {
+        cfg3.registry == 'https://comment-test.com/' -> {
+            print('PASS: npmrc skips comments')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc should skip comments')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with empty lines ──
+    cfg4 = config.default-config()
+    config.merge-npmrc(cfg4, '\n\n\nregistry=https://empty-lines.com/\n\n')
+    {
+        cfg4.registry == 'https://empty-lines.com/' -> {
+            print('PASS: npmrc skips empty lines')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc should skip empty lines')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc boolean false ──
+    cfg5 = config.default-config()
+    config.merge-npmrc(cfg5, 'auto-install-peers=false\nhoist=false\nsave-exact=true')
+    {
+        cfg5.auto-install-peers == false && cfg5.hoist == false && cfg5.save-exact == true -> {
+            print('PASS: npmrc boolean false/true')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc boolean false/true')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with save-prefix ──
+    cfg6 = config.default-config()
+    config.merge-npmrc(cfg6, 'save-prefix=~')
+    {
+        cfg6.save-prefix == '~' -> {
+            print('PASS: npmrc save-prefix override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc save-prefix override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with node-linker ──
+    cfg7 = config.default-config()
+    config.merge-npmrc(cfg7, 'node-linker=hoisted')
+    {
+        cfg7.node-linker == 'hoisted' -> {
+            print('PASS: npmrc node-linker override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc node-linker override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with frozen-lockfile ──
+    cfg8 = config.default-config()
+    config.merge-npmrc(cfg8, 'frozen-lockfile=true\nprefer-frozen-lockfile=true')
+    {
+        cfg8.frozen-lockfile == true && cfg8.prefer-frozen-lockfile == true -> {
+            print('PASS: npmrc frozen-lockfile settings')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc frozen-lockfile settings')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with production ──
+    cfg9 = config.default-config()
+    config.merge-npmrc(cfg9, 'production=true')
+    {
+        cfg9.prod == true -> {
+            print('PASS: npmrc production=true')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc production=true')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with store-dir ──
+    cfg10 = config.default-config()
+    config.merge-npmrc(cfg10, 'store-dir=/custom/store\n')
+    {
+        cfg10.store-dir == '/custom/store' -> {
+            print('PASS: npmrc store-dir override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc store-dir override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with fetch-timeout ──
+    cfg11 = config.default-config()
+    config.merge-npmrc(cfg11, 'fetch-timeout=30000')
+    {
+        cfg11.fetch-timeout == 30000 -> {
+            print('PASS: npmrc fetch-timeout override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc fetch-timeout override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── merge-npmrc with hoist-pattern ──
+    cfg12 = config.default-config()
+    config.merge-npmrc(cfg12, 'hoist-pattern=*eslint*')
+    {
+        cfg12.hoist-pattern == '*eslint*' -> {
+            print('PASS: npmrc hoist-pattern override')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: npmrc hoist-pattern override')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-workspace-yaml basic ──
+    yaml1 = 'packages:\n  - "packages/*"\n  - "tools/*"\n'
+    patterns1 = config.parse-workspace-yaml(yaml1)
+    {
+        patterns1.contains('packages/*') && patterns1.contains('tools/*') -> {
+            print('PASS: parse-workspace-yaml basic')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-workspace-yaml basic')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-workspace-yaml with single quotes ──
+    yaml2 = 'packages:\n  - \'packages/**\'\n'
+    patterns2 = config.parse-workspace-yaml(yaml2)
+    {
+        patterns2.contains('packages/**') -> {
+            print('PASS: parse-workspace-yaml single quotes')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-workspace-yaml single quotes')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-workspace-yaml no quotes ──
+    yaml3 = 'packages:\n  - packages/*\n'
+    patterns3 = config.parse-workspace-yaml(yaml3)
+    {
+        patterns3.contains('packages/*') -> {
+            print('PASS: parse-workspace-yaml no quotes')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-workspace-yaml no quotes')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-workspace-yaml empty ──
+    yaml4 = 'packages:\n'
+    patterns4 = config.parse-workspace-yaml(yaml4)
+    {
+        patterns4 == '' -> {
+            print('PASS: parse-workspace-yaml empty packages')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-workspace-yaml empty packages')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── parse-workspace-yaml sharedWorkspaceLockfile ──
+    yaml5 = 'sharedWorkspaceLockfile: true\n'
+    patterns5 = config.parse-workspace-yaml(yaml5)
+    {
+        patterns5 == '' -> {
+            print('PASS: parse-workspace-yaml non-packages key')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse-workspace-yaml should return empty for non-packages key')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

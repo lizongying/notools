@@ -1,0 +1,591 @@
+; test-semver.no — comprehensive tests for the semver module
+;
+; Mirrors pnpm's pickVersionByVersionRange.test.ts and parseBareSpecifier.test.ts
+; Tests: parsing, comparison, range matching (^, ~, >=, <=, >, <, *, =),
+;   prerelease, build metadata, max-satisfying, to-string, gt, lt, eq
+; Run: no run nonpm/tests/test-semver.no
+
+# /nonpm/src/semver
+
+main = () {
+    print('--- Testing semver module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── parse tests ──
+
+    ; Test 1: parse basic version
+    v1, ok1 = semver.parse('1.2.3')
+    {
+        ok1 && v1.major == 1 && v1.minor == 2 && v1.patch == 3 -> {
+            print('PASS: parse 1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse 1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: parse with v prefix
+    v2, ok2 = semver.parse('v3.4.5')
+    {
+        ok2 && v2.major == 3 && v2.minor == 4 && v2.patch == 5 -> {
+            print('PASS: parse v3.4.5')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse v3.4.5')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: parse with V prefix
+    v3, ok3 = semver.parse('V2.0.1')
+    {
+        ok3 && v3.major == 2 -> {
+            print('PASS: parse V2.0.1')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse V2.0.1')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: parse with pre-release
+    v4, ok4 = semver.parse('1.0.0-beta.1')
+    {
+        ok4 && v4.major == 1 && v4.pre-release == 'beta.1' -> {
+            print('PASS: parse 1.0.0-beta.1')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse 1.0.0-beta.1')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: parse with build metadata
+    v5, ok5 = semver.parse('1.2.3+build.1')
+    {
+        ok5 && v5.major == 1 && v5.minor == 2 && v5.patch == 3 && v5.build-metadata == 'build.1' -> {
+            print('PASS: parse 1.2.3+build.1')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse 1.2.3+build.1')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: parse with both pre-release and build metadata
+    v6, ok6 = semver.parse('1.0.0-alpha.1+build.42')
+    {
+        ok6 && v6.pre-release == 'alpha.1' && v6.build-metadata == 'build.42' -> {
+            print('PASS: parse 1.0.0-alpha.1+build.42')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse 1.0.0-alpha.1+build.42')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: parse invalid version
+    v7, ok7 = semver.parse('not-a-version')
+    {
+        ok7 == false -> {
+            print('PASS: parse invalid version returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse invalid version should return false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 8: parse two-part version
+    v8, ok8 = semver.parse('1.2')
+    {
+        ok8 && v8.major == 1 && v8.minor == 2 && v8.patch == 0 -> {
+            print('PASS: parse 1.2 (minor only)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: parse 1.2')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── compare tests ──
+
+    ; Test 9: compare equal versions
+    a9, ok9a = semver.parse('1.2.3')
+    b9, ok9b = semver.parse('1.2.3')
+    {
+        semver.compare(a9, b9) == 0 -> {
+            print('PASS: compare equal')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: compare equal')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 10: compare less than
+    a10, ok10a = semver.parse('1.2.3')
+    b10, ok10b = semver.parse('1.2.4')
+    {
+        semver.compare(a10, b10) < 0 -> {
+            print('PASS: compare 1.2.3 < 1.2.4')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: compare 1.2.3 < 1.2.4')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 11: compare greater than
+    a11, ok11a = semver.parse('2.0.0')
+    b11, ok11b = semver.parse('1.9.9')
+    {
+        semver.compare(a11, b11) > 0 -> {
+            print('PASS: compare 2.0.0 > 1.9.9')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: compare 2.0.0 > 1.9.9')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 12: compare major versions
+    a12, ok12a = semver.parse('3.0.0')
+    b12, ok12b = semver.parse('2.99.99')
+    {
+        semver.compare(a12, b12) > 0 -> {
+            print('PASS: compare 3.0.0 > 2.99.99')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: compare 3.0.0 > 2.99.99')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 13: compare pre-release vs release (release > pre-release)
+    a13, ok13a = semver.parse('1.0.0')
+    b13, ok13b = semver.parse('1.0.0-beta')
+    {
+        semver.compare(a13, b13) > 0 -> {
+            print('PASS: release > pre-release')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: release should be > pre-release')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 14: compare pre-release vs pre-release
+    a14, ok14a = semver.parse('1.0.0-alpha.1')
+    b14, ok14b = semver.parse('1.0.0-beta.2')
+    {
+        semver.compare(a14, b14) < 0 -> {
+            print('PASS: alpha.1 < beta.2')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: alpha.1 should be < beta.2')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 15: compare numeric vs string pre-release segments
+    a15, ok15a = semver.parse('1.0.0-2')
+    b15, ok15b = semver.parse('1.0.0-10')
+    {
+        semver.compare(a15, b15) < 0 -> {
+            print('PASS: numeric pre-release 2 < 10')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: numeric pre-release 2 should be < 10')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── satisfies: caret range ──
+
+    ; Test 16: ^1.2.3 matches 1.2.3
+    v16, ok16 = semver.parse('1.2.3')
+    {
+        semver.satisfies(v16, '^1.2.3') -> {
+            print('PASS: 1.2.3 satisfies ^1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.3 should satisfy ^1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 17: ^1.2.3 matches 1.5.0 (same major)
+    v17, ok17 = semver.parse('1.5.0')
+    {
+        semver.satisfies(v17, '^1.2.3') -> {
+            print('PASS: 1.5.0 satisfies ^1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.5.0 should satisfy ^1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 18: ^1.2.3 does NOT match 2.0.0
+    v18, ok18 = semver.parse('2.0.0')
+    {
+        semver.satisfies(v18, '^1.2.3') == false -> {
+            print('PASS: 2.0.0 does NOT satisfy ^1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 2.0.0 should NOT satisfy ^1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 19: ^1.2.3 does NOT match 1.2.2 (below range)
+    v19, ok19 = semver.parse('1.2.2')
+    {
+        semver.satisfies(v19, '^1.2.3') == false -> {
+            print('PASS: 1.2.2 does NOT satisfy ^1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.2 should NOT satisfy ^1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 20: ^0.2.3 only matches 0.2.x
+    v20a, ok20a = semver.parse('0.2.5')
+    v20b, ok20b = semver.parse('0.3.0')
+    {
+        semver.satisfies(v20a, '^0.2.3') && semver.satisfies(v20b, '^0.2.3') == false -> {
+            print('PASS: ^0.2.3 matches 0.2.x but not 0.3.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: ^0.2.3 boundary test')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 21: ^0.0.3 only matches 0.0.3
+    v21a, ok21a = semver.parse('0.0.3')
+    v21b, ok21b = semver.parse('0.0.4')
+    {
+        semver.satisfies(v21a, '^0.0.3') && semver.satisfies(v21b, '^0.0.3') == false -> {
+            print('PASS: ^0.0.3 matches only 0.0.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: ^0.0.3 should only match 0.0.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── satisfies: tilde range ──
+
+    ; Test 22: ~1.2.3 matches 1.2.5
+    v22, ok22 = semver.parse('1.2.5')
+    {
+        semver.satisfies(v22, '~1.2.3') -> {
+            print('PASS: 1.2.5 satisfies ~1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.5 should satisfy ~1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 23: ~1.2.3 does NOT match 1.3.0
+    v23, ok23 = semver.parse('1.3.0')
+    {
+        semver.satisfies(v23, '~1.2.3') == false -> {
+            print('PASS: 1.3.0 does NOT satisfy ~1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.3.0 should NOT satisfy ~1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── satisfies: comparison operators ──
+
+    ; Test 24: >=1.0.0
+    v24, ok24 = semver.parse('1.0.0')
+    {
+        semver.satisfies(v24, '>=1.0.0') -> {
+            print('PASS: 1.0.0 satisfies >=1.0.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.0.0 should satisfy >=1.0.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 25: <=1.2.0
+    v25, ok25 = semver.parse('1.2.0')
+    {
+        semver.satisfies(v25, '<=1.2.0') -> {
+            print('PASS: 1.2.0 satisfies <=1.2.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.0 should satisfy <=1.2.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 26: >1.0.0
+    v26, ok26 = semver.parse('1.0.1')
+    {
+        semver.satisfies(v26, '>1.0.0') -> {
+            print('PASS: 1.0.1 satisfies >1.0.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.0.1 should satisfy >1.0.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 27: <2.0.0
+    v27, ok27 = semver.parse('1.99.99')
+    {
+        semver.satisfies(v27, '<2.0.0') -> {
+            print('PASS: 1.99.99 satisfies <2.0.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.99.99 should satisfy <2.0.0')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── satisfies: wildcard and exact ──
+
+    ; Test 28: * matches anything
+    v28, ok28 = semver.parse('99.99.99')
+    {
+        semver.satisfies(v28, '*') -> {
+            print('PASS: * matches 99.99.99')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: * should match anything')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 29: exact version match
+    v29, ok29 = semver.parse('1.2.3')
+    {
+        semver.satisfies(v29, '1.2.3') -> {
+            print('PASS: 1.2.3 satisfies 1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.3 should satisfy 1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 30: exact version mismatch
+    v30, ok30 = semver.parse('1.2.4')
+    {
+        semver.satisfies(v30, '1.2.3') == false -> {
+            print('PASS: 1.2.4 does NOT satisfy 1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.4 should NOT satisfy 1.2.3')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── max-satisfying ──
+
+    ; Test 31: max-satisfying from mixed versions (mirrors pnpm VERSIONS test)
+    versions []str = ['0.0.1', '1.0.0-alpha.1', '1.0.0-beta.2', '1.0.0', '1.0.10', '1.2.0', '1.2.3+build.1', '1.10.0', '2.0.0-rc.1', '2.0.0', '3.0.0', 'v4.0.0', 'not-a-version']
+    best31 = semver.max-satisfying(versions, '^1.0.0')
+    {
+        best31 == '1.10.0' -> {
+            print('PASS: max-satisfying ^1.0.0 = 1.10.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: max-satisfying ^1.0.0 should be 1.10.0, got ' - best31)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 32: max-satisfying with * range
+    best32 = semver.max-satisfying(versions, '*')
+    {
+        best32 == '4.0.0' -> {
+            print('PASS: max-satisfying * = 4.0.0 (v4.0.0 parsed)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: max-satisfying * should be 4.0.0, got ' - best32)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 33: max-satisfying with no match
+    best33 = semver.max-satisfying(versions, '^9.0.0')
+    {
+        best33 == '' -> {
+            print('PASS: max-satisfying ^9.0.0 = empty (no match)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: max-satisfying ^9.0.0 should be empty, got ' - best33)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 34: max-satisfying with exact version
+    best34 = semver.max-satisfying(versions, '2.0.0')
+    {
+        best34 == '2.0.0' -> {
+            print('PASS: max-satisfying 2.0.0 = 2.0.0')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: max-satisfying 2.0.0 should be 2.0.0, got ' - best34)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── to-string ──
+
+    ; Test 35: to-string roundtrip
+    v35, ok35 = semver.parse('1.2.3')
+    s35 = semver.to-string(v35)
+    {
+        s35 == '1.2.3' -> {
+            print('PASS: to-string 1.2.3')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: to-string 1.2.3, got ' - s35)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 36: to-string with pre-release
+    v36, ok36 = semver.parse('1.0.0-beta.1')
+    s36 = semver.to-string(v36)
+    {
+        s36 == '1.0.0-beta.1' -> {
+            print('PASS: to-string with pre-release')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: to-string with pre-release, got ' - s36)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 37: to-string with build metadata
+    v37, ok37 = semver.parse('1.2.3+build.1')
+    s37 = semver.to-string(v37)
+    {
+        s37 == '1.2.3+build.1' -> {
+            print('PASS: to-string with build metadata')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: to-string with build metadata, got ' - s37)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── gt / lt / eq ──
+
+    ; Test 38: gt
+    a38, ok38a = semver.parse('2.0.0')
+    b38, ok38b = semver.parse('1.0.0')
+    {
+        semver.gt(a38, b38) -> {
+            print('PASS: gt(2.0.0, 1.0.0)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: gt(2.0.0, 1.0.0)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 39: lt
+    a39, ok39a = semver.parse('1.0.0')
+    b39, ok39b = semver.parse('2.0.0')
+    {
+        semver.lt(a39, b39) -> {
+            print('PASS: lt(1.0.0, 2.0.0)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: lt(1.0.0, 2.0.0)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 40: eq
+    a40, ok40a = semver.parse('1.2.3')
+    b40, ok40b = semver.parse('1.2.3')
+    {
+        semver.eq(a40, b40) -> {
+            print('PASS: eq(1.2.3, 1.2.3)')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: eq(1.2.3, 1.2.3)')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 41: eq with build metadata (equal in semver)
+    a41, ok41a = semver.parse('1.2.3+build.1')
+    b41, ok41b = semver.parse('1.2.3+build.2')
+    {
+        semver.eq(a41, b41) -> {
+            print('PASS: eq with different build metadata')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: 1.2.3+build.1 should eq 1.2.3+build.2')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

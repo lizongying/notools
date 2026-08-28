@@ -1,0 +1,203 @@
+; publish.no — package publishing to npm registry for noNpm
+;
+; Handles publishing packages to the npm registry:
+; - Packs the package into a tarball
+; - Uploads to the registry with auth token
+; - Supports scoped packages
+;
+; API:
+;   publish(cfg config, dir str, token str) (ok bool) — publish package
+;   pack(dir str, dest str) (tgz-path str, ok bool) — create tarball
+;   get-publish-files(dir str) (files str) — get files to publish
+
+# /nonpm/src/utils
+# /nonpm/src/json
+
+; ═══════════════════════════════════════════════
+; pack — create a tarball from package directory
+; dir str — package root directory
+; dest str — destination directory for .tgz
+; returns tgz-path str — path to created tarball
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+pack = (dir str, dest str) (tgz-path str, ok bool) {
+    ok = false
+    tgz-path = ''
+
+    ; read package.json for name and version
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                name-val = json.get-key(it, 'name')
+                ver-val = json.get-key(it, 'version')
+                name-val: {
+                    ok -> {
+                        pkg-name = it.str-val()
+                        ver-val: {
+                            ok -> {
+                                pkg-ver = it.str-val()
+                                ; create tarball name: name-version.tgz
+                                safe-name = pkg-name
+                                safe-name = utils.replace(safe-name, '/', '-')
+                                tgz-name = safe-name - '-' - pkg-ver - '.tgz'
+                                tgz-path = dest - '/' - tgz-name
+
+                                ; create tarball excluding node_modules and .git
+                                exclude = '--exclude node_modules --exclude .git --exclude .nonpm'
+                                cmd = 'cd ' - dir - ' && tar czf ' - tgz-path - ' ' - exclude - ' .'
+                                code = process.process-system(cmd)
+                                ok = code == 0
+                            }
+                            nil -> {
+                                print('error: no version in package.json')
+                            }
+                            err -> {}
+                        }
+                    }
+                    nil -> {
+                        print('error: no name in package.json')
+                    }
+                    err -> {}
+                }
+            }
+            nil -> {
+                print('error: invalid package.json')
+            }
+            err -> {}
+        }
+    }
+    -> {
+        print('error: no package.json found')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; publish — publish package to registry
+; cfg config — configuration
+; dir str — package root directory
+; token str — auth token
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+publish = (cfg config, dir str, token str) (ok bool) {
+    ok = false
+    ; read package.json
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                name-val = json.get-key(it, 'name')
+                ver-val = json.get-key(it, 'version')
+                name-val: {
+                    ok -> {
+                        pkg-name = it.str-val()
+                        ver-val: {
+                            ok -> {
+                                pkg-ver = it.str-val()
+                                print('noNpm: packing ' - pkg-name - '@' - pkg-ver - '...')
+
+                                ; create tarball
+                                tmp-dest = '/tmp/nonpm-publish-' - os.now-ms().to-str()
+                                process.process-system('mkdir -p ' - tmp-dest)
+                                tgz-path, pack-ok = pack(dir, tmp-dest)
+                                pack-ok == false -> {
+                                    print('error: failed to create tarball')
+                                    process.process-system('rm -rf ' - tmp-dest)
+                                    return
+                                }
+
+                                ; construct publish URL
+                                safe-name = pkg-name
+                                safe-name.starts-with('@') -> {
+                                    ; scoped package
+                                    safe-name = utils.replace(safe-name, '/', '%2F')
+                                }
+                                pub-url = cfg.registry - safe-name
+
+                                ; read tarball content
+                                tgz-content = fs.read-file(tgz-path)
+
+                                ; upload via curl with auth
+                                curl-cmd = 'curl -s -X PUT -H "Authorization: Bearer ' - token - '" -H "Content-Type: application/octet-stream" --data-binary @' - tgz-path - ' ' - pub-url
+                                code = process.process-system(curl-cmd)
+
+                                ; cleanup
+                                process.process-system('rm -rf ' - tmp-dest)
+
+                                code == 0 -> {
+                                    print('noNpm: published ' - pkg-name - '@' - pkg-ver)
+                                    ok = true
+                                }
+                                -> {
+                                    print('error: publish failed')
+                                }
+                            }
+                            nil -> {}
+                            err -> {}
+                        }
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-publish-files — get list of files to publish
+; dir str — package root directory
+; returns files str — newline-separated file list
+; ═══════════════════════════════════════════════
+
+get-publish-files = (dir str) (files str) {
+    files = ''
+    ; read "files" field from package.json
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                files-arr = json.get-key(it, 'files')
+                files-arr: {
+                    ok -> {
+                        n = it.arr-len()
+                        i <- [0..n): {
+                            entry = it.arr-get(i)
+                            entry: {
+                                ok -> {
+                                    pat = it.str-val()
+                                    files = files - pat - '\n'
+                                }
+                                nil -> {}
+                                err -> {}
+                            }
+                        }
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}

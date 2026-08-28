@@ -1,0 +1,109 @@
+; tarball.no — tarball download and extraction for noNpm
+;
+; Handles downloading .tgz tarballs from the npm registry
+; and extracting them into the virtual store.
+; Uses curl for download and tar for extraction.
+;
+; API:
+;   download(url str, dest str) (ok bool) — download tarball to file
+;   extract(tgz-path str, dest-dir str) (ok bool) — extract tgz to directory
+;   download-and-extract(url str, dest-dir str) (ok bool) — download and extract
+
+# /nonpm/src/utils
+
+; ═══════════════════════════════════════════════
+; download — download a tarball from URL to local file
+; url str — tarball URL
+; dest str — destination file path
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+download = (url str, dest str) (ok bool) {
+    ok = false
+    cmd = 'curl -sL -o ' - dest - ' ' - url
+    code = process.process-system(cmd)
+    ok = code == 0
+}
+
+; ═══════════════════════════════════════════════
+; extract — extract a .tgz file to a directory
+; tgz-path str — path to .tgz file
+; dest-dir str — destination directory (must exist)
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+extract = (tgz-path str, dest-dir str) (ok bool) {
+    ok = false
+    ; npm tarballs contain a "package/" prefix directory
+    ; extract to temp, then move contents
+    tmp-dir = '/tmp/nonpm-extract-' - os.now-ms().to-str()
+    mkdir-cmd = 'mkdir -p ' - tmp-dir
+    process.process-system(mkdir-cmd)
+    cmd = 'tar xzf ' - tgz-path - ' -C ' - tmp-dir - ' 2>/dev/null'
+    code = process.process-system(cmd)
+    code == 0 -> {
+        ; move package/* contents to dest-dir
+        pkg-dir = tmp-dir - '/package'
+        is-pkg = fs.is-dir(pkg-dir)
+        is-pkg == true -> {
+            mv-cmd = 'cp -r ' - pkg-dir - '/* ' - dest-dir - '/ 2>/dev/null'
+            process.process-system(mv-cmd)
+            process.process-system('rm -rf ' - tmp-dir)
+            ok = true
+        }
+        -> {
+            ; no package/ prefix, copy directly
+            cp-cmd = 'cp -r ' - tmp-dir - '/* ' - dest-dir - '/ 2>/dev/null'
+            process.process-system(cp-cmd)
+            process.process-system('rm -rf ' - tmp-dir)
+            ok = true
+        }
+    }
+    -> {
+        process.process-system('rm -rf ' - tmp-dir)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; download-and-extract — download tarball and extract in one step
+; url str — tarball URL
+; dest-dir str — destination directory (must exist)
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+download-and-extract = (url str, dest-dir str) (ok bool) {
+    ok = false
+    tmp-tgz = '/tmp/nonpm-pkg-' - os.now-ms().to-str() - '.tgz'
+    dl-ok = download(url, tmp-tgz)
+    dl-ok == false -> {
+        fs.remove(tmp-tgz)
+        return
+    }
+    ok = extract(tmp-tgz, dest-dir)
+    fs.remove(tmp-tgz)
+}
+
+; ═══════════════════════════════════════════════
+; verify-shasum — verify tarball integrity
+; tgz-path str — path to .tgz file
+; expected str — expected shasum/integrity string
+; returns ok bool — true if matches
+; ═══════════════════════════════════════════════
+
+verify-shasum = (tgz-path str, expected str) (ok bool) {
+    ok = false
+    ; compute sha512 of file
+    content = fs.read-file(tgz-path)
+    b = content.to-bytes()
+    hash = sha512.sha512-hex(b)
+    ; expected may be "sha512-XXXX" or just "XXXX"
+    exp = expected
+    exp.starts-with('sha512-') -> exp = exp.slice(7, exp.len)
+    exp.starts-with('sha1-') -> {
+        ; fall back to sha1
+        h1 = sha1.sha1-hex(b)
+        ok = h1 == exp
+        return
+    }
+    ok = hash == exp
+}

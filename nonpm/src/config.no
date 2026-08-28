@@ -109,9 +109,8 @@ load-global = () (cfg config) {
             p: config-path,
         }
         p.exists() -> {
-            content = fs.read-file(config-path)
-            cfg.raw = content
-            merge-npmrc(cfg, content)
+            raw = fs.read-file(config-path)
+            merge-npmrc(cfg, raw)
         }
     }
     env-registry = os.get-env('NONPM_REGISTRY')
@@ -135,17 +134,16 @@ load-project = (dir str) (cfg config) {
         p: npmrc-path,
     }
     p.exists() -> {
-        content = fs.read-file(npmrc-path)
-        cfg.raw = cfg.raw - '\n' - content
-        merge-npmrc(cfg, content)
+        raw = fs.read-file(npmrc-path)
+        merge-npmrc(cfg, raw)
     }
     ws-path = dir - '/pnpm-workspace.yaml'
     wp = path{
         p: ws-path,
     }
     wp.exists() -> {
-        ws-content = fs.read-file(ws-path)
-        cfg.workspaces = parse-workspace-yaml(ws-content)
+        ws-raw = fs.read-file(ws-path)
+        cfg.workspaces = parse-workspace-yaml(ws-raw)
     }
 }
 
@@ -292,11 +290,36 @@ parse-workspace-yaml = (content str) (patterns str) {
 ; ═══════════════════════════════════════════════
 
 save-project = (dir str, cfg config) (ok bool) {
-    content = ''
-    content = content - 'registry=' - cfg.registry - '\n'
-    cfg.store-dir.len > 0 -> content = content - 'store-dir=' - cfg.store-dir - '\n'
-    cfg.shamefully-hoist == true -> content = content - 'shamefully-hoist=true\n'
-    cfg.auto-install-peers == true -> content = content - 'auto-install-peers=true\n'
-    cfg.node-linker.len > 0 -> content = content - 'node-linker=' - cfg.node-linker - '\n'
-    ok = utils.write-file(dir - '/.npmrc', content)
+    ok = false
+    fd = fs.open-write(dir - '/.npmrc')
+    {
+        fd <= 0 -> return
+        -> {
+            fs.write(fd, 'registry=', 9)
+            fs.write(fd, cfg.registry, cfg.registry.len)
+            fs.write(fd, '\n', 1)
+            {
+                cfg.store-dir.len > 0 -> {
+                    fs.write(fd, 'store-dir=', 10)
+                    fs.write(fd, cfg.store-dir, cfg.store-dir.len)
+                    fs.write(fd, '\n', 1)
+                }
+            }
+            {
+                cfg.shamefully-hoist == true -> fs.write(fd, 'shamefully-hoist=true\n', 22)
+            }
+            {
+                cfg.auto-install-peers == true -> fs.write(fd, 'auto-install-peers=true\n', 24)
+            }
+            {
+                cfg.node-linker.len > 0 -> {
+                    fs.write(fd, 'node-linker=', 12)
+                    fs.write(fd, cfg.node-linker, cfg.node-linker.len)
+                    fs.write(fd, '\n', 1)
+                }
+            }
+            fs.close(fd)
+            ok = true
+        }
+    }
 }

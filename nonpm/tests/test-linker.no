@@ -1,0 +1,125 @@
+; test-linker.no — comprehensive tests for the linker module
+;
+; Mirrors pnpm's symlink/link-bin tests
+; Tests: store-path, package-dir path computation, scoped package path
+; Run: no run nonpm/tests/test-linker.no
+
+# /nonpm/src/linker
+
+main = () {
+    print('--- Testing linker module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── store-path basic ──
+    sp1 = linker.store-path('/store', 'express', '4.17.1')
+    {
+        sp1 == '/store/express@4.17.1' -> {
+            print('PASS: store-path basic')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: store-path basic, got ' - sp1)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── store-path scoped package (slash replaced) ──
+    sp2 = linker.store-path('/store', '@scope/pkg', '1.0.0')
+    {
+        sp2 == '/store/@scope+pkg@1.0.0' -> {
+            print('PASS: store-path scoped package')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: store-path scoped package, got ' - sp2)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── store-path with pre-release version ──
+    sp3 = linker.store-path('/store', 'foo', '1.0.0-beta.1')
+    {
+        sp3 == '/store/foo@1.0.0-beta.1' -> {
+            print('PASS: store-path pre-release version')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: store-path pre-release, got ' - sp3)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── package-dir basic ──
+    pd1 = linker.package-dir('/store', 'express', '4.17.1')
+    {
+        pd1 == '/store/express@4.17.1/package' -> {
+            print('PASS: package-dir basic')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: package-dir basic, got ' - pd1)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── package-dir scoped package ──
+    pd2 = linker.package-dir('/store', '@types/node', '18.0.0')
+    {
+        pd2 == '/store/@types+node@18.0.0/package' -> {
+            print('PASS: package-dir scoped package')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: package-dir scoped, got ' - pd2)
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── link-package to temp dir ──
+    test-store = '/tmp/nonpm-test-link-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-store - '/test-pkg@1.0.0/package')
+    utils.write-file(test-store - '/test-pkg@1.0.0/package/index.js', 'module.exports = {};')
+    test-nm = '/tmp/nonpm-test-nm-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-nm)
+    link-ok1 = linker.link-package(test-store, 'test-pkg', '1.0.0', test-nm)
+    {
+        link-ok1 -> {
+            print('PASS: link-package creates symlink')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: link-package should succeed')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── link-to-node-modules ──
+    test-store2 = '/tmp/nonpm-test-link2-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-store2 - '/foo@1.0.0/package')
+    utils.write-file(test-store2 - '/foo@1.0.0/package/index.js', 'module.exports = {};')
+    test-nm2 = '/tmp/nonpm-test-nm2-' - os.now-ms().to-str()
+    link-ok2 = linker.link-to-node-modules(test-store2, 'foo', '1.0.0', test-nm2)
+    {
+        link-ok2 -> {
+            print('PASS: link-to-node-modules')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: link-to-node-modules')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    process.process-system('rm -rf ' - test-store - ' ' - test-nm - ' ' - test-store2 - ' ' - test-nm2)
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

@@ -1,0 +1,340 @@
+; test-registry.no — tests for the registry module
+;
+; Mirrors pnpm's registry metadata and dist-info tests
+; Tests: get-versions, get-latest-version, get-tarball-url, get-dist-info,
+;   get-deps, get-dev-deps, get-peer-deps, get-bin
+; Uses mock JSON metadata to avoid network calls
+; Run: no run nonpm/tests/test-registry.no
+
+# /nonpm/src/registry
+# /nonpm/src/json
+
+main = () {
+    print('--- Testing registry module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── build mock package metadata (mirrors pnpm fullFooMeta) ──
+    ; {"name":"foo","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"name":"foo","version":"1.0.0","dependencies":{"bar":"^1.0.0"},"bin":{"foo":"./bin/foo.js"},"dist":{"tarball":"https://registry.npmjs.org/foo/-/foo-1.0.0.tgz","integrity":"sha512-ABCDEF"}},"1.1.0":{"name":"foo","version":"1.1.0","dist":{"tarball":"https://registry.npmjs.org/foo/-/foo-1.1.0.tgz","integrity":"sha512-GHIJKL"}}}}
+    meta-json = '{"name":"foo","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"name":"foo","version":"1.0.0","dependencies":{"bar":"^1.0.0"},"bin":{"foo":"./bin/foo.js"},"dist":{"tarball":"https://registry.npmjs.org/foo/-/foo-1.0.0.tgz","integrity":"sha512-ABCDEF"}},"1.1.0":{"name":"foo","version":"1.1.0","dist":{"tarball":"https://registry.npmjs.org/foo/-/foo-1.1.0.tgz","integrity":"sha512-GHIJKL"}}}}'
+    meta = json.parse(meta-json, meta-json.len)
+
+    ; ── get-versions ──
+    {
+        meta: {
+            ok -> {
+                versions = registry.get-versions(it)
+                {
+                    versions.len == 2 -> {
+                        print('PASS: get-versions returns 2 versions')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-versions should return 2, got ' - versions.len.to-str())
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: meta should not be nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: meta should not be error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-latest-version ──
+    {
+        meta: {
+            ok -> {
+                latest = registry.get-latest-version(it)
+                {
+                    latest == '1.0.0' -> {
+                        print('PASS: get-latest-version')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-latest-version should be 1.0.0, got ' - latest)
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-latest-version meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-latest-version meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-versions from empty metadata ──
+    empty-meta-json = '{"name":"empty","dist-tags":{},"versions":{}}'
+    empty-meta = json.parse(empty-meta-json, empty-meta-json.len)
+    {
+        empty-meta: {
+            ok -> {
+                ev = registry.get-versions(it)
+                {
+                    ev.len == 0 -> {
+                        print('PASS: get-versions empty metadata')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-versions empty should return 0')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: empty meta should not be nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: empty meta should not be error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-latest-version from metadata without dist-tags ──
+    no-tags-json = '{"name":"no-tags","versions":{"1.0.0":{"name":"no-tags","version":"1.0.0","dist":{"tarball":"https://x.com/t.tgz"}}}}'
+    no-tags = json.parse(no-tags-json, no-tags-json.len)
+    {
+        no-tags: {
+            ok -> {
+                latest = registry.get-latest-version(it)
+                {
+                    latest == '' -> {
+                        print('PASS: get-latest-version no dist-tags returns empty')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-latest-version no dist-tags should return empty')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: no-tags meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: no-tags meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-dist-info from version metadata ──
+    ; Build version metadata JSON
+    ver-meta-json = '{"name":"foo","version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/foo/-/foo-1.0.0.tgz","integrity":"sha512-ABCDEF","shasum":"abc123"}}'
+    ver-meta = json.parse(ver-meta-json, ver-meta-json.len)
+    {
+        ver-meta: {
+            ok -> {
+                url, shasum, dist-ok = registry.get-dist-info(it)
+                {
+                    dist-ok && url == 'https://registry.npmjs.org/foo/-/foo-1.0.0.tgz' && shasum == 'sha512-ABCDEF' -> {
+                        print('PASS: get-dist-info')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-dist-info url=' - url - ' shasum=' - shasum)
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: ver-meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: ver-meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-tarball-url ──
+    {
+        ver-meta: {
+            ok -> {
+                tb-url = registry.get-tarball-url(it)
+                {
+                    tb-url == 'https://registry.npmjs.org/foo/-/foo-1.0.0.tgz' -> {
+                        print('PASS: get-tarball-url')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-tarball-url, got ' - tb-url)
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-tarball-url meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-tarball-url meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-tarball-url: no dist ──
+    no-dist-json = '{"name":"foo","version":"1.0.0"}'
+    no-dist = json.parse(no-dist-json, no-dist-json.len)
+    {
+        no-dist: {
+            ok -> {
+                tb-url2 = registry.get-tarball-url(it)
+                {
+                    tb-url2 == '' -> {
+                        print('PASS: get-tarball-url no dist returns empty')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-tarball-url no dist should return empty')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: no-dist meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: no-dist meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-deps ──
+    {
+        ver-meta: {
+            ok -> {
+                deps = registry.get-deps(it)
+                {
+                    deps == '' -> {
+                        ; ver-meta-json above doesn't have dependencies at top level
+                        ; test with a meta that does
+                        deps-meta-json = '{"name":"foo","version":"1.0.0","dependencies":{"bar":"^1.0.0","baz":">=2.0.0"}}'
+                        deps-meta = json.parse(deps-meta-json, deps-meta-json.len)
+                        {
+                            deps-meta: {
+                                ok -> {
+                                    d = registry.get-deps(it)
+                                    {
+                                        d.contains('bar') && d.contains('^1.0.0') && d.contains('baz') && d.contains('>=2.0.0') -> {
+                                            print('PASS: get-deps')
+                                            n-pass = n-pass + 1
+                                        }
+                                        -> {
+                                            print('FAIL: get-deps content mismatch')
+                                            n-fail = n-fail + 1
+                                        }
+                                    }
+                                }
+                                nil -> {
+                                    print('FAIL: deps-meta nil')
+                                    n-fail = n-fail + 1
+                                }
+                                err -> {
+                                    print('FAIL: deps-meta error')
+                                    n-fail = n-fail + 1
+                                }
+                            }
+                        }
+                    }
+                    -> {
+                        print('FAIL: get-deps should return empty for no deps')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-deps meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-deps meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-bin ──
+    bin-meta-json = '{"name":"foo","version":"1.0.0","bin":{"foo":"./bin/foo.js","bar":"./bin/bar.js"}}'
+    bin-meta = json.parse(bin-meta-json, bin-meta-json.len)
+    {
+        bin-meta: {
+            ok -> {
+                bin-str = registry.get-bin(it)
+                {
+                    bin-str.contains('foo') && bin-str.contains('./bin/foo.js') -> {
+                        print('PASS: get-bin')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-bin content mismatch')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-bin meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-bin meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── get-bin: string bin (single) ──
+    bin-str-meta-json = '{"name":"single-bin","version":"1.0.0","bin":"./cli.js"}'
+    bin-str-meta = json.parse(bin-str-meta-json, bin-str-meta-json.len)
+    {
+        bin-str-meta: {
+            ok -> {
+                bin-str2 = registry.get-bin(it)
+                {
+                    bin-str2.contains('./cli.js') -> {
+                        print('PASS: get-bin string')
+                        n-pass = n-pass + 1
+                    }
+                    -> {
+                        print('FAIL: get-bin string')
+                        n-fail = n-fail + 1
+                    }
+                }
+            }
+            nil -> {
+                print('FAIL: get-bin string meta nil')
+                n-fail = n-fail + 1
+            }
+            err -> {
+                print('FAIL: get-bin string meta error')
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

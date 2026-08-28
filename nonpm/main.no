@@ -1,0 +1,906 @@
+; main — noNpm CLI entry point and command dispatcher
+;
+; Pure Nolang implementation of pnpm (fast, disk-efficient package manager).
+; Implements pnpm's isolated node_modules structure with content-addressable store.
+;
+; Commands: install, add, remove, run, init, update, list, outdated,
+;           prune, why, link, unlink, publish, login, whoami,
+;           pack, workspace, exec, dlx, fetch, import,
+;           cache (clean/dir/prune), self (version/update),
+;           version, help
+;
+; Usage: no run nonpm <command> [args...]
+
+# /nonpm/src/utils
+# /nonpm/src/json
+# /nonpm/src/semver
+# /nonpm/src/config
+# /nonpm/src/registry
+# /nonpm/src/resolver
+# /nonpm/src/installer
+# /nonpm/src/linker
+# /nonpm/src/lockfile
+# /nonpm/src/tarball
+# /nonpm/src/workspace
+# /nonpm/src/run
+# /nonpm/src/publish
+
+VERSION = '0.1.0'
+
+; ═══════════════════════════════════════════════
+; main entry
+; ═══════════════════════════════════════════════
+
+main = () {
+    argc = os.args() - 1
+    argc < 1 -> {
+        print-usage()
+        return
+    }
+    cmd = os.arg(1)
+    cmd: {
+        'install' -> cmd-install(argc)
+        'i' -> cmd-install(argc)
+        'ci' -> cmd-install(argc)
+        'add' -> cmd-add(argc)
+        'a' -> cmd-add(argc)
+        'remove' -> cmd-remove(argc)
+        'rm' -> cmd-remove(argc)
+        'uninstall' -> cmd-remove(argc)
+        'run' -> cmd-run(argc)
+        'init' -> cmd-init(argc)
+        'create' -> cmd-init(argc)
+        'update' -> cmd-update(argc)
+        'upgrade' -> cmd-update(argc)
+        'list' -> cmd-list(argc)
+        'ls' -> cmd-list(argc)
+        'll' -> cmd-list(argc)
+        'outdated' -> cmd-outdated(argc)
+        'prune' -> cmd-prune(argc)
+        'why' -> cmd-why(argc)
+        'link' -> cmd-link(argc)
+        'unlink' -> cmd-unlink(argc)
+        'publish' -> cmd-publish(argc)
+        'login' -> cmd-login(argc)
+        'adduser' -> cmd-login(argc)
+        'whoami' -> cmd-whoami(argc)
+        'pack' -> cmd-pack(argc)
+        'exec' -> cmd-exec(argc)
+        'dlx' -> cmd-dlx(argc)
+        'fetch' -> cmd-fetch(argc)
+        'import' -> cmd-import(argc)
+        'cache' -> cmd-cache(argc)
+        'self' -> cmd-self(argc)
+        'version' -> print-version()
+        '--version' -> print-version()
+        '-v' -> print-version()
+        '-V' -> print-version()
+        'help' -> print-usage()
+        '--help' -> print-usage()
+        '-h' -> print-usage()
+        -> {
+            print('error: unknown command: {cmd}')
+            print('')
+            print-usage()
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; usage
+; ═══════════════════════════════════════════════
+
+print-usage = () {
+    print('noNpm — pure Nolang implementation of pnpm')
+    print('')
+    print('Fast, disk-efficient package manager using a virtual store.')
+    print('')
+    print('Usage: nonpm [OPTIONS] <command> [ARGS]')
+    print('')
+    print('Commands:')
+    print('')
+    print('  Install:')
+    print('    install [flags]         Install all dependencies from package.json')
+    print('    add <pkg> [pkg...]      Add dependency and install it')
+    print('    remove <pkg> [pkg...]   Remove dependency')
+    print('    update [pkg...]         Update dependencies')
+    print('    prune                   Remove extraneous packages')
+    print('')
+    print('  Run:')
+    print('    run <script> [args...]  Run a script defined in package.json')
+    print('    exec <cmd> [args...]   Execute a command in the project environment')
+    print('    dlx <pkg> [args...]     Run a package in a temporary environment')
+    print('')
+    print('  Project:')
+    print('    init [path]             Create a new package.json')
+    print('    pack                    Create a tarball from the package')
+    print('    publish                 Publish the package to the registry')
+    print('')
+    print('  Inspect:')
+    print('    list [flags]            List installed dependencies')
+    print('    outdated [pkg...]       Check for outdated dependencies')
+    print('    why <pkg>               Show why a package is installed')
+    print('')
+    print('  Registry:')
+    print('    login                   Authenticate with the registry')
+    print('    whoami                  Show current user')
+    print('')
+    print('  Linking:')
+    print('    link [path]             Link local package')
+    print('    unlink <pkg>           Remove a linked package')
+    print('')
+    print('  Cache:')
+    print('    cache clean             Clean the cache')
+    print('    cache dir               Show the cache directory')
+    print('    cache prune             Prune stale cache entries')
+    print('')
+    print('  Self:')
+    print('    self version            Show version')
+    print('    self update              Update noNpm')
+    print('')
+    print('  version                  Show version')
+    print('  help                     Show this help message')
+    print('')
+    print('Global Options:')
+    print('    -v, --version          Show version')
+    print('    -h, --help            Show help')
+    print('    --registry URL         Override registry URL')
+    print('    --store-dir DIR        Override store directory')
+    print('    --frozen-lockfile      No lockfile updates')
+    print('    --no-cache            Disable cache')
+    print('    --prod, --production   Skip dev dependencies')
+    print('    --dev                 Include dev dependencies')
+    print('    --shamefully-hoist     Hoist all packages to top-level')
+    print('    --node-linker TYPE     Set node linker (isolated|hoisted|pnp)')
+}
+
+print-version = () {
+    print('nonpm {VERSION}')
+}
+
+; ═══════════════════════════════════════════════
+; command: install
+; ═══════════════════════════════════════════════
+
+cmd-install = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    ; parse global flags
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a.starts-with('--registry=') -> cfg.registry = a.slice(11, a.len)
+            a == '--registry' -> {
+                i < argc -> cfg.registry = os.arg(i + 1)
+            }
+            a.starts-with('--store-dir=') -> cfg.store-dir = a.slice(12, a.len)
+            a == '--store-dir' -> {
+                i < argc -> cfg.store-dir = os.arg(i + 1)
+            }
+            a == '--frozen-lockfile' -> cfg.frozen-lockfile = true
+            a == '--prefer-frozen-lockfile' -> cfg.prefer-frozen-lockfile = true
+            a == '--no-cache' -> {}
+            a == '--prod' -> cfg.prod = true
+            a == '--production' -> cfg.prod = true
+            a == '--dev' -> cfg.dev = true
+            a == '--shamefully-hoist' -> cfg.shamefully-hoist = true
+            a.starts-with('--node-linker=') -> cfg.node-linker = a.slice(13, a.len)
+            a == '--node-linker' -> {
+                i < argc -> cfg.node-linker = os.arg(i + 1)
+            }
+        }
+    }
+    ok = installer.install(cfg, dir)
+    ok == false -> os.exit(1)
+}
+
+; ═══════════════════════════════════════════════
+; command: add
+; ═══════════════════════════════════════════════
+
+cmd-add = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm add <pkg>[@version] [pkg...]')
+        return
+    }
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    dev = false
+    pkgs []str = []
+    i <- [2..argc): {
+        a = os.arg(i)
+        {
+            a == '-D' -> dev = true
+            a == '--save-dev' -> dev = true
+            a == '--dev' -> dev = true
+            a.starts-with('--') -> {}
+            -> {
+                pkgs.push(a)
+            }
+        }
+    }
+    n = pkgs.len
+    n == 0 -> {
+        print('error: no packages specified')
+        return
+    }
+    i <- [0..n): {
+        pkg-spec = pkgs[i]
+        at-pos = pkg-spec.index('@')
+        name = pkg-spec
+        range-str = ''
+        at-pos > 0 -> {
+            name = pkg-spec.slice(0, at-pos)
+            range-str = pkg-spec.slice(at-pos + 1, pkg-spec.len)
+        }
+        ok = installer.add(cfg, name, range-str, dir, dev)
+        ok == false -> os.exit(1)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: remove
+; ═══════════════════════════════════════════════
+
+cmd-remove = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm remove <pkg> [pkg...]')
+        return
+    }
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    i <- [2..argc): {
+        a = os.arg(i)
+        a.starts-with('-') -> continue
+        ok = installer.remove(cfg, a, dir)
+        ok == false -> os.exit(1)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: run
+; ═══════════════════════════════════════════════
+
+cmd-run = (argc i64) {
+    argc < 2 -> {
+        scripts = run.list-scripts(os.get-wd())
+        print(scripts)
+        return
+    }
+    script-name = os.arg(2)
+    args = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        args.len > 0 -> args = args - ' ' - a
+        args.len == 0 -> args = a
+    }
+    dir = os.get-wd()
+    ok = run.run-script(dir, script-name, args)
+    ok == false -> os.exit(1)
+}
+
+; ═══════════════════════════════════════════════
+; command: init
+; ═══════════════════════════════════════════════
+
+cmd-init = (argc i64) {
+    dir = os.get-wd()
+    name = ''
+    {
+        argc >= 2 -> {
+            path-arg = os.arg(2)
+            path-arg.starts-with('-') -> {}
+            -> {
+                pp = path{
+                    p: path-arg,
+                }
+                pp.is-abs() -> dir = path-arg
+                -> dir = dir - '/' - path-arg
+                p = path{
+                    p: dir,
+                }
+                p.make-dir()
+                name = pp.base()
+            }
+        }
+    }
+    name.len == 0 -> {
+        pp = path{
+            p: dir,
+        }
+        name = pp.base()
+    }
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        print('error: package.json already exists')
+        os.exit(1)
+    }
+    ; create package.json
+    v = json.new-obj()
+    json.set-key(v, 'name', json.from-str(name))
+    json.set-key(v, 'version', json.from-str('1.0.0'))
+    json.set-key(v, 'description', json.from-str(''))
+    main-obj = json.new-obj()
+    main-obj.set-key('name', json.from-str('index.js'))
+    v.set-key('main', main-obj)
+    scripts-obj = json.new-obj()
+    scripts-obj.set-key('test', json.from-str('echo "Error: no test specified" && exit 1'))
+    v.set-key('scripts', scripts-obj)
+    keywords-arr = json.new-arr()
+    v.set-key('keywords', keywords-arr)
+    author-val = json.from-str('')
+    v.set-key('author', author-val)
+    license-val = json.from-str('ISC')
+    v.set-key('license', license-val)
+
+    buf str = with-len(65536)
+    n = json.stringify-pretty(v, buf, 2)
+    content = buf.slice(0, n)
+    utils.write-file(pkg-path, content)
+
+    print('Wrote to {pkg-path}')
+    print('')
+    print('{')
+    print('  "name": "{name}",')
+    print('  "version": "1.0.0",')
+    print('  ...')
+    print('}')
+    print('')
+    print('noNpm: initialized project in {dir}')
+}
+
+; ═══════════════════════════════════════════════
+; command: update
+; ═══════════════════════════════════════════════
+
+cmd-update = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    pkgs []str = []
+    i <- [2..argc): {
+        a = os.arg(i)
+        a.starts-with('-') -> continue
+        pkgs.push(a)
+    }
+    n = pkgs.len
+    n == 0 -> {
+        ; update all dependencies
+        print('noNpm: updating all dependencies...')
+        ok = installer.install(cfg, dir)
+        ok == false -> os.exit(1)
+        return
+    }
+    ; update specific packages
+    i <- [0..n): {
+        pkg-spec = pkgs[i]
+        at-pos = pkg-spec.index('@')
+        name = pkg-spec
+        range-str = ''
+        at-pos > 0 -> {
+            name = pkg-spec.slice(0, at-pos)
+            range-str = pkg-spec.slice(at-pos + 1, pkg-spec.len)
+        }
+        ; remove and re-add
+        installer.remove(cfg, name, dir)
+        installer.add(cfg, name, range-str, dir, false)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: list
+; ═══════════════════════════════════════════════
+
+cmd-list = (argc i64) {
+    dir = os.get-wd()
+    nm-dir = dir - '/node_modules'
+    virtual = nm-dir - '/.nonpm'
+    p = path{
+        p: virtual,
+    }
+    p.exists() -> {
+        print('noNpm: installed packages:')
+        ; read lockfile for list
+        lock-content, lock-ok = lockfile.read(dir)
+        lock-ok == true -> {
+            ; parse and display
+            lines = lock-content.split('\n')
+            n = lines.len
+            in-deps = false
+            i <- [0..n): {
+                line = lines[i]
+                line.starts-with('dependencies:') -> {
+                    in-deps = true
+                    continue
+                }
+                line.starts-with('devDependencies:') -> in-deps = false
+                in-deps == true -> {
+                    line.starts-with('  ') && line.ends-with(':') -> {
+                        pkg-name = line.trim()
+                        pkg-name = pkg-name.slice(0, pkg-name.len - 1)
+                        print('  ' - pkg-name)
+                    }
+                }
+            }
+        }
+        -> {
+            print('  (no lockfile found)')
+        }
+    }
+    -> {
+        print('no node_modules found')
+        print('Run "nonpm install" to install dependencies')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: outdated
+; ═══════════════════════════════════════════════
+
+cmd-outdated = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    lock-content, lock-ok = lockfile.read(dir)
+    lock-ok == true -> {
+        print('noNpm: checking for outdated packages...')
+        lines = lock-content.split('\n')
+        n = lines.len
+        in-deps = false
+        i <- [0..n): {
+            line = lines[i]
+            line.starts-with('dependencies:') -> {
+                in-deps = true
+                continue
+            }
+            line.starts-with('devDependencies:') -> in-deps = false
+            in-deps == true -> {
+                line.starts-with('  ') && line.ends-with(':') -> {
+                    pkg-name = line.trim()
+                    pkg-name = pkg-name.slice(0, pkg-name.len - 1)
+                    ; get current version
+                    cur-ver = lockfile.get-pkg-version(lock-content, pkg-name)
+                    cur-ver: {
+                        ok -> {
+                            ; fetch latest from registry
+                            meta = registry.fetch-metadata(cfg, pkg-name)
+                            meta: {
+                                ok -> {
+                                    latest = registry.get-latest-version(it)
+                                    latest.len > 0 -> {
+                                        latest != it -> {
+                                            print('  ' - pkg-name - '  ' - it - ' -> ' - latest)
+                                        }
+                                    }
+                                }
+                                nil -> {}
+                                err -> {}
+                            }
+                        }
+                        nil -> {}
+                        err -> {}
+                    }
+                }
+            }
+        }
+    }
+    -> {
+        print('no lockfile found')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: prune
+; ═══════════════════════════════════════════════
+
+cmd-prune = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    ok = installer.prune(cfg, dir)
+    ok == false -> os.exit(1)
+}
+
+; ═══════════════════════════════════════════════
+; command: why
+; ═══════════════════════════════════════════════
+
+cmd-why = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm why <pkg>')
+        return
+    }
+    pkg-name = os.arg(2)
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    lock-content, lock-ok = lockfile.read(dir)
+    lock-ok == true -> {
+        ver = lockfile.get-pkg-version(lock-content, pkg-name)
+        ver: {
+            ok -> {
+                print('{pkg-name}@{it} is installed')
+                print('  This package is a direct dependency of the project.')
+            }
+            nil -> {
+                print('{pkg-name} is not installed')
+            }
+            err -> {
+                print('{pkg-name} is not installed')
+            }
+        }
+    }
+    -> {
+        print('no lockfile found')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: link
+; ═══════════════════════════════════════════════
+
+cmd-link = (argc i64) {
+    dir = os.get-wd()
+    {
+        argc >= 2 -> {
+            target = os.arg(2)
+            target.starts-with('-') -> {
+                print('usage: nonpm link [path]')
+                return
+            }
+            ; link local package
+            full-target = target
+            target.starts-with('/') -> full-target = target
+            -> full-target = dir - '/' - target
+            ; create symlink in node_modules
+            nm-dir = dir - '/node_modules'
+            p = path{
+                p: nm-dir,
+            }
+            p.exists() -> {
+                p.make-dir()
+            }
+            pkg-path = full-target - '/package.json'
+            pp = path{
+                p: pkg-path,
+            }
+            pp.exists() -> {
+                content = fs.read-file(pkg-path)
+                v = json.parse(content, content.len)
+                v: {
+                    ok -> {
+                        name-val = json.get-key(it, 'name')
+                        name-val: {
+                            ok -> {
+                                pkg-name = it.str-val()
+                                link-path = nm-dir - '/' - pkg-name
+                                fs.is-file(link-path) -> fs.remove(link-path)
+                                cmd = 'ln -s ' - full-target - ' ' - link-path
+                                process.process-run(cmd)
+                                print('noNpm: linked ' - pkg-name - ' -> ' - full-target)
+                            }
+                            nil -> {
+                                print('error: no "name" field in package.json')
+                            }
+                            err -> {}
+                        }
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+            }
+            -> {
+                print('error: no package.json in ' - full-target)
+            }
+        }
+        -> {
+            print('usage: nonpm link [path]')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: unlink
+; ═══════════════════════════════════════════════
+
+cmd-unlink = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm unlink <pkg>')
+        return
+    }
+    pkg-name = os.arg(2)
+    dir = os.get-wd()
+    nm-dir = dir - '/node_modules'
+    link-path = nm-dir - '/' - pkg-name
+    fs.is-file(link-path) -> fs.remove(link-path)
+    fs.is-dir(link-path) -> process.process-run('rm -rf ' - link-path)
+    print('noNpm: unlinked ' - pkg-name)
+}
+
+; ═══════════════════════════════════════════════
+; command: publish
+; ═══════════════════════════════════════════════
+
+cmd-publish = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    ; get token from env or .npmrc
+    token = os.get-env('NPM_TOKEN')
+    token.len == 0 -> {
+        token = os.get-env('NONPM_TOKEN')
+    }
+    token.len == 0 -> {
+        print('error: no auth token found')
+        print('Set NPM_TOKEN environment variable or run "nonpm login"')
+        os.exit(1)
+    }
+    ok = publish.publish(cfg, dir, token)
+    ok == false -> os.exit(1)
+}
+
+; ═══════════════════════════════════════════════
+; command: login
+; ═══════════════════════════════════════════════
+
+cmd-login = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    print('noNpm: login to ' - cfg.registry)
+    print('Username: ', '')
+    username = fs.get-line()
+    print('Password: ', '')
+    password = fs.get-line()
+    token = registry.login(cfg, username, password)
+    token: {
+        ok -> {
+            print('Logged in as ' - username)
+            print('Token: ' - it)
+            print('Save this token as NPM_TOKEN environment variable')
+        }
+        nil -> {
+            print('error: login failed')
+            os.exit(1)
+        }
+        err -> {
+            print('error: ' - it)
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: whoami
+; ═══════════════════════════════════════════════
+
+cmd-whoami = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    token = os.get-env('NPM_TOKEN')
+    token.len == 0 -> {
+        token = os.get-env('NONPM_TOKEN')
+    }
+    token.len == 0 -> {
+        print('not logged in')
+        os.exit(1)
+    }
+    username = registry.whoami(cfg, token)
+    username: {
+        ok -> {
+            print(it)
+        }
+        nil -> {
+            print('not logged in')
+            os.exit(1)
+        }
+        err -> {
+            print('error: ' - it)
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: pack
+; ═══════════════════════════════════════════════
+
+cmd-pack = (argc i64) {
+    dir = os.get-wd()
+    dest = dir
+    {
+        argc >= 2 -> {
+            dest = os.arg(2)
+            dest.starts-with('-') -> dest = dir
+        }
+    }
+    tgz-path, ok = publish.pack(dir, dest)
+    ok == true -> {
+        print('noNpm: created ' - tgz-path)
+    }
+    -> {
+        print('error: failed to create tarball')
+        os.exit(1)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: exec
+; ═══════════════════════════════════════════════
+
+cmd-exec = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm exec <cmd> [args...]')
+        return
+    }
+    dir = os.get-wd()
+    cmd-str = ''
+    i <- [2..argc): {
+        a = os.arg(i)
+        cmd-str.len > 0 -> cmd-str = cmd-str - ' ' - a
+        cmd-str.len == 0 -> cmd-str = a
+    }
+    nm-dir = dir - '/node_modules/.bin'
+    path-env = os.get-env('PATH')
+    full-path = nm-dir - ':' - path-env
+    os.set-env('PATH', full-path)
+    code = process.process-run('cd ' - dir - ' && ' - cmd-str)
+    code != 0 -> os.exit(code)
+}
+
+; ═══════════════════════════════════════════════
+; command: dlx
+; ═══════════════════════════════════════════════
+
+cmd-dlx = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm dlx <pkg> [args...]')
+        return
+    }
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    pkg-spec = os.arg(2)
+    at-pos = pkg-spec.index('@')
+    name = pkg-spec
+    range-str = ''
+    at-pos > 0 -> {
+        name = pkg-spec.slice(0, at-pos)
+        range-str = pkg-spec.slice(at-pos + 1, pkg-spec.len)
+    }
+    ; create temporary directory
+    tmp-dir = '/tmp/nonpm-dlx-' - os.now-ms().to-str()
+    process.process-run('mkdir -p ' - tmp-dir)
+    ; install package to tmp dir
+    ok = installer.install-pkg(cfg, name, range-str, tmp-dir)
+    ok == false -> {
+        process.process-run('rm -rf ' - tmp-dir)
+        os.exit(1)
+    }
+    ; run the package's bin
+    bin-dir = tmp-dir - '/node_modules/.bin'
+    cmd-str = ''
+    i <- [3..argc): {
+        a = os.arg(i)
+        cmd-str.len > 0 -> cmd-str = cmd-str - ' ' - a
+        cmd-str.len == 0 -> cmd-str = a
+    }
+    full-cmd = 'cd ' - tmp-dir - ' && ' - bin-dir - '/' - name - ' ' - cmd-str
+    code = process.process-run(full-cmd)
+    process.process-run('rm -rf ' - tmp-dir)
+    code != 0 -> os.exit(code)
+}
+
+; ═══════════════════════════════════════════════
+; command: fetch
+; ═══════════════════════════════════════════════
+
+cmd-fetch = (argc i64) {
+    dir = os.get-wd()
+    cfg = config.load-project(dir)
+    ; resolve and download without linking
+    graph, resolve-ok = resolver.resolve-project(cfg, dir)
+    resolve-ok == false -> {
+        print('error: failed to resolve dependencies')
+        os.exit(1)
+    }
+    store-dir = cfg.store-dir
+    nm-dir = dir - '/node_modules'
+    virtual-store = nm-dir - '/.nonpm'
+    n = graph.node-count
+    i <- [0..n): {
+        node = graph.nodes[i]
+        pkg-store-path = linker.package-dir(virtual-store, node.name, node.version)
+        pkg-exists = fs.is-dir(pkg-store-path)
+        pkg-exists == false -> {
+            print('noNpm: fetching ' - node.name - '@' - node.version - '...')
+            dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path)
+            dl-ok == false -> {
+                print('error: failed to fetch ' - node.name)
+            }
+        }
+    }
+    print('noNpm: fetched all packages to virtual store')
+}
+
+; ═══════════════════════════════════════════════
+; command: import
+; ═══════════════════════════════════════════════
+
+cmd-import = (argc i64) {
+    dir = os.get-wd()
+    print('noNpm: importing from existing node_modules...')
+    ; TODO: generate lockfile from existing node_modules
+    cfg = config.load-project(dir)
+    graph, resolve-ok = resolver.resolve-project(cfg, dir)
+    resolve-ok == true -> {
+        lockfile.generate(cfg, dir, graph)
+    }
+    -> {
+        print('error: could not resolve project')
+        os.exit(1)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: cache
+; ═══════════════════════════════════════════════
+
+cmd-cache = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm cache <subcommand>')
+        print('  cache clean    Clean the cache')
+        print('  cache dir      Show the cache directory')
+        print('  cache prune    Prune stale cache entries')
+        return
+    }
+    sub = os.arg(2)
+    sub: {
+        'clean' -> {
+            home = os.get-env('HOME')
+            cache-dir = home - '/.nonpm/cache'
+            process.process-run('rm -rf ' - cache-dir - '/*')
+            print('noNpm: cache cleaned')
+        }
+        'dir' -> {
+            home = os.get-env('HOME')
+            print(home - '/.nonpm/cache')
+        }
+        'prune' -> {
+            print('noNpm: pruning cache...')
+            ; TODO: scan cache and remove old entries
+            print('noNpm: cache pruned')
+        }
+        -> {
+            print('unknown cache subcommand: {sub}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; command: self
+; ═══════════════════════════════════════════════
+
+cmd-self = (argc i64) {
+    argc < 2 -> {
+        print('usage: nonpm self <subcommand>')
+        print('  self version   Show version')
+        print('  self update    Update noNpm')
+        return
+    }
+    sub = os.arg(2)
+    sub: {
+        'version' -> print-version()
+        'update' -> {
+            print('noNpm: updating...')
+            code = process.process-run('no install nonpm -u')
+            code == 0 -> {
+                print('noNpm: updated successfully')
+            }
+            -> {
+                print('noNpm: update failed')
+                os.exit(1)
+            }
+        }
+        -> {
+            print('unknown self subcommand: {sub}')
+        }
+    }
+}

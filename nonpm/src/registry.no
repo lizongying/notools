@@ -1,0 +1,375 @@
+; registry.no — npm registry HTTP interaction for noNpm
+;
+; Provides functions for communicating with the npm registry:
+; - Fetching package metadata (all versions, dist info)
+; - Downloading tarballs
+; - Publishing packages
+; - User authentication
+;
+; API:
+;   fetch-metadata(cfg config, pkg str) (meta ?json-value) — get package metadata
+;   fetch-version(cfg config, pkg str, ver str) (meta ?json-value) — get specific version metadata
+;   get-tarball-url(meta json-value, ver str) (url str) — extract tarball URL
+;   get-dist-info(meta json-value, ver str) (url str, shasum str, ok bool) — get dist info
+;   login(cfg config, username str, password str) (token ?str) — authenticate
+;   whoami(cfg config, token str) (username ?str) — check auth
+
+# /nonpm/src/utils
+# /nonpm/src/json
+# /nonpm/src/semver
+
+; ═══════════════════════════════════════════════
+; fetch-metadata — fetch full package metadata from registry
+; cfg config — configuration (contains registry URL)
+; pkg str — package name
+; returns meta ?json-value — parsed metadata (nil=not found, err=error)
+; ═══════════════════════════════════════════════
+
+fetch-metadata = (cfg config, pkg str) (meta ?json-value) {
+    meta = nil
+    url = cfg.registry - pkg
+    resp = http.http-get(url)
+    resp: {
+        nil -> {
+            meta = err('network error: failed to fetch ' - pkg)
+            return
+        }
+        err -> {
+            meta = err(it)
+            return
+        }
+        ok -> {
+            it.status-code != 200 -> {
+                it.status-code == 404 -> {
+                    meta = nil
+                    return
+                }
+                meta = err('registry returned status ' - it.status-code.to-str())
+                return
+            }
+            body = it.body
+            meta = json.parse(body, body.len)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; fetch-version — fetch metadata for a specific version
+; cfg config — configuration
+; pkg str — package name
+; ver str — version string (or "latest")
+; returns meta ?json-value — version metadata (nil=not found, err=error)
+; ═══════════════════════════════════════════════
+
+fetch-version = (cfg config, pkg str, ver str) (meta ?json-value) {
+    meta = nil
+    version-path = ver
+    ver == 'latest' -> version-path = 'latest'
+    ver == '' -> version-path = 'latest'
+    url = cfg.registry - pkg - '/' - version-path
+    resp = http.http-get(url)
+    resp: {
+        nil -> {
+            meta = err('network error')
+            return
+        }
+        err -> {
+            meta = err(it)
+            return
+        }
+        ok -> {
+            it.status-code != 200 -> {
+                it.status-code == 404 -> {
+                    meta = nil
+                    return
+                }
+                meta = err('registry returned status ' - it.status-code.to-str())
+                return
+            }
+            body = it.body
+            meta = json.parse(body, body.len)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-tarball-url — extract tarball URL from version metadata
+; meta json-value — version metadata
+; returns url str — tarball download URL
+; ═══════════════════════════════════════════════
+
+get-tarball-url = (meta json-value) (url str) {
+    url = ''
+    dist = json.get-key(meta, 'dist')
+    dist: {
+        ok -> {
+            tarball = json.get-key(it, 'tarball')
+            tarball: {
+                ok -> url = it.str-val()
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-dist-info — get dist info (url, shasum) from version metadata
+; meta json-value — version metadata
+; returns url str — tarball URL
+; returns shasum str — SHA-512 hex digest
+; returns ok bool — true if found
+; ═══════════════════════════════════════════════
+
+get-dist-info = (meta json-value) (url str, shasum str, ok bool) {
+    url = ''
+    shasum = ''
+    ok = false
+    dist = json.get-key(meta, 'dist')
+    dist: {
+        ok -> {
+            tarball = json.get-key(it, 'tarball')
+            tarball: {
+                ok -> {
+                    url = it.str-val()
+                }
+                nil -> return
+                err -> return
+            }
+            sh = json.get-key(it, 'shasum')
+            sh: {
+                ok -> shasum = it.str-val()
+                nil -> {}
+                err -> {}
+            }
+            int-val = json.get-key(it, 'integrity')
+            int-val: {
+                ok -> {
+                    int-str = it.str-val()
+                    int-str.len > 0 -> shasum = int-str
+                }
+                nil -> {}
+                err -> {}
+            }
+            ok = true
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-versions — get all available versions from package metadata
+; meta json-value — package metadata
+; returns versions []str — list of version strings
+; ═══════════════════════════════════════════════
+
+get-versions = (meta json-value) (versions []str) {
+    versions = []
+    versions-obj = json.get-key(meta, 'versions')
+    versions-obj: {
+        ok -> {
+            keys = versions-obj.obj-keys-str()
+            versions = keys
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-latest-version — get the "latest" dist-tag
+; meta json-value — package metadata
+; returns ver str — latest version string
+; ═══════════════════════════════════════════════
+
+get-latest-version = (meta json-value) (ver str) {
+    ver = ''
+    dist-tags = json.get-key(meta, 'dist-tags')
+    dist-tags: {
+        ok -> {
+            latest = json.get-key(it, 'latest')
+            latest: {
+                ok -> ver = it.str-val()
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-deps — get dependencies from version metadata
+; meta json-value — version metadata
+; returns deps str — JSON string of dependencies
+; ═══════════════════════════════════════════════
+
+get-deps = (meta json-value) (deps str) {
+    deps = ''
+    dep-obj = json.get-key(meta, 'dependencies')
+    dep-obj: {
+        ok -> {
+            buf str = with-len(65536)
+            n = json.stringify(dep-obj, buf)
+            deps = buf.slice(0, n)
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-dev-deps — get devDependencies from version metadata
+; meta json-value — version metadata
+; returns deps str — JSON string of devDependencies
+; ═══════════════════════════════════════════════
+
+get-dev-deps = (meta json-value) (deps str) {
+    deps = ''
+    dep-obj = json.get-key(meta, 'devDependencies')
+    dep-obj: {
+        ok -> {
+            buf str = with-len(65536)
+            n = json.stringify(dep-obj, buf)
+            deps = buf.slice(0, n)
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-peer-deps — get peerDependencies from version metadata
+; meta json-value — version metadata
+; returns deps str — JSON string of peerDependencies
+; ═══════════════════════════════════════════════
+
+get-peer-deps = (meta json-value) (deps str) {
+    deps = ''
+    dep-obj = json.get-key(meta, 'peerDependencies')
+    dep-obj: {
+        ok -> {
+            buf str = with-len(65536)
+            n = json.stringify(dep-obj, buf)
+            deps = buf.slice(0, n)
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-bin — get bin field from version metadata
+; meta json-value — version metadata
+; returns bin str — JSON string of bin field
+; ═══════════════════════════════════════════════
+
+get-bin = (meta json-value) (bin str) {
+    bin = ''
+    bin-obj = json.get-key(meta, 'bin')
+    bin-obj: {
+        ok -> {
+            buf str = with-len(65536)
+            n = json.stringify(bin-obj, buf)
+            bin = buf.slice(0, n)
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; login — authenticate with registry, return token
+; cfg config — configuration
+; username str — npm username
+; password str — npm password
+; returns token ?str — auth token (nil=failed, err=error)
+; ═══════════════════════════════════════════════
+
+login = (cfg config, username str, password str) (token ?str) {
+    token = nil
+    url = cfg.registry - '-/v1/login'
+    body = '{"username":"' - username - '","password":"' - password - '"}'
+    req = http.http-request{
+        method: 'PUT',
+        url: url,
+        body: body,
+    }
+    req.add-header('Content-Type', 'application/json')
+    resp = http.http-do-req(req)
+    resp: {
+        nil -> {
+            token = err('network error during login')
+            return
+        }
+        err -> {
+            token = err(it)
+            return
+        }
+        ok -> {
+            it.status-code != 200 -> {
+                token = err('login failed: status ' - it.status-code.to-str())
+                return
+            }
+            v = json.parse(it.body, it.body.len)
+            v: {
+                ok -> {
+                    tok = json.get-key(it, 'token')
+                    tok: {
+                        ok -> token = it.str-val()
+                        nil -> token = nil
+                        err -> token = err(it)
+                    }
+                }
+                nil -> token = nil
+                err -> token = err(it)
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; whoami — check authentication, return username
+; cfg config — configuration
+; token str — auth token
+; returns username ?str — username (nil=not authed, err=error)
+; ═══════════════════════════════════════════════
+
+whoami = (cfg config, token str) (username ?str) {
+    username = nil
+    url = cfg.registry - '-/whoami'
+    resp = http.http-get(url)
+    resp: {
+        nil -> {
+            username = err('network error')
+            return
+        }
+        err -> {
+            username = err(it)
+            return
+        }
+        ok -> {
+            it.status-code != 200 -> {
+                username = nil
+                return
+            }
+            v = json.parse(it.body, it.body.len)
+            v: {
+                ok -> {
+                    un = json.get-key(it, 'username')
+                    un: {
+                        ok -> username = it.str-val()
+                        nil -> username = nil
+                        err -> username = err(it)
+                    }
+                }
+                nil -> username = nil
+                err -> username = err(it)
+            }
+        }
+    }
+}

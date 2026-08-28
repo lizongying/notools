@@ -1,0 +1,297 @@
+; workspace.no — workspace multi-package management for noNpm
+;
+; Manages monorepo workspaces with pnpm-workspace.yaml:
+; - Discovers workspace packages via glob patterns
+; - Supports recursive commands across all packages
+; - Handles inter-package dependencies
+;
+; API:
+;   discover(dir str) (packages []str, ok bool) — find all workspace packages
+;   get-package-info(dir str) (name str, ver str, ok bool) — read package info
+;   is-workspace-root(dir str) (ok bool) — check if directory is workspace root
+;   exec-recursive(dir str, cmd str) (ok bool) — run command in all packages
+;   resolve-local-dep(dir str, name str) (path ?str) — resolve local package path
+
+# /nonpm/src/utils
+# /nonpm/src/json
+
+; ═══════════════════════════════════════════════
+; discover — discover all workspace packages
+; dir str — workspace root directory
+; returns paths []str — list of package directories
+; returns ok bool — true if workspace found
+; ═══════════════════════════════════════════════
+
+discover = (dir str) (paths []str, ok bool) {
+    ok = false
+    ws-path = dir - '/pnpm-workspace.yaml'
+    p = path{
+        p: ws-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(ws-path)
+        patterns = parse-packages-field(content)
+        ; expand each glob pattern
+        pat-lines = patterns.split('\n')
+        n = pat-lines.len
+        i <- [0..n): {
+            pat = pat-lines[i].trim()
+            pat.len > 0 -> {
+                expand-pattern(dir, pat, paths)
+            }
+        }
+        ok = true
+    }
+    -> {
+        ; check package.json for "workspaces" field
+        pkg-path = dir - '/package.json'
+        pp = path{
+            p: pkg-path,
+        }
+        pp.exists() -> {
+            content = fs.read-file(pkg-path)
+            v = json.parse(content, content.len)
+            v: {
+                ok -> {
+                    ws = json.get-key(it, 'workspaces')
+                    ws: {
+                        ok -> {
+                            ws-kind = it.kind()
+                            ws-kind == json-kind.arr -> {
+                                n = it.arr-len()
+                                i <- [0..n): {
+                                    entry = it.arr-get(i)
+                                    entry: {
+                                        ok -> {
+                                            pat = it.str-val()
+                                            expand-pattern(dir, pat, paths)
+                                        }
+                                        nil -> {}
+                                        err -> {}
+                                    }
+                                }
+                                ok = true
+                            }
+                            ws-kind == json-kind.obj -> {
+                                packages = json.get-key(it, 'packages')
+                                packages: {
+                                    ok -> {
+                                        n = packages.arr-len()
+                                        i <- [0..n): {
+                                            entry = packages.arr-get(i)
+                                            entry: {
+                                                ok -> {
+                                                    pat = it.str-val()
+                                                    expand-pattern(dir, pat, paths)
+                                                }
+                                                nil -> {}
+                                                err -> {}
+                                            }
+                                        }
+                                        ok = true
+                                    }
+                                    nil -> {}
+                                    err -> {}
+                                }
+                            }
+                        }
+                        nil -> {}
+                        err -> {}
+                    }
+                }
+                nil -> {}
+                err -> {}
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-packages-field — extract package patterns from yaml
+; content str — pnpm-workspace.yaml content
+; returns patterns str — newline-separated glob patterns
+; ═══════════════════════════════════════════════
+
+parse-packages-field = (content str) (patterns str) {
+    patterns = ''
+    lines = content.split('\n')
+    n = lines.len
+    in-packages = false
+    i <- [0..n): {
+        line = lines[i]
+        trimmed = line.trim()
+        trimmed.starts-with('packages:') -> {
+            in-packages = true
+            continue
+        }
+        in-packages == true -> {
+            trimmed.starts-with('-') -> {
+                val = trimmed.slice(1, trimmed.len).trim()
+                val.starts-with('"') -> val = val.slice(1, val.len)
+                val.ends-with('"') -> val = val.slice(0, val.len - 1)
+                val.starts-with("'") -> val = val.slice(1, val.len)
+                val.ends-with("'") -> val = val.slice(0, val.len - 1)
+                patterns = patterns - val - '\n'
+            }
+            -> {
+                in-packages = false
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; expand-pattern — expand a glob pattern and add matching dirs to paths
+; base-dir str — workspace root
+; pattern str — glob pattern (e.g. "packages/*")
+; paths []str — array to append matches to
+; ═══════════════════════════════════════════════
+
+expand-pattern = (base-dir str, pattern str, paths []str) {
+    full-pattern = base-dir - '/' - pattern
+    ; use find to expand glob
+    cmd = 'find ' - base-dir - ' -maxdepth 2 -name package.json -not -path "*/node_modules/*" 2>/dev/null'
+    tmp = '/tmp/nonpm-ws-' - os.now-ms().to-str()
+    process.process-system(cmd - ' > ' - tmp)
+    content = fs.read-file(tmp)
+    fs.remove(tmp)
+    lines = content.split('\n')
+    n = lines.len
+    i <- [0..n): {
+        line = lines[i].trim()
+        line.len > 0 -> {
+            ; line is a path to package.json, extract directory
+            dir-path = utils.path-dir(line)
+            paths.push(dir-path)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-package-info — read package name and version
+; dir str — package directory
+; returns name str — package name
+; returns ver str — package version
+; returns ok bool — true if package.json found
+; ═══════════════════════════════════════════════
+
+get-package-info = (dir str) (name str, ver str, ok bool) {
+    name = ''
+    ver = ''
+    ok = false
+    pkg-path = dir - '/package.json'
+    p = path{
+        p: pkg-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                name-val = json.get-key(it, 'name')
+                name-val: {
+                    ok -> name = it.str-val()
+                    nil -> {}
+                    err -> {}
+                }
+                ver-val = json.get-key(it, 'version')
+                ver-val: {
+                    ok -> ver = it.str-val()
+                    nil -> {}
+                    err -> {}
+                }
+                ok = true
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-workspace-root — check if directory is workspace root
+; dir str — directory to check
+; returns ok bool — true if workspace root
+; ═══════════════════════════════════════════════
+
+is-workspace-root = (dir str) (ok bool) {
+    ok = false
+    ws-path = dir - '/pnpm-workspace.yaml'
+    p = path{
+        p: ws-path,
+    }
+    p.exists() -> {
+        ok = true
+        return
+    }
+    ; check package.json workspaces field
+    pkg-path = dir - '/package.json'
+    pp = path{
+        p: pkg-path,
+    }
+    pp.exists() -> {
+        content = fs.read-file(pkg-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                ws = json.get-key(it, 'workspaces')
+                ws: {
+                    ok -> ok = true
+                    nil -> {}
+                    err -> {}
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; resolve-local-dep — resolve a local workspace dependency
+; dir str — workspace root
+; name str — package name
+; returns path ?str — path to local package (nil=not found)
+; ═══════════════════════════════════════════════
+
+resolve-local-dep = (dir str, name str) (p ?str) {
+    p = nil
+    packages, ws-ok = discover(dir)
+    ws-ok == true -> {
+        n = packages.len
+        i <- [0..n): {
+            pkg-dir = packages[i]
+            pkg-name, pkg-ver, info-ok = get-package-info(pkg-dir)
+            info-ok == true -> {
+                pkg-name == name -> {
+                    p = pkg-dir
+                    return
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; exec-recursive — run a command in all workspace packages
+; dir str — workspace root
+; cmd str — command to run
+; returns ok bool — true if all succeeded
+; ═══════════════════════════════════════════════
+
+exec-recursive = (dir str, cmd str) (ok bool) {
+    ok = true
+    packages, ws-ok = discover(dir)
+    ws-ok == true -> {
+        n = packages.len
+        i <- [0..n): {
+            pkg-dir = packages[i]
+            pkg-name, _, info-ok = get-package-info(pkg-dir)
+            info-ok == true -> {
+                print('> ' - pkg-name - ' $ ' - cmd)
+                code = process.process-system('cd ' - pkg-dir - ' && ' - cmd)
+                code != 0 -> ok = false
+            }
+        }
+    }
+}

@@ -1,0 +1,71 @@
+; test-installer.no — tests for the installer module (logic-only)
+;
+; Mirrors pnpm's getSaveType and install command tests
+; Tests: installer module imports, function existence (no network calls)
+; Run: no run nonpm/tests/test-installer.no
+
+# /nonpm/src/installer
+# /nonpm/src/utils
+
+main = () {
+    print('--- Testing installer module ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ── install-pkg: nonexistent dir should fail gracefully ──
+    cfg config.config
+    cfg = config.default-config()
+    cfg.registry = 'http://localhost:99999/'
+    ok1 = installer.install-pkg(cfg, 'nonexistent-pkg', '1.0.0', '/tmp/nonpm-nonexistent-' - os.now-ms().to-str())
+    {
+        ok1 == false -> {
+            print('PASS: install-pkg nonexistent returns false')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: install-pkg nonexistent should return false')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── remove: nonexistent dir should still return true ──
+    test-dir2 = '/tmp/nonpm-test-installer-' - os.now-ms().to-str()
+    process.process-system('mkdir -p ' - test-dir2)
+    utils.write-file(test-dir2 - '/package.json', '{"name":"test","version":"1.0.0","dependencies":{"foo":"^1.0.0"}}')
+    ok2 = installer.remove(cfg, 'foo', test-dir2)
+    {
+        ok2 -> {
+            print('PASS: remove returns true')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: remove should return true')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; ── remove: verify dependency was removed from package.json ──
+    content = fs.read-file(test-dir2 - '/package.json')
+    {
+        content.contains('foo') == false -> {
+            print('PASS: remove deletes dependency from package.json')
+            n-pass = n-pass + 1
+        }
+        -> {
+            print('FAIL: remove should delete dependency from package.json')
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; cleanup
+    process.process-system('rm -rf ' - test-dir2)
+
+    ; ── summary ──
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
+
+main()

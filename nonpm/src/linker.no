@@ -1,0 +1,284 @@
+; linker.no — symlink management (pnpm style) for noNpm
+;
+; Implements pnpm's isolated node_modules structure:
+; - Packages are stored in a virtual store (.nonpm-store)
+; - Each package version gets its own directory
+; - node_modules uses symlinks to the virtual store
+; - Each package's dependencies are symlinked into its own node_modules
+;
+; Structure:
+;   node_modules/
+;     .nonpm/
+;       express@4.17.1/
+;         package/          (extracted package)
+;         node_modules/     (symlinks to deps)
+;     express -> .nonpm/express@4.17.1/package
+;
+; API:
+;   link-package(store-dir str, name str, ver str, dest-dir str) (ok bool)
+;   link-to-node-modules(store-dir str, name str, ver str, nm-dir str) (ok bool)
+;   link-deps(store-dir str, name str, ver str, deps str) (ok bool)
+;   create-bin-links(store-dir str, name str, ver str, bin-dir str) (ok bool)
+
+# /nonpm/src/utils
+# /nonpm/src/json
+
+; ═══════════════════════════════════════════════
+; store-path — get the virtual store path for a package
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; returns path str — path in virtual store
+; ═══════════════════════════════════════════════
+
+store-path = (store-dir str, name str, ver str) (path str) {
+    ; replace / in name (scoped packages like @scope/pkg)
+    safe-name = name
+    safe-name = utils.replace(safe-name, '/', '+')
+    path = store-dir - '/' - safe-name - '@' - ver
+}
+
+; ═══════════════════════════════════════════════
+; package-dir — get the package/ directory within a store entry
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; returns path str — path to extracted package
+; ═══════════════════════════════════════════════
+
+package-dir = (store-dir str, name str, ver str) (path str) {
+    base = store-path(store-dir, name, ver)
+    path = base - '/package'
+}
+
+; ═══════════════════════════════════════════════
+; link-package — create symlink from node_modules to store entry
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; dest-dir str — destination node_modules directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
+    ok = false
+    pkg-path = package-dir(store-dir, name, ver)
+    ; create node_modules if needed
+    dest = dest-dir - '/' - name
+    ; for scoped packages, create @scope/ directory
+    name.starts-with('@') -> {
+        slash-pos = name.index('/')
+        slash-pos >= 0 -> {
+            scope-dir = dest-dir - '/' - name.slice(0, slash-pos)
+            fs.is-dir(scope-dir) -> {
+                mk = path{
+                    p: scope-dir,
+                }
+                mk.make-dir()
+            }
+            pkg-name = name.slice(slash-pos + 1, name.len)
+            dest = scope-dir - '/' - pkg-name
+        }
+    }
+    ; remove existing symlink or file
+    fs.is-file(dest) -> fs.remove(dest)
+    fs.is-dir(dest) -> {
+        process.process-system('rm -rf ' - dest)
+    }
+    ; create symlink
+    cmd = 'ln -s ' - pkg-path - ' ' - dest
+    code = process.process-system(cmd)
+    ok = code == 0
+}
+
+; ═══════════════════════════════════════════════
+; link-to-node-modules — link a package to top-level node_modules
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; nm-dir str — project node_modules directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+link-to-node-modules = (store-dir str, name str, ver str, nm-dir str) (ok bool) {
+    ; ensure node_modules exists
+    nm-exists = fs.is-dir(nm-dir)
+    nm-exists == false -> {
+        p = path{
+            p: nm-dir,
+        }
+        p.make-dir()
+    }
+    ; create .nonpm subdirectory for internal store
+    virtual = nm-dir - '/.nonpm'
+    v-exists = fs.is-dir(virtual)
+    v-exists == false -> {
+        p = path{
+            p: virtual,
+        }
+        p.make-dir()
+    }
+    ok = link-package(virtual, name, ver, nm-dir)
+}
+
+; ═══════════════════════════════════════════════
+; link-deps — create symlinks for a package's dependencies
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; deps str — JSON string of dependencies (name->version)
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
+    ok = true
+    deps.len == 0 -> return
+    dep-obj = json.parse(deps, deps.len)
+    dep-obj: {
+        ok -> {
+            keys = it.obj-keys-str()
+            n = keys.len
+            i <- [0..n): {
+                dep-name = keys[i]
+                dep-ver-val = json.get-key(it, dep-name)
+                dep-ver-val: {
+                    ok -> {
+                        dep-ver = dep-ver-val.str-val()
+                        dep-ver.starts-with('^') -> dep-ver = dep-ver.slice(1, dep-ver.len)
+                        dep-ver.starts-with('~') -> dep-ver = dep-ver.slice(1, dep-ver.len)
+                        dep-ver.starts-with('=') -> dep-ver = dep-ver.slice(1, dep-ver.len)
+                        ; link into package's node_modules
+                        pkg-nm = package-dir(store-dir, name, ver) - '/node_modules'
+                        nm-exists = fs.is-dir(pkg-nm)
+                        nm-exists == false -> {
+                            p = path{
+                                p: pkg-nm,
+                            }
+                            p.make-dir()
+                        }
+                        link-ok = link-package(store-dir, dep-name, dep-ver, pkg-nm)
+                        link-ok == false -> ok = false
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; create-bin-links — create symlinks for package binaries
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; bin-dir str — target bin directory (e.g. node_modules/.bin)
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
+    ok = true
+    pkg-path = package-dir(store-dir, name, ver)
+    ; read package.json for bin field
+    pkg-json-path = pkg-path - '/package.json'
+    p = path{
+        p: pkg-json-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(pkg-json-path)
+        v = json.parse(content, content.len)
+        v: {
+            ok -> {
+                bin-obj = json.get-key(it, 'bin')
+                bin-obj: {
+                    ok -> {
+                        ; bin can be string (single) or object
+                        bin-kind = it.kind()
+                        bin-kind == json-kind.str -> {
+                            bin-name = it.str-val()
+                            link-bin(pkg-path, bin-name, bin-dir, name)
+                        }
+                        bin-kind == json-kind.obj -> {
+                            keys = it.obj-keys-str()
+                            n = keys.len
+                            j <- [0..n): {
+                                bin-name = keys[j]
+                                link-bin(pkg-path, bin-name, bin-dir, name)
+                            }
+                        }
+                    }
+                    nil -> {}
+                    err -> {}
+                }
+            }
+            nil -> {}
+            err -> {}
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; link-bin — create a single bin symlink
+; pkg-path str — package directory in store
+; bin-name str — bin name (e.g. "express")
+; bin-dir str — target .bin directory
+; pkg-name str — package name (for fallback)
+; ═══════════════════════════════════════════════
+
+link-bin = (pkg-path str, bin-name str, bin-dir str, pkg-name str) {
+    ; ensure .bin dir exists
+    bin-exists = fs.is-dir(bin-dir)
+    bin-exists == false -> {
+        p = path{
+            p: bin-dir,
+        }
+        p.make-dir()
+    }
+    target = pkg-path - '/' - bin-name
+    link = bin-dir - '/' - bin-name
+    ; remove existing
+    fs.is-file(link) -> fs.remove(link)
+    cmd = 'ln -s ' - target - ' ' - link
+    process.process-system(cmd)
+    process.process-system('chmod +x ' - link)
+}
+
+; ═══════════════════════════════════════════════
+; hoist-package — create hoisted symlink (shamefully hoist)
+; store-dir str — virtual store root
+; name str — package name
+; ver str — package version
+; nm-dir str — top-level node_modules
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+hoist-package = (store-dir str, name str, ver str, nm-dir str) (ok bool) {
+    ok = link-package(store-dir, name, ver, nm-dir)
+}
+
+; ═══════════════════════════════════════════════
+; create-node-links — create all symlinks for a resolved graph
+; store-dir str — virtual store root
+; names str — newline-separated package names
+; versions str — newline-separated versions
+; deps-json str — JSON string of each package's dependencies (newline-separated)
+; nm-dir str — project node_modules directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+create-node-links = (store-dir str, names str, versions str, nm-dir str) (ok bool) {
+    ok = true
+    name-lines = names.split('\n')
+    ver-lines = versions.split('\n')
+    n = name-lines.len
+    i <- [0..n): {
+        name = name-lines[i]
+        ver = ver-lines[i]
+        name.len > 0 && ver.len > 0 -> {
+            link-ok = link-to-node-modules(store-dir, name, ver, nm-dir)
+            link-ok == false -> ok = false
+        }
+    }
+}
