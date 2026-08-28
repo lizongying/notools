@@ -1,0 +1,452 @@
+; semver.no — Semantic Versioning (SemVer) parsing and comparison
+;
+; Implements SemVer 2.0.0 specification for npm package version handling.
+; Supports: version parsing, comparison, range matching (^, ~, >, <, =, >=, <=, *).
+;
+; API:
+;   parse(s str) (v semver, ok bool) — parse version string
+;   compare(a semver, b semver) (r i64) — compare versions (-1, 0, 1)
+;   satisfies(v semver, range-str str) (ok bool) — check if version satisfies range
+;   max-satisfying(versions []str, range-str str) (best str) — find best matching version
+
+# /nonpm/src/utils
+
+; ═══════════════════════════════════════════════
+; semver struct
+; ═══════════════════════════════════════════════
+
+semver {
+    major i64
+    minor i64
+    patch i64
+    pre-release str
+    build-metadata str
+}
+
+; ═══════════════════════════════════════════════
+; parse — parse a semver version string
+; s str — version string (e.g. "1.2.3", "1.2.3-beta.1")
+; returns v semver — parsed version
+; returns ok bool — true if valid
+; ═══════════════════════════════════════════════
+
+parse = (s str) (v semver, ok bool) {
+    ok = false
+    v.major = 0
+    v.minor = 0
+    v.patch = 0
+    v.pre-release = ''
+    v.build-metadata = ''
+
+    ; strip leading 'v' or 'V'
+    work = s
+    work.starts-with('v') -> work = work.slice(1, work.len)
+    work.starts-with('V') -> work = work.slice(1, work.len)
+
+    ; split off build metadata (+)
+    plus-pos = work.index('+')
+    plus-pos >= 0 -> {
+        v.build-metadata = work.slice(plus-pos + 1, work.len)
+        work = work.slice(0, plus-pos)
+    }
+
+    ; split off pre-release (-)
+    dash-pos = work.index('-')
+    dash-pos >= 0 -> {
+        v.pre-release = work.slice(dash-pos + 1, work.len)
+        work = work.slice(0, dash-pos)
+    }
+
+    ; parse major.minor.patch
+    parts = work.split('.')
+    parts.len < 1 -> return
+    parts.len > 3 -> return
+
+    ; major
+    major-val = parts[0].to-i64()
+    major-val: {
+        ok -> v.major = it
+        nil -> return
+        err -> return
+    }
+    ok = true
+
+    parts.len >= 2 -> {
+        minor-val = parts[1].to-i64()
+        minor-val: {
+            ok -> v.minor = it
+            nil -> {
+                ok = false
+                return
+            }
+            err -> {
+                ok = false
+                return
+            }
+        }
+    }
+
+    parts.len >= 3 -> {
+        patch-val = parts[2].to-i64()
+        patch-val: {
+            ok -> v.patch = it
+            nil -> {
+                ok = false
+                return
+            }
+            err -> {
+                ok = false
+                return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; compare — compare two semver versions
+; a semver — first version
+; b semver — second version
+; returns r i64 — -1 if a<b, 0 if a==b, 1 if a>b
+; ═══════════════════════════════════════════════
+
+compare = (a semver, b semver) (r i64) {
+    ; compare major
+    {
+        a.major < b.major -> {
+            r = -1
+            return
+        }
+        a.major > b.major -> {
+            r = 1
+            return
+        }
+    }
+    ; compare minor
+    {
+        a.minor < b.minor -> {
+            r = -1
+            return
+        }
+        a.minor > b.minor -> {
+            r = 1
+            return
+        }
+    }
+    ; compare patch
+    {
+        a.patch < b.patch -> {
+            r = -1
+            return
+        }
+        a.patch > b.patch -> {
+            r = 1
+            return
+        }
+    }
+    ; compare pre-release: no pre-release > has pre-release
+    a-pre-empty = a.pre-release == ''
+    b-pre-empty = b.pre-release == ''
+    {
+        a-pre-empty == true && b-pre-empty == true -> {
+            r = 0
+            return
+        }
+        a-pre-empty == true && b-pre-empty == false -> {
+            r = 1
+            return
+        }
+        a-pre-empty == false && b-pre-empty == true -> {
+            r = -1
+            return
+        }
+    }
+    ; both have pre-release — compare lexicographically
+    r = compare-pre-release(a.pre-release, b.pre-release)
+}
+
+; ═══════════════════════════════════════════════
+; compare-pre-release — compare two pre-release strings
+; a str — first pre-release
+; b str — second pre-release
+; returns r i64 — -1, 0, or 1
+; ═══════════════════════════════════════════════
+
+compare-pre-release = (a str, b str) (r i64) {
+    a-parts = a.split('.')
+    b-parts = b.split('.')
+    a-n = a-parts.len
+    b-n = b-parts.len
+    max-n = a-n
+    b-n > max-n -> max-n = b-n
+
+    i <- [0..max-n): {
+        i >= a-n -> {
+            r = -1
+            return
+        }
+        i >= b-n -> {
+            r = 1
+            return
+        }
+        a-seg = a-parts[i]
+        b-seg = b-parts[i]
+        ; check if numeric
+        a-num = a-seg.to-i64()
+        b-num = b-seg.to-i64()
+        a-is-num = false
+        b-is-num = false
+        a-num: {
+            ok -> a-is-num = true
+            nil -> {}
+            err -> {}
+        }
+        b-num: {
+            ok -> b-is-num = true
+            nil -> {}
+            err -> {}
+        }
+        {
+            a-is-num == true && b-is-num == true -> {
+                {
+                    a-num.val < b-num.val -> {
+                        r = -1
+                        return
+                    }
+                    a-num.val > b-num.val -> {
+                        r = 1
+                        return
+                    }
+                }
+            }
+            a-is-num == true && b-is-num == false -> {
+                r = -1
+                return
+            }
+            a-is-num == false && b-is-num == true -> {
+                r = 1
+                return
+            }
+            -> {
+                ; both are strings — lexicographic comparison
+                {
+                    a-seg < b-seg -> {
+                        r = -1
+                        return
+                    }
+                    a-seg > b-seg -> {
+                        r = 1
+                        return
+                    }
+                }
+            }
+        }
+    }
+    r = 0
+}
+
+; ═══════════════════════════════════════════════
+; satisfies — check if version satisfies a range
+; v semver — version to check
+; range-str str — range string (e.g. "^1.2.3", "~1.2", ">=1.0.0", "*")
+; returns ok bool — true if version satisfies range
+; ═══════════════════════════════════════════════
+
+satisfies = (v semver, range-str str) (ok bool) {
+    ok = false
+    r = range-str.trim()
+
+    ; wildcard — matches everything
+    r == '*' -> {
+        ok = true
+        return
+    }
+    r == '' -> {
+        ok = true
+        return
+    }
+
+    ; caret range: ^1.2.3 — compatible within major version
+    r.starts-with('^') -> {
+        range-ver, parse-ok = parse(r.slice(1, r.len))
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ; ^1.2.3 means >=1.2.3 <2.0.0
+        ; ^0.2.3 means >=0.2.3 <0.3.0
+        ; ^0.0.3 means >=0.0.3 <0.0.4
+        {
+            range-ver.major > 0 -> {
+                ok = v.major == range-ver.major && compare(v, range-ver) >= 0
+                return
+            }
+            range-ver.minor > 0 -> {
+                ok = v.major == 0 && v.minor == range-ver.minor && compare(v, range-ver) >= 0
+                return
+            }
+            -> {
+                ok = v.major == 0 && v.minor == 0 && v.patch == range-ver.patch
+                return
+            }
+        }
+    }
+
+    ; tilde range: ~1.2.3 — compatible within minor version
+    r.starts-with('~') -> {
+        range-ver, parse-ok = parse(r.slice(1, r.len))
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ; ~1.2.3 means >=1.2.3 <1.3.0
+        ; ~1.2 means >=1.2.0 <1.3.0
+        ; ~1 means >=1.0.0 <2.0.0
+        {
+            range-ver.major != v.major -> {
+                ok = false
+                return
+            }
+            -> {
+                ok = v.minor == range-ver.minor && compare(v, range-ver) >= 0
+                return
+            }
+        }
+    }
+
+    ; >= operator
+    r.starts-with('>=') -> {
+        range-ver, parse-ok = parse(r.slice(2, r.len).trim())
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ok = compare(v, range-ver) >= 0
+        return
+    }
+
+    ; <= operator
+    r.starts-with('<=') -> {
+        range-ver, parse-ok = parse(r.slice(2, r.len).trim())
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ok = compare(v, range-ver) <= 0
+        return
+    }
+
+    ; > operator
+    r.starts-with('>') -> {
+        range-ver, parse-ok = parse(r.slice(1, r.len).trim())
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ok = compare(v, range-ver) > 0
+        return
+    }
+
+    ; < operator
+    r.starts-with('<') -> {
+        range-ver, parse-ok = parse(r.slice(1, r.len).trim())
+        parse-ok == false -> {
+            ok = false
+            return
+        }
+        ok = compare(v, range-ver) < 0
+        return
+    }
+
+    ; = or exact version
+    r.starts-with('=') -> {
+        r = r.slice(1, r.len).trim()
+    }
+
+    ; exact version match
+    range-ver, parse-ok = parse(r)
+    parse-ok == false -> {
+        ok = false
+        return
+    }
+    ok = compare(v, range-ver) == 0
+}
+
+; ═══════════════════════════════════════════════
+; max-satisfying — find best version matching a range
+; versions []str — available versions
+; range-str str — range to satisfy
+; returns best str — best matching version (empty if none)
+; ═══════════════════════════════════════════════
+
+max-satisfying = (versions []str, range-str str) (best str) {
+    best = ''
+    best-v semver
+    best-set = false
+    n = versions.len
+    i <- [0..n): {
+        v, parse-ok = parse(versions[i])
+        parse-ok == true -> {
+            ok = satisfies(v, range-str)
+            ok == true -> {
+                best-set == false -> {
+                    best = versions[i]
+                    best-v = v
+                    best-set = true
+                }
+                -> {
+                    c = compare(v, best-v)
+                    c > 0 -> {
+                        best = versions[i]
+                        best-v = v
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; to-string — convert semver to string
+; v semver — version
+; returns s str — version string
+; ═══════════════════════════════════════════════
+
+to-string = (v semver) (s str) {
+    s = v.major.to-str() - '.' - v.minor.to-str() - '.' - v.patch.to-str()
+    v.pre-release.len > 0 -> {
+        s = s - '-' - v.pre-release
+    }
+    v.build-metadata.len > 0 -> {
+        s = s - '+' - v.build-metadata
+    }
+}
+
+; ═══════════════════════════════════════════════
+; gt — check if a > b
+; a semver, b semver — versions to compare
+; returns ok bool — true if a > b
+; ═══════════════════════════════════════════════
+
+gt = (a semver, b semver) (ok bool) {
+    ok = compare(a, b) > 0
+}
+
+; ═══════════════════════════════════════════════
+; lt — check if a < b
+; a semver, b semver — versions to compare
+; returns ok bool — true if a < b
+; ═══════════════════════════════════════════════
+
+lt = (a semver, b semver) (ok bool) {
+    ok = compare(a, b) < 0
+}
+
+; ═══════════════════════════════════════════════
+; eq — check if a == b
+; a semver, b semver — versions to compare
+; returns ok bool — true if a == b
+; ═══════════════════════════════════════════════
+
+eq = (a semver, b semver) (ok bool) {
+    ok = compare(a, b) == 0
+}

@@ -1,0 +1,302 @@
+; config.no — .npmrc and project configuration management for noNpm
+;
+; Reads and manages configuration from multiple sources:
+; - Global config: ~/.nonpm/config
+; - Project config: .npmrc in project root
+; - Environment variables: NONPM_* overrides
+;
+; API:
+;   load-global() (cfg config) — load global configuration
+;   load-project(dir str) (cfg config) — load project configuration
+;   get(cfg config, key str) (val ?str) — get config value
+;   get-default(cfg config, key str, default str) (val str) — get with default
+;   set(cfg config, key str, val str) — set config value
+;   save-project(dir str, cfg config) (ok bool) — save .npmrc
+
+# /nonpm/src/utils
+
+; ═══════════════════════════════════════════════
+; config struct
+; ═══════════════════════════════════════════════
+
+config {
+    registry str
+    store-dir str
+    cache-dir str
+    global-dir str
+    strict-peer-deps bool
+    auto-install-peers bool
+    shamefully-hoist bool
+    hoist bool
+    hoist-pattern str
+    public-hoist-pattern str
+    shamefully-hoist-pattern str
+    network-concurrency i64
+    fetch-retries i64
+    fetch-retry-factor i64
+    fetch-retry-mintimeout i64
+    fetch-retry-maxtimeout i64
+    fetch-timeout i64
+    save-exact bool
+    save-prefix str
+    package-manager str
+    workspaces str
+    extra-env str
+    node-linker str
+    prefer-frozen-lockfile bool
+    frozen-lockfile bool
+    prod bool
+    dev bool
+    optional bool
+    peer bool
+    config-file str
+    raw str
+}
+
+; ═══════════════════════════════════════════════
+; default-config — create config with default values
+; returns cfg config — config with defaults
+; ═══════════════════════════════════════════════
+
+default-config = () (cfg config) {
+    cfg.registry = 'https://registry.npmjs.org/'
+    cfg.store-dir = ''
+    cfg.cache-dir = ''
+    cfg.global-dir = ''
+    cfg.strict-peer-deps = false
+    cfg.auto-install-peers = true
+    cfg.shamefully-hoist = false
+    cfg.hoist = true
+    cfg.hoist-pattern = ''
+    cfg.public-hoist-pattern = ''
+    cfg.shamefully-hoist-pattern = ''
+    cfg.network-concurrency = 16
+    cfg.fetch-retries = 2
+    cfg.fetch-retry-factor = 10
+    cfg.fetch-retry-mintimeout = 10000
+    cfg.fetch-retry-maxtimeout = 60000
+    cfg.fetch-timeout = 60000
+    cfg.save-exact = false
+    cfg.save-prefix = '^'
+    cfg.package-manager = ''
+    cfg.workspaces = ''
+    cfg.extra-env = ''
+    cfg.node-linker = 'isolated'
+    cfg.prefer-frozen-lockfile = false
+    cfg.frozen-lockfile = false
+    cfg.prod = false
+    cfg.dev = true
+    cfg.optional = true
+    cfg.peer = true
+    cfg.config-file = ''
+    cfg.raw = ''
+}
+
+; ═══════════════════════════════════════════════
+; load-global — load global configuration from ~/.nonpm/config
+; returns cfg config — merged global configuration
+; ═══════════════════════════════════════════════
+
+load-global = () (cfg config) {
+    cfg = default-config()
+    home = os.get-env('HOME')
+    home.len > 0 -> {
+        cfg.store-dir = home - '/.nonpm/store'
+        cfg.cache-dir = home - '/.nonpm/cache'
+        cfg.global-dir = home - '/.nonpm/global'
+        config-path = home - '/.nonpm/config'
+        p = path{
+            p: config-path,
+        }
+        p.exists() -> {
+            content = fs.read-file(config-path)
+            cfg.raw = content
+            merge-npmrc(cfg, content)
+        }
+    }
+    env-registry = os.get-env('NONPM_REGISTRY')
+    env-registry.len > 0 -> cfg.registry = env-registry
+    env-store = os.get-env('NONPM_STORE_DIR')
+    env-store.len > 0 -> cfg.store-dir = env-store
+    env-cache = os.get-env('NONPM_CACHE_DIR')
+    env-cache.len > 0 -> cfg.cache-dir = env-cache
+}
+
+; ═══════════════════════════════════════════════
+; load-project — load project-level configuration from .npmrc
+; dir str — project root directory
+; returns cfg config — merged project configuration
+; ═══════════════════════════════════════════════
+
+load-project = (dir str) (cfg config) {
+    cfg = load-global()
+    npmrc-path = dir - '/.npmrc'
+    p = path{
+        p: npmrc-path,
+    }
+    p.exists() -> {
+        content = fs.read-file(npmrc-path)
+        cfg.raw = cfg.raw - '\n' - content
+        merge-npmrc(cfg, content)
+    }
+    ws-path = dir - '/pnpm-workspace.yaml'
+    wp = path{
+        p: ws-path,
+    }
+    wp.exists() -> {
+        ws-content = fs.read-file(ws-path)
+        cfg.workspaces = parse-workspace-yaml(ws-content)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; merge-npmrc — parse and merge .npmrc content into config
+; cfg config — config to merge into (modified in place)
+; content str — .npmrc file content
+; ═══════════════════════════════════════════════
+
+merge-npmrc = (cfg config, content str) {
+    lines = content.split('\n')
+    n = lines.len
+    i <- [0..n): {
+        line = lines[i].trim()
+        {
+            line == '' -> continue
+            line.starts-with('#') -> continue
+            line.starts-with(';') -> continue
+        }
+        eq-pos = line.index('=')
+        eq-pos < 0 -> continue
+        key = line.slice(0, eq-pos).trim()
+        val = line.slice(eq-pos + 1, line.len).trim()
+        apply-config(cfg, key, val)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; apply-config — apply a single key=value to config
+; cfg config — config to modify
+; key str — config key
+; val str — config value
+; ═══════════════════════════════════════════════
+
+apply-config = (cfg config, key str, val str) {
+    key: {
+        'registry' -> cfg.registry = val
+        'store-dir' -> cfg.store-dir = val
+        'cache-dir' -> cfg.cache-dir = val
+        'global-dir' -> cfg.global-dir = val
+        'strict-peer-dependencies' -> {
+            val == 'true' -> cfg.strict-peer-deps = true
+            val == 'false' -> cfg.strict-peer-deps = false
+        }
+        'auto-install-peers' -> {
+            val == 'true' -> cfg.auto-install-peers = true
+            val == 'false' -> cfg.auto-install-peers = false
+        }
+        'shamefully-hoist' -> {
+            val == 'true' -> cfg.shamefully-hoist = true
+            val == 'false' -> cfg.shamefully-hoist = false
+        }
+        'hoist' -> {
+            val == 'true' -> cfg.hoist = true
+            val == 'false' -> cfg.hoist = false
+        }
+        'hoist-pattern' -> cfg.hoist-pattern = val
+        'public-hoist-pattern' -> cfg.public-hoist-pattern = val
+        'shamefully-hoist-pattern' -> cfg.shamefully-hoist-pattern = val
+        'network-concurrency' -> {
+            v = val.to-i64()
+            v: {
+                ok -> cfg.network-concurrency = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        'fetch-retries' -> {
+            v = val.to-i64()
+            v: {
+                ok -> cfg.fetch-retries = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        'fetch-timeout' -> {
+            v = val.to-i64()
+            v: {
+                ok -> cfg.fetch-timeout = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        'save-exact' -> {
+            val == 'true' -> cfg.save-exact = true
+            val == 'false' -> cfg.save-exact = false
+        }
+        'save-prefix' -> cfg.save-prefix = val
+        'node-linker' -> cfg.node-linker = val
+        'frozen-lockfile' -> {
+            val == 'true' -> cfg.frozen-lockfile = true
+            val == 'false' -> cfg.frozen-lockfile = false
+        }
+        'prefer-frozen-lockfile' -> {
+            val == 'true' -> cfg.prefer-frozen-lockfile = true
+            val == 'false' -> cfg.prefer-frozen-lockfile = false
+        }
+        'production' -> {
+            val == 'true' -> cfg.prod = true
+            val == 'false' -> cfg.prod = false
+        }
+        -> {}
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-workspace-yaml — extract workspace patterns from yaml
+; content str — pnpm-workspace.yaml content
+; returns patterns str — newline-separated glob patterns
+; ═══════════════════════════════════════════════
+
+parse-workspace-yaml = (content str) (patterns str) {
+    patterns = ''
+    lines = content.split('\n')
+    n = lines.len
+    in-packages = false
+    i <- [0..n): {
+        line = lines[i].trim()
+        line.starts-with('packages:') -> {
+            in-packages = true
+            continue
+        }
+        in-packages == true -> {
+            line.starts-with('-') -> {
+                val = line.slice(1, line.len).trim()
+                val.starts-with('"') -> val = val.slice(1, val.len)
+                val.ends-with('"') -> val = val.slice(0, val.len - 1)
+                val.starts-with("'") -> val = val.slice(1, val.len)
+                val.ends-with("'") -> val = val.slice(0, val.len - 1)
+                patterns = patterns - val - '\n'
+            }
+            -> {
+                in-packages = false
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; save-project — save project .npmrc
+; dir str — project root directory
+; cfg config — config to save
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
+save-project = (dir str, cfg config) (ok bool) {
+    content = ''
+    content = content - 'registry=' - cfg.registry - '\n'
+    cfg.store-dir.len > 0 -> content = content - 'store-dir=' - cfg.store-dir - '\n'
+    cfg.shamefully-hoist == true -> content = content - 'shamefully-hoist=true\n'
+    cfg.auto-install-peers == true -> content = content - 'auto-install-peers=true\n'
+    cfg.node-linker.len > 0 -> content = content - 'node-linker=' - cfg.node-linker - '\n'
+    ok = utils.write-file(dir - '/.npmrc', content)
+}
