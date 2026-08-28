@@ -10,6 +10,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 友好的错误处理
 - 内含纯 Nolang Git 实现（`nogit/` 子项目），不依赖系统 `git` 二进制
 - 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 55+ 种图像操作
+- 内含纯 Nolang Python 包管理器（`nouv/` 子项目），兼容 uv/pip 接口，管理 Python 项目生命周期
 
 ## 安装
 
@@ -17,24 +18,25 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 直接从 [GitHub Releases](https://github.com/lizongying/notools/releases) 下载对应平台的已编译好二进制文件，无需安装编译器。
 
-三个独立工具各自构建，可按需下载：
+四个独立工具各自构建，可按需下载：
 
 | 工具 | 说明 |
 |------|------|
 | `notools` | Unix 常用命令行工具集（193 个命令） |
 | `nogit` | 纯 Nolang Git 实现（不依赖系统 `git`） |
 | `noimg` | 纯 Nolang 图像处理工具库（9 种格式、55+ 种操作） |
+| `nouv` | 纯 Nolang Python 包管理器（兼容 uv/pip） |
 
 支持的平台：
 
-| 平台 | notools | nogit | noimg |
-|------|---------|-------|-------|
-| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` |
+| 平台 | notools | nogit | noimg | nouv |
+|------|---------|-------|-------|------|
+| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` |
 
 ```bash
 # Linux amd64 示例 — 按需安装
@@ -49,13 +51,17 @@ chmod +x nogit && sudo mv nogit /usr/local/bin/
 # noimg
 curl -fsSL -o noimg https://github.com/lizongying/notools/releases/latest/download/noimg-linux-amd64
 chmod +x noimg && sudo mv noimg /usr/local/bin/
+
+# nouv
+curl -fsSL -o nouv https://github.com/lizongying/notools/releases/latest/download/nouv-linux-amd64
+chmod +x nouv && sudo mv nouv /usr/local/bin/
 ```
 
 下载后可使用同目录下的 `checksums-sha256.txt` 进行校验。
 
 ### 方式二：从源码构建
 
-三个子项目各自独立构建：
+四个子项目各自独立构建：
 
 ```bash
 # 克隆项目
@@ -73,6 +79,10 @@ cp nogit/dist/nogit /usr/local/bin/nogit
 # 构建 noimg
 cd noimg && no build && cd ..
 cp noimg/dist/noimg /usr/local/bin/noimg
+
+# 构建 nouv
+cd nouv && no build && cd ..
+cp nouv/dist/nouv /usr/local/bin/nouv
 ```
 
 ## 工具列表
@@ -568,6 +578,60 @@ noimg/
 └── package.jsonc        ; 项目配置
 ```
 
+## nouv（纯 Nolang Python 包管理器）
+
+notools 仓库内含一个**纯 Nolang 实现的 Python 包和项目管理器**（`nouv/` 目录），兼容 [uv](https://github.com/astral-sh/uv) 和 pip 接口，管理完整的 Python 项目生命周期。
+
+### 特性
+
+- pip 兼容接口（install / uninstall / freeze / list / show / compile / sync）
+- 完整的 pyproject.toml 项目生命周期管理（init → add → sync → lock → build → publish）
+- 虚拟环境管理（venv 创建、激活提示、依赖升级）
+- Python 版本管理（从 python-build-standalone 下载安装）
+- 工具管理（uvx/pipx 风格的 ephemeral 环境运行 CLI 工具）
+- 依赖解析器（PEP 508 解析、环境标记求值、版本约束、回溯解析）
+- Lockfile 生成与管理（uv.lock 格式，支持哈希、源信息）
+- Wheel 安装与构建（ZIP 解压安装、entry point 脚本、sdist/wheel 打包）
+- 多源依赖（registry / git / url / path / editable）
+- 全局缓存（wheel/sdist/url/git 去重缓存，prune 清理）
+- Workspace 支持（多包工作区）
+- 全局配置（环境变量、配置文件、pyproject.toml `[tool.uv]` 层级优先级）
+
+### 主要命令
+
+| 命令 | 说明 |
+|------|------|
+| `init [path]` | 创建新的 Python 项目 |
+| `add <pkg>` | 添加依赖（`--dev`、`--editable`、`--group=`） |
+| `remove <pkg>` | 移除依赖 |
+| `sync` | 同步环境与依赖 |
+| `lock` | 生成 uv.lock 锁文件 |
+| `run <cmd>` | 在项目环境中运行命令 |
+| `build` | 构建项目分发 |
+| `pip install <pkg>` | pip 兼容安装接口 |
+| `venv [path]` | 创建虚拟环境 |
+| `python install <ver>` | 安装 Python 版本 |
+| `tool run <cmd>` | 在临时环境中运行工具 |
+| `uvx <pkg>` | 运行工具的快捷方式 |
+| `cache clean` | 清空缓存 |
+
+### 构建与运行
+
+```bash
+cd nouv
+no build
+# 产物位于 nouv/dist/nouv
+
+# 示例：创建新项目
+nouv init my-project
+cd my-project
+nouv add requests
+nouv sync
+nouv run python main.py
+```
+
+详细的命令列表、环境变量、模块架构等信息请参见 [`nouv/README.md`](nouv/README.md)。
+
 ## 用法
 
 ```bash
@@ -632,6 +696,9 @@ notools/
 │   ├── main.no          # noimg CLI 入口与命令分发
 │   ├── lib.no           # 库导出声明
 │   └── src/             # 格式编解码与图像操作模块
+├── nouv/                # 纯 Nolang Python 包管理器（独立子项目）
+│   ├── main.no          # nouv CLI 入口与命令分发
+│   └── src/             # 依赖解析/安装/锁文件/工具管理等模块
 └── package.jsonc        # 项目配置
 ```
 
@@ -639,7 +706,7 @@ notools/
 
 ### 构建
 
-三个子项目各自独立构建：
+四个子项目各自独立构建：
 
 ```bash
 # 构建 notools
@@ -659,6 +726,12 @@ cd noimg
 no build
 cd ..
 # 产物位于 noimg/dist/noimg
+
+# 构建 nouv
+cd nouv
+no build
+cd ..
+# 产物位于 nouv/dist/nouv
 ```
 
 ### 测试
