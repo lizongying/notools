@@ -5,37 +5,79 @@
 
 # /nouv/src/config
 # /nouv/src/toml
-# /nouv/src/installer
 # /nouv/src/venv
 # /nouv/src/wheel
 # /nouv/src/python
 # /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
-; build-from-source — build a wheel from a source directory
+; get-build-system — get build system info from pyproject.toml
 ; ═══════════════════════════════════════════════
 
-build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
+get-build-system = (src-dir str) (requires str, backend str, ok bool) {
     ok = false
-    wheel-path = ''
+    requires = ''
+    backend = ''
 
-    requires, backend, bs-ok = get-build-system(src-dir)
+    pyproject = src-dir - '/pyproject.toml'
+    p = path{
+        p: pyproject,
+    }
+    exists = p.exists()
     {
-        bs-ok == false -> {
-            print('error: no build-system defined in pyproject.toml')
-            return
+        exists == false -> return
+        -> {
+            content = fs.read-file(pyproject)
+            cfg = toml.parse(content)
+
+            ; get build-system.requires
+            req-val, req-found = toml.get-value-str(cfg, 'build-system.requires')
+            {
+                req-found -> requires = toml.parse-array(req-val)
+            }
+
+            ; get build-system.build-backend
+            backend-val, backend-found = toml.get-value-str(cfg, 'build-system.build-backend')
+            {
+                backend-found -> backend = backend-val
+            }
+
+            ; defaults
+            {
+                backend == '' -> backend = 'setuptools.build_meta'
+            }
+            {
+                requires == '' -> requires = 'setuptools>=61.0\nwheel'
+            }
+
+            ok = true
         }
     }
+}
 
-    env-ok = prepare-build-env(venv-path, requires)
+; ═══════════════════════════════════════════════
+; prepare-build-env — prepare a build environment with build dependencies
+; ═══════════════════════════════════════════════
+
+prepare-build-env = (venv-path str, requires str) (ok bool) {
+    ok = false
+
     {
-        env-ok == false -> {
-            print('error: failed to prepare build environment')
+        requires == '' -> {
+            ok = true
             return
         }
+        -> {
+            py-bin, py-ok = get-python(venv-path)
+            {
+                py-ok == false -> return
+                -> {
+                    inst-ok = utils.run-cmd('"' - py-bin - '" -m pip install ' - requires)
+                    ok = inst-ok
+                }
+            }
+        }
     }
-
-    wheel-path, ok = build-with-backend(src-dir, backend, venv-path)
 }
 
 ; ═══════════════════════════════════════════════
@@ -72,7 +114,7 @@ build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path str, 
         -> {
             ; read build output from temp file to get wheel filename
             out = run-cmd-output('ls ' - out-dir - '/*.whl')
-            wheel-name = out.trim()
+            wheel-name = utils.trim-str(out)
             {
                 wheel-name != '' -> {
                     wheel-path = out-dir - '/' - wheel-name
@@ -91,6 +133,33 @@ build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path str, 
 }
 
 ; ═══════════════════════════════════════════════
+; build-from-source — build a wheel from a source directory
+; ═══════════════════════════════════════════════
+
+build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
+    ok = false
+    wheel-path = ''
+
+    requires, backend, bs-ok = get-build-system(src-dir)
+    {
+        bs-ok == false -> {
+            print('error: no build-system defined in pyproject.toml')
+            return
+        }
+    }
+
+    env-ok = prepare-build-env(venv-path, requires)
+    {
+        env-ok == false -> {
+            print('error: failed to prepare build environment')
+            return
+        }
+    }
+
+    wheel-path, ok = build-with-backend(src-dir, backend, venv-path)
+}
+
+; ═══════════════════════════════════════════════
 ; extract-sdist — extract a source distribution archive
 ; ═══════════════════════════════════════════════
 
@@ -103,8 +172,7 @@ extract-sdist = (archive-path str, dest str) (ok bool) {
     mk = p.make-dir()
 
     {
-        archive-path.ends-with('.tar.gz') -> {
-        archive-path.ends-with('.tgz') -> {
+        utils.ends-with-str(archive-path, '.tar.gz') -> {
             ; extract tar.gz using system tar
             code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
             {
@@ -112,7 +180,15 @@ extract-sdist = (archive-path str, dest str) (ok bool) {
                 -> print('error: failed to extract tar.gz')
             }
         }
-        archive-path.ends-with('.zip') -> {
+        utils.ends-with-str(archive-path, '.tgz') -> {
+            ; extract tgz using system tar
+            code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
+            {
+                code == 0 -> ok = true
+                -> print('error: failed to extract tgz')
+            }
+        }
+        utils.ends-with-str(archive-path, '.zip') -> {
             ; extract zip using system unzip
             code = run-cmd('unzip -o ' - archive-path - ' -d ' - dest)
             {
@@ -122,85 +198,6 @@ extract-sdist = (archive-path str, dest str) (ok bool) {
         }
         -> {
             print('error: unsupported archive format: {archive-path}')
-        }
-    }
-}
-
-; ═══════════════════════════════════════════════
-; get-build-system — get build system info from pyproject.toml
-; ═══════════════════════════════════════════════
-
-get-build-system = (src-dir str) (requires str, backend str, ok bool) {
-    ok = false
-    requires = ''
-    backend = ''
-
-    pyproject = src-dir - '/pyproject.toml'
-    p = path{
-        p: pyproject,
-    }
-    exists = p.exists()
-    {
-        exists == false -> return
-        -> {
-            content = fs.read-file(pyproject)
-            cfg = parse(content)
-
-            ; get build-system.requires
-            req-val = get-value(cfg, 'build-system.requires')
-            req-val: {
-                nil -> {}
-                err -> {}
-                ok -> requires = parse-array(it)
-            }
-
-            ; get build-system.build-backend
-            backend-val = get-value(cfg, 'build-system.build-backend')
-            backend-val: {
-                nil -> {}
-                err -> {}
-                ok -> {
-                    v = it
-                    {
-                        v.starts-with('"') -> {
-                            v.ends-with('"') -> backend = v.slice(1, v.len - 1)
-                        }
-                        v.starts-with("'") -> {
-                            v.ends-with("'") -> backend = v.slice(1, v.len - 1)
-                        }
-                        -> backend = v
-                    }
-                }
-            }
-
-            ; defaults
-            {
-                backend == '' -> backend = 'setuptools.build_meta'
-            }
-            {
-                requires == '' -> requires = 'setuptools>=61.0\nwheel'
-            }
-
-            ok = true
-        }
-    }
-}
-
-; ═══════════════════════════════════════════════
-; prepare-build-env — prepare a build environment with build dependencies
-; ═══════════════════════════════════════════════
-
-prepare-build-env = (venv-path str, requires str) (ok bool) {
-    ok = false
-
-    {
-        requires == '' -> {
-            ok = true
-            return
-        }
-        -> {
-            inst-ok = pip-install(venv-path, requires)
-            ok = inst-ok
         }
     }
 }
@@ -228,10 +225,10 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
     ; find the extracted source directory (usually a subdirectory)
     src-dir = tmp-dir
     out = run-cmd-output('ls ' - tmp-dir)
-    lines = out.split('\n')
+    lines = utils.split-str(out, '\n')
     {
         lines.len == 1 -> {
-            subdir = lines[0].trim()
+            subdir = utils.trim-str(lines[0])
             {
                 subdir != '' -> src-dir = tmp-dir - '/' - subdir
             }
@@ -276,7 +273,7 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
                         }
                         -> {
                             ; install the built wheel
-                            inst-ok = install(venv-path, wheel-path, false)
+                            inst-ok = wheel.install(venv-path, wheel-path, false)
                             ok = inst-ok
                         }
                     }
@@ -298,7 +295,7 @@ build-editable = (src-dir str, venv-path str, pkg-name str) (ok bool) {
 
     ; create .pth file in site-packages
     sp-dir = get-site-packages(venv-path)
-    norm-name = pkg-name.replace-char(45, 95)
+    norm-name = utils.replace-char-str(pkg-name, 45, 95)
 
     ; create .pth file
     pth-path = sp-dir - '/' - norm-name - '.pth'

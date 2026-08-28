@@ -15,7 +15,7 @@
 ;   list-available() (versions str) — list available versions for install
 ;   get-python-dir() (dir str) — get managed Python directory
 ;   pin-version(dir str, ver str) (ok bool) — pin Python version for project
-;   get-pinned-version(dir str) (ver ?str) — get pinned version
+;   get-pinned-version(dir str) (ver str, found bool) — get pinned version
 ;   find-system-python() (path str, ok bool) — find system Python
 ;   detect-platform() (plat str) — detect current platform
 ;   get-download-url(ver str, plat str) (url str) — get download URL
@@ -37,10 +37,9 @@ find-python = (ver str) (py-path str, ok bool) {
     py-path = ''
 
     ; 1. check pinned version
-    pinned = get-pinned-version('.')
-    pinned: {
-        ok -> {
-            pv = it
+    pv, pv-found = get-pinned-version('.')
+    {
+        pv-found -> {
             p, found = check-version-path(pv, ver)
             {
                 found -> {
@@ -50,8 +49,6 @@ find-python = (ver str) (py-path str, ok bool) {
                 }
             }
         }
-        nil -> {}
-        err -> {}
     }
 
     ; 2. check managed installations
@@ -63,20 +60,20 @@ find-python = (ver str) (py-path str, ok bool) {
     {
         exists -> {
             versions = scan-managed-versions(managed-dir)
-            lines = versions.split('\n')
+            lines = utils.split-str(versions, '\n')
             n = lines.len
             i = 0
             {
                 v = lines[i]
                 i = i + 1
-                v = v.trim()
+                v = utils.trim-str(v)
                 v.len > 0 -> {
                     {
                         ver == '' -> {
-                        v.starts-with(ver) -> {
-                            p2 = managed-dir - '/' - v - '/bin/python' - v.slice(0, 1)
+                        utils.starts-with-str(v, ver) -> {
+                            p2 = managed-dir - '/' - v - '/bin/python' - utils.slice-str(v, 0, 1)
                             {
-                                v.starts-with('3') -> p2 = managed-dir - '/' - v - '/bin/python3'
+                                utils.starts-with-str(v, '3') -> p2 = managed-dir - '/' - v - '/bin/python3'
                             }
                             p3 = path{
                                 p: p2,
@@ -110,7 +107,7 @@ find-python = (ver str) (py-path str, ok bool) {
                     ; verify version matches
                     content = run-cmd-output('python3 --version')
                     {
-                        content.contains(ver) -> {
+                        utils.contains-str(content, ver) -> {
                             py-path = sys-path
                             ok = true
                             return
@@ -123,13 +120,13 @@ find-python = (ver str) (py-path str, ok bool) {
 
     ; 4. check common paths
     common-paths = '/usr/bin/python3\n/usr/local/bin/python3\n/opt/homebrew/bin/python3\n'
-    lines = common-paths.split('\n')
+    lines = utils.split-str(common-paths, '\n')
     n = lines.len
     i = 0
     {
         cp = lines[i]
         i = i + 1
-        cp = cp.trim()
+        cp = utils.trim-str(cp)
         cp.len > 0 -> {
             pp = path{
                 p: cp,
@@ -155,7 +152,7 @@ check-version-path = (installed-ver str, want-ver str) (py-path str, ok bool) {
     py-path = ''
     {
         want-ver != '' -> {
-            installed-ver.starts-with(want-ver) == false -> return
+        utils.starts-with-str(installed-ver, want-ver) == false -> return
         }
         -> {
             managed-dir = get-python-dir()
@@ -305,7 +302,8 @@ install-version = (ver str) (ok bool) {
                             p: file-path,
                         }
                         ; ensure parent dir exists
-                        parent = file-path.slice(0, file-path.rindex('/'))
+                        slash-pos = utils.rindex-str(file-path, '/')
+                        parent = utils.slice-str(file-path, 0, slash-pos)
                         {
                             parent.len > 0 -> {
                                 p6 = path{
@@ -320,8 +318,10 @@ install-version = (ver str) (ok bool) {
                                 fs.write(wfd, content, content.len)
                                 fs.close(wfd)
                                 ; set executable for bin
-                                name.starts-with('bin/') -> {
-                                    chmod(file-path, '755')
+                                {
+                                    utils.starts-with-str(name, 'bin/') -> {
+                                        chmod(file-path, '755')
+                                    }
                                 }
                             }
                         }
@@ -360,9 +360,9 @@ detect-platform = () (plat str) {
     plat = ''
     ; use uname to detect
     arch = run-cmd-output('uname -m')
-    arch = arch.trim()
+    arch = utils.trim-str(arch)
     os-name = run-cmd-output('uname -s')
-    os-name = os-name.trim()
+    os-name = utils.trim-str(os-name)
 
     {
         os-name == 'Darwin' -> {
@@ -445,7 +445,7 @@ list-versions = () (versions str) {
             versions = versions - '  ' - sys-path - '\n'
             ; get version
             v-out = run-cmd-output(sys-path - ' --version')
-            versions = versions - '  Version: ' - v-out.trim() - '\n'
+            versions = versions - '  Version: ' - utils.trim-str(v-out) - '\n'
         }
         -> versions = versions - '  (not found)\n'
     }
@@ -459,17 +459,15 @@ scan-managed-versions = (dir str) (versions str) {
     versions = ''
     ; list directories in dir that look like version numbers
     out = run-cmd-output('ls' - ' ' - dir)
-    lines = out.split('\n')
+    lines = utils.split-str(out, '\n')
     n2 = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
-        line = line.trim()
+        line = utils.trim-str(line)
         {
             line.len > 0 -> {
-                line.starts-with('3') -> {
-            }
                 versions = versions - '  ' - line - '\n'
             }
         }
@@ -511,24 +509,22 @@ pin-version = (dir str, ver str) (ok bool) {
 ; get-pinned-version — read .python-version file
 ; ═══════════════════════════════════════════════
 
-get-pinned-version = (dir str) (ver ?str) {
+get-pinned-version = (dir str) (ver str, found bool) {
+    ver = ''
+    found = false
     pin-path = dir - '/.python-version'
     p = path{
         p: pin-path,
     }
     exists = p.exists()
     {
-        exists == false -> {
-            ver = nil
-            return
-        }
+        exists == false -> return
         -> {
-            content str
-            content = fs.read-file(pin-path)
-            v = content.trim()
+            raw = fs.read-file(pin-path)
+            ver = utils.trim-str(raw)
             {
-                v == '' -> ver = nil
-                -> ver = v
+                ver == '' -> return
+                -> found = true
             }
         }
     }
@@ -626,10 +622,9 @@ find-python-preferred = (dir str, ver str) (py-path str, ok bool) {
     py-path = ''
 
     ; 1. check .python-version
-    pinned = get-pinned-version(dir)
-    pinned: {
-        ok -> {
-            pv = it
+    pv, pv-found = get-pinned-version(dir)
+    {
+        pv-found -> {
             p, found = check-version-path(pv, ver)
             {
                 found -> {
@@ -639,8 +634,6 @@ find-python-preferred = (dir str, ver str) (py-path str, ok bool) {
                 }
             }
         }
-        nil -> {}
-        err -> {}
     }
 
     ; 2. check UV_PYTHON env
@@ -649,7 +642,7 @@ find-python-preferred = (dir str, ver str) (py-path str, ok bool) {
         uv-py != '' -> {
             ; could be a version number or path
             {
-                uv-py.starts-with('/') -> {
+                utils.starts-with-str(uv-py, '/') -> {
                     p = path{
                         p: uv-py,
                     }
@@ -685,17 +678,17 @@ find-python-preferred = (dir str, ver str) (py-path str, ok bool) {
     {
         exists -> {
             versions = scan-managed-versions(managed-dir)
-            lines = versions.split('\n')
+            lines = utils.split-str(versions, '\n')
             n = lines.len
             i = 0
             {
                 v = lines[i]
                 i = i + 1
-                v = v.trim()
+                v = utils.trim-str(v)
                 v.len > 0 -> {
                     {
                         ver == '' -> {
-                        v.starts-with(ver) -> {
+                        utils.starts-with-str(v, ver) -> {
                             py-bin = managed-dir - '/' - v - '/bin/python3'
                             p2 = path{
                                 p: py-bin,
@@ -739,20 +732,20 @@ get-version-info = (py-path str) (ver str, impl str) {
     impl = ''
     out = run-cmd-output(py-path - ' --version')
     {
-        out.starts-with('Python ') -> {
-            ver = out.slice(7, out.len)
-            ver = ver.trim()
+        utils.starts-with-str(out, 'Python ') -> {
+            ver = utils.slice-str(out, 7, out.len)
+            ver = utils.trim-str(ver)
         }
         -> {
-            ver = out.trim()
+            ver = utils.trim-str(out)
         }
     }
 
     ; detect implementation
     {
-        out.contains('CPython') -> impl = 'CPython'
-        out.contains('Python') -> impl = 'CPython'
-        out.contains('PyPy') -> impl = 'PyPy'
+        utils.contains-str(out, 'CPython') -> impl = 'CPython'
+        utils.contains-str(out, 'Python') -> impl = 'CPython'
+        utils.contains-str(out, 'PyPy') -> impl = 'PyPy'
         -> impl = 'CPython'
     }
 }
@@ -764,13 +757,13 @@ get-version-info = (py-path str) (ver str, impl str) {
 list-available = () (versions str) {
     versions = 'Available Python versions for installation:\n'
     available = get-available-versions()
-    lines = available.split('\n')
+    lines = utils.split-str(available, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
-        line = line.trim()
+        line = utils.trim-str(line)
         {
             line.len > 0 -> versions = versions - '  ' - line - '\n'
         }
@@ -788,7 +781,7 @@ resolve-version = (ver str) (full-ver str, ok bool) {
     full-ver = ''
 
     ; if already a full version (e.g. 3.12.7), return as-is
-    parts = ver.split('.')
+    parts = utils.split-str(ver, '.')
     {
         parts.len >= 3 -> {
             full-ver = ver
@@ -799,7 +792,7 @@ resolve-version = (ver str) (full-ver str, ok bool) {
 
     ; get available versions
     available = get-available-versions()
-    lines = available.split('\n')
+    lines = utils.split-str(available, '\n')
     n = lines.len
 
     ; find the best match
@@ -808,16 +801,16 @@ resolve-version = (ver str) (full-ver str, ok bool) {
     {
         line = lines[i]
         i = i + 1
-        line = line.trim()
+        line = utils.trim-str(line)
         {
-            line.starts-with(ver) -> {
+            utils.starts-with-str(line, ver) -> {
                 ; pick the highest version for this prefix
                 {
                     best == '' -> best = line
                     -> {
                         ; compare: prefer higher version
-                        best-parts = best.split('.')
-                        line-parts = line.split('.')
+                        best-parts = utils.split-str(best, '.')
+                        line-parts = utils.split-str(line, '.')
                         ; compare major
                         b-major = version.str-to-i64(best-parts[0])
                         l-major = version.str-to-i64(line-parts[0])
@@ -903,7 +896,7 @@ get-python-lib-path = (ver str) (lib-path str) {
     managed-dir = get-python-dir()
     ; for python-build-standalone, lib is at python/lib
     ; and site-packages is at python/lib/python{major}.{minor}/site-packages
-    parts = ver.split('.')
+    parts = utils.split-str(ver, '.')
     {
         parts.len >= 2 -> {
             py-ver-dir = parts[0] - '.' - parts[1]

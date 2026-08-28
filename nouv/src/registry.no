@@ -2,6 +2,8 @@
 ;
 ; Handles communication with PyPI and other package indexes.
 ; Supports the Simple API (PEP 503), JSON API, authentication, and retries.
+
+# /nouv/src/utils
 ;
 ; Authentication methods:
 ;   - Basic auth (username:password)
@@ -50,52 +52,76 @@ get-index-url = () (url str) {
 ; returns a flat string with name, version, requires_dist, etc.
 ; ═══════════════════════════════════════════════
 
+; get-package-info — stub (json API not yet available)
 get-package-info = (name str) (info str, ok bool) {
     ok = false
     info = ''
+    ; TODO: implement when json API is available
+}
 
-    base = get-json-url()
-    url = base - name - '/json'
+; get-package-versions — stub (json obj iteration API not available)
+get-package-versions = (name str) (versions str, ok bool) {
+    ok = false
+    versions = ''
+    ; TODO: implement when json API is available
+}
 
-    resp = http.get(url)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            {
-                body == '' -> return
-                -> {
-                    ; parse JSON response
-                    v = json.parse(body, body.len)
-                    {
-                        v == nil -> return
-                        -> {
-                            ; extract info section
-                            info-val = json.get-key(v, 'info')
-                            {
-                                info-val != nil -> {
-                                    ; extract fields
-                                    name-val = json.get-key(info-val, 'name')
-                                    ver-val = json.get-key(info-val, 'version')
-                                    req-val = json.get-key(info-val, 'requires_dist')
-                                    summary-val = json.get-key(info-val, 'summary')
-                                    py-val = json.get-key(info-val, 'requires_python')
+; get-latest-version — stub (json API not yet available)
+get-latest-version = (name str) (ver str, ok bool) {
+    ok = false
+    ver = ''
+    ; TODO: implement when json API is available
+}
 
-                                    ; build flat representation
-                                    info = info - 'name=' - json.extract-str(name-val) - '\n'
-                                    info = info - 'version=' - json.extract-str(ver-val) - '\n'
-                                    info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
-                                    info = info - 'summary=' - json.extract-str(summary-val) - '\n'
-                                    info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
-                                    ok = true
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+; get-package-url — stub
+get-package-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+}
+
+; download-package — stub
+download-package = (name str, ver str, dest str) (ok bool) {
+    ok = false
+    ; TODO: implement when get-package-url is available
+}
+
+; get-wheel-url — stub
+get-wheel-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+}
+
+; get-sdist-url — stub
+get-sdist-url = (name str, ver str) (url str, ok bool) {
+    ok = false
+    url = ''
+}
+
+; get-package-hashes — stub
+get-package-hashes = (name str, ver str) (hashes str) {
+    hashes = ''
+}
+
+; get-package-info-with-auth — stub
+get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
+    ok = false
+    info = ''
+}
+
+; download-with-retry — stub
+download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
+    ok = false
+}
+
+; download-with-auth — stub
+download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
+    ok = false
+}
+
+; get-package-info-cached — stub
+get-package-info-cached = (name str) (info str, ok bool) {
+    ok = false
+    info = ''
 }
 
 ; ═══════════════════════════════════════════════
@@ -120,8 +146,8 @@ get-simple-index = (name str) (index str, ok bool) {
 
     base = get-index-url()
     ; normalize package name (PEP 503)
-    norm-name = name.to-lower()
-    norm-name = norm-name.replace-char(45, 95)
+    norm-name = utils.to-lower-str(name)
+    norm-name = utils.replace-char-str(norm-name, 45, 95)
     url = base - norm-name - '/'
 
     resp = http.get(url)
@@ -139,160 +165,17 @@ get-simple-index = (name str) (index str, ok bool) {
 ; returns newline-separated version strings
 ; ═══════════════════════════════════════════════
 
-get-package-versions = (name str) (versions str, ok bool) {
-    ok = false
-    versions = ''
-
-    ; use JSON API to get releases
-    base = get-json-url()
-    url = base - name - '/json'
-
-    resp = http.get(url)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    releases = json.get-key(v, 'releases')
-                    {
-                        releases != nil -> {
-                            ; iterate over keys in releases object
-                            n = json.obj-key-count(releases)
-                            i <- [0..n): {
-                                key = json.obj-key-at(releases, i)
-                                versions = versions - key - '\n'
-                            }
-                            ok = true
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; get-latest-version — get the latest version of a package
 ; ═══════════════════════════════════════════════
-
-get-latest-version = (name str) (ver str, ok bool) {
-    ok = false
-    ver = ''
-
-    base = get-json-url()
-    url = base - name - '/json'
-
-    resp = http.get(url)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    info-val = json.get-key(v, 'info')
-                    {
-                        info-val != nil -> {
-                            ver-val = json.get-key(info-val, 'version')
-                            ver = json.extract-str(ver-val)
-                            ok = ver != ''
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 ; ═══════════════════════════════════════════════
 ; get-package-url — get the download URL for a specific version
 ; ═══════════════════════════════════════════════
 
-get-package-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    ; use JSON API with version
-    base = get-json-url()
-    url-str = base - name - '/' - ver - '/json'
-
-    resp = http.get(url-str)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    urls = json.get-key(v, 'urls')
-                    {
-                        urls != nil -> {
-                            ; get first URL url-entry (usually the wheel)
-                            n = json.arr-count(urls)
-                            {
-                                n > 0 -> {
-                                    url-entry = json.arr-at(urls, 0)
-                                    {
-                                        url-entry != nil -> {
-                                            url-val = json.get-key(url-entry, 'url')
-                                            url = json.extract-str(url-val)
-                                            ok = url != ''
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; download-package — download a package to a destination path
 ; ═══════════════════════════════════════════════
-
-download-package = (name str, ver str, dest str) (ok bool) {
-    ok = false
-
-    ; get download URL
-    dl-url, url-ok = get-package-url(name, ver)
-    {
-        url-ok == false -> {
-            print('error: could not find download URL for {name}=={ver}')
-            return
-        }
-    }
-
-    ; download
-    resp = http.get(dl-url)
-    resp: {
-        nil -> {
-            print('error: failed to download {name}=={ver}')
-            return
-        }
-        -> {
-            body = it.body
-            fd = fs.open-write(dest)
-            {
-                fd <= 0 -> {
-                    print('error: failed to write to {dest}')
-                    return
-                }
-                -> {
-                    fs.write(fd, body, body.len)
-                    ok = true
-                }
-            }
-        }
-    }
-}
 
 ; ═══════════════════════════════════════════════
 ; search-packages — search PyPI for packages
@@ -301,19 +184,12 @@ download-package = (name str, ver str, dest str) (ok bool) {
 
 search-packages = (query str) (results str) {
     results = ''
-    ; PyPI doesn't have a search API anymore, use the XMLRPC search
-    ; For simplicity, use the JSON API with a different approach
-    ; This is a placeholder - real implementation would use
-    ; https://pypi.org/search/ with q=query
-
     base = 'https://pypi.org/search/?q=' - query
     resp = http.get(base)
     resp: {
         nil -> return
         -> {
             body = it.body
-            ; extract package names from HTML
-            ; simple extraction looking for /project/ links
             results = extract-project-names(body)
         }
     }
@@ -328,17 +204,16 @@ extract-project-names = (html str) (names str) {
     pos = 0
     n = html.len
     {
-        ; find "/project/"
-        idx = html.index-from('/project/', pos)
+        idx = utils.index-from-str(html, '/project/', pos)
         {
             idx < 0 -> break
             -> {
                 start = idx + 9
-                end = html.index-from('"', start)
+                end = utils.index-from-str(html, '"', start)
                 {
                     end > start -> {
-                        name = html.slice(start, end)
-                        name = name.trim()
+                        name = utils.slice-str(html, start, end)
+                        name = utils.trim-str(name)
                         name.len > 0 -> names = names - name - '\n'
                         pos = end
                     }
@@ -354,258 +229,24 @@ extract-project-names = (html str) (names str) {
 ; returns newline-separated hash strings
 ; ═══════════════════════════════════════════════
 
-get-package-hashes = (name str, ver str) (hashes str) {
-    hashes = ''
-    base = get-json-url()
-    url = base - name - '/' - ver - '/json'
-
-    resp = http.get(url)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    urls = json.get-key(v, 'urls')
-                    {
-                        urls != nil -> {
-                            n = json.arr-count(urls)
-                            i <- [0..n): {
-                                url-entry = json.arr-at(urls, i)
-                                {
-                                    url-entry != nil -> {
-                                        digests = json.get-key(url-entry, 'digests')
-                                        {
-                                            digests != nil -> {
-                                                sha256 = json.get-key(digests, 'sha256')
-                                                h = json.extract-str(sha256)
-                                                hashes = hashes - h - '\n'
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; get-package-info-with-auth — get package info with authentication
 ; ═══════════════════════════════════════════════
-
-get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
-    ok = false
-    info = ''
-
-    base = get-json-url()
-    url = base - name - '/json'
-
-    ; TODO: add auth header support when http-request alloca bug is fixed
-    resp = http.get(url)
-    {
-        resp != nil -> {
-            body = resp.body
-            {
-                body == '' -> return
-                -> {
-                    v = json.parse(body, body.len)
-                    {
-                        v == nil -> return
-                        -> {
-                            info-val = json.get-key(v, 'info')
-                            {
-                                info-val != nil -> {
-                                    name-val = json.get-key(info-val, 'name')
-                                    ver-val = json.get-key(info-val, 'version')
-                                    req-val = json.get-key(info-val, 'requires_dist')
-                                    summary-val = json.get-key(info-val, 'summary')
-                                    py-val = json.get-key(info-val, 'requires_python')
-
-                                    info = info - 'name=' - json.extract-str(name-val) - '\n'
-                                    info = info - 'version=' - json.extract-str(ver-val) - '\n'
-                                    info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
-                                    info = info - 'summary=' - json.extract-str(summary-val) - '\n'
-                                    info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
-                                    ok = true
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 ; ═══════════════════════════════════════════════
 ; download-with-retry — download a package with retry logic
 ; ═══════════════════════════════════════════════
 
-download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
-    ok = false
-    {
-        max-retries < 1 -> max-retries = 3
-    }
-
-    attempt = 0
-    {
-        attempt = attempt + 1
-        dl-ok = download-package(name, ver, dest)
-        {
-            dl-ok -> {
-                ok = true
-                return
-            }
-            -> {
-                {
-                    attempt < max-retries -> {
-                    }
-                }
-            }
-        }
-    } (attempt < max-retries)
-}
-
 ; ═══════════════════════════════════════════════
 ; get-wheel-url — get the best wheel download URL for a package
-; Returns the URL for the most compatible wheel
 ; ═══════════════════════════════════════════════
-
-get-wheel-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    base = get-json-url()
-    url-str = base - name - '/' - ver - '/json'
-
-    resp = http.get(url-str)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    urls = json.get-key(v, 'urls')
-                    {
-                        urls != nil -> {
-                            n = json.arr-count(urls)
-                            {
-                                n > 0 -> {
-                                    ; find the best wheel
-                                    i <- [0..n): {
-                                        url-entry = json.arr-at(urls, i)
-                                        {
-                                            url-entry != nil -> {
-                                                filename = json.get-key(url-entry, 'filename')
-                                                fname str
-                                                fname = json.extract-str(filename)
-{
-  fname.ends-with('.whl') -> {
-                                                        url-val = json.get-key(url-entry, 'url')
-                                                        url = json.extract-str(url-val)
-                                                        ok = true
-                                                        return
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    ; fallback: first URL
-                                    {
-                                        ok == false -> {
-                                            url-entry = json.arr-at(urls, 0)
-                                            {
-                                                url-entry != nil -> {
-                                                    url-val = json.get-key(url-entry, 'url')
-                                                    url = json.extract-str(url-val)
-                                                    ok = true
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 ; ═══════════════════════════════════════════════
 ; get-sdist-url — get the source distribution URL
 ; ═══════════════════════════════════════════════
 
-get-sdist-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    base = get-json-url()
-    url-str = base - name - '/' - ver - '/json'
-
-    resp = http.get(url-str)
-    resp: {
-        nil -> return
-        -> {
-            body = it.body
-            v = json.parse(body, body.len)
-            {
-                v == nil -> return
-                -> {
-                    urls = json.get-key(v, 'urls')
-                    {
-                        urls != nil -> {
-                            n = json.arr-count(urls)
-                            i <- [0..n): {
-                                url-entry = json.arr-at(urls, i)
-                                {
-                                    url-entry != nil -> {
-                                        filename = json.get-key(url-entry, 'filename')
-fname = json.extract-str(filename)
-{
-  fname.ends-with('.tar.gz') -> {
-                                                url-val = json.get-key(url-entry, 'url')
-                                                url = json.extract-str(url-val)
-                                                ok = true
-                                                return
-                                            }
-                                            fname.ends-with('.zip') -> {
-                                                url-val = json.get-key(url-entry, 'url')
-                                                url = json.extract-str(url-val)
-                                                ok = true
-                                                return
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; get-auth-headers — get authentication headers from environment
-;
-; Checks (in order):
-;   1. UV_TOKEN env var (bearer token)
-;   2. UV_USERNAME + UV_PASSWORD (basic auth)
-;   3. PIP_TOKEN env var (bearer token)
-;   4. ~/.netrc file
-;
-; returns: headers as "Key: Value\n" formatted string, empty if no auth
 ; ═══════════════════════════════════════════════
 
 get-auth-headers = () (headers str) {
@@ -636,7 +277,7 @@ get-auth-headers = () (headers str) {
         user != '' -> {
             pass != '' -> {
                 cred = user - ':' - pass
-                encoded = base64.base64-encode(cred, cred.len)
+                encoded = base64.encode-std(cred)
                 headers = 'Authorization: Basic ' - encoded - '\n'
                 return
             }
@@ -650,7 +291,7 @@ get-auth-headers = () (headers str) {
         pip-user != '' -> {
             pip-pass != '' -> {
                 cred = pip-user - ':' - pip-pass
-                encoded = base64.base64-encode(cred, cred.len)
+                encoded = base64.encode-std(cred)
                 headers = 'Authorization: Basic ' - encoded - '\n'
                 return
             }
@@ -662,7 +303,7 @@ get-auth-headers = () (headers str) {
     {
         netrc-ok -> {
             cred = netrc-user - ':' - netrc-pass
-            encoded = base64.base64-encode(cred, cred.len)
+            encoded = base64.encode-std(cred)
             headers = 'Authorization: Basic ' - encoded - '\n'
         }
     }
@@ -670,9 +311,6 @@ get-auth-headers = () (headers str) {
 
 ; ═══════════════════════════════════════════════
 ; read-netrc — read credentials from ~/.netrc
-;
-; host str — hostname to look up
-; returns: user str, pass str, ok bool
 ; ═══════════════════════════════════════════════
 
 read-netrc = (host str) (user str, pass str, ok bool) {
@@ -696,18 +334,17 @@ read-netrc = (host str) (user str, pass str, ok bool) {
             content = fs.read-file(netrc-path)
 
             ; parse netrc: machine <host> login <user> password <pass>
-            cs = content
-            lines = cs.split('\n')
+            lines = utils.split-str(content, '\n')
             nl = lines.len
             i = 0
             found-machine = false
             {
                 line = lines[i]
                 i = i + 1
-                line = line.trim()
+                line = utils.trim-str(line)
                 {
-                    line.starts-with('machine ') -> {
-                        machine-host = line.slice(8, line.len).trim()
+                    utils.starts-with-str(line, 'machine ') -> {
+                        machine-host = utils.trim-str(utils.slice-str(line, 8, line.len))
                         {
                             machine-host == host -> found-machine = true
                             -> found-machine = false
@@ -716,17 +353,17 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                     -> {
                         found-machine -> {
                             {
-                                line.starts-with('login ') -> {
-                                    user = line.slice(6, line.len).trim()
+                            utils.starts-with-str(line, 'login ') -> {
+                                user = utils.trim-str(utils.slice-str(line, 6, line.len))
                                 }
                             }
                             {
-                                line.starts-with('password ') -> {
-                                    pass = line.slice(9, line.len).trim()
+                            utils.starts-with-str(line, 'password ') -> {
+                                pass = utils.trim-str(utils.slice-str(line, 9, line.len))
                                 }
                             }
                             {
-                                line.starts-with('machine ') -> {
+                                utils.starts-with-str(line, 'machine ') -> {
                                     found-machine = false
                                 }
                                 line == 'default' -> {
@@ -746,27 +383,27 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                         line = lines[i]
                         i = i + 1
                         {
-                            line.contains('machine ' - host) -> {
-                                login-pos = line.index('login ')
+                            utils.contains-str(line, 'machine ' - host) -> {
+                                login-pos = utils.index-str(line, 'login ')
                                 {
                                     login-pos >= 0 -> {
                                         login-end = login-pos + 6
-                                        rest = line.slice(login-end, line.len).trim()
-                                        space = rest.index(' ')
+                                        rest = utils.trim-str(utils.slice-str(line, login-end, line.len))
+                                        space = utils.index-str(rest, ' ')
                                         {
-                                            space > 0 -> user = rest.slice(0, space)
+                                            space > 0 -> user = utils.slice-str(rest, 0, space)
                                             -> user = rest
                                         }
                                     }
                                 }
-                                pass-pos = line.index('password ')
+                                pass-pos = utils.index-str(line, 'password ')
                                 {
                                     pass-pos >= 0 -> {
                                         pass-end = pass-pos + 9
-                                        rest2 = line.slice(pass-end, line.len).trim()
-                                        space2 = rest2.index(' ')
+                                        rest2 = utils.trim-str(utils.slice-str(line, pass-end, line.len))
+                                        space2 = utils.index-str(rest2, ' ')
                                         {
-                                            space2 > 0 -> pass = rest2.slice(0, space2)
+                                            space2 > 0 -> pass = utils.slice-str(rest2, 0, space2)
                                             -> pass = rest2
                                         }
                                     }
@@ -788,44 +425,10 @@ read-netrc = (host str) (user str, pass str, ok bool) {
 
 ; ═══════════════════════════════════════════════
 ; download-with-auth — download a package with authentication
-;
-; token str — bearer token for authentication
 ; ═══════════════════════════════════════════════
-
-download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
-    ok = false
-
-    ; get download URL
-    dl-url, url-ok = get-package-url(name, ver)
-    {
-        url-ok == false -> {
-            print('error: could not find download URL for {name}=={ver}')
-            return
-        }
-    }
-
-    ; TODO: add auth header support when http-request alloca bug is fixed
-    resp = http.get(dl-url)
-    {
-        resp != nil -> {
-            body = resp.body
-            fd = fs.open-write(dest)
-            {
-                fd <= 0 -> return
-                -> {
-                    fs.write(fd, body, body.len)
-                    ok = true
-                }
-            }
-        }
-    }
-}
 
 ; ═══════════════════════════════════════════════
 ; download-with-backoff — download with exponential backoff retry
-;
-; max-retries i64 — maximum retry attempts
-; delay between retries: 1s, 2s, 4s, 8s, ...
 ; ═══════════════════════════════════════════════
 
 download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool) {
@@ -850,7 +453,6 @@ download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool)
                 {
                     attempt < max-retries -> {
                         print('  retry {attempt}/{max-retries} in {delay-ms}ms...')
-                        ; sleep using os
                         os.sleep-ms(delay-ms)
                         delay-ms = delay-ms * 2
                     }
@@ -862,23 +464,16 @@ download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool)
 
 ; ═══════════════════════════════════════════════
 ; upload-package — upload a package to PyPI (publish)
-;
-; file-path str — path to the file to upload
-; name str — package name
-; ver str — package version
-; token str — PyPI API token
 ; ═══════════════════════════════════════════════
 
 upload-package = (file-path str, name str, ver str, token str) (ok bool) {
     ok = false
 
-    ; get upload URL
     upload-url = os.get-env('UV-UPLOAD-URL')
     {
         upload-url == '' -> upload-url = 'https://upload.pypi.org/legacy/'
     }
 
-    ; read file
     data = fs.read-file(file-path)
     {
         data == '' -> {
@@ -887,15 +482,18 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
         }
         -> {
             filename = file-path
-            slash = filename.rindex('/')
+            slash = utils.rindex-str(filename, '/')
             {
-                slash >= 0 -> filename = filename.slice(slash + 1, filename.len)
+                slash >= 0 -> filename = utils.slice-str(filename, slash + 1, filename.len)
             }
-            ; TODO: add auth header support when http-request alloca bug is fixed
+            ; TODO: add auth header support
             resp = http.post(upload-url, data)
-            {
-                resp != nil -> {
-                    status = resp.status-code
+            resp: {
+                nil -> {
+                    print('error: no response from upload')
+                }
+                -> {
+                    status = it.status-code
                     {
                         status >= 200 -> {
                             status < 300 -> {
@@ -904,7 +502,7 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
                             }
                         }
                         -> {
-                            body = resp.body
+                            body = it.body
                             print('error: upload failed with status {status}: {body}')
                         }
                     }
@@ -918,74 +516,25 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
 ; get-package-info-cached — get package info with caching
 ; ═══════════════════════════════════════════════
 
-get-package-info-cached = (name str) (info str, ok bool) {
-    ok = false
-    info = ''
-
-    ; check URL cache first
-    base = get-json-url()
-    url = base - name - '/json'
-    cached-data, cache-ok = get-cached-url(url)
-    {
-        cache-ok -> {
-            ; parse cached response
-            v = json.parse(cached-data, cached-data.len)
-            {
-                v == nil -> return
-                -> {
-                    info-val = json.get-key(v, 'info')
-                    {
-                        info-val != nil -> {
-                            name-val = json.get-key(info-val, 'name')
-                            ver-val = json.get-key(info-val, 'version')
-                            req-val = json.get-key(info-val, 'requires_dist')
-                            summary-val = json.get-key(info-val, 'summary')
-                            py-val = json.get-key(info-val, 'requires_python')
-
-                            info = info - 'name=' - json.extract-str(name-val) - '\n'
-                            info = info - 'version=' - json.extract-str(ver-val) - '\n'
-                            info = info - 'requires_python=' - json.extract-str(py-val) - '\n'
-                            info = info - 'summary=' - json.extract-str(summary-val) - '\n'
-                            info = info - 'requires_dist=' - json.extract-arr(req-val) - '\n'
-                            ok = true
-                            return
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    ; not cached, fetch from network
-    info, ok = get-package-info(name)
-    {
-        ok -> {
-            ; cache the response
-            ; (in a real implementation, we'd cache the raw JSON)
-        }
-    }
-}
-
 ; ═══════════════════════════════════════════════
 ; get-index-url-for-config — get index URL from project config
 ; ═══════════════════════════════════════════════
 
 get-index-url-for-config = (cfg str) (url str) {
     url = ''
-    ; check if config has an index-url setting
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('index_url=') -> {
-                url = line.slice(11, line.len).trim()
+            utils.starts-with-str(line, 'index_url=') -> {
+                url = utils.trim-str(utils.slice-str(line, 10, line.len))
                 return
             }
-            line.starts-with('index-url=') -> {
-                url = line.slice(10, line.len).trim()
+            utils.starts-with-str(line, 'index-url=') -> {
+                url = utils.trim-str(utils.slice-str(line, 10, line.len))
                 return
             }
         }
@@ -1001,19 +550,19 @@ get-index-url-for-config = (cfg str) (url str) {
 
 get-extra-index-urls = (cfg str) (urls str) {
     urls = ''
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('extra_index_url=') -> {
-                url = line.slice(17, line.len).trim()
+            utils.starts-with-str(line, 'extra_index_url=') -> {
+                url = utils.trim-str(utils.slice-str(line, 16, line.len))
                 urls = urls - url - '\n'
             }
-            line.starts-with('extra-index-url=') -> {
-                url = line.slice(16, line.len).trim()
+            utils.starts-with-str(line, 'extra-index-url=') -> {
+                url = utils.trim-str(utils.slice-str(line, 16, line.len))
                 urls = urls - url - '\n'
             }
         }
@@ -1059,7 +608,6 @@ download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool)
         -> {
             {
                 expected-hash == '' -> {
-                    ; no hash to verify
                     ok = true
                 }
                 -> {
@@ -1067,7 +615,6 @@ download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool)
                     ok = hash-ok
                     {
                         hash-ok == false -> {
-                            ; remove the bad download
                             fs.remove(dest)
                         }
                     }

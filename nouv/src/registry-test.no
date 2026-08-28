@@ -1,0 +1,116 @@
+; registry test step 1
+
+# /nouv/src/utils
+
+PYPI-SIMPLE-URL = 'https://pypi.org/simple/'
+PYPI-JSON-URL = 'https://pypi.org/pypi/'
+UV-INDEX-URL = 'https://astral.sh/uv/simple/'
+DEFAULT-INDEX = 'https://pypi.org/simple/'
+
+get-index-url = () (url str) {
+    url = os.get-env('UV-INDEX-URL')
+    {
+        url == '' -> url = os.get-env('PIP-INDEX-URL')
+    }
+    {
+        url == '' -> url = DEFAULT-INDEX
+    }
+}
+
+get-json-url = () (url str) {
+    url = os.get-env('UV-JSON-URL')
+    {
+        url == '' -> url = PYPI-JSON-URL
+    }
+}
+
+get-auth-headers = () (headers str) {
+    headers = ''
+
+    ; 1. check UV_TOKEN
+    token = os.get-env('UV-TOKEN')
+    {
+        token != '' -> {
+            headers = 'Authorization: Bearer ' - token - '\n'
+            return
+        }
+    }
+
+    ; 2. check PIP_TOKEN
+    pip-token = os.get-env('PIP-TOKEN')
+    {
+        pip-token != '' -> {
+            headers = 'Authorization: Bearer ' - pip-token - '\n'
+            return
+        }
+    }
+
+    ; 3. check UV_USERNAME + UV_PASSWORD
+    user = os.get-env('UV-USERNAME')
+    pass = os.get-env('UV-PASSWORD')
+    {
+        user != '' -> {
+            pass != '' -> {
+                cred = user - ':' - pass
+                encoded = base64.encode-std(cred)
+                headers = 'Authorization: Basic ' - encoded - '\n'
+                return
+            }
+        }
+    }
+
+    ; 4. check PIP_USERNAME + PIP_PASSWORD
+    pip-user = os.get-env('PIP-USERNAME')
+    pip-pass = os.get-env('PIP-PASSWORD')
+    {
+        pip-user != '' -> {
+            pip-pass != '' -> {
+                cred = pip-user - ':' - pip-pass
+                encoded = base64.encode-std(cred)
+                headers = 'Authorization: Basic ' - encoded - '\n'
+                return
+            }
+        }
+    }
+
+    ; 5. try netrc
+    netrc-user, netrc-pass, netrc-ok = read-netrc('pypi.org')
+    {
+        netrc-ok -> {
+            cred = netrc-user - ':' - netrc-pass
+            encoded = base64.encode-std(cred)
+            headers = 'Authorization: Basic ' - encoded - '\n'
+        }
+    }
+}
+
+read-netrc = (host str) (user str, pass str, ok bool) {
+    ok = false
+    user = ''
+    pass = ''
+
+    home = os.get-env('HOME')
+    {
+        home == '' -> return
+    }
+
+    netrc-path = home - '/.netrc'
+    p = path{
+        p: netrc-path,
+    }
+    exists = p.exists()
+    {
+        exists == false -> return
+        -> {
+            content = fs.read-file(netrc-path)
+            lines = utils.split-str(content, '\n')
+            nl = lines.len
+            i = 0
+            {
+                line = lines[i]
+                i = i + 1
+                line = utils.trim-str(line)
+            } (i < nl)
+        }
+    }
+}

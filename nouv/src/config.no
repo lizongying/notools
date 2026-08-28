@@ -34,6 +34,7 @@
 ;   get-entry-points(cfg str) (eps str) — get [project.scripts]
 
 # /nouv/src/toml
+# /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
 ; load-config — read and parse pyproject.toml
@@ -51,7 +52,7 @@ load-config = (dir str) (cfg str, ok bool) {
         exists == false -> return
         -> {
             content = fs.read-file(path)
-            cfg = parse(content)
+            cfg = toml.parse(content)
             ok = true
         }
     }
@@ -64,7 +65,7 @@ load-config = (dir str) (cfg str, ok bool) {
 save-config = (dir str, cfg str) (ok bool) {
     ok = false
     path = dir - '/pyproject.toml'
-    content = serialize(cfg)
+    content = toml.serialize(cfg)
     fd = fs.open-write(path)
     {
         fd <= 0 -> return
@@ -116,19 +117,15 @@ init-project = (dir str, name str) (ok bool) {
 
 get-name = (cfg str) (name str) {
     name = ''
-    val = get-value(cfg, 'project.name')
+    val = toml.get-value(cfg, 'project.name')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> name = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> name = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> name = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> name = utils.slice-str(v, 1, v.len - 1) }
                 -> name = v
             }
         }
@@ -141,19 +138,15 @@ get-name = (cfg str) (name str) {
 
 get-version = (cfg str) (ver str) {
     ver = ''
-    val = get-value(cfg, 'project.version')
+    val = toml.get-value(cfg, 'project.version')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> ver = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> ver = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> ver = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> ver = utils.slice-str(v, 1, v.len - 1) }
                 -> ver = v
             }
         }
@@ -166,11 +159,11 @@ get-version = (cfg str) (ver str) {
 
 get-dependencies = (cfg str) (deps str) {
     deps = ''
-    val = get-value(cfg, 'project.dependencies')
+    val = toml.get-value(cfg, 'project.dependencies')
     val: {
         nil -> {}
         err -> {}
-        ok -> deps = parse-array(it)
+        ok -> deps = toml.parse-array(it)
         -> {
             ; no dependencies
         }
@@ -183,11 +176,11 @@ get-dependencies = (cfg str) (deps str) {
 
 get-dev-dependencies = (cfg str) (deps str) {
     deps = ''
-    val = get-value(cfg, 'tool.uv.dev-dependencies')
+    val = toml.get-value(cfg, 'tool.uv.dev-dependencies')
     val: {
         nil -> {}
         err -> {}
-        ok -> deps = parse-array(it)
+        ok -> deps = toml.parse-array(it)
     }
 }
 
@@ -205,18 +198,18 @@ add-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
 
     ; check if already present
     {
-        deps.contains(pkg) -> return
+        utils.contains-str(deps, pkg) -> return
         -> {
             ; check for prefix match (e.g. "requests" matches "requests>=2.0")
-            lines = deps.split('\n')
+            lines = utils.split-str(deps, '\n')
             n = lines.len
             i = 0
             {
                 line = lines[i]
                 i = i + 1
-                line = line.trim()
+                line = utils.trim-str(line)
                 {
-                    line.starts-with(pkg) -> return
+                    utils.starts-with-str(line, pkg) -> return
                 }
             } (i < n)
         }
@@ -229,10 +222,10 @@ add-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
     }
 
     ; create new array value
-    arr-val = make-array-value(deps)
+    arr-val = toml.make-array-value(deps)
 
     ; update config
-    new-cfg = set-value(cfg, 'project.dependencies', arr-val)
+    new-cfg = toml.set-value(cfg, 'project.dependencies', arr-val)
     ok = true
 }
 
@@ -249,15 +242,15 @@ remove-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
     new-deps = ''
     found = false
 
-    lines = deps.split('\n')
+    lines = utils.split-str(deps, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
-        line = line.trim()
+        line = utils.trim-str(line)
         {
-            line.starts-with(pkg) -> {
+            utils.starts-with-str(line, pkg) -> {
                 found = true
             }
             line.len > 0 -> {
@@ -269,7 +262,7 @@ remove-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
     found == false -> return
 
     arr-val = make-array-value(new-deps)
-    new-cfg = set-value(cfg, 'project.dependencies', arr-val)
+    new-cfg = toml.set-value(cfg, 'project.dependencies', arr-val)
     ok = true
 }
 
@@ -279,19 +272,15 @@ remove-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
 
 get-python-version = (cfg str) (ver str) {
     ver = ''
-    val = get-value(cfg, 'project.requires-python')
+    val = toml.get-value(cfg, 'project.requires-python')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> ver = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> ver = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> ver = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> ver = utils.slice-str(v, 1, v.len - 1) }
                 -> ver = v
             }
         }
@@ -321,19 +310,15 @@ get-metadata = (cfg str) (meta str) {
 
 get-description = (cfg str) (desc str) {
     desc = ''
-    val = get-value(cfg, 'project.description')
+    val = toml.get-value(cfg, 'project.description')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> desc = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> desc = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> desc = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> desc = utils.slice-str(v, 1, v.len - 1) }
                 -> desc = v
             }
         }
@@ -350,14 +335,14 @@ get-optional-dependencies = (cfg str) (deps str) {
     ; Look for project.optional-dependencies section
     ; In the flat format, keys would be like:
     ; project.optional-dependencies.dev=['ruff', 'pytest']
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('project.optional-dependencies.') -> {
+            utils.starts-with-str(line, 'project.optional-dependencies.') -> {
                 deps = deps - line - '\n'
             }
         }
@@ -374,11 +359,11 @@ get-optional-dependencies = (cfg str) (deps str) {
 get-group-dependencies = (cfg str, group str) (deps str) {
     deps = ''
     key = 'tool.uv.dependency-groups.' - group
-    val = get-value(cfg, key)
+    val = toml.get-value(cfg, key)
     val: {
         nil -> {}
         err -> {}
-        ok -> deps = parse-array(it)
+        ok -> deps = toml.parse-array(it)
     }
 }
 
@@ -401,19 +386,19 @@ get-all-dependencies = (cfg str) (deps str) {
 
     ; also get all dependency groups
     ; scan for tool.uv.dependency-groups.* keys
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('tool.uv.dependency-groups.') -> {
-                eq = line.index('=')
+            utils.starts-with-str(line, 'tool.uv.dependency-groups.') -> {
+                eq = utils.index-str(line, '=')
                 {
                     eq >= 0 -> {
-                        val = line.slice(eq + 1, line.len).trim()
-                        group-deps = parse-array(val)
+                        val = utils.trim-str(utils.slice-str(line, eq + 1, line.len))
+                        group-deps = toml.parse-array(val)
                         {
                             group-deps != '' -> deps = deps - '\n' - group-deps
                         }
@@ -437,17 +422,17 @@ add-dev-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
 
     ; check if already present
     {
-        deps.contains(pkg) -> return
+        utils.contains-str(deps, pkg) -> return
         -> {
-            lines = deps.split('\n')
+            lines = utils.split-str(deps, '\n')
             n = lines.len
             i = 0
             {
                 line = lines[i]
                 i = i + 1
-                line = line.trim()
+                line = utils.trim-str(line)
                 {
-                    line.starts-with(pkg) -> return
+                    utils.starts-with-str(line, pkg) -> return
                 }
             } (i < n)
         }
@@ -459,8 +444,8 @@ add-dev-dependency = (cfg str, pkg str) (new-cfg str, ok bool) {
         -> deps = pkg - '\n'
     }
 
-    arr-val = make-array-value(deps)
-    new-cfg = set-value(cfg, 'tool.uv.dev-dependencies', arr-val)
+    arr-val = toml.make-array-value(deps)
+    new-cfg = toml.set-value(cfg, 'tool.uv.dev-dependencies', arr-val)
     ok = true
 }
 
@@ -477,17 +462,17 @@ add-group-dependency = (cfg str, group str, pkg str) (new-cfg str, ok bool) {
 
     ; check if already present
     {
-        deps.contains(pkg) -> return
+        utils.contains-str(deps, pkg) -> return
         -> {
-            lines = deps.split('\n')
+            lines = utils.split-str(deps, '\n')
             n = lines.len
             i = 0
             {
                 line = lines[i]
                 i = i + 1
-                line = line.trim()
+                line = utils.trim-str(line)
                 {
-                    line.starts-with(pkg) -> return
+                    utils.starts-with-str(line, pkg) -> return
                 }
             } (i < n)
         }
@@ -500,8 +485,8 @@ add-group-dependency = (cfg str, group str, pkg str) (new-cfg str, ok bool) {
     }
 
     key = 'tool.uv.dependency-groups.' - group
-    arr-val = make-array-value(deps)
-    new-cfg = set-value(cfg, key, arr-val)
+    arr-val = toml.make-array-value(deps)
+    new-cfg = toml.set-value(cfg, key, arr-val)
     ok = true
 }
 
@@ -513,11 +498,11 @@ add-group-dependency = (cfg str, group str, pkg str) (new-cfg str, ok bool) {
 
 get-override-dependencies = (cfg str) (deps str) {
     deps = ''
-    val = get-value(cfg, 'tool.uv.override-dependencies')
+    val = toml.get-value(cfg, 'tool.uv.override-dependencies')
     val: {
         nil -> {}
         err -> {}
-        ok -> deps = parse-array(it)
+        ok -> deps = toml.parse-array(it)
     }
 }
 
@@ -529,11 +514,11 @@ get-override-dependencies = (cfg str) (deps str) {
 
 get-constraint-dependencies = (cfg str) (deps str) {
     deps = ''
-    val = get-value(cfg, 'tool.uv.constraint-dependencies')
+    val = toml.get-value(cfg, 'tool.uv.constraint-dependencies')
     val: {
         nil -> {}
         err -> {}
-        ok -> deps = parse-array(it)
+        ok -> deps = toml.parse-array(it)
     }
 }
 
@@ -544,7 +529,7 @@ get-constraint-dependencies = (cfg str) (deps str) {
 
 get-index = (cfg str) (index str) {
     index = ''
-    val = get-value(cfg, 'tool.uv.index')
+    val = toml.get-value(cfg, 'tool.uv.index')
     val: {
         nil -> {}
         err -> {}
@@ -559,14 +544,14 @@ get-index = (cfg str) (index str) {
 
 get-sources = (cfg str) (sources str) {
     sources = ''
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('tool.uv.sources.') -> sources = sources - line - '\n'
+            utils.starts-with-str(line, 'tool.uv.sources.') -> sources = sources - line - '\n'
         }
     } (i < n)
 }
@@ -577,19 +562,15 @@ get-sources = (cfg str) (sources str) {
 
 get-build-backend = (cfg str) (backend str) {
     backend = ''
-    val = get-value(cfg, 'build-system.build-backend')
+    val = toml.get-value(cfg, 'build-system.build-backend')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> backend = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> backend = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> backend = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> backend = utils.slice-str(v, 1, v.len - 1) }
                 -> backend = v
             }
         }
@@ -603,28 +584,24 @@ get-build-backend = (cfg str) (backend str) {
 
 get-entry-points = (cfg str) (eps str) {
     eps = ''
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('project.scripts.') -> {
+            utils.starts-with-str(line, 'project.scripts.') -> {
                 ; format: project.scripts.name = "module:func"
-                dot = line.rindex('.')
-                eq = line.index('=')
+                dot = utils.rindex-str(line, '.')
+                eq = utils.index-str(line, '=')
                 {
                     eq > dot -> {
-                        ep-name = line.slice(dot + 1, eq).trim()
-                        ep-val = line.slice(eq + 1, line.len).trim()
+                        ep-name = utils.trim-str(utils.slice-str(line, dot + 1, eq))
+                        ep-val = utils.trim-str(utils.slice-str(line, eq + 1, line.len))
                         {
-                            ep-val.starts-with('"') -> {
-                                ep-val.ends-with('"') -> ep-val = ep-val.slice(1, ep-val.len - 1)
-                            }
-                            ep-val.starts-with("'") -> {
-                                ep-val.ends-with("'") -> ep-val = ep-val.slice(1, ep-val.len - 1)
-                            }
+utils.starts-with-str(ep-val, '"') -> { utils.ends-with-str(ep-val, '"') -> ep-val = utils.slice-str(ep-val, 1, ep-val.len - 1) }
+utils.starts-with-str(ep-val, "'") -> { utils.ends-with-str(ep-val, "'") -> ep-val = utils.slice-str(ep-val, 1, ep-val.len - 1) }
                         }
                         eps = eps - ep-name - '=' - ep-val - '\n'
                     }
@@ -640,19 +617,15 @@ get-entry-points = (cfg str) (eps str) {
 
 get-requires-python = (cfg str) (ver str) {
     ver = ''
-    val = get-value(cfg, 'project.requires-python')
+    val = toml.get-value(cfg, 'project.requires-python')
     val: {
         nil -> {}
         err -> {}
         ok -> {
             v = it
             {
-                v.starts-with('"') -> {
-                    v.ends-with('"') -> ver = v.slice(1, v.len - 1)
-                }
-                v.starts-with("'") -> {
-                    v.ends-with("'") -> ver = v.slice(1, v.len - 1)
-                }
+utils.starts-with-str(v, '"') -> { utils.ends-with-str(v, '"') -> ver = utils.slice-str(v, 1, v.len - 1) }
+utils.starts-with-str(v, "'") -> { utils.ends-with-str(v, "'") -> ver = utils.slice-str(v, 1, v.len - 1) }
                 -> ver = v
             }
         }
@@ -665,26 +638,22 @@ get-requires-python = (cfg str) (ver str) {
 
 get-optional-dependency-groups = (cfg str) (groups str) {
     groups = ''
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('project.optional-dependencies.') -> {
-                dot = line.rindex('.')
-                eq = line.index('=')
+            utils.starts-with-str(line, 'project.optional-dependencies.') -> {
+                dot = utils.rindex-str(line, '.')
+                eq = utils.index-str(line, '=')
                 {
                     eq > dot -> {
-                        group = line.slice(dot + 1, eq).trim()
+                        group = utils.trim-str(utils.slice-str(line, dot + 1, eq))
                         {
-                            group.starts-with('"') -> {
-                                group.ends-with('"') -> group = group.slice(1, group.len - 1)
-                            }
-                            group.starts-with("'") -> {
-                                group.ends-with("'") -> group = group.slice(1, group.len - 1)
-                            }
+utils.starts-with-str(group, '"') -> { utils.ends-with-str(group, '"') -> group = utils.slice-str(group, 1, group.len - 1) }
+utils.starts-with-str(group, "'") -> { utils.ends-with-str(group, "'") -> group = utils.slice-str(group, 1, group.len - 1) }
                         }
                         groups = groups - group - '\n'
                     }
@@ -701,28 +670,24 @@ get-optional-dependency-groups = (cfg str) (groups str) {
 
 get-dependency-groups = (cfg str) (groups str) {
     groups = ''
-    lines = cfg.split('\n')
+    lines = utils.split-str(cfg, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
         {
-            line.starts-with('tool.uv.dependency-groups.') -> {
+            utils.starts-with-str(line, 'tool.uv.dependency-groups.') -> {
                 ; extract group name
                 prefix = 'tool.uv.dependency-groups.'
-                rest = line.slice(prefix.len, line.len)
-                eq = rest.index('=')
+rest = utils.slice-str(line, prefix.len, line.len)
+eq = utils.index-str(rest, '=')
                 {
                     eq > 0 -> {
-                        group = rest.slice(0, eq).trim()
+                        group = utils.trim-str(utils.slice-str(rest, 0, eq))
                         {
-                            group.starts-with('"') -> {
-                                group.ends-with('"') -> group = group.slice(1, group.len - 1)
-                            }
-                            group.starts-with("'") -> {
-                                group.ends-with("'") -> group = group.slice(1, group.len - 1)
-                            }
+utils.starts-with-str(group, '"') -> { utils.ends-with-str(group, '"') -> group = utils.slice-str(group, 1, group.len - 1) }
+utils.starts-with-str(group, "'") -> { utils.ends-with-str(group, "'") -> group = utils.slice-str(group, 1, group.len - 1) }
                         }
                         groups = groups - group - '\n'
                     }

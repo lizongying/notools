@@ -5,6 +5,7 @@
 # /nouv/src/venv
 # /nouv/src/cache
 # /nouv/src/utils
+# /nouv/src/markers
 
 ; ═══════════════════════════════════════════════
 ; install — install a wheel file into a virtual environment
@@ -13,99 +14,74 @@
 install = (venv-path str, wheel-path str, no-cache bool) (ok bool) {
     ok = false
 
-    ; read wheel file
-    data = fs.read-file(wheel-path)
+    sp-dir = get-site-packages(venv-path)
+    p = path{
+        p: sp-dir,
+    }
+    mk = p.make-dir()
+
+    ; create temp dir for extraction
+    tmp-dir = '/tmp/nouv-wheel-' - os.now-ms().to-str()
+    p2 = path{
+        p: tmp-dir,
+    }
+    mk2 = p2.make-dir()
+
+    ; extract wheel using unzip
+    code = run-cmd('unzip -o -q ' - wheel-path - ' -d ' - tmp-dir)
     {
-        data == '' -> {
-            print('error: could not read wheel file: {wheel-path}')
+        code != 0 -> {
+            print('error: failed to extract wheel file: {wheel-path}')
+            run-cmd('rm -rf ' - tmp-dir)
             return
         }
-        -> {
-            ; wheel is a zip file
-            archive = zip{
-                data: data,
+    }
+
+    ; find dist-info directory
+    dist-info-dir = ''
+    out = run-cmd-output('ls ' - tmp-dir)
+    lines = utils.split-str(out, '\n')
+    n = lines.len
+    i = 0
+    {
+        line = lines[i]
+        i = i + 1
+        line = utils.trim-str(line)
+        {
+            utils.ends-with-str(line, '.dist-info') -> {
+                dist-info-dir = line
             }
-            count = archive.count()
-            {
-                count == 0 -> {
-                    print('error: empty wheel file')
-                    return
+        }
+    } (i < n)
+
+    ; copy all extracted files to site-packages
+    copy-code = run-cmd('cp -R ' - tmp-dir - '/* ' - sp-dir - '/')
+    {
+        copy-code == 0 -> ok = true
+        -> print('error: failed to copy wheel contents')
+    }
+
+    ; create entry point scripts
+    {
+        ok -> {
+            dist-info-dir != '' -> {
+                ep-path = sp-dir - '/' - dist-info-dir - '/entry_points.txt'
+                p4 = path{
+                    p: ep-path,
                 }
-                -> {
-                    sp-dir = get-site-packages(venv-path)
-                    p = path{
-                        p: sp-dir,
+                ep-exists = p4.exists()
+                {
+                    ep-exists -> {
+                        ep-data = fs.read-file(ep-path)
+                        ep-ok = create-entry-point-scripts(venv-path, ep-data)
                     }
-                    mk = p.make-dir()
-
-                    ; parse dist-info directory name
-                    dist-info-dir = ''
-                    i <- [0..count): {
-                        name = archive.name(i)
-                        {
-                            name.ends-with('.dist-info/') -> {
-                                dist-info-dir = name.slice(0, name.len - 1)
-                                break
-                            }
-                        }
-                    }
-
-                    ; extract each file
-                    i <- [0..count): {
-                        name = archive.name(i)
-                        content = archive.extract(i)
-
-                        {
-                            name.ends-with('/') == false -> {
-                                out-path = sp-dir - '/' - name
-                                p2 = path{
-                                    p: out-path,
-                                }
-
-                                slash = name.rindex('/')
-                                {
-                                    slash >= 0 -> {
-                                        parent-dir = sp-dir - '/' - name.slice(0, slash)
-                                        p3 = path{
-                                            p: parent-dir,
-                                        }
-                                        mk2 = p3.make-dir()
-                                    }
-                                }
-
-                                wfd = fs.open-write(out-path)
-                                {
-                                    wfd > 0 -> {
-                                        fs.write(wfd, content, content.len)
-                                        fs.close(wfd)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ; create entry point scripts
-                    {
-                        dist-info-dir != '' -> {
-                            ep-path = sp-dir - '/' - dist-info-dir - '/entry_points.txt'
-                            p4 = path{
-                                p: ep-path,
-                            }
-                            ep-exists = p4.exists()
-                            {
-                                ep-exists -> {
-                                    ep-data = fs.read-file(ep-path)
-                                    ep-ok = create-entry-point-scripts(venv-path, ep-data)
-                                }
-                            }
-                        }
-                    }
-
-                    ok = true
                 }
             }
         }
     }
+
+    ; clean up
+    run-cmd('rm -rf ' - tmp-dir)
 }
 
 ; ═══════════════════════════════════════════════
@@ -116,8 +92,7 @@ parse-metadata = (metadata-content str) (metadata str, ok bool) {
     ok = false
     metadata = ''
 
-    lines = metadata-cs = content
-cs = cs.split('\n')
+    lines = utils.split-str(metadata-content, '\n')
     n = lines.len
     i = 0
     {
@@ -126,11 +101,14 @@ cs = cs.split('\n')
         {
             line == '' -> break
             -> {
-                colon = line.index(':')
+                colon = utils.index-str(line, ':')
                 {
                     colon >= 0 -> {
-                        key = line.slice(0, colon).trim().to-lower()
-                        val = line.slice(colon + 1, line.len).trim()
+                        key = utils.slice-str(line, 0, colon)
+                        key = utils.trim-str(key)
+                        key = utils.to-lower-str(key)
+                        val = utils.slice-str(line, colon + 1, line.len)
+                        val = utils.trim-str(val)
                         {
                             key == 'name' -> metadata = metadata - 'name=' - val - '\n'
                             key == 'version' -> metadata = metadata - 'version=' - val - '\n'
@@ -162,8 +140,7 @@ parse-wheel-file = (wheel-content str) (info str, ok bool) {
     ok = false
     info = ''
 
-    lines = wheel-cs = content
-cs = cs.split('\n')
+    lines = utils.split-str(wheel-content, '\n')
     n = lines.len
     i = 0
     {
@@ -172,11 +149,14 @@ cs = cs.split('\n')
         {
             line == '' -> break
             -> {
-                colon = line.index(':')
+                colon = utils.index-str(line, ':')
                 {
                     colon >= 0 -> {
-                        key = line.slice(0, colon).trim().to-lower()
-                        val = line.slice(colon + 1, line.len).trim()
+                        key = utils.slice-str(line, 0, colon)
+                        key = utils.trim-str(key)
+                        key = utils.to-lower-str(key)
+                        val = utils.slice-str(line, colon + 1, line.len)
+                        val = utils.trim-str(val)
                         info = info - key - '=' - val - '\n'
                     }
                 }
@@ -195,27 +175,26 @@ parse-entry-points = (content str) (eps str) {
     eps = ''
     current-section = ''
 
-    lines = cs = content
-cs = cs.split('\n')
+    lines = utils.split-str(content, '\n')
     n = lines.len
     i = 0
     {
         line = lines[i]
         i = i + 1
-        line = line.trim()
+        line = utils.trim-str(line)
         {
             line == '' -> continue
-            line.starts-with('[') -> {
-                line.ends-with(']') -> {
-            }
-                current-section = line.slice(1, line.len - 1)
+            utils.starts-with-str(line, '[') -> {
+                utils.ends-with-str(line, ']') -> {
+                    current-section = utils.slice-str(line, 1, line.len - 1)
+                }
             }
             -> {
-                eq = line.index('=')
+                eq = utils.index-str(line, '=')
                 {
                     eq >= 0 -> {
-                        name = line.slice(0, eq).trim()
-                        target = line.slice(eq + 1, line.len).trim()
+                        name = utils.trim-str(utils.slice-str(line, 0, eq))
+                        target = utils.trim-str(utils.slice-str(line, eq + 1, line.len))
                         eps = eps - current-section - ':' - name - '=' - target - '\n'
                     }
                 }
@@ -232,28 +211,42 @@ get-entry-points = (wheel-path str) (eps str, ok bool) {
     ok = false
     eps = ''
 
-    data = fs.read-file(wheel-path)
-    {
-        data == '' -> return
-        -> {
-            archive = zip{
-                data: data,
-            }
-            count = archive.count()
+    ; create temp dir for extraction
+    tmp-dir = '/tmp/nouv-ep-' - os.now-ms().to-str()
+    p = path{
+        p: tmp-dir,
+    }
+    mk = p.make-dir()
 
-            i <- [0..count): {
-                name = archive.name(i)
-                {
-                    name.ends-with('entry_points.txt') -> {
-                        content = archive.extract(i)
-                        eps = parse-entry-points(content)
-                        ok = true
-                        return
-                    }
-                }
-            }
+    ; extract wheel using unzip
+    code = run-cmd('unzip -o -q ' - wheel-path - ' -d ' - tmp-dir)
+    {
+        code != 0 -> {
+            run-cmd('rm -rf ' - tmp-dir)
+            return
         }
     }
+
+    ; find entry_points.txt
+    ep-out = run-cmd-output('find ' - tmp-dir - ' -name entry_points.txt')
+    ep-lines = utils.split-str(ep-out, '\n')
+    n = ep-lines.len
+    i = 0
+    {
+        fpath = ep-lines[i]
+        i = i + 1
+        fpath = utils.trim-str(fpath)
+        {
+            fpath.len > 0 -> {
+                ep-data = fs.read-file(fpath)
+                eps = parse-entry-points(ep-data)
+                ok = true
+            }
+        }
+    } (i < n)
+
+    ; clean up
+    run-cmd('rm -rf ' - tmp-dir)
 }
 
 ; ═══════════════════════════════════════════════
@@ -275,43 +268,44 @@ create-entry-point-scripts = (venv-path str, ep-content str) (ok bool) {
             }
             mk = p.make-dir()
 
-            lines = eps.split('\n')
+            lines = utils.split-str(eps, '\n')
             n = lines.len
             i = 0
             {
                 line = lines[i]
                 i = i + 1
-                line = line.trim()
+                line = utils.trim-str(line)
                 {
                     line.len > 0 -> {
-                        colon1 = line.index(':')
+                        colon1 = utils.index-str(line, ':')
                         {
                             colon1 >= 0 -> {
-                                ep-type = line.slice(0, colon1)
-                                rest = line.slice(colon1 + 1, line.len)
-                                eq = rest.index('=')
+                                ep-type = utils.slice-str(line, 0, colon1)
+                                rest = utils.slice-str(line, colon1 + 1, line.len)
+                                eq = utils.index-str(rest, '=')
                                 {
                                     eq >= 0 -> {
-                                        ep-name = rest.slice(0, eq)
-                                        ep-target = rest.slice(eq + 1, rest.len)
+                                        ep-name = utils.slice-str(rest, 0, eq)
+                                        ep-target = utils.slice-str(rest, eq + 1, rest.len)
 
                                         {
                                             ep-type == 'console_scripts' -> {
-                                            ep-type == 'gui_scripts' -> {
-                                                script-path = bin-dir - '/' - ep-name
-                                                wfd = fs.open-write(script-path)
-                                                {
-                                                    wfd > 0 -> {
-                                                        script = ''
-                                                        script = script - '#!{venv-path}/bin/python3\n'
-                                                        script = script - '# -*- coding: utf-8 -*-\n'
-                                                        script = script - 'import sys\n'
-                                                        script = script - 'from {ep-target}\n'
-                                                        script = script - 'if __name__ == "__main__":\n'
-                                                        script = script - '    sys.exit(main())\n'
-                                                        fs.write(wfd, script, script.len)
-                                                        fs.close(wfd)
-                                                        chmod(script-path, '755')
+                                                ep-type == 'gui_scripts' -> {
+                                                    script-path = bin-dir - '/' - ep-name
+                                                    wfd = fs.open-write(script-path)
+                                                    {
+                                                        wfd > 0 -> {
+                                                            script = ''
+                                                            script = script - '#!{venv-path}/bin/python3\n'
+                                                            script = script - '# -*- coding: utf-8 -*-\n'
+                                                            script = script - 'import sys\n'
+                                                            script = script - 'from {ep-target}\n'
+                                                            script = script - 'if __name__ == "__main__":\n'
+                                                            script = script - '    sys.exit(main())\n'
+                                                            fs.write(wfd, script, script.len)
+                                                            fs.close(wfd)
+                                                            chmod(script-path, '755')
+                                                        }
                                                     }
                                                 }
                                             }
@@ -334,13 +328,13 @@ create-entry-point-scripts = (venv-path str, ep-content str) (ok bool) {
 
 build-wheel-file-record = (files str, base-dir str) (record str) {
     record = ''
-    lines = files.split('\n')
+    lines = utils.split-str(files, '\n')
     n = lines.len
     i = 0
     {
         file = lines[i]
         i = i + 1
-        file = file.trim()
+        file = utils.trim-str(file)
         {
             file.len > 0 -> {
                 full-path = base-dir - '/' - file
@@ -363,23 +357,33 @@ build-wheel-file-record = (files str, base-dir str) (record str) {
 ; get-name-version — parse a wheel filename to extract name and version
 ; ═══════════════════════════════════════════════
 
-get-name-version = (filename str) (name str, ver str) {
+get-name-version = (filename str) (result str) {
+    result = ''
     name = ''
     ver = ''
 
+    fname = filename
     {
-        filename.ends-with('.whl') -> filename = filename.slice(0, filename.len - 4)
+        utils.ends-with-str(fname, '.whl') -> fname = utils.slice-str(fname, 0, fname.len - 4)
     }
 
-    parts = filename.split('-')
+    ; manually find name and version (first two fields)
+    dash = utils.index-str(fname, '-')
     {
-        parts.len >= 2 -> {
-            name = parts[0]
-            ver = parts[1]
+        dash >= 0 -> {
+            name = utils.slice-str(fname, 0, dash)
+            rest = utils.slice-str(fname, dash + 1, fname.len)
+            dash2 = utils.index-str(rest, '-')
+            {
+                dash2 >= 0 -> ver = utils.slice-str(rest, 0, dash2)
+                -> ver = rest
+            }
         }
+        -> name = fname
     }
 
-    name = name.replace-char(95, 45)
+    name = utils.replace-char-str(name, 95, 45)
+    result = name - '|' - ver
 }
 
 ; ═══════════════════════════════════════════════
@@ -389,7 +393,7 @@ get-name-version = (filename str) (name str, ver str) {
 is-wheel = (filename str) (yes bool) {
     yes = false
     {
-        filename.ends-with('.whl') -> yes = true
+        utils.ends-with-str(filename, '.whl') -> yes = true
     }
 }
 
@@ -399,12 +403,31 @@ is-wheel = (filename str) (yes bool) {
 
 get-python-tag = (filename str) (tag str) {
     tag = ''
+    fname = filename
     {
-        filename.ends-with('.whl') -> filename = filename.slice(0, filename.len - 4)
+        utils.ends-with-str(fname, '.whl') -> fname = utils.slice-str(fname, 0, fname.len - 4)
     }
-    parts = filename.split('-')
+
+    ; find 3rd dash-delimited field (index 2, i.e. skip 2 dashes)
+    pos1 = utils.index-str(fname, '-')
     {
-        parts.len >= 5 -> tag = parts[2]
+        pos1 < 0 -> return
+    }
+    rest1 = utils.slice-str(fname, pos1 + 1, fname.len)
+    idx2 = utils.index-str(rest1, '-')
+    {
+        idx2 < 0 -> return
+    }
+    ; third field starts at idx2+1 in rest1
+    rest2 = utils.slice-str(rest1, idx2 + 1, rest1.len)
+    idx3 = utils.index-str(rest2, '-')
+    {
+        idx3 < 0 -> {
+            tag = rest2
+        }
+        -> {
+            tag = utils.slice-str(rest2, 0, idx3)
+        }
     }
 }
 
@@ -420,18 +443,18 @@ is-compatible = (filename str) (yes bool) {
     {
         py-tag == 'py3' -> yes = true
         py-tag == 'py2.py3' -> yes = true
-        py-tag.starts-with('cp3') -> yes = true
+        utils.starts-with-str(py-tag, 'cp3') -> yes = true
     }
 
     {
         yes -> {
             {
-                filename.ends-with('any.whl') -> yes = true
-                filename.ends-with('linux_x86_64.whl') -> {
-                    sys = get-platform-system()
+                utils.ends-with-str(filename, 'any.whl') -> yes = true
+                utils.ends-with-str(filename, 'linux_x86_64.whl') -> {
+                    sys = markers.get-platform-system()
                     {
                         sys == 'Linux' -> {
-                            arch = get-platform-machine()
+                            arch = markers.get-platform-machine()
                             {
                                 arch == 'x86_64' -> yes = true
                                 -> yes = false
@@ -440,11 +463,11 @@ is-compatible = (filename str) (yes bool) {
                         -> yes = false
                     }
                 }
-                filename.ends-with('macosx_x86_64.whl') -> {
-                    sys = get-platform-system()
+                utils.ends-with-str(filename, 'macosx_x86_64.whl') -> {
+                    sys = markers.get-platform-system()
                     {
                         sys == 'Darwin' -> {
-                            arch = get-platform-machine()
+                            arch = markers.get-platform-machine()
                             {
                                 arch == 'x86_64' -> yes = true
                                 -> yes = false
@@ -453,11 +476,11 @@ is-compatible = (filename str) (yes bool) {
                         -> yes = false
                     }
                 }
-                filename.ends-with('macosx_arm64.whl') -> {
-                    sys = get-platform-system()
+                utils.ends-with-str(filename, 'macosx_arm64.whl') -> {
+                    sys = markers.get-platform-system()
                     {
                         sys == 'Darwin' -> {
-                            arch = get-platform-machine()
+                            arch = markers.get-platform-machine()
                             {
                                 arch == 'arm64' -> yes = true
                                 -> yes = false
@@ -482,16 +505,16 @@ build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pk
     dist-info-path = sp-dir - '/' - dist-info-dir
 
     out = run-cmd-output('find ' - dist-info-path - ' -type f')
-    lines = out.split('\n')
+    lines = utils.split-str(out, '\n')
     nl = lines.len
     i = 0
     {
         fpath = lines[i]
         i = i + 1
-        fpath = fpath.trim()
+        fpath = utils.trim-str(fpath)
         {
             fpath.len > 0 -> {
-                rel = fpath.slice(sp-dir.len + 1, fpath.len)
+                rel = utils.slice-str(fpath, sp-dir.len + 1, fpath.len)
                 content = fs.read-file(fpath)
                 {
                     content != '' -> {
@@ -508,7 +531,7 @@ build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pk
     } (i < nl)
 
     ; also list package files
-    norm-name = pkg-name.replace-char(45, 95)
+    norm-name = utils.replace-char-str(pkg-name, 45, 95)
     pkg-dir = sp-dir - '/' - norm-name
     p2 = path{
         p: pkg-dir,
@@ -517,16 +540,16 @@ build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pk
     {
         pkg-exists -> {
             out2 = run-cmd-output('find ' - pkg-dir - ' -type f')
-            pkg-lines = out2.split('\n')
+            pkg-lines = utils.split-str(out2, '\n')
             pln = pkg-lines.len
             i = 0
             {
                 fpath = pkg-lines[i]
                 i = i + 1
-                fpath = fpath.trim()
+                fpath = utils.trim-str(fpath)
                 {
                     fpath.len > 0 -> {
-                        rel = fpath.slice(sp-dir.len + 1, fpath.len)
+                        rel = utils.slice-str(fpath, sp-dir.len + 1, fpath.len)
                         content = fs.read-file(fpath)
                         {
                             content != '' -> {
