@@ -181,8 +181,10 @@ opt: error: use of undefined value '@to-str'
 - 所有使用 `json.parse` 的测试和源文件都无法编译
 - `test-json.no`、`test-workspace.no`、`test-resolver.no`、`test-run.no`、`test-registry.no` 等
 
-**当前 workaround**:
-- 无（需要编译器修复 fallback 机制）
+**状态**: 已在当前编译器版本（`2c171f5`）中修复。IR 正确生成 `call void @f64.to-str(double* %"num-val", %str-long* ...)`。
+
+**当前残留问题**:
+- `test-json.no` 仍有运行时 segfault（非编译错误），可能与 `json.parse` 返回 `%option` 类型的内存管理有关，需另行排查。
 
 ---
 
@@ -220,8 +222,7 @@ opt: error: use of undefined value '%O-APPEND'
 - 只要编译引用了 `fs` 模块的标准库代码（如 `fs.write-str`、`fs.open-write` 等），就会触发
 - 影响所有测试文件
 
-**当前 workaround**:
-- 无（需要编译器修复平台条件编译）
+**状态**: 已在当前编译器版本（`2c171f5`）中修复。`test-utils.no`、`test-config.no`、`test-lockfile.no` 均能编译通过。
 
 ---
 
@@ -238,26 +239,53 @@ codegen error: function "parse" has 2 output params but generateCallExpression r
 opt: error: '%call.tmp' defined with type '%str-long' but expected 'i64'
 ```
 
-**触发场景**:
-- `test-semver.no` 之前全部通过，现在编译失败
+**根本原因**:
+`semver.to-string` 函数中 `s = v.major.to-str() - '.' - v.minor.to-str() - '.' - v.patch.to-str()` 使用 `-` 作为字符串拼接。当接收者是结构体字段（`v.major`，`DotExpression` 而非 `Identifier`）时，编译器的 `isStringExpr` 无法推断 `v.major.to-str()` 的返回类型为 `%str-long`，导致 `-` 运算符被误判为字节算术而非字符串拼接。
+
+具体来说，`exprResultLLVMType` 处理 `CallExpression` 的 `DotExpression` 分支时，仅处理了 `dot.Receiver` 为 `Identifier` 的情况，未处理 `dot.Receiver` 为 `DotExpression`（结构体字段）、`IndexExpression`（数组元素）等非简单标识符接收者的情况。
+
+**修复**:
+在 `src/build/llvm/expr.go` 的 `exprResultLLVMType` 函数中，为 `CallExpression` 的 `DotExpression` 分支增加了非 `Identifier` 接收者的回退逻辑：递归调用 `exprResultLLVMType(dot.Receiver)` 解析接收者类型，再通过类型前缀候选列表查找方法返回类型。
+
+**修复后状态**:
+- `test-semver.no` 编译通过，大部分测试 PASS
+- 残留问题：Test 15（numeric pre-release 比较）FAIL；`max-satisfying` 函数在 `*` 范围测试时运行时 abort trap（疑似未初始化结构体变量的堆释放问题）
+- `codegen error: function "parse" has 2 output params...` 警告为误报，不影响编译
 
 ---
 
-## 测试运行结果汇总
+## 测试运行结果汇总（编译器版本 `2c171f5`，2026-08-30）
 
-> **注意**: 编译器从 `85cf832` 升级到 `adc35d8` 后，之前能通过的测试也出现了回退（问题 13/14）。
+> **更新**: 问题 11（f64.to-str）、13（O-APPEND）已在当前编译器版本中修复。问题 14（结构体字段方法调用返回类型推断）已修复。
 
 | 测试文件 | 状态 | 通过/失败 | 备注 |
 |---------|------|----------|------|
-| test-semver.no | ❌ 编译失败 | - | 问题 14: 多值返回类型推断回退（新编译器引入） |
-| test-utils.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败（新编译器引入） |
-| test-config.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败 |
-| test-lockfile.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败 |
-| test-json.no | ❌ 编译失败 | - | 问题 11: f64.to-str() LLVM bug + 问题 13 |
-| test-workspace.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
-| test-linker.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
-| test-tarball.no | ❌ 编译失败 | - | 问题 13 |
-| test-resolver.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
-| test-run.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
-| test-publish.no | ❌ 编译失败 | - | 问题 13 |
-| test-registry.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
+| test-semver.no | ✅ 编译通过 / 部分运行失败 | 30 PASS / 2 FAIL | 问题 14 已修复；Test 15 FAIL + max-satisfying 运行时 abort（内存问题） |
+| test-utils.no | ✅ 全部通过 | PASS | 问题 13 已修复 |
+| test-config.no | ✅ 全部通过 | PASS | 问题 13 已修复 |
+| test-lockfile.no | ✅ 编译通过 | - | 问题 13 已修复 |
+| test-json.no | ❌ 运行时崩溃 | - | 问题 11 已修复（编译通过）；segfault 疑似 json.parse 返回 option 内存问题 |
+| test-workspace.no | ❌ 解析错误 | - | workspace.no 使用 `_` 占位变量语法被解析为错误（非编译器 bug） |
+| test-linker.no | ❌ LLVM 优化失败 | - | 需进一步排查 |
+| test-tarball.no | ❌ LLVM 优化失败 | - | 需进一步排查 |
+| test-resolver.no | ❌ 编译错误 | - | `starts-with`/`slice` 方法调用参数检查（疑似问题 12 类冲突） |
+| test-run.no | ❌ LLVM 优化失败 | - | 需进一步排查 |
+| test-publish.no | ❌ LLVM 优化失败 | - | 需进一步排查 |
+| test-registry.no | ❌ 编译错误 | - | `starts-with`/`slice` 方法调用参数检查（疑似问题 12 类冲突） |
+| test-installer.no | ❌ 编译错误 | - | `remove`/`starts-with`/`slice` 方法调用参数检查 |
+
+## 已修复问题汇总
+
+| 问题 | 修复方式 | 修复位置 |
+|------|---------|--------|
+| 11 (f64.to-str LLVM bug) | 编译器已在新版本中修复 | - |
+| 13 (O-APPEND 平台条件编译) | 编译器已在新版本中修复 | - |
+| 14 (结构体字段方法调用返回类型推断) | `exprResultLLVMType` 增加非 Identifier 接收者回退 | `src/build/llvm/expr.go` ~L1865 |
+
+## 待解决问题
+
+| 问题 | 严重程度 | 描述 |
+|------|---------|------|
+| 15 (新) | 中 | `max-satisfying` 函数运行时 abort trap：未初始化结构体变量 `best-v semver` 的堆释放问题 |
+| 16 (新) | 中 | `test-json.no` 运行时 segfault：`json.parse` 返回 `%option` 类型的内存管理问题 |
+| 17 (新) | 低 | `codegen error: function "parse" has 2 output params...` 警告为误报（不影响编译，但应消除噪音） |

@@ -11,6 +11,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 内含纯 Nolang Git 实现（`nogit/` 子项目），不依赖系统 `git` 二进制
 - 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 55+ 种图像操作
 - 内含纯 Nolang Python 包管理器（`nouv/` 子项目），兼容 uv/pip 接口，管理 Python 项目生命周期
+- 内含纯 Nolang Node.js 包管理器（`nonpm/` 子项目），兼容 pnpm 接口，支持虚拟存储与隔离 node_modules
 
 ## 安装
 
@@ -18,7 +19,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 直接从 [GitHub Releases](https://github.com/lizongying/notools/releases) 下载对应平台的已编译好二进制文件，无需安装编译器。
 
-四个独立工具各自构建，可按需下载：
+五个独立工具各自构建，可按需下载：
 
 | 工具 | 说明 |
 |------|------|
@@ -26,17 +27,18 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 | `nogit` | 纯 Nolang Git 实现（不依赖系统 `git`） |
 | `noimg` | 纯 Nolang 图像处理工具库（9 种格式、55+ 种操作） |
 | `nouv` | 纯 Nolang Python 包管理器（兼容 uv/pip） |
+| `nonpm` | 纯 Nolang Node.js 包管理器（兼容 pnpm） |
 
 支持的平台：
 
-| 平台 | notools | nogit | noimg | nouv |
-|------|---------|-------|-------|------|
-| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` |
+| 平台 | notools | nogit | noimg | nouv | nonpm |
+|------|---------|-------|-------|------|-------|
+| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` |
 
 ```bash
 # Linux amd64 示例 — 按需安装
@@ -55,13 +57,17 @@ chmod +x noimg && sudo mv noimg /usr/local/bin/
 # nouv
 curl -fsSL -o nouv https://github.com/lizongying/notools/releases/latest/download/nouv-linux-amd64
 chmod +x nouv && sudo mv nouv /usr/local/bin/
+
+# nonpm
+curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/latest/download/nonpm-linux-amd64
+chmod +x nonpm && sudo mv nonpm /usr/local/bin/
 ```
 
 下载后可使用同目录下的 `checksums-sha256.txt` 进行校验。
 
 ### 方式二：从源码构建
 
-四个子项目各自独立构建：
+五个子项目各自独立构建：
 
 ```bash
 # 克隆项目
@@ -83,6 +89,10 @@ cp noimg/dist/noimg /usr/local/bin/noimg
 # 构建 nouv
 cd nouv && no build && cd ..
 cp nouv/dist/nouv /usr/local/bin/nouv
+
+# 构建 nonpm
+cd nonpm && no build && cd ..
+cp nonpm/dist/nonpm /usr/local/bin/nonpm
 ```
 
 ## 工具列表
@@ -632,6 +642,63 @@ nouv run python main.py
 
 详细的命令列表、环境变量、模块架构等信息请参见 [`nouv/README.md`](nouv/README.md)。
 
+## nonpm（纯 Nolang Node.js 包管理器）
+
+notools 仓库内含一个**纯 Nolang 实现的 Node.js 包管理器**（`nonpm/` 目录），兼容 [pnpm](https://github.com/pnpm/pnpm) 接口，采用虚拟存储与符号链接实现磁盘高效的依赖管理。
+
+### 特性
+
+- **Virtual Store** — 基于内容寻址的磁盘存储，每个包版本仅存储一次
+- **Isolated `node_modules`** — 基于符号链接的结构，无幽灵依赖
+- **Semantic Versioning** — 完整 SemVer 2.0.0 范围匹配（`^`、`~`、`>=`、`<=`、`>`、`<`、`*`）
+- **Workspace Support** — 通过 `pnpm-workspace.yaml` 管理 Monorepo
+- **Lockfile** — 通过 `pnpm-lock.yaml` 实现确定性安装
+- **Script Runner** — 通过 `nonpm run` 执行 `package.json` 中的脚本
+- **Package Publishing** — 打包并发布到 npm registry
+- **Binary Links** — 自动为 CLI 工具创建 `.bin` 符号链接
+- **Peer Dependencies** — 自动安装 peer 依赖
+- **Hoisting** — 可选的 shamefully-hoist 模式用于兼容性
+
+### 主要命令
+
+| 命令 | 说明 |
+|------|------|
+| `install` | 安装 package.json 中的所有依赖 |
+| `add <pkg>` | 添加依赖（`-D` 开发依赖、`@version` 指定版本） |
+| `remove <pkg>` | 移除依赖 |
+| `run [script]` | 列出或运行 package.json 中的脚本 |
+| `update [pkg]` | 更新依赖 |
+| `list` | 列出已安装的包 |
+| `outdated` | 检查过时的包 |
+| `why <pkg>` | 查看包为何被安装 |
+| `init [path]` | 初始化新项目 |
+| `pack` | 创建 tarball |
+| `publish` | 发布到 registry |
+| `exec <cmd>` | 在 node_modules/.bin 环境中运行命令 |
+| `dlx <pkg>` | 在临时环境中运行包 |
+| `link <path>` | 链接本地包 |
+| `cache clean` | 清理缓存 |
+
+### 构建与运行
+
+```bash
+cd nonpm
+no build
+# 产物位于 nonpm/dist/nonpm
+
+# 示例：安装依赖
+cd my-project
+nonpm install
+
+# 示例：添加依赖
+nonpm add express
+
+# 示例：运行脚本
+nonpm run build
+```
+
+详细的命令列表、配置选项、模块架构等信息请参见 [`nonpm/README.md`](nonpm/README.md)。
+
 ## 用法
 
 ```bash
@@ -699,6 +766,9 @@ notools/
 ├── nouv/                # 纯 Nolang Python 包管理器（独立子项目）
 │   ├── main.no          # nouv CLI 入口与命令分发
 │   └── src/             # 依赖解析/安装/锁文件/工具管理等模块
+├── nonpm/               # 纯 Nolang Node.js 包管理器（独立子项目）
+│   ├── main.no          # nonpm CLI 入口与命令分发
+│   └── src/             # 依赖解析/安装/锁文件/发布等模块
 └── package.jsonc        # 项目配置
 ```
 
@@ -706,7 +776,7 @@ notools/
 
 ### 构建
 
-四个子项目各自独立构建：
+五个子项目各自独立构建：
 
 ```bash
 # 构建 notools
@@ -732,6 +802,12 @@ cd nouv
 no build
 cd ..
 # 产物位于 nouv/dist/nouv
+
+# 构建 nonpm
+cd nonpm
+no build
+cd ..
+# 产物位于 nonpm/dist/nonpm
 ```
 
 ### 测试

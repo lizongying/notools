@@ -3,7 +3,7 @@ name: Build
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
-#      判断 notools / nogit / noimg 哪些子项目有变更，决定是否需要构建
+#      判断 notools / nogit / noimg / nouv / nonpm 哪些子项目有变更，决定是否需要构建
 #   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
 #   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
 #   4. no build 交叉编译 6 个目标平台（按需构建）
@@ -28,6 +28,7 @@ jobs:
       needs-nogit: ${{ steps.detect.outputs.needs-nogit }}
       needs-noimg: ${{ steps.detect.outputs.needs-noimg }}
       needs-nouv: ${{ steps.detect.outputs.needs-nouv }}
+      needs-nonpm: ${{ steps.detect.outputs.needs-nonpm }}
       last-tag: ${{ steps.detect.outputs.last-tag }}
     steps:
       - name: Detect changed subprojects via GitHub API
@@ -86,6 +87,8 @@ jobs:
             echo "needs-notools=true"    >> "$GITHUB_OUTPUT"
             echo "needs-nogit=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noimg=true"      >> "$GITHUB_OUTPUT"
+            echo "needs-nouv=true"       >> "$GITHUB_OUTPUT"
+            echo "needs-nonpm=true"      >> "$GITHUB_OUTPUT"
             echo "last-tag="             >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -106,12 +109,13 @@ jobs:
           echo ""
 
           # ── 4. 判断每个子项目是否有变更 ──
-          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/
+          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/  nonpm/
           # 额外：根目录的 .github/workflows/ 或 package.jsonc 变更也触发全部构建
           NEEDS_NOTOOLS=false
           NEEDS_NOGIT=false
           NEEDS_NOIMG=false
           NEEDS_NOUV=false
+          NEEDS_NONPM=false
 
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -123,6 +127,7 @@ jobs:
                 NEEDS_NOGIT=true
                 NEEDS_NOIMG=true
                 NEEDS_NOUV=true
+                NEEDS_NONPM=true
                 echo "  [root-config] $f → triggers all"
                 continue
                 ;;
@@ -146,6 +151,10 @@ jobs:
                 NEEDS_NOUV=true
                 echo "  [nouv] $f"
                 ;;
+              nonpm/*)
+                NEEDS_NONPM=true
+                echo "  [nonpm] $f"
+                ;;
             esac
           done <<< "$CHANGED_FILES"
 
@@ -157,6 +166,7 @@ jobs:
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
           echo "  nouv:    $NEEDS_NOUV"
+          echo "  nonpm:   $NEEDS_NONPM"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
@@ -164,6 +174,7 @@ jobs:
           echo "needs-nogit=$NEEDS_NOGIT"     >> "$GITHUB_OUTPUT"
           echo "needs-noimg=$NEEDS_NOIMG"     >> "$GITHUB_OUTPUT"
           echo "needs-nouv=$NEEDS_NOUV"        >> "$GITHUB_OUTPUT"
+          echo "needs-nonpm=$NEEDS_NONPM"      >> "$GITHUB_OUTPUT"
           echo "last-tag=$LAST_TAG"           >> "$GITHUB_OUTPUT"
 
   # ── 构建 notools ──────────────────────────────────────────────────
@@ -774,10 +785,138 @@ jobs:
           path: dist/nouv-*
           if-no-files-found: warn
 
+  # ── 构建 nonpm ───────────────────────────────────────────────────
+  build-nonpm:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nonpm == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          echo "Injecting VERSION='$VER' (from tag '$TAG')"
+          sed -i "s/VERSION = '0.1.0'/VERSION = '$VER'/" nonpm/main.no
+          grep -n '^VERSION' nonpm/main.no
+
+      - name: Build nonpm for multiple platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@v0.2.30
+        with:
+          version: "0.2.30"
+          entry: nonpm/main.no
+          name: nonpm
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          cc: zig
+          fail-on-error: "true"
+
+      - name: Build report
+        if: always()
+        shell: bash
+        env:
+          BINARIES: ${{ steps.build.outputs.binaries }}
+          FAILED: ${{ steps.build.outputs.failed }}
+          NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+        run: |
+          echo "============================================"
+          echo "  nonpm Build Report"
+          echo "============================================"
+          echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo ""
+          echo "--- Built successfully ---"
+          if [ -n "$BINARIES" ]; then
+            printf '  %s\n' $BINARIES
+          else
+            echo "  (none)"
+          fi
+          echo ""
+          echo "--- Failed targets ---"
+          if [ -n "$FAILED" ]; then
+            printf '  %s\n' $FAILED
+          else
+            echo "  (none)"
+          fi
+
+      - name: Smoke test nonpm (linux/amd64)
+        run: |
+          set -e
+          BIN="dist/nonpm-linux-amd64"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::nonpm linux/amd64 binary not found — critical build failure"
+            exit 1
+          fi
+          chmod +x "$BIN"
+
+          PASS=0; FAIL=0
+
+          check() {
+            local desc="$1" actual="$2" expected="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "  PASS: $desc"
+              PASS=$((PASS+1))
+            else
+              echo "  FAIL: $desc"
+              echo "    expected: '$expected'"
+              echo "    actual:   '$actual'"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          echo "=== nonpm version ==="
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          out=$("$BIN" version)
+          check "version" "$out" "nonpm $VER"
+
+          echo "=== nonpm help ==="
+          out=$("$BIN" help | head -1)
+          check "help" "$out" "noNpm — pure Nolang implementation of pnpm"
+
+          echo "=== nonpm init ==="
+          rm -rf /tmp/nonpm-smoke-test
+          out=$("$BIN" init /tmp/nonpm-smoke-test 2>&1)
+          if [ -f /tmp/nonpm-smoke-test/package.json ]; then
+            echo "  PASS: package.json created"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: package.json missing"; FAIL=$((FAIL+1))
+          fi
+
+          echo "=== nonpm cache dir ==="
+          out=$("$BIN" cache dir 2>&1)
+          if echo "$out" | grep -q "nonpm"; then
+            echo "  PASS: cache dir returned"; PASS=$((PASS+1))
+          else
+            echo "  FAIL: cache dir unexpected: $out"; FAIL=$((FAIL+1))
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "  nonpm Smoke test: $PASS passed, $FAIL failed"
+          echo "============================================"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      - name: Upload nonpm artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nonpm-binaries
+          path: dist/nonpm-*
+          if-no-files-found: warn
+
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm]
     runs-on: ubuntu-latest
     steps:
       - name: Download notools artifacts
@@ -808,6 +947,13 @@ jobs:
           name: nouv-binaries
           path: artifacts
 
+      - name: Download nonpm artifacts
+        if: needs.detect-changes.outputs.needs-nonpm == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nonpm-binaries
+          path: artifacts
+
       - name: Generate checksums and build release notes
         id: prep
         shell: bash
@@ -816,6 +962,7 @@ jobs:
           NEEDS_NOGIT: ${{ needs.detect-changes.outputs.needs-nogit }}
           NEEDS_NOIMG: ${{ needs.detect-changes.outputs.needs-noimg }}
           NEEDS_NOUV: ${{ needs.detect-changes.outputs.needs-nouv }}
+          NEEDS_NONPM: ${{ needs.detect-changes.outputs.needs-nonpm }}
           LAST_TAG: ${{ needs.detect-changes.outputs.last-tag }}
           REPO: ${{ github.repository }}
         run: |
@@ -829,6 +976,7 @@ jobs:
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
           echo "  nouv:    $NEEDS_NOUV"
+          echo "  nonpm:   $NEEDS_NONPM"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
@@ -848,6 +996,7 @@ jobs:
           [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64) 下载。\n\n"
           [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64) 下载。\n\n"
           [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64) 下载。\n\n"
+          [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64) 下载。\n\n"
 
           # 输出到 GITHUB_ENV 供 release step 的 body 引用
           {
@@ -864,11 +1013,12 @@ jobs:
             artifacts/nogit-*
             artifacts/noimg-*
             artifacts/nouv-*
+            artifacts/nonpm-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
@@ -892,6 +1042,11 @@ jobs:
             curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nouv-linux-amd64
             chmod +x nouv
             sudo mv nouv /usr/local/bin/nouv
+
+            # nonpm (纯 Nolang Node.js 包管理器，pnpm 兼容)
+            curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nonpm-linux-amd64
+            chmod +x nonpm
+            sudo mv nonpm /usr/local/bin/nonpm
             ```
 
             ### 校验
