@@ -109,7 +109,12 @@ load-global = () (cfg config) {
             p: config-path,
         }
         p.exists() -> {
-            raw = fs.read-file(config-path)
+            result = fs.read-str(config-path)
+            result: {
+                ok -> raw = it
+                nil -> raw = ''
+                err -> raw = ''
+            }
             merge-npmrc(cfg, raw)
         }
     }
@@ -134,7 +139,12 @@ load-project = (dir str) (cfg config) {
         p: npmrc-path,
     }
     p.exists() -> {
-        raw = fs.read-file(npmrc-path)
+        result = fs.read-str(npmrc-path)
+        result: {
+            ok -> raw = it
+            nil -> raw = ''
+            err -> raw = ''
+        }
         merge-npmrc(cfg, raw)
     }
     ws-path = dir - '/pnpm-workspace.yaml'
@@ -142,8 +152,12 @@ load-project = (dir str) (cfg config) {
         p: ws-path,
     }
     wp.exists() -> {
-        ws-raw = fs.read-file(ws-path)
-        cfg.workspaces = parse-workspace-yaml(ws-raw)
+        result = fs.read-str(ws-path)
+        result: {
+            ok -> cfg.workspaces = parse-workspace-yaml(it)
+            nil -> {}
+            err -> {}
+        }
     }
 }
 
@@ -291,35 +305,23 @@ parse-workspace-yaml = (content str) (patterns str) {
 
 save-project = (dir str, cfg config) (ok bool) {
     ok = false
-    fd = fs.open-write(dir - '/.npmrc')
+    content = 'registry=' - cfg.registry - '\n'
     {
-        fd <= 0 -> return
-        -> {
-            fs.write(fd, 'registry=', 9)
-            fs.write(fd, cfg.registry, cfg.registry.len)
-            fs.write(fd, '\n', 1)
-            {
-                cfg.store-dir.len > 0 -> {
-                    fs.write(fd, 'store-dir=', 10)
-                    fs.write(fd, cfg.store-dir, cfg.store-dir.len)
-                    fs.write(fd, '\n', 1)
-                }
-            }
-            {
-                cfg.shamefully-hoist == true -> fs.write(fd, 'shamefully-hoist=true\n', 22)
-            }
-            {
-                cfg.auto-install-peers == true -> fs.write(fd, 'auto-install-peers=true\n', 24)
-            }
-            {
-                cfg.node-linker.len > 0 -> {
-                    fs.write(fd, 'node-linker=', 12)
-                    fs.write(fd, cfg.node-linker, cfg.node-linker.len)
-                    fs.write(fd, '\n', 1)
-                }
-            }
-            fs.close(fd)
-            ok = true
+        cfg.store-dir.len > 0 -> {
+            content = content - 'store-dir=' - cfg.store-dir - '\n'
         }
     }
+    {
+        cfg.shamefully-hoist == true -> content = content - 'shamefully-hoist=true\n'
+    }
+    {
+        cfg.auto-install-peers == true -> content = content - 'auto-install-peers=true\n'
+    }
+    {
+        cfg.node-linker.len > 0 -> {
+            content = content - 'node-linker=' - cfg.node-linker - '\n'
+        }
+    }
+    fs.write-str(dir - '/.npmrc', content)
+    ok = true
 }

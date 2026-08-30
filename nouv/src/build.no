@@ -92,7 +92,7 @@ build-wheel = (dir str, cfg str) (ok bool, path str) {
 create-sdist-archive = (src-dir str, name str, ver str, out-path str) (ok bool) {
     ok = false
 
-    builder = tar-builder{}
+    builder = tar.tar-builder{}
     base-name = name - '-' - ver
 
     ; add pyproject.toml
@@ -103,8 +103,7 @@ create-sdist-archive = (src-dir str, name str, ver str, out-path str) (ok bool) 
     py-exists = p.exists()
     {
         py-exists -> {
-            content = fs.read-file(pyproject-path)
-            builder.add-file(base-name - '/pyproject.toml', content)
+            builder.add-file(base-name - '/pyproject.toml', fs.read-file(pyproject-path))
         }
     }
 
@@ -116,8 +115,7 @@ create-sdist-archive = (src-dir str, name str, ver str, out-path str) (ok bool) 
     readme-exists = p2.exists()
     {
         readme-exists -> {
-            content = fs.read-file(readme-path)
-            builder.add-file(base-name - '/README.md', content)
+            builder.add-file(base-name - '/README.md', fs.read-file(readme-path))
         }
     }
 
@@ -194,7 +192,7 @@ create-wheel-archive = (src-dir str, name str, ver str, out-path str) (ok bool) 
     metadata-content = metadata-content - 'Version: ' - ver - '\n'
 
     ; write files using tar builder
-    builder = tar-builder{}
+    builder = tar.tar-builder{}
     builder.add-file(dist-info-dir - '/WHEEL', wheel-content)
     builder.add-file(dist-info-dir - '/METADATA', metadata-content)
     builder.add-file(dist-info-dir - '/RECORD', '')
@@ -211,9 +209,8 @@ create-wheel-archive = (src-dir str, name str, ver str, out-path str) (ok bool) 
                 fpath = fpath.trim()
                 {
                     fpath.len > 0 -> {
-                        content = fs.read-file(fpath)
                         rel-path = fpath.slice(src-dir.len + 5, fpath.len)
-                        builder.add-file(rel-path, content)
+                        builder.add-file(rel-path, fs.read-file(fpath))
                     }
                 }
             } (i < n)
@@ -237,7 +234,7 @@ create-wheel-archive = (src-dir str, name str, ver str, out-path str) (ok bool) 
 ; add-directory-to-tar — recursively add directory contents to tar builder
 ; ═══════════════════════════════════════════════
 
-add-directory-to-tar = (builder, dir-path str, archive-prefix str) {
+add-directory-to-tar = (builder tar.tar-builder, dir-path str, archive-prefix str) {
     out = run-cmd-output('find ' - dir-path - ' -type f')
     lines = out.split('\n')
     n2 = lines.len
@@ -248,10 +245,9 @@ add-directory-to-tar = (builder, dir-path str, archive-prefix str) {
         fpath = fpath.trim()
         {
             fpath.len > 0 -> {
-                content = fs.read-file(fpath)
                 rel = fpath.slice(dir-path.len + 1, fpath.len)
                 archive-path = archive-prefix - '/' - rel
-                builder.add-file(archive-path, content)
+                builder.add-file(archive-path, fs.read-file(fpath))
             }
         }
     } (i < n2)
@@ -300,9 +296,12 @@ publish-project = (dir str, cfg str, token str) (ok bool) {
 upload-file = (file-path str, filename str, token str) (ok bool) {
     ok = false
 
-    content = fs.read-file(file-path)
+    p = path{
+        p: file-path,
+    }
+    file-exists = p.exists()
     {
-        content == '' -> {
+        file-exists == false -> {
             print('error: could not read file {file-path}')
             return
         }
@@ -319,7 +318,8 @@ upload-file = (file-path str, filename str, token str) (ok bool) {
             body = body - 'Content-Disposition: form-data; name="content"; filename="' - filename - '"\n'
             body = body - 'Content-Type: application/octet-stream\n'
             body = body - '\n'
-            body = body - content
+            raw = fs.read-file(file-path).to-str()
+            body = body - raw
             body = body - '\n--nouv-boundary--\n'
 
             resp = http.http-do-req(req)
@@ -444,7 +444,7 @@ create-editable-wheel = (src-dir str, name str, ver str, out-path str) (ok bool)
     metadata-content = metadata-content - 'Name: ' - name - '\n'
     metadata-content = metadata-content - 'Version: ' - ver - '\n'
 
-    builder = tar-builder{}
+    builder = tar.tar-builder{}
     builder.add-file(norm-name - '.pth', pth-content)
     builder.add-file(dist-info-dir - '/WHEEL', wheel-content)
     builder.add-file(dist-info-dir - '/METADATA', metadata-content)

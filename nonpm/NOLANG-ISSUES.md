@@ -2,37 +2,23 @@
 
 在 nonpm 测试过程中遇到的 Nolang 编译器问题，供后续处理。
 
-## 问题 1: LLVM IR str-long vs vec 类型不匹配
+## 问题 1: ~~LLVM IR str-long vs vec 类型不匹配~~（已解决）
 
-**严重程度**: 高（影响大部分模块）
+**严重程度**: 无（已解决）
 
-**描述**: 
-当 `str` 类型变量（特别是长字符串 >127 字节，即 `str-long`）被传递给某些标准库函数（如 `json.stringify`, `fs.read-file` 返回值赋值给变量后再传递）时，LLVM 优化器会将 `str-long` 类型与 `vec` 类型混淆，导致编译错误。
+**描述**:
+~~当 `str` 类型变量（特别是长字符串 >127 字节，即 `str-long`）被传递给某些标准库函数时，LLVM 优化器会将 `str-long` 类型与 `vec` 类型混淆。~~
 
-**错误信息**:
-```
-error: '%var.val.NNN' defined with type '%str-long = type { i64, i64, i64 }' but expected '%vec = type { i64, i64, i64 }'
-```
+**根本原因**:
+`fs.read-file` 返回 `[]byte`（`%vec`），但代码中将其赋值给 `str` 类型变量（`%str-long`），导致类型不匹配。
 
-**触发场景**:
-1. `json.stringify(val, buf)` — 当 `buf` 是 `str` 类型（通过 `with-len` 创建）时
-2. `json.stringify-pretty(val, buf, indent)` — 同上
-3. `content = fs.read-file(path)` 然后 `content == other_str` — 字符串比较
-4. `content = fs.read-file(path)` 然后 `cfg.raw = content` — 赋值给结构体字段
-5. 字符串拼接 `content = content - '...' - var` 后传给 `utils.write-file(path, content)`
-6. 长字符串字面量赋值给变量后传给函数参数
+**解决方案**:
+- 使用 `fs.read-str(path) (?str)` 替代 `fs.read-file(path) ([]byte)` 读取文件内容为字符串
+- 将 `utils.no` 的 `read-file` 函数改为调用 `fs.read-str` 并通过 match 提取 `str`
+- 将所有源文件中的 `fs.read-file(X).to-str()` 链式调用改为两步赋值或直接使用 `fs.read-str`
 
-**当前 workaround**:
-- 避免将 `fs.read-file` 返回值存储在变量中再传递给其他函数
-- 使用 `fs.open-write` + `fs.write` 替代字符串拼接 + `utils.write-file`
-- 跳过涉及文件 I/O 的测试
-
-**受影响的源文件**:
-- `src/utils.no`: `write-json-file`, `read-json-file`
-- `src/config.no`: `load-global`, `load-project`, `save-project`
-- `src/lockfile.no`: `generate`, `check-valid`, `read-lockfile`
-- `src/json.no`: `stringify`, `stringify-pretty`, `parse-file`, `write-json`
-- `src/workspace.no`, `src/publish.no`, `src/registry.no`, `src/tarball.no` 等
+**注意**:
+虽然此问题已解决，但新编译器 `adc35d8` 引入了问题 13（`O-APPEND` 平台条件编译失败），导致所有测试仍无法通过。
 
 ---
 
@@ -217,19 +203,61 @@ Error: compilation error: function argument errors: line 358, column 19: functio
 
 ---
 
+## 问题 13: 编译器 `adc35d8` 平台条件编译回退 — `O-APPEND` 未定义
+
+**严重程度**: 高（阻塞所有引用 fs 模块的测试）
+
+**描述**:
+新编译器版本 `adc35d8`（2026-08-30）中，标准库 `fs.no` 的平台条件编译 `#{mac-arm64}` 没有正确工作，导致 `O-APPEND` 常量未定义。之前版本 `85cf832` 中此问题不存在。
+
+**错误信息**:
+```
+opt: error: use of undefined value '%O-APPEND'
+    %"O-APPEND.val" = load i64, i64* %"O-APPEND"
+```
+
+**触发场景**:
+- 只要编译引用了 `fs` 模块的标准库代码（如 `fs.write-str`、`fs.open-write` 等），就会触发
+- 影响所有测试文件
+
+**当前 workaround**:
+- 无（需要编译器修复平台条件编译）
+
+---
+
+## 问题 14: 编译器 `adc35d8` 多值返回类型推断回退
+
+**严重程度**: 高
+
+**描述**:
+新编译器版本 `adc35d8` 中，多值返回的函数调用存在类型推断回退。`semver.parse` 返回 `(ver semver-version, ok bool)`，但编译器生成 `codegen error: function "parse" has 2 output params but generateCallExpression returned void call`。之前版本 `85cf832` 中此问题不存在。
+
+**错误信息**:
+```
+codegen error: function "parse" has 2 output params but generateCallExpression returned void call (not handled as expression)
+opt: error: '%call.tmp' defined with type '%str-long' but expected 'i64'
+```
+
+**触发场景**:
+- `test-semver.no` 之前全部通过，现在编译失败
+
+---
+
 ## 测试运行结果汇总
+
+> **注意**: 编译器从 `85cf832` 升级到 `adc35d8` 后，之前能通过的测试也出现了回退（问题 13/14）。
 
 | 测试文件 | 状态 | 通过/失败 | 备注 |
 |---------|------|----------|------|
-| test-semver.no | ✅ 通过 | 全部通过 | |
-| test-utils.no | ✅ 通过 | 27/0 | 跳过文件 I/O |
-| test-config.no | ✅ 通过 | 25/0 | 修复 save-project |
-| test-lockfile.no | ⚠️ 编译通过但 0 测试执行 | 0/0 | 长字符串比较可能被 LLVM 优化掉 |
-| test-json.no | ❌ 编译失败 | - | 问题 11: f64.to-str() LLVM bug |
-| test-workspace.no | ❌ 编译失败 | - | 问题 11: 导入 pj.no 间接编译 json 模块 |
-| test-linker.no | ❌ 编译失败 | - | 问题 11: 导入 pj.no 间接编译 json 模块 |
-| test-tarball.no | ❌ 未验证 | - | 待验证 |
-| test-resolver.no | ❌ 编译失败 | - | 问题 11: 导入 pj.no 间接编译 json 模块 |
-| test-run.no | ❌ 编译失败 | - | 问题 11: 导入 pj.no 间接编译 json 模块 |
-| test-publish.no | ❌ 未验证 | - | 待验证 |
-| test-registry.no | ❌ 编译失败 | - | 问题 11: 导入 pj.no 间接编译 json 模块 |
+| test-semver.no | ❌ 编译失败 | - | 问题 14: 多值返回类型推断回退（新编译器引入） |
+| test-utils.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败（新编译器引入） |
+| test-config.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败 |
+| test-lockfile.no | ❌ 编译失败 | - | 问题 13: O-APPEND 平台条件编译失败 |
+| test-json.no | ❌ 编译失败 | - | 问题 11: f64.to-str() LLVM bug + 问题 13 |
+| test-workspace.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
+| test-linker.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
+| test-tarball.no | ❌ 编译失败 | - | 问题 13 |
+| test-resolver.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
+| test-run.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
+| test-publish.no | ❌ 编译失败 | - | 问题 13 |
+| test-registry.no | ❌ 编译失败 | - | 问题 11 + 问题 13 |
