@@ -19,6 +19,7 @@
 
 # /nouv/src/settings
 # /nouv/src/utils
+# /nouv/src/toml
 
 ; Source type constants
 SOURCE-REGISTRY = 'registry'
@@ -49,12 +50,14 @@ parse-source = (spec str) (source str, kind str, ok bool) {
     ; check for editable install
     {
         s.starts-with('-e ') -> {
+            kind = SOURCE-EDITABLE
+            source = s.slice(3, s.len).trim()
+            ok = true
+            return
+        }
         s.starts-with('--editable ') -> {
             kind = SOURCE-EDITABLE
-            {
-                s.starts-with('-e ') -> source = s.slice(3, s.len).trim()
-                -> source = s.slice(11, s.len).trim()
-            }
+            source = s.slice(11, s.len).trim()
             ok = true
             return
         }
@@ -108,6 +111,11 @@ parse-source = (spec str) (source str, kind str, ok bool) {
     ; check for direct URL (starts with http)
     {
         s.starts-with('https://') -> {
+            kind = SOURCE-URL
+            source = s
+            ok = true
+            return
+        }
         s.starts-with('http://') -> {
             kind = SOURCE-URL
             source = s
@@ -119,6 +127,11 @@ parse-source = (spec str) (source str, kind str, ok bool) {
     ; check for local path (starts with / or . or file://)
     {
         s.starts-with('/') -> {
+            kind = SOURCE-PATH
+            source = s
+            ok = true
+            return
+        }
         s.starts-with('./') || s.starts-with('../') || s.starts-with('file://') -> {
             kind = SOURCE-PATH
             {
@@ -261,11 +274,11 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
     {
         ref == '' -> {
             ; shallow clone without ref
-            code = run-cmd('git clone --depth 1 ' - repo - ' ' - dest)
+            code = utils.run-cmd('git clone --depth 1 ' - repo - ' ' - dest)
         }
         -> {
             ; clone with specific ref
-            code = run-cmd('git clone --depth 1 --branch ' - ref - ' ' - repo - ' ' - dest)
+            code = utils.run-cmd('git clone --depth 1 --branch ' - ref - ' ' - repo - ' ' - dest)
         }
     }
     {
@@ -281,9 +294,8 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
             ; if it's a full hex hash (40 chars), checkout
             {
                 ref.len == 40 -> {
-                    ref.is-hex() -> {
-                }
-                    code2 = run-cmd('git -C ' - dest - ' checkout ' - ref)
+                    ; assume it's a commit hash, try checkout
+                    code2 = utils.run-cmd('git -C ' - dest - ' checkout ' - ref)
                     {
                         code2 != 0 -> {
                             print('warning: could not checkout commit ' - ref)
@@ -295,7 +307,7 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
     }
 
     ; remove .git directory to save space
-    run-cmd('rm' - ' ' - '-rf ' - dest - '/.git')
+    utils.run-cmd('rm' - ' ' - '-rf ' - dest - '/.git')
 
     ok = true
 }
@@ -322,7 +334,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
         SOURCE-GIT -> {
             ; parse git URL
             repo, ref, subpath = parse-git-url(source)
-            cache-dir = get-cache-dir() - '/git'
+            cache-dir = settings.get-cache-dir() - '/git'
 
             ; create a hash of the repo+ref for the directory name
             dir-name = repo.replace-char(47, 95).replace-char(58, 95) - '-' - ref
@@ -354,7 +366,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
         }
         SOURCE-URL -> {
             ; download to cache
-            cache-dir = get-cache-dir() - '/urls'
+            cache-dir = settings.get-cache-dir() - '/urls'
             p = path{
                 p: cache-dir,
             }
@@ -417,6 +429,62 @@ resolve-source = (source str, kind str) (path str, ok bool) {
 }
 
 ; ═══════════════════════════════════════════════
+; extract-inline-value — extract a value from an inline table string
+; e.g. from "{ git = 'https://...', tag = 'v1.0' }" extract git value
+; ═══════════════════════════════════════════════
+
+extract-inline-value = (table str, key str) (val str) {
+    val = ''
+    search = key - ' = '
+    pos = table.index(search)
+    {
+        pos < 0 -> {
+            search = key - '='
+            pos = table.index(search)
+        }
+    }
+    {
+        pos < 0 -> return
+        -> {
+            start = pos + search.len
+            ; skip whitespace
+            {
+                start = start + 1
+            } (start < table.len && (table[start] == 32 || table[start] == 9))
+            {
+                start < table.len -> {
+                    c = table[start]
+                    {
+                        c == 34 -> {
+                            ; double-quoted
+                            rest = table.slice(start + 1, table.len)
+                            found = rest.index('"')
+                            {
+                                found >= 0 -> {
+                                    end = start + 1 + found
+                                    val = table.slice(start + 1, end)
+                                }
+                            }
+                        }
+                        c == 39 -> {
+                            ; single-quoted
+                            rest = table.slice(start + 1, table.len)
+                            found = rest.index("'")
+                            {
+                                found >= 0 -> {
+                                    end = start + 1 + found
+                                    val = table.slice(start + 1, end)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; get-source-type — get source configuration from [tool.uv.sources]
 ;
 ; In pyproject.toml:
@@ -432,10 +500,10 @@ get-source-type = (cfg str, name str) (kind str, spec str) {
 
     ; look for tool.uv.sources.<name>
     key = 'tool.uv.sources.' - name
-    val = get-value(cfg, key)
+    val = toml.get-value(cfg, key)
     val: {
-        nil -> {}
-        err -> {}
+        nil -> return
+        err -> return
         ok -> {
             v = it
             ; parse inline table: { git = "...", tag = "..." }
@@ -473,64 +541,16 @@ get-source-type = (cfg str, name str) (kind str, spec str) {
 }
 
 ; ═══════════════════════════════════════════════
-; extract-inline-value — extract a value from an inline table string
-; e.g. from "{ git = 'https://...', tag = 'v1.0' }" extract git value
-; ═══════════════════════════════════════════════
-
-extract-inline-value = (table str, key str) (val str) {
-    val = ''
-    search = key - ' = '
-    pos = table.index(search)
-    {
-        pos < 0 -> {
-            search = key - '='
-            pos = table.index(search)
-        }
-    }
-    {
-        pos < 0 -> return
-        -> {
-            start = pos + search.len
-            ; skip whitespace
-            {
-                start = start + 1
-            } (start < table.len && (table[start] == 32 || table[start] == 9))
-            {
-                start < table.len -> {
-                    c = table[start]
-                    {
-                        c == 34 -> {
-                            ; double-quoted
-                            end = table.index-from('"', start + 1)
-                            {
-                                end > start -> val = table.slice(start + 1, end)
-                            }
-                        }
-                        c == 39 -> {
-                            ; single-quoted
-                            end = table.index-from("'", start + 1)
-                            {
-                                end > start -> val = table.slice(start + 1, end)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-; ═══════════════════════════════════════════════
 ; get-git-ref — extract the ref from a parsed git source
 ; ═══════════════════════════════════════════════
 
 get-git-ref = (cfg str, name str) (ref str) {
     ref = ''
     key = 'tool.uv.sources.' - name
-    val = get-value(cfg, key)
+    val = toml.get-value(cfg, key)
     val: {
-        nil -> {}
-        err -> {}
+        nil -> return
+        err -> return
         ok -> {
             v = it
             {
