@@ -1,0 +1,84 @@
+# /nonpm/src/installer
+# /nonpm/src/utils
+# /nonpm/src/config
+
+main = () {
+    print('--- Debug installer step by step ---')
+    cfg config.config
+    cfg = config.default-config()
+    cfg.registry = 'http://localhost:99999/'
+    
+    print('step 1: resolve-pkg')
+    ver, resolve-ok = resolver.resolve-pkg(cfg, 'nonexistent-pkg', '1.0.0')
+    print('step 1 done: ver={ver} ok={resolve-ok}')
+    
+    resolve-ok == false -> {
+        print('step 2: resolve failed, returning')
+        return
+    }
+    
+    print('step 3: fetch-version')
+    vmeta = registry.fetch-version(cfg, 'nonexistent-pkg', ver)
+    print('step 3 done')
+    vmeta: {
+        ok -> {
+            print('step 4: got version metadata')
+            url, integrity, dist-ok = registry.get-dist-info(it)
+            print('step 4 done: url={url} dist-ok={dist-ok}')
+            dist-ok == false -> {
+                print('error: could not get dist info')
+                return
+            }
+            print('step 5: set up directories')
+            nm-dir = '/tmp/nonpm-test-installer-dir'
+            virtual-store = nm-dir - '/.nonpm'
+            p = path{ p: nm-dir }
+            p.make-dir()
+            vp = path{ p: virtual-store }
+            vp.make-dir()
+            
+            print('step 6: package-dir')
+            pkg-store-path = linker.package-dir(virtual-store, 'nonexistent-pkg', ver)
+            print('step 6 done: pkg-store-path={pkg-store-path}')
+            
+            print('step 7: is-dir check')
+            pkg-exists = fs.is-dir(pkg-store-path)
+            print('step 7 done: pkg-exists={pkg-exists}')
+            
+            pkg-exists == false -> {
+                print('step 8: download')
+                dl-ok = tarball.download-and-extract(url, pkg-store-path)
+                print('step 8 done: dl-ok={dl-ok}')
+                dl-ok == false -> {
+                    print('error: failed to download')
+                    return
+                }
+            }
+            
+            print('step 9: link-package')
+            linker.link-package(virtual-store, 'nonexistent-pkg', ver, nm-dir)
+            print('step 9 done')
+            
+            print('step 10: bin links')
+            bin-dir = nm-dir - '/.bin'
+            linker.create-bin-links(virtual-store, 'nonexistent-pkg', ver, bin-dir)
+            print('step 10 done')
+            
+            print('step 11: link deps')
+            deps = registry.get-deps(it)
+            print('step 11 done: deps.len={deps.len}')
+            deps.len > 0 -> {
+                linker.link-deps(virtual-store, 'nonexistent-pkg', ver, deps)
+            }
+            print('step 12: done')
+        }
+        nil -> {
+            print('step 4: version metadata nil')
+        }
+        err -> {
+            print('step 4: version metadata err')
+        }
+    }
+    print('install-pkg completed')
+}
+main()

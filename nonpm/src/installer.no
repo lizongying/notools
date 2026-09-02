@@ -280,50 +280,27 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
 ; returns ok bool — true on success
 ; ═══════════════════════════════════════════════
 
+; ═══════════════════════════════════════════════
+; remove-dep — remove a dependency from package.json and node_modules
+; cfg config — configuration
+; name str — package name
+; dir str — project root directory
+; returns ok bool — true on success
+; ═══════════════════════════════════════════════
+
 remove-dep = (cfg config, name str, dir str) (ok bool) {
     ok = false
-    ; remove from package.json
+    ; remove from package.json using sed
+    ; this avoids json pool copy issues with json.get/delete-key
     pkg-path = dir - '/package.json'
     p = path{
         p: pkg-path,
     }
     p.exists() -> {
-        result = fs.read-str(pkg-path)
-        result: {
-            ok -> content = it
-            nil -> content = ''
-            err -> content = ''
-        }
-        v = json.parse(content)
-        v: {
-            ok -> {
-                ; remove from dependencies
-                dep-obj = it.get('dependencies')
-                dep-obj: {
-                    ok -> {
-                        dep-obj.delete-key(name)
-                        v.set-key('dependencies', dep-obj)
-                    }
-                    nil -> {}
-                    err -> {}
-                }
-                ; remove from devDependencies
-                dev-obj = it.get('devDependencies')
-                dev-obj: {
-                    ok -> {
-                        dev-obj.delete-key(name)
-                        v.set-key('devDependencies', dev-obj)
-                    }
-                    nil -> {}
-                    err -> {}
-                }
-                ; write back
-                out = v.stringify()
-                utils.write-file(pkg-path, out)
-            }
-            nil -> {}
-            err -> {}
-        }
+        ; use sed to remove the dependency key from JSON
+        ; handles: "name":"value" with optional comma/whitespace
+        sed-cmd = 'sed -i "" \\"s/\\\"' - name - '\\":\\"[^,\\\"]+\\\",*//g;s/,*\\\"' - name - '\\":\\"[^,\\\"]+\\\"//g\\" ' - pkg-path
+        process.process-system(sed-cmd)
     }
 
     ; remove symlink from node_modules
