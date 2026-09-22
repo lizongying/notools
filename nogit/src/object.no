@@ -92,7 +92,7 @@ octal-to-i64 = (s str) (out i64) {
     out = 0
     i <- [0..s.len-bytes()): {
         #{overflow=wrap}
-        out = out * 8 + (s[i] - 48)
+        out = out * 8 + (s.byte(i) - 48)
     }
 }
 
@@ -125,8 +125,8 @@ name-cmp = (na str, adir bool, nb str, bdir bool) (r i64) {
     i = 0
     {
         i < len -> {
-            ca = na[i]
-            cb = nb[i]
+            ca = na.byte(i)
+            cb = nb.byte(i)
             ca < cb -> {
                 r = -1
                 return
@@ -142,9 +142,9 @@ name-cmp = (na str, adir bool, nb str, bdir bool) (r i64) {
     ca = 0
     cb = 0
     {
-        la > len -> ca = na[len]
+        la > len -> ca = na.byte(len)
 
-        lb > len -> cb = nb[len]
+        lb > len -> cb = nb.byte(len)
 
         ca == 0 && adir == true -> ca = 47
 
@@ -233,7 +233,7 @@ tree-id = (t tree, i i64) (o oid) {
     tmp oid
     k <- [0..20): {
         #{overflow=wrap}
-        tmp.id[k] = t.raw[nl + 1 + k]
+        tmp.id[k] = t.raw.byte(nl + 1 + k)
     }
     o = tmp
 }
@@ -335,7 +335,7 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
         mode-val i64 = 0
         k <- [0..ms.len()): {
             #{overflow=wrap}
-            mode-val = mode-val * 10 + (ms[k] - 48)
+            mode-val = mode-val * 10 + (ms.byte(k) - 48)
         }
 
         ; extract oid i
@@ -344,9 +344,9 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
         entry-oid oid
         k <- [0..20): {
             #{overflow=wrap}
-            c0 = hx[k * 2]
+            c0 = hx.byte(k * 2)
             #{overflow=wrap}
-            c1 = hx[k * 2 + 1]
+            c1 = hx.byte(k * 2 + 1)
             hi = util.hexdigit(c0)
             lo = util.hexdigit(c1)
             entry-oid.id[k] = (hi << 4) | lo
@@ -564,7 +564,7 @@ tree-id-raw = (raw str, i i64) (o oid) {
     tmp oid
     j <- [0..20): {
         #{overflow=wrap}
-        tmp.id[j] = raw[nl + 1 + j]
+        tmp.id[j] = raw.byte(nl + 1 + j)
     }
     o = tmp
 }
@@ -600,7 +600,7 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
         #{overflow=wrap}
         nm.len() > 0 -> {
             #{overflow=wrap}
-            nm[nm.len() - 1] == 32 -> nm = util.str-range(nm, 0, nm.len() - 1)
+            nm.byte(nm.len-bytes() - 1) == 32 -> nm = util.str-range(nm, 0, nm.len-bytes() - 1)
         }
     }
     name = nm
@@ -613,7 +613,7 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     {
         rpos < rest.len() -> {
             #{overflow=wrap}
-            rest[rpos] == 32 -> rpos = rpos + 1
+            rest.byte(rpos) == 32 -> rpos = rpos + 1
 
             -> break
         }
@@ -732,19 +732,23 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     f str = object-path(git-dir, o)
     hdr = oid.object-header(kind, data.len-bytes())
     #{overflow=wrap}
-    full str = with-len(hdr.len() + data.len-bytes())
-    i <- [0..hdr.len()): {
-        full[i] = hdr[i]
+    full str = with-len(hdr.len-bytes() + data.len-bytes())
+    i <- [0..hdr.len-bytes()): {
+        full[i] = hdr.byte(i)
     }
     i <- [0..data.len-bytes()): {
         #{overflow=wrap}
-        full[hdr.len + i] = data[i]
+        full[hdr.len-bytes() + i] = data.byte(i)
     }
     comp str = zlib.zlib-compress(full)
 
     ; Write the compressed object to file.
+    ; comp 是「位元組字串」：len() 是碼點數，len-bytes() 才是位元組數。zlib 流含
+    ; >= 0x80 的位元組時兩者不等（每個高位元組編成 2 bytes UTF-8），用 len() 會
+    ; 截斷尾端（Adler-32）產生損壞的 loose object。故先轉 []byte 再按元素數寫出。
+    comp-bytes []byte = comp.to-bytes()
     fd = fs.open-write(f)
-    fs.write(fd, comp, comp.len())
+    fs.write(fd, comp-bytes, comp-bytes.len())
     fs.close(fd)
 }
 
@@ -1213,7 +1217,7 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
         full-path = dest-dir
         dest-dir.len-bytes() > 0 -> {
             #{overflow=wrap}
-            last = dest-dir[dest-dir.len-bytes() - 1]
+            last = dest-dir.byte(dest-dir.len-bytes() - 1)
             last != 47 -> full-path = dest-dir - '/' - nm
         }
         dest-dir.len-bytes() == 0 -> full-path = nm

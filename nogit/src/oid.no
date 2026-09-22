@@ -116,12 +116,30 @@ object-header = (kind str, size i64) (out str) {
 ; narrowed back to `u32` with `& 4294967295`. `u32` addition naturally wraps
 ; mod 2^32 (same pattern gitoxide/md5.no rely on). The message bytes are still
 ; carried as a `str` byte-string because []byte is unreliable across modules.
+; rotl32: 32-bit left rotate implemented with explicit shifts.
+; The builtin rotate lowers to llvm.fshl.i64 — a 64-bit rotate. Its width is
+; chosen from the argument's MIR type, but MIR (and even HIR) flattens every
+; integer to i64, so a `u32` argument is indistinguishable from i64 and the
+; builtin degenerates to `(x << n)`, silently dropping the `x >> (32-n)`
+; wrap-around half. That makes every 32-bit hash (SHA-1 here, md5x in
+; notools) produce wrong digests.
+rotl32 = (x u32, n i64) (r u32) {
+    #{overflow=wrap}
+    r = ((x << n) | (x >> (32 - n))) & 4294967295
+}
+
 sha1-hex = (data str) (out str) {
     h0 u32 = 0x67452301
     h1 u32 = 0xefcdab89
     h2 u32 = 0x98badcfe
     h3 u32 = 0x10325476
     h4 u32 = 0xc3d2e1f0
+
+    ; MIR 會把所有整數展平成 i64，`u32` 只是「範圍提示」：算術不會自動截斷到
+    ; 32 位（`#{overflow=wrap}` 是 lint 註解，不做截斷）。故每個 32-bit 累加
+    ; 之後都要手動 & mask，否則 h0..h4 會長到 64 位、摘要全錯。
+    ; （notools/src/sha1x.no 用的是同一套寫法。）
+    mask u32 = 4294967295
 
     mlen = data.len-bytes()
     #{overflow=wrap}
@@ -138,7 +156,7 @@ sha1-hex = (data str) (out str) {
 
     msg str = with-len(plen)
     i <- [0..mlen): {
-        msg[i] = data[i]
+        msg[i] = data.byte(i)
     }
     msg[mlen] = 0x80
     i <- [0..z): {
@@ -186,10 +204,10 @@ sha1-hex = (data str) (out str) {
             #{overflow=wrap}
             w3 u32 = msg.byte(off + j * 4 + 3) & 0xff
             w[j] = w0
-            w[j] = (w[j] << 24) & 4294967295
-            t = (w1 << 16) & 4294967295
+            w[j] = (w[j] << 24) & mask
+            t = (w1 << 16) & mask
             w[j] = w[j] | t
-            t = (w2 << 8) & 4294967295
+            t = (w2 << 8) & mask
             w[j] = w[j] | t
             w[j] = w[j] | w3
         }
@@ -202,7 +220,7 @@ sha1-hex = (data str) (out str) {
             v = v ^ w[j - 14]
             #{overflow=wrap}
             v = v ^ w[j - 16]
-            w[j] = rotate-left(v, 1) & 4294967295
+            w[j] = rotl32(v, 1)
         }
         a u32 = h0
         b u32 = h1
@@ -233,7 +251,7 @@ sha1-hex = (data str) (out str) {
                 f = b ^ c ^ d
                 k = 0xca62c1d6
             }
-            ta u32 = rotate-left(a, 5) & 4294967295
+            ta u32 = rotl32(a, 5)
             #{overflow=wrap}
             temp u32 = ta + f
             #{overflow=wrap}
@@ -242,22 +260,23 @@ sha1-hex = (data str) (out str) {
             temp = temp + k
             #{overflow=wrap}
             temp = temp + w[j]
+            temp = temp & mask
             e = d
             d = c
-            c = rotate-left(b, 30) & 4294967295
+            c = rotl32(b, 30)
             b = a
             a = temp
         }
         #{overflow=wrap}
-        h0 = h0 + a
+        h0 = (h0 + a) & mask
         #{overflow=wrap}
-        h1 = h1 + b
+        h1 = (h1 + b) & mask
         #{overflow=wrap}
-        h2 = h2 + c
+        h2 = (h2 + c) & mask
         #{overflow=wrap}
-        h3 = h3 + d
+        h3 = (h3 + d) & mask
         #{overflow=wrap}
-        h4 = h4 + e
+        h4 = (h4 + e) & mask
     }
 
     ; assemble 20 raw digest bytes then hex-encode
@@ -310,7 +329,7 @@ hash-object = (kind str, data str) (o oid) {
     }
     i <- [0..data.len-bytes()): {
         #{overflow=wrap}
-        buf[hdr.len + i] = data[i]
+        buf[hdr.len-bytes() + i] = data.byte(i)
     }
     hx str = sha1-hex(buf)
     o, ok = oid-from-hex(hx)

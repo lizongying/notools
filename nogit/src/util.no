@@ -37,8 +37,24 @@ bytes-to-str = (data []byte) (out str) {
 ; s str: source byte-string
 ; start i64, end i64: half-open char range (0 <= start <= end <= s.len)
 ; returns out str: the copied substring
+; NOTE: s[a..b) 是「碼點」切片且會重新做 UTF-8 編碼，對二進位 byte-string 會
+; 損壞內容與長度。本函式是 byte-string 專用，故逐 byte 以 .byte() 取出後寫入
+; 新字串（索引「寫入」本來就是 byte 位移，與 .byte() 讀取一致）。
 str-range = (s str, start i64, end i64) (out str) {
-    out = s[start..end)
+    lb = s.len-bytes()
+    a = start
+    a < 0 -> a = 0
+    a > lb -> a = lb
+    e = end
+    e > lb -> e = lb
+    #{overflow=wrap}
+    n = e - a
+    n < 0 -> n = 0
+    out str = with-len(n)
+    i <- [0..n): {
+        #{overflow=wrap}
+        out[i] = s.byte(a + i)
+    }
 }
 
 ; mkdir-all: recursively create a directory (like mkdir -p)
@@ -150,7 +166,7 @@ find-byte = (data []byte, b byte, from i64) (pos i64) {
 find-byte-str = (s str, b byte, from i64) (pos i64) {
     pos = -1
     i <- [from..s.len-bytes()): {
-        s[i] == b -> {
+        s.byte(i) == b -> {
             pos = i
             break
         }
@@ -167,7 +183,7 @@ trim-newline = (s str) (out str) {
     {
         #{overflow=wrap}
         L > 0 -> {
-            out[L - 1] == 10 -> {
+            out.byte(L - 1) == 10 -> {
                 #{overflow=wrap}
                 L = L - 1
                 out = str-range(out, 0, L)
@@ -276,7 +292,7 @@ str-eq = (a str, b str) (yes bool) {
     i = 0
     {
         i >= a.len-bytes() -> break
-        a[i] != b[i] -> {
+        a.byte(i) != b.byte(i) -> {
             yes = false
             return
         }
