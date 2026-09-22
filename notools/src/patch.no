@@ -15,21 +15,23 @@ patch-cmd = () {
     i <- [2..argc): {
         a = arg(i)
         a == '-i' -> {
+            #{overflow=wrap}
             i = i + 1
             i < argc -> patch-file = arg(i)
         }
         a == '-p' -> {
+            #{overflow=wrap}
             i = i + 1
             i < argc -> strip = patch-parse-int(arg(i))
         }
         ! a.starts-with('-') -> {
-            target-file.len == 0 -> target-file = a
+            target-file.len-bytes() == 0 -> target-file = a
         }
     }
 
     ; 從 stdin 讀取補丁
     {
-        patch-file.len == 0 -> {
+        patch-file.len-bytes() == 0 -> {
             patch-content = ''
             r = fs.read-stdin-str()
             r: {
@@ -57,10 +59,12 @@ patch-cmd = () {
     ; 按 @@ 分割 hunk
     hunks []str
     hunk-start = -1
-    i <- [0..patch-content.len): {
+    i <- [0..patch-content.len-bytes()): {
 
         ; 檢查 "@@" 開頭
-        i + 1 < patch-content.len -> {
+        #{overflow=wrap}
+        i + 1 < patch-content.len-bytes() -> {
+            #{overflow=wrap}
             patch-content[i] == 64 && patch-content[i + 1] == 64 -> {
 
                 ; 找到 @@ 開頭
@@ -70,49 +74,54 @@ patch-cmd = () {
                 ; 往前找行首
                 line-start = i
                 line-start > 0 -> {
+                    #{overflow=wrap}
                     line-start = line-start - 1
+                    #{overflow=wrap}
                     patch-content[line-start] == 10 -> line-start = line-start + 1
                 }
                 hunk-start = line-start
             }
         }
     }
-    hunk-start >= 0 -> hunks.push(patch-content.slice(hunk-start, patch-content.len))
+    hunk-start >= 0 -> hunks.push(patch-content.slice(hunk-start, patch-content.len-bytes()))
 
     ; 解析 --- /+++ 行確定目標檔案
     patch-file-name = ''
     first-newline = patch-content.index(10)
-    first-newline < 0 -> first-newline = patch-content.len
+    first-newline < 0 -> first-newline = patch-content.len-bytes()
     header = patch-content.slice(0, first-newline)
     pos = patch-content.index('+++ ')
     {
         pos >= 0 -> {
             plus-end = patch-content.index-from(10, pos)
-            plus-end < 0 -> plus-end = patch-content.len
+            plus-end < 0 -> plus-end = patch-content.len-bytes()
+            #{overflow=wrap}
             patch-file-name = patch-content.slice(pos + 4, plus-end)
             ; 去除前綴
             s = 0
             j <- [0..strip): {
                 sp = patch-file-name.index-from('/', s)
                 sp < 0 -> *
+                #{overflow=wrap}
                 s = sp + 1
             }
-            strip > 0 -> patch-file-name = patch-file-name.slice(s, patch-file-name.len)
+            strip > 0 -> patch-file-name = patch-file-name.slice(s, patch-file-name.len-bytes())
         }
     }
 
     ; 確定目標檔案
     actual-target = target-file
     {
-        actual-target.len == 0 -> actual-target = patch-file-name
+        actual-target.len-bytes() == 0 -> actual-target = patch-file-name
 
-        actual-target.len == 0 -> {
+        actual-target.len-bytes() == 0 -> {
             eprint('patch: no target file specified')
             os.exit(1)
         }
 
         ; 讀取目標檔案
         fs.is-file(actual-target) == false -> {
+            #{overflow=wrap}
             eprint('patch: ' - actual-target - ': No such file')
             os.exit(1)
         }
@@ -131,30 +140,36 @@ patch-cmd = () {
     ; 按行分割
     orig-lines []str
     start = 0
-    i <- [0..orig-content.len): {
+    i <- [0..orig-content.len-bytes()): {
         orig-content[i] == 10 -> {
             orig-lines.push(orig-content.slice(start, i))
+            #{overflow=wrap}
             start = i + 1
         }
     }
-    start < orig-content.len -> orig-lines.push(orig-content.slice(start, orig-content.len))
+    start < orig-content.len-bytes() -> orig-lines.push(orig-content.slice(start, orig-content.len-bytes()))
 
     ; 逐 hunk 應用
-    out-lines []str = with-cap(orig-lines.len)
+    out-lines []str = with-cap(orig-lines.len())
     orig-idx = 0
 
-    hi <- [0..hunks.len): {
+    hi <- [0..hunks.len()): {
+        #{index-out=0}
         hunk = hunks[hi]
         ; 解析 @@ -old_start,old_count +new_start,new_count @@
         at-pos = hunk.index('@@')
         at-pos >= 0 -> {
+            #{overflow=wrap}
             second-at = hunk.index-from('@@', at-pos + 2)
             second-at >= 0 -> {
+                #{overflow=wrap}
                 header-line = hunk.slice(at-pos, second-at + 2)
                 ; 解析 -old_start
                 minus-pos = header-line.index('-')
                 minus-pos >= 0 -> {
-                    old-start = patch-parse-int(header-line.slice(minus-pos + 1, header-line.len))
+                    #{overflow=wrap}
+                    old-start = patch-parse-int(header-line.slice(minus-pos + 1, header-line.len()))
+                    #{overflow=wrap}
                     old-start > 0 -> old-start = old-start - 1
 
                     ; 複製未變更行到 old-start
@@ -166,37 +181,41 @@ patch-cmd = () {
                     }
 
                     ; 處理 hunk body（在 second-at 之後）
-                    body = hunk.slice(second-at + 2, hunk.len)
+                    #{overflow=wrap}
+                    body = hunk.slice(second-at + 2, hunk.len())
                     body-lines []str
                     bs = 0
-                    i <- [0..body.len): {
+                    i <- [0..body.len()): {
                         body[i] == 10 -> {
                             body-lines.push(body.slice(bs, i))
+                            #{overflow=wrap}
                             bs = i + 1
                         }
                     }
-                    bs < body.len -> body-lines.push(body.slice(bs, body.len))
+                    bs < body.len() -> body-lines.push(body.slice(bs, body.len()))
 
                     ; 跳過空行
-                    bi <- [0..body-lines.len): {
+                    bi <- [0..body-lines.len()): {
                         line = body-lines[bi]
-                        line.len == 0 -> *
+                        line.len() == 0 -> *
                         c = line[0]
                         c == 32 -> {
 
                             ; 上下文行：複製並前進
                             out-lines.push(orig-lines[orig-idx])
+                            #{overflow=wrap}
                             orig-idx = orig-idx + 1
                         }
                         c == 45 -> {
 
                             ; 刪除行：跳過
+                            #{overflow=wrap}
                             orig-idx = orig-idx + 1
                         }
                         c == 43 -> {
 
                             ; 新增行：加入
-                            out-lines.push(line.slice(1, line.len))
+                            out-lines.push(line.slice(1, line.len()))
                         }
                     }
                 }
@@ -206,8 +225,8 @@ patch-cmd = () {
 
     ; 複製剩餘行
     {
-        orig-idx < orig-lines.len -> {
-            j <- [orig-idx..orig-lines.len): {
+        orig-idx < orig-lines.len() -> {
+            j <- [orig-idx..orig-lines.len()): {
                 out-lines.push(orig-lines[j])
             }
         }
@@ -215,20 +234,23 @@ patch-cmd = () {
 
     ; 組裝結果
     result = ''
-    j <- [0..out-lines.len): {
+    j <- [0..out-lines.len()): {
+        #{overflow=wrap}
         result = result - out-lines[j] - '\n'
     }
 
     fd = fs.open-write(actual-target)
-    fs.write(fd, result, result.len)
+    fs.write(fd, result, result.len-bytes())
     fs.close(fd)
+    #{overflow=wrap}
     print('patching file ' - actual-target)
 }
 
 patch-parse-int = (s str) (v i64) {
     v = 0
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
         c == 44 -> return
         c == 32 -> return

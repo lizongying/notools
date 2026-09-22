@@ -34,7 +34,7 @@
 ; returns img ?image: loaded image, nil on error
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len < 8 -> {
+    data.len() < 8 -> {
         img = nil
         return
     }
@@ -65,7 +65,8 @@ load = (path str) (img ?image) {
 
     ; Read IFD offset
     ifd-offset = tiff-read-u32(data, 4, little-endian)
-    ifd-offset + 2 > data.len -> {
+    #{overflow=wrap}
+    ifd-offset + 2 > data.len() -> {
         img = nil
         return
     }
@@ -85,10 +86,14 @@ load = (path str) (img ?image) {
     rows-per-strip = 0
     planar = 1
     i <- [0..num-entries): {
+        #{overflow=wrap}
         entry-pos = ifd-offset + 2 + i * 12
         tag = tiff-read-u16(data, entry-pos, little-endian)
+        #{overflow=wrap}
         type = tiff-read-u16(data, entry-pos + 2, little-endian)
+        #{overflow=wrap}
         count = tiff-read-u32(data, entry-pos + 4, little-endian)
+        #{overflow=wrap}
         val = tiff-read-u32(data, entry-pos + 8, little-endian)
         {
             tag == 256 -> w = val
@@ -135,18 +140,21 @@ img = nil
     {
         bands > 4 -> bands = 4
     }
+    #{overflow=wrap}
     n = w * h * bands
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, bands, _d)
 
     ; Copy pixel data from strip
+    #{overflow=wrap}
     {
-        strip-offset + n <= data.len -> {
+        strip-offset + n <= data.len() -> {
 
             ; TIFF stores RGB, we store RGB
             {
                 bands == samples-per-pixel -> {
                     i <- [0..n): {
+                        #{overflow=wrap}
                         tmp.data[i] = data[strip-offset + i] & 255
                     }
                 }
@@ -154,9 +162,11 @@ img = nil
                 -> {
 
                     ; Need to truncate channels
+                    #{overflow=wrap}
                     npix = w * h
                     i <- [0..npix): {
                         b <- [0..bands): {
+                            #{overflow=wrap}
                             tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b] & 255
                         }
                     }
@@ -225,6 +235,7 @@ save = (path str, img image) (ok bool) {
     }
 
     ; Build pixel data (ensure RGB for bands>=3)
+    #{overflow=wrap}
     pixel-data []byte = with-len(w * h * bands)
     {
         img.bands == bands -> {
@@ -234,33 +245,45 @@ save = (path str, img image) (ok bool) {
         }
 
         -> {
+            #{overflow=wrap}
             npix = w * h
             i <- [0..npix): {
                 {
                     bands == 1 -> {
                         img.bands >= 3 -> {
+                            #{overflow=wrap}
                             r = img.data[i * img.bands]
+                            #{overflow=wrap}
                             g = img.data[i * img.bands + 1]
+                            #{overflow=wrap}
                             b = img.data[i * img.bands + 2]
+                            #{overflow=wrap}
                             pixel-data[i] = (r * 299 + g * 587 + b * 114) / 1000
                         }
 
                         -> {
+                            #{overflow=wrap}
                             pixel-data[i] = img.data[i * img.bands]
                         }
                     }
 
                     bands == 3 -> {
                         img.bands >= 3 -> {
+                            #{overflow=wrap}
                             pixel-data[i * 3] = img.data[i * img.bands]
+                            #{overflow=wrap}
                             pixel-data[i * 3 + 1] = img.data[i * img.bands + 1]
+                            #{overflow=wrap}
                             pixel-data[i * 3 + 2] = img.data[i * img.bands + 2]
                         }
 
                         img.bands == 1 -> {
                             v = img.data[i]
+                            #{overflow=wrap}
                             pixel-data[i * 3] = v
+                            #{overflow=wrap}
                             pixel-data[i * 3 + 1] = v
+                            #{overflow=wrap}
                             pixel-data[i * 3 + 2] = v
                         }
                     }
@@ -269,10 +292,12 @@ save = (path str, img image) (ok bool) {
                         b <- [0..4): {
                             {
                                 b < img.bands -> {
+                                    #{overflow=wrap}
                                     pixel-data[i * 4 + b] = img.data[i * img.bands + b]
                                 }
 
                                 -> {
+                                    #{overflow=wrap}
                                     pixel-data[i * 4 + b] = 255
                                 }
                             }
@@ -288,10 +313,12 @@ save = (path str, img image) (ok bool) {
     ; IFD: 2 + 10*12 + 4 = 126 bytes
     num-tags = 10
     ifd-offset = 8
+    #{overflow=wrap}
     pixel-offset = 8 + 2 + num-tags * 12 + 4
 
     ; Write header
-    buf []byte = with-cap(pixel-offset + pixel-data.len)
+    #{overflow=wrap}
+    buf []byte = with-cap(pixel-offset + pixel-data.len())
 
     ; Byte order: little-endian (II)
     buf.push(73)
@@ -337,7 +364,7 @@ save = (path str, img image) (ok bool) {
     tiff-write-entry(buf, 278, 3, 1, h)
 
     ; Tag 279: StripByteCounts
-    tiff-write-entry(buf, 279, 4, 1, pixel-data.len)
+    tiff-write-entry(buf, 279, 4, 1, pixel-data.len())
 
     ; Tag 284: PlanarConfiguration (1 = chunky)
     tiff-write-entry(buf, 284, 3, 1, 1)
@@ -349,7 +376,7 @@ save = (path str, img image) (ok bool) {
     buf.push(0)
 
     ; Pixel data
-    i <- [0..pixel-data.len): {
+    i <- [0..pixel-data.len()): {
         buf.push(pixel-data[i])
     }
 
@@ -359,7 +386,7 @@ save = (path str, img image) (ok bool) {
         ok = false
         return
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }

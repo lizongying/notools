@@ -52,15 +52,17 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     ; if there's a ~ or ^ suffix, resolve the base ref and walk back N steps
     split-pos > 0 -> {
         base-ref = util.str-range(ref, 0, split-pos)
-        suffix = util.str-range(ref, split-pos + 1, ref.len)
+        #{overflow=wrap}
+        suffix = util.str-range(ref, split-pos + 1, ref.len-bytes())
         base-oid, base-ok = resolve-ref(git-dir, base-ref)
         base-ok == false -> return
 
         ; parse N (default 1)
         n i64 = 1
-        suffix.len > 0 -> {
+        suffix.len() > 0 -> {
             n = 0
-            si <- [0..suffix.len): {
+            si <- [0..suffix.len()): {
+                #{overflow=wrap}
                 n = n * 10 + (suffix[si] - 48)
             }
             n == 0 -> n = 1
@@ -73,7 +75,7 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
             np i64
             ph, np, walk-ok = commit-parents(git-dir, cur)
             walk-ok == false -> return
-            ph.len >= 40 -> {
+            ph.len() >= 40 -> {
                 first-hex = util.str-range(ph, 0, 40)
                 cur, walk-ok = oid.oid-from-hex(first-hex)
                 walk-ok == false -> return
@@ -108,7 +110,7 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
     {
         ok == true -> return
 
-        ref.len == 40 -> {
+        ref.len-bytes() == 40 -> {
 
             ; try as 40-char hex oid (must be exactly 40 chars)
 
@@ -134,7 +136,7 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
         read-ok == false -> return
 
         ; parse "tree <hex>\n" — "tree " is 5 bytes, then 40-char hex
-        d.len < 46 -> return
+        d.len() < 46 -> return
     }
     ; extract the 40-char hex after "tree "
     hx = util.str-range(d, 5, 45)
@@ -155,23 +157,25 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
     nparents = 0
     pos = 0
     {
-        pos >= data.len -> break
+        pos >= data.len() -> break
         nl = util.find-byte-str(data, 10, pos)
-        end = data.len
+        end = data.len()
         nl >= 0 -> end = nl
         line = util.str-range(data, pos, end)
         line.starts-with('parent ') -> {
-            hx = util.str-range(line, 7, line.len)
+            hx = util.str-range(line, 7, line.len())
             parent-hex = parent-hex - hx
+            #{overflow=wrap}
             nparents = nparents + 1
         }
 
         ; stop at blank line (message starts)
-        line.len == 0 -> break
+        line.len() == 0 -> break
 
         ; stop at author/committer lines
         line.starts-with('author ') -> break
         line.starts-with('committer ') -> break
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     } (true)
@@ -185,7 +189,8 @@ commit-parents = (git-dir str, commit-oid oid) (parent-hex str, nparents i64, ok
 ;   c-name str, c-email str, c-time i64, c-tz str, message str, ok bool
 commit-info-full = (git-dir str, commit-oid oid) (tree-oid oid, parent-hex str, nparents i64, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
     tree-oid, parent-hex, a-name, a-email, a-time, a-tz, c-name, c-email, c-time, c-tz, message, ok = object.read-commit-full(git-dir, commit-oid)
-    nparents = parent-hex.len / 40
+    #{overflow=wrap}
+    nparents = parent-hex.len() / 40
 }
 
 ; ═══════════════════════════════════════════════
@@ -208,12 +213,15 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
         t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
         cok == false -> break
         ch = oid.oid-hex-str(cur)
+        #{overflow=wrap}
         commit-hex = commit-hex - ch - '\n'
+        #{overflow=wrap}
         count = count + 1
-        np i64 = ph.len / 40
+        #{overflow=wrap}
+        np i64 = ph.len() / 40
         np == 0 -> break
         {
-            ph.len >= 40 -> {
+            ph.len() >= 40 -> {
                 first-parent-hex = util.str-range(ph, 0, 40)
                 cur, cok = oid.oid-from-hex(first-parent-hex)
                 cok == false -> break
@@ -257,20 +265,23 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
 
         ; dequeue first element
         cur-hex = util.str-range(queue-hex, 0, 40)
-        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len())
+        #{overflow=wrap}
         queue-n = queue-n - 1
 
         ; check if already visited
         is-visited = false
         vpos = 0
         {
-            vpos >= visited-hex.len -> break
+            vpos >= visited-hex.len-bytes() -> break
+            #{overflow=wrap}
             vh = util.str-range(visited-hex, vpos, vpos + 40)
             same = util.str-eq(vh, cur-hex)
             same == true -> {
                 is-visited = true
                 break
             }
+            #{overflow=wrap}
             vpos = vpos + 40
         } (true)
 
@@ -284,19 +295,28 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
                 ; read commit
                 t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
                 cok == true -> {
+                    #{overflow=wrap}
                     output = output - 'commit ' - cur-hex - '\n'
+                    #{overflow=wrap}
                     output = output - 'Author: ' - an - ' <' - ae - '>\n'
+                    #{overflow=wrap}
                     output = output - 'Date:   ' - util.i64-to-str(at) - ' ' - az - '\n'
                     output = output - '\n'
+                    #{overflow=wrap}
                     output = output - '    ' - msg - '\n'
                     output = output - '\n'
+                    #{overflow=wrap}
                     count = count + 1
 
                     ; enqueue all parents (not just first-parent)
-                    np i64 = ph.len / 40
+                    #{overflow=wrap}
+                    np i64 = ph.len() / 40
                     i <- [0..np): {
+                        #{overflow=wrap}
                         parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        #{overflow=wrap}
                         queue-hex = queue-hex - parent-hex
+                        #{overflow=wrap}
                         queue-n = queue-n + 1
                     }
                 }
@@ -336,20 +356,23 @@ revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, 
 
         ; dequeue first element
         cur-hex = util.str-range(queue-hex, 0, 40)
-        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len())
+        #{overflow=wrap}
         queue-n = queue-n - 1
 
         ; check if already visited
         is-visited = false
         vpos = 0
         {
-            vpos >= visited-hex.len -> break
+            vpos >= visited-hex.len-bytes() -> break
+            #{overflow=wrap}
             vh = util.str-range(visited-hex, vpos, vpos + 40)
             same = util.str-eq(vh, cur-hex)
             same == true -> {
                 is-visited = true
                 break
             }
+            #{overflow=wrap}
             vpos = vpos + 40
         } (true)
 
@@ -367,17 +390,23 @@ revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, 
                     short-hex = util.str-range(cur-hex, 0, 7)
                     ; first line of message
                     msg-nl = util.find-byte-str(msg, 10, 0)
-                    msg-end = msg.len
+                    msg-end = msg.len()
                     msg-nl >= 0 -> msg-end = msg-nl
                     msg-line = util.str-range(msg, 0, msg-end)
+                    #{overflow=wrap}
                     output = output - short-hex - ' ' - msg-line - '\n'
+                    #{overflow=wrap}
                     count = count + 1
 
                     ; enqueue all parents
-                    np i64 = ph.len / 40
+                    #{overflow=wrap}
+                    np i64 = ph.len() / 40
                     i <- [0..np): {
+                        #{overflow=wrap}
                         parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        #{overflow=wrap}
                         queue-hex = queue-hex - parent-hex
+                        #{overflow=wrap}
                         queue-n = queue-n + 1
                     }
                 }
@@ -408,7 +437,8 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
 
         ; dequeue first
         cur-hex = util.str-range(queue-hex, 0, 40)
-        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len())
+        #{overflow=wrap}
         queue-n = queue-n - 1
 
         ; parse oid
@@ -419,13 +449,15 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
         is-visited = false
         vpos = 0
         {
-            vpos >= visited-hex.len -> break
+            vpos >= visited-hex.len-bytes() -> break
+            #{overflow=wrap}
             vh = util.str-range(visited-hex, vpos, vpos + 40)
             same = util.str-eq(vh, cur-hex)
             same == true -> {
                 is-visited = true
                 break
             }
+            #{overflow=wrap}
             vpos = vpos + 40
         } (true)
         {
@@ -439,14 +471,20 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
                 ; read commit
                 t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
                 cok == true -> {
+                    #{overflow=wrap}
                     commit-hex = commit-hex - cur-hex - '\n'
+                    #{overflow=wrap}
                     count = count + 1
 
                     ; enqueue parents
-                    np i64 = ph.len / 40
+                    #{overflow=wrap}
+                    np i64 = ph.len() / 40
                     i <- [0..np): {
+                        #{overflow=wrap}
                         parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                        #{overflow=wrap}
                         queue-hex = queue-hex - parent-hex
+                        #{overflow=wrap}
                         queue-n = queue-n + 1
                     }
                 }
@@ -474,7 +512,8 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
     {
         queue-n == 0 -> break
         cur-hex = util.str-range(queue-hex, 0, 40)
-        queue-hex = util.str-range(queue-hex, 40, queue-hex.len)
+        queue-hex = util.str-range(queue-hex, 40, queue-hex.len())
+        #{overflow=wrap}
         queue-n = queue-n - 1
 
         ; check if this is the ancestor
@@ -488,13 +527,15 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
         is-visited = false
         vpos = 0
         {
-            vpos >= visited-hex.len -> break
+            vpos >= visited-hex.len-bytes() -> break
+            #{overflow=wrap}
             vh = util.str-range(visited-hex, vpos, vpos + 40)
             vsame = util.str-eq(vh, cur-hex)
             vsame == true -> {
                 is-visited = true
                 break
             }
+            #{overflow=wrap}
             vpos = vpos + 40
         } (true)
         {
@@ -506,10 +547,14 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
                 cur-ok == true -> {
                     t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
                     cok == true -> {
-                        np i64 = ph.len / 40
+                        #{overflow=wrap}
+                        np i64 = ph.len() / 40
                         i <- [0..np): {
+                            #{overflow=wrap}
                             parent-hex = util.str-range(ph, i * 40, i * 40 + 40)
+                            #{overflow=wrap}
                             queue-hex = queue-hex - parent-hex
+                            #{overflow=wrap}
                             queue-n = queue-n + 1
                         }
                     }

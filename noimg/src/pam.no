@@ -33,7 +33,7 @@
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len < 15 -> {
+    data.len() < 15 -> {
         img = nil
         return
     }
@@ -54,11 +54,11 @@ load = (path str) (img ?image) {
     pos = 3
 
     ; Parse header fields
-    for pos < data.len {
+    for pos < data.len() {
         line, pos = pam-read-line(data, pos)
         {
             line.starts-with('WIDTH') -> {
-                r = line.slice(6, line.len).to-i64()
+                r = line.slice(6, line.len()).to-i64()
                 r: {
                     ok -> w = it
                     -> w = 0
@@ -66,7 +66,7 @@ load = (path str) (img ?image) {
             }
 
             line.starts-with('HEIGHT') -> {
-                r = line.slice(7, line.len).to-i64()
+                r = line.slice(7, line.len()).to-i64()
                 r: {
                     ok -> h = it
                     -> h = 0
@@ -74,7 +74,7 @@ load = (path str) (img ?image) {
             }
 
             line.starts-with('DEPTH') -> {
-                r = line.slice(6, line.len).to-i64()
+                r = line.slice(6, line.len()).to-i64()
                 r: {
                     ok -> depth = it
                     -> depth = 0
@@ -82,7 +82,7 @@ load = (path str) (img ?image) {
             }
 
             line.starts-with('MAXVAL') -> {
-                r = line.slice(7, line.len).to-i64()
+                r = line.slice(7, line.len()).to-i64()
                 r: {
                     ok -> maxval = it
                     -> maxval = 0
@@ -101,6 +101,7 @@ img = nil
             return
         }
     }
+    #{overflow=wrap}
     n = w * h * depth
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, depth, _d)
@@ -109,6 +110,7 @@ img = nil
 
             ; 8-bit per sample
             i <- [0..n): {
+                #{overflow=wrap}
                 tmp.data[i] = data[pos + i] & 255
             }
         }
@@ -117,6 +119,7 @@ img = nil
 
             ; 16-bit per sample, take MSB (truncate to 8-bit)
             i <- [0..n): {
+                #{overflow=wrap}
                 tmp.data[i] = data[pos + i * 2] & 255
             }
         }
@@ -132,9 +135,10 @@ img = nil
 pam-read-line = (data str, pos i64) (line str, new-pos i64) {
     new-pos = pos
     end = new-pos
-    for end < data.len {
+    for end < data.len-bytes() {
         c = data[end] & 255
         c == 10 || c == 13 -> break
+        #{overflow=wrap}
         end = end + 1
     }
     line = data.slice(new-pos, end)
@@ -142,14 +146,16 @@ pam-read-line = (data str, pos i64) (line str, new-pos i64) {
     ; Skip line ending
     new-pos = end
     {
-        new-pos < data.len -> {
+        new-pos < data.len-bytes() -> {
             c = data[new-pos] & 255
+            #{overflow=wrap}
             c == 13 -> new-pos = new-pos + 1
         }
     }
     {
-        new-pos < data.len -> {
+        new-pos < data.len-bytes() -> {
             c = data[new-pos] & 255
+            #{overflow=wrap}
             c == 10 -> new-pos = new-pos + 1
         }
     }
@@ -176,15 +182,18 @@ save = (path str, img image) (ok bool) {
     }
 
     ; Build header
+    #{overflow=wrap}
     hdr = 'P7\n' - 'WIDTH ' - img.width.to-str() - '\n' - 'HEIGHT ' - img.height.to-str() - '\n' - 'DEPTH ' - img.bands.to-str() - '\n' - 'MAXVAL 255\n' - 'TUPLTYPE ' - tupl - '\n' - 'ENDHDR\n'
 
     ; Build complete output buffer using []byte + push
+    #{overflow=wrap}
     n = img.width * img.height * img.bands
     hdr-bytes = hdr.to-bytes()
-    buf []byte = with-cap(hdr-bytes.len + n)
+    #{overflow=wrap}
+    buf []byte = with-cap(hdr-bytes.len() + n)
 
     ; Write header bytes
-    i <- [0..hdr-bytes.len): {
+    i <- [0..hdr-bytes.len()): {
         buf.push(hdr-bytes[i])
     }
 
@@ -199,7 +208,7 @@ save = (path str, img image) (ok bool) {
         ok = false
         return
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }

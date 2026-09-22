@@ -9,8 +9,9 @@
 ; atoi: parse a non-negative integer
 atoi = (s str) (v i64) {
     v = 0
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
 }
@@ -32,8 +33,10 @@ shred = () {
             -> {
                 a = arg(i)
                 {
+                    #{overflow=wrap}
                     a == '-n' -> {
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             n-passes = atoi(arg(i + 1))
                             skip-next = true
                         }
@@ -44,7 +47,7 @@ shred = () {
                     a == '-z' -> zero = true
 
                     a.starts-with('-n') -> {
-                        a.len > 2 -> n-passes = atoi(a.slice(2, a.len))
+                        a.len-bytes() > 2 -> n-passes = atoi(a.slice(2, a.len-bytes()))
                     }
 
                     ! a.starts-with('-') -> files.push(a)
@@ -54,7 +57,7 @@ shred = () {
     }
 
     {
-        files.len == 0 -> {
+        files.len() == 0 -> {
             eprint('shred: missing file operand')
             os.exit(1)
         }
@@ -64,13 +67,16 @@ shred = () {
     state = os.get-pid() ^ os.now-ns()
     state = state | 1
 
-    fi <- [0..files.len): {
+    fi <- [0..files.len()): {
+        #{index-out=0}
         f = files[fi]
         fs.is-file(f) == false -> {
+            #{overflow=wrap}
             eprint('shred: ' - f - ': No such file or directory')
             continue
         }
-        size = fs.stat-size(f)
+        size, sok = os.stat-size(f)
+        sok == false -> continue
         size == 0 -> {
             remove == true -> fs.remove(f)
             continue
@@ -81,6 +87,7 @@ shred = () {
             buf = ' '.repeat(size)
             s = state
             j <- [0..size): {
+                #{overflow=wrap}
                 s = s * 1103515245 + 12345
                 buf[j] = (s >> 16) & 255
             }

@@ -25,7 +25,7 @@ adler32 = (data str) (sum i64) {
     mod i64 = 65521
     a = 1
     b = 0
-    i <- [0..data.len): {
+    i <- [0..data.len-bytes()): {
         a = (a + data[i]) % mod
         b = (b + a) % mod
     }
@@ -48,7 +48,7 @@ zlib-compress = (data str) (out str) {
 
     ; data is split into stored blocks of max 65535 bytes each
     pos i64 = 0
-    rem i64 = data.len
+    rem i64 = data.len-bytes()
     {
         rem <= 0 -> {
             ; empty data — single empty stored block (BFINAL=1)
@@ -87,11 +87,14 @@ zlib-compress = (data str) (out str) {
         ; write data bytes
         i <- [0..blen): {
             bs str = with-len(1)
+            #{overflow=wrap}
             bs[0] = data[pos + i]
             out = out - bs
         }
 
+        #{overflow=wrap}
         pos = pos + blen
+        #{overflow=wrap}
         rem = rem - blen
         rem <= 0 -> break
     } (true)
@@ -120,7 +123,7 @@ zlib-compress = (data str) (out str) {
 zlib-decompress = (data str) (out str, ok bool) {
     ok = false
     out = ''
-    data.len < 6 -> return
+    data.len-bytes() < 6 -> return
 
     ; Try manual stored-block decompression first (handles our own output)
     out, ok = zlib-decompress-stored(data)
@@ -133,22 +136,25 @@ zlib-decompress = (data str) (out str, ok bool) {
     ; (generous upper bound for typical git objects).
     data[0] == 0x78 -> {
         ; zlib format — skip 2-byte header, decompress raw DEFLATE
-        deflate-data []byte = with-len(data.len - 2)
-        i <- [0..data.len - 2): {
+        #{overflow=wrap}
+        deflate-data []byte = with-len(data.len-bytes() - 2)
+        i <- [0..data.len-bytes() - 2): {
+            #{overflow=wrap}
             deflate-data[i] = data[i + 2]
         }
         ; Estimate output size: 100x input (capped to avoid OOM)
-        est-out i64 = data.len * 100
+        #{overflow=wrap}
+        est-out i64 = data.len-bytes() * 100
         est-out > 1048576 -> est-out = 1048576 ; cap at 1MB
         est-out < 64 -> est-out = 64 ; minimum
         decomp-bytes []byte = gzip.inflate-decompress(deflate-data, est-out)
-        decomp-bytes.len == 0 -> {
+        decomp-bytes.len() == 0 -> {
             ok = true
             return
         }
         ; Manual []byte to str conversion to ensure correct byte values
-        out str = with-len(decomp-bytes.len)
-        i <- [0..decomp-bytes.len): {
+        out str = with-len(decomp-bytes.len())
+        i <- [0..decomp-bytes.len()): {
             out[i] = decomp-bytes[i]
         }
         ok = true
@@ -158,7 +164,7 @@ zlib-decompress = (data str) (out str, ok bool) {
     ; Fall back to std gzip module (for gzip format data)
     data-bytes []byte = data.to-bytes()
     decomp-bytes []byte = gzip.gzip-decompress(data-bytes)
-    decomp-bytes.len == 0 -> {
+    decomp-bytes.len() == 0 -> {
         ; decompression returned empty — could be legitimate empty data
         ; or a failure. Check if the input looks like a valid zlib stream.
         ; A valid zlib stream starts with 0x78 (CMF byte).
@@ -168,8 +174,8 @@ zlib-decompress = (data str) (out str, ok bool) {
         return
     }
     ; Manual []byte to str conversion to ensure correct byte values
-    out str = with-len(decomp-bytes.len)
-    i <- [0..decomp-bytes.len): {
+    out str = with-len(decomp-bytes.len())
+    i <- [0..decomp-bytes.len()): {
         out[i] = decomp-bytes[i]
     }
     ok = true
@@ -182,26 +188,30 @@ zlib-decompress = (data str) (out str, ok bool) {
 zlib-decompress-stored = (data str) (out str, ok bool) {
     ok = false
     out = ''
-    data.len < 6 -> return
+    data.len-bytes() < 6 -> return
 
     ; single pass: extract payload bytes from each stored block
     p = 2
     {
-        p >= data.len -> break
+        p >= data.len-bytes() -> break
         bfinal = data[p] & 1
         btype = (data[p] >> 1) & 3
         btype != 0 -> {
             out = ''
             return
         }
+        #{overflow=wrap}
         p = p + 1
         len = data[p] | (data[p + 1] << 8)
+        #{overflow=wrap}
         p = p + 4
 
         ; extract payload byte by byte via byte-to-str
         i <- [0..len): {
-            out = out - byte-to-str(data[p + i])
+            #{overflow=wrap}
+            out = out - byte-to-str(data.byte(p + i))
         }
+        #{overflow=wrap}
         p = p + len
         bfinal == 1 -> break
     } (true)
@@ -214,21 +224,24 @@ zlib-decompress-stored = (data str) (out str, ok bool) {
 ; returns consumed i64: total bytes consumed (including header and Adler-32)
 zlib-consumed-stored = (data str) (consumed i64) {
     consumed = 0
-    data.len < 6 -> return
+    data.len-bytes() < 6 -> return
 
     ; skip 2-byte zlib header
     p = 2
     {
-        p >= data.len -> return
+        p >= data.len-bytes() -> return
         bfinal = data[p] & 1
         btype = (data[p] >> 1) & 3
         btype != 0 -> return
+        #{overflow=wrap}
         p = p + 1
         blk-len = (data[p] & 0xff) | ((data[p + 1] & 0xff) << 8)
+        #{overflow=wrap}
         p = p + 4 + blk-len
         bfinal == 1 -> break
     } (true)
     ; p now points to the Adler-32 (4 bytes)
+    #{overflow=wrap}
     consumed = p + 4
 }
 
@@ -242,11 +255,12 @@ zlib-consumed-stored = (data str) (consumed i64) {
 ; returns consumed i64: total bytes consumed (0 on error)
 zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     consumed = 0
-    avail = data.len - start
+    #{overflow=wrap}
+    avail = data.len-bytes() - start
     avail < 6 -> return
 
     ; First, verify the stream decompresses correctly with full remaining data
-    sub str = util.str-range(data, start, data.len)
+    sub str = util.str-range(data, start, data.len-bytes())
     decomp str
     ok bool
     decomp, ok = zlib-decompress(sub)
@@ -257,7 +271,7 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     ; To avoid crashes from truncated gzip data, we use stored-block
     ; scan as the primary method (safe for any input) and only fall
     ; back to binary search if stored scan fails.
-    sub-full str = util.str-range(data, start, data.len)
+    sub-full str = util.str-range(data, start, data.len-bytes())
     stored-len i64 = 0
     stored-len = zlib-consumed-stored(sub-full)
     stored-len > 0 -> {
@@ -274,8 +288,10 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
 
     {
         lo >= hi -> break
+        #{overflow=wrap}
         mid i64 = (lo + hi) / 2
         ; Check if mid bytes is enough by trying stored-block scan first
+        #{overflow=wrap}
         sub2 str = util.str-range(data, start, start + mid)
         s2 i64 = 0
         s2 = zlib-consumed-stored(sub2)

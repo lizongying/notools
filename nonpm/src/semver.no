@@ -40,27 +40,29 @@ parse = (s str) (v semver, ok bool) {
 
     ; strip leading 'v' or 'V'
     work = s
-    work.starts-with('v') -> work = work.slice(1, work.len)
-    work.starts-with('V') -> work = work.slice(1, work.len)
+    work.starts-with('v') -> work = work.slice(1, work.len-bytes())
+    work.starts-with('V') -> work = work.slice(1, work.len-bytes())
 
     ; split off build metadata (+)
     plus-pos = work.index('+')
     plus-pos >= 0 -> {
-        v.build-metadata = work.slice(plus-pos + 1, work.len)
+        #{overflow=wrap}
+        v.build-metadata = work.slice(plus-pos + 1, work.len-bytes())
         work = work.slice(0, plus-pos)
     }
 
     ; split off pre-release (-)
     dash-pos = work.index('-')
     dash-pos >= 0 -> {
-        v.pre-release = work.slice(dash-pos + 1, work.len)
+        #{overflow=wrap}
+        v.pre-release = work.slice(dash-pos + 1, work.len-bytes())
         work = work.slice(0, dash-pos)
     }
 
     ; parse major.minor.patch
     parts = work.split('.')
-    parts.len < 1 -> return
-    parts.len > 3 -> return
+    parts.len() < 1 -> return
+    parts.len() > 3 -> return
 
     ; major
     major-val = parts[0].to-i64()
@@ -72,7 +74,7 @@ parse = (s str) (v semver, ok bool) {
         err -> return
     }
     ok = true
-    parts.len >= 2 -> {
+    parts.len() >= 2 -> {
         minor-val = parts[1].to-i64()
         minor-val: {
             ok -> v.minor = it
@@ -88,7 +90,7 @@ parse = (s str) (v semver, ok bool) {
             }
         }
     }
-    parts.len >= 3 -> {
+    parts.len() >= 3 -> {
         patch-val = parts[2].to-i64()
         patch-val: {
             ok -> v.patch = it
@@ -184,8 +186,8 @@ compare = (a semver, b semver) (r i64) {
 compare-pre-release = (a str, b str) (r i64) {
     a-parts = a.split('.')
     b-parts = b.split('.')
-    a-n = a-parts.len
-    b-n = b-parts.len
+    a-n = a-parts.len()
+    b-n = b-parts.len()
     max-n = a-n
     b-n > max-n -> max-n = b-n
     i <- [0..max-n): {
@@ -197,7 +199,9 @@ compare-pre-release = (a str, b str) (r i64) {
             r = 1
             return
         }
+        #{index-out=0}
         a-seg = a-parts[i]
+        #{index-out=0}
         b-seg = b-parts[i]
         ; check if numeric
         a-num = a-seg.to-i64()
@@ -257,12 +261,12 @@ compare-pre-release = (a str, b str) (r i64) {
 
                 ; both are strings — lexicographic comparison
                 {
-                    a-seg < b-seg -> {
+                    a-seg.compare(b-seg) < 0 -> {
                         r = -1
                         return
                     }
 
-                    a-seg > b-seg -> {
+                    a-seg.compare(b-seg) > 0 -> {
                         r = 1
                         return
                     }
@@ -294,7 +298,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; caret range: ^1.2.3 — compatible within major version
     r.starts-with('^') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len))
+        range-ver, parse-ok = parse(r.slice(1, r.len()))
         parse-ok == false -> {
             ok = false
             return
@@ -321,7 +325,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; tilde range: ~1.2.3 — compatible within minor version
     r.starts-with('~') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len))
+        range-ver, parse-ok = parse(r.slice(1, r.len()))
         parse-ok == false -> {
             ok = false
             return
@@ -343,7 +347,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; >= operator
     r.starts-with('>=') -> {
-        range-ver, parse-ok = parse(r.slice(2, r.len).trim())
+        range-ver, parse-ok = parse(r.slice(2, r.len()).trim())
         parse-ok == false -> {
             ok = false
             return
@@ -353,7 +357,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; <= operator
     r.starts-with('<=') -> {
-        range-ver, parse-ok = parse(r.slice(2, r.len).trim())
+        range-ver, parse-ok = parse(r.slice(2, r.len()).trim())
         parse-ok == false -> {
             ok = false
             return
@@ -363,7 +367,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; > operator
     r.starts-with('>') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len).trim())
+        range-ver, parse-ok = parse(r.slice(1, r.len()).trim())
         parse-ok == false -> {
             ok = false
             return
@@ -373,7 +377,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; < operator
     r.starts-with('<') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len).trim())
+        range-ver, parse-ok = parse(r.slice(1, r.len()).trim())
         parse-ok == false -> {
             ok = false
             return
@@ -383,7 +387,7 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
     ; = or exact version
     r.starts-with('=') -> {
-        r = r.slice(1, r.len).trim()
+        r = r.slice(1, r.len()).trim()
     }
 
     ; exact version match
@@ -406,7 +410,7 @@ max-satisfying = (versions []str, range-str str) (best str) {
     best = ''
     best-v semver
     best-set = false
-    n = versions.len
+    n = versions.len()
     i <- [0..n): {
         v, parse-ok = parse(versions[i])
         parse-ok == true -> {
@@ -442,11 +446,14 @@ to-string = (v semver) (s str) {
     maj = v.major
     min = v.minor
     pat = v.patch
+    #{overflow=wrap}
     s = number.i64-to-str(maj) - '.' - number.i64-to-str(min) - '.' - number.i64-to-str(pat)
-    v.pre-release.len > 0 -> {
+    v.pre-release.len-bytes() > 0 -> {
+        #{overflow=wrap}
         s = s - '-' - v.pre-release
     }
-    v.build-metadata.len > 0 -> {
+    v.build-metadata.len-bytes() > 0 -> {
+        #{overflow=wrap}
         s = s - '+' - v.build-metadata
     }
 }

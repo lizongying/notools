@@ -23,6 +23,7 @@ VERSION = 'dev'
 ; os.arg(0) returns the program path (argv[0]), so we subtract 1 from
 ; argc and add 1 to every arg index to skip the program name.
 main = () {
+    #{overflow=wrap}
     argc = os.args() - 1
     argc < 1 -> {
         print-usage()
@@ -50,6 +51,7 @@ main = () {
         'update-ref' -> cmd-update-ref(argc)
         'config' -> cmd-config(argc)
         'reflog' -> cmd-reflog(argc)
+        #{overflow=wrap}
         'version' -> print('nolang-git v' - VERSION - ' (pure nolang)')
         'help' -> print-usage()
         -> {
@@ -99,8 +101,9 @@ print-usage = () {
 read-worktree-file = (work-tree str, path str) (content str, ok bool) {
     sl = '/'
     full = work-tree - sl - path
-    work-tree.len > 0 -> {
-        last = work-tree[work-tree.len - 1]
+    work-tree.len-bytes() > 0 -> {
+        #{overflow=wrap}
+        last = work-tree[work-tree.len-bytes() - 1]
         last == 47 -> full = work-tree - path
     }
     content, ok = util.read-file-str(full)
@@ -140,7 +143,8 @@ tree-to-flat-unified = (git-dir str, tree-oid oid, prefix str) (paths str, hexoi
 
         ; build full path
         full-path = nm
-        prefix.len > 0 -> {
+        prefix.len-bytes() > 0 -> {
+            #{overflow=wrap}
             full-path = prefix - '/' - nm
         }
 
@@ -151,16 +155,20 @@ tree-to-flat-unified = (git-dir str, tree-oid oid, prefix str) (paths str, hexoi
                 paths = paths - sub-paths
                 hexoids = hexoids - sub-hexoids
                 modes = modes - sub-modes
+                #{overflow=wrap}
                 count = count + sub-count
             }
         }
 
         -> {
             ; blob — add as flat entry
+            #{overflow=wrap}
             paths = paths - full-path - '\n'
             hexoids = hexoids - entry-hex
             mode-str = util.i64-to-str(mode)
+            #{overflow=wrap}
             modes = modes - mode-str - '\n'
+            #{overflow=wrap}
             count = count + 1
         }
     }
@@ -188,11 +196,13 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
 
         ; build full path
         full-path = dest-dir
-        dest-dir.len > 0 -> {
-            last = dest-dir[dest-dir.len - 1]
+        dest-dir.len-bytes() > 0 -> {
+            #{overflow=wrap}
+            last = dest-dir[dest-dir.len-bytes() - 1]
+            #{overflow=wrap}
             last != 47 -> full-path = dest-dir - '/' - nm
         }
-        dest-dir.len == 0 -> full-path = nm
+        dest-dir.len-bytes() == 0 -> full-path = nm
 
         mode == 16384 -> {
             ; subtree — create directory and recurse
@@ -240,10 +250,11 @@ log-packed = (git-dir str, oneline bool, max-count i64) {
         ; parse commit: tree, parent, author, message
         cur-hex = oid.oid-hex-str(cur)
         idx i64 = d.index('\n\n')
-        hend = d.len
+        hend = d.len()
         idx >= 0 -> hend = idx
         msg = ''
-        idx >= 0 -> msg = util.str-range(d, idx + 2, d.len)
+        #{overflow=wrap}
+        idx >= 0 -> msg = util.str-range(d, idx + 2, d.len())
         parent-hex str = ''
         a-name str = ''
         a-email str = ''
@@ -256,38 +267,43 @@ log-packed = (git-dir str, oneline bool, max-count i64) {
             nl < 0 -> nl = hend
             line str = util.str-range(d, pos, nl)
             line.starts-with('parent ') -> {
-                parent-hex = util.str-range(line, 7, line.len)
+                parent-hex = util.str-range(line, 7, line.len())
             }
             line.starts-with('author ') -> {
-                ap str = util.str-range(line, 7, line.len)
+                ap str = util.str-range(line, 7, line.len())
                 a-name, a-email, a-time, a-tz = object.parse-person-fields(ap)
             }
+            #{overflow=wrap}
             pos = nl + 1
         } (true)
         oneline == true -> {
             short-hex = util.str-range(cur-hex, 0, 7)
             ; first line of message
-            ml = msg.len
+            ml = msg.len-bytes()
             mnl = util.find-byte-str(msg, 10, 0)
             mnl >= 0 -> ml = mnl
             first-line = util.str-range(msg, 0, ml)
             print('{short-hex} {first-line}')
         }
         -> {
+            #{overflow=wrap}
             print('commit ' - cur-hex)
+            #{overflow=wrap}
             print('Author: ' - a-name - ' <' - a-email - '>')
+            #{overflow=wrap}
             print('Date:   ' - util.i64-to-str(a-time) - ' ' - a-tz)
             print('')
             print('    ' - msg)
             print('')
         }
+        #{overflow=wrap}
         count = count + 1
-        parent-hex.len == 40 -> {
+        parent-hex.len-bytes() == 40 -> {
             cur, ref-ok = oid.oid-from-hex(parent-hex)
             ref-ok == false -> break
         }
-        parent-hex.len == 0 -> break
-        parent-hex.len > 40 -> {
+        parent-hex.len-bytes() == 0 -> break
+        parent-hex.len-bytes() > 40 -> {
             ; multiple parents — take first
             first-hex = util.str-range(parent-hex, 0, 40)
             cur, ref-ok = oid.oid-from-hex(first-hex)
@@ -304,6 +320,7 @@ cmd-init = (argc i64) {
     path = '.'
     bare = false
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '--bare' -> bare = true
         arg == '-q' -> {}
@@ -318,9 +335,11 @@ cmd-init = (argc i64) {
             sl = '/'
             {
                 path.starts-with('./') -> {
-                    full-path = cwd - sl - util.str-range(path, 2, path.len)
+                    #{overflow=wrap}
+                    full-path = cwd - sl - util.str-range(path, 2, path.len-bytes())
                 }
                 -> {
+                    #{overflow=wrap}
                     full-path = cwd - sl - path
                 }
             }
@@ -349,6 +368,7 @@ cmd-add = (argc i64) {
         return
     }
     i <- [1..argc): {
+        #{overflow=wrap}
         path = os.arg(i + 1)
         path == '--' -> {}
 
@@ -358,12 +378,13 @@ cmd-add = (argc i64) {
         }
 
         path.starts-with('./') -> {
-            clean-path = util.str-range(path, 2, path.len)
-            clean-path.len == 0 -> {
+            clean-path = util.str-range(path, 2, path.len())
+            clean-path.len() == 0 -> {
                 ; path is './' — add entire work tree
                 add-directory-recursive(git-dir, work-tree, work-tree, '')
             }
             -> {
+                #{overflow=wrap}
                 full-path = work-tree - '/' - clean-path
                 add-file-or-dir(git-dir, work-tree, full-path, clean-path)
             }
@@ -376,6 +397,7 @@ cmd-add = (argc i64) {
 
         -> {
             ; relative path
+            #{overflow=wrap}
             full-path = work-tree - '/' - path
             add-file-or-dir(git-dir, work-tree, full-path, path)
         }
@@ -394,7 +416,7 @@ add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix 
         fname, fe-ok = fs.read-dir(dirp)
         fe-ok == true -> {
             ; Inline skip check to avoid function return value issues
-            fl = fname.len
+            fl = fname.len()
             proceed = true
             fl == 1 -> {
                 fname[0] == 46 -> proceed = false
@@ -420,9 +442,11 @@ add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix 
                 }
             }
             proceed == true -> {
+                #{overflow=wrap}
                 sub-full = dir-path - '/' - fname
                 sub-rel = fname
-                rel-prefix.len > 0 -> sub-rel = rel-prefix - '/' - fname
+                #{overflow=wrap}
+                rel-prefix.len-bytes() > 0 -> sub-rel = rel-prefix - '/' - fname
                 add-file-or-dir(git-dir, work-tree, sub-full, sub-rel)
             }
         }
@@ -436,7 +460,7 @@ add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
     ; Normalize rel-path: strip leading "./" and reject "."
     rel-path == '.' -> return
     rel-path.starts-with('./') -> {
-        rel-path = util.str-range(rel-path, 2, rel-path.len)
+        rel-path = util.str-range(rel-path, 2, rel-path.len-bytes())
     }
     isf = fs.is-file(full-path)
     isf == true -> {
@@ -467,9 +491,12 @@ add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
 cmd-commit = (argc i64) {
     message = ''
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '-m' -> {
+            #{overflow=wrap}
             i < argc - 1 -> {
+                #{overflow=wrap}
                 message = os.arg(i + 2)
             }
         }
@@ -532,6 +559,7 @@ cmd-commit = (argc i64) {
     branch, detached, branch-ok = refs.current-branch(git-dir)
 
     ; Update refs
+    #{overflow=wrap}
     ref-name = 'refs/heads/' - branch
     commit-msg = 'commit: ' - message
     initial-msg = 'commit (initial): ' - message
@@ -558,9 +586,13 @@ cmd-commit = (argc i64) {
     {
         branch-ok == true -> {
             detached == false -> {
+                #{overflow=wrap}
                 line = '[' - branch
+                #{overflow=wrap}
                 line = line - ' '
+                #{overflow=wrap}
                 line = line - ch
+                #{overflow=wrap}
                 line = line - '] '
                 line = line - message
                 print(line)
@@ -588,13 +620,17 @@ cmd-log = (argc i64) {
     max-count = 0
     oneline = false
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '-n' -> {
+            #{overflow=wrap}
             i < argc - 1 -> {
+                #{overflow=wrap}
                 nstr = os.arg(i + 2)
-                nstr.len > 0 -> {
+                nstr.len() > 0 -> {
                     nv = 0
-                    k <- [0..nstr.len): {
+                    k <- [0..nstr.len()): {
+                        #{overflow=wrap}
                         nv = nv * 10 + (nstr[k] - 48)
                     }
                     max-count = nv
@@ -609,7 +645,7 @@ cmd-log = (argc i64) {
             log-packed(git-dir, true, max-count)
             return
         }
-        log-output.len == 0 -> {
+        log-output.len() == 0 -> {
             log-packed(git-dir, true, max-count)
             return
         }
@@ -621,7 +657,7 @@ cmd-log = (argc i64) {
             log-packed(git-dir, false, max-count)
             return
         }
-        log-output.len == 0 -> {
+        log-output.len() == 0 -> {
             log-packed(git-dir, false, max-count)
             return
         }
@@ -684,9 +720,10 @@ cmd-status = (argc i64) {
     pos = 0
     i <- [0..count): {
         nl = util.find-byte-str(names, 10, pos)
-        end = names.len
+        end = names.len()
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
+        #{overflow=wrap}
         hx = util.str-range(hexoids, i * 40, i * 40 + 40)
 
         ; Check against HEAD tree (staged changes)
@@ -697,16 +734,18 @@ cmd-status = (argc i64) {
             hpos = 0
             j <- [0..head-flat-count): {
                 hnl = util.find-byte-str(head-flat-names, 10, hpos)
-                hend = head-flat-names.len
+                hend = head-flat-names.len-bytes()
                 hnl >= 0 -> hend = hnl
                 hnm = util.str-range(head-flat-names, hpos, hend)
                 same-nm = util.str-eq(hnm, nm)
                 same-nm == true -> {
                     in-head = true
+                    #{overflow=wrap}
                     hhex = util.str-range(head-flat-oids, j * 40, j * 40 + 40)
                     head-matches = util.str-eq(hhex, hx)
                     break
                 }
+                #{overflow=wrap}
                 hpos = hnl + 1
                 hnl < 0 -> break
             }
@@ -716,20 +755,26 @@ cmd-status = (argc i64) {
         {
             has-head == false -> {
                 ; No HEAD — everything is "new file"
+                #{overflow=wrap}
                 staged-names = staged-names - 'new file: ' - nm - '\n'
+                #{overflow=wrap}
                 staged-count = staged-count + 1
             }
 
             has-head == true -> {
                 in-head == false -> {
                     ; File not in HEAD tree — new file
+                    #{overflow=wrap}
                     staged-names = staged-names - 'new file: ' - nm - '\n'
+                    #{overflow=wrap}
                     staged-count = staged-count + 1
                 }
                 in-head == true -> {
                     head-matches == false -> {
                         ; File in HEAD but content differs — modified
+                        #{overflow=wrap}
                         staged-names = staged-names - 'modified: ' - nm - '\n'
+                        #{overflow=wrap}
                         staged-count = staged-count + 1
                     }
                 }
@@ -738,13 +783,16 @@ cmd-status = (argc i64) {
 
         ; Check working tree (modified files)
         work-file = nm
-        work-tree.len > 0 -> {
+        work-tree.len() > 0 -> {
             sl = '/'
+            #{overflow=wrap}
             work-file = work-tree - sl - nm
         }
         isf = fs.is-file(work-file)
         isf == false -> {
+            #{overflow=wrap}
             modified-names = modified-names - 'deleted: ' - nm - '\n'
+            #{overflow=wrap}
             modified-count = modified-count + 1
         }
         isf == true -> {
@@ -755,12 +803,15 @@ cmd-status = (argc i64) {
                 w-hex = oid.oid-hex-str(w-oid)
                 w-matches = util.str-eq(w-hex, hx)
                 w-matches == false -> {
+                    #{overflow=wrap}
                     modified-names = modified-names - 'modified: ' - nm - '\n'
+                    #{overflow=wrap}
                     modified-count = modified-count + 1
                 }
             }
         }
 
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     }
@@ -770,12 +821,14 @@ cmd-status = (argc i64) {
         print('Changes to be committed:')
         spos = 0
         {
-            spos >= staged-names.len -> break
+            spos >= staged-names.len-bytes() -> break
             snl = util.find-byte-str(staged-names, 10, spos)
-            send = staged-names.len
+            send = staged-names.len-bytes()
             snl >= 0 -> send = snl
             sline = util.str-range(staged-names, spos, send)
+            #{overflow=wrap}
             print('  ' - sline)
+            #{overflow=wrap}
             spos = snl + 1
             snl < 0 -> break
         } (true)
@@ -787,12 +840,14 @@ cmd-status = (argc i64) {
         print('Changes not staged for commit:')
         mpos = 0
         {
-            mpos >= modified-names.len -> break
+            mpos >= modified-names.len-bytes() -> break
             mnl = util.find-byte-str(modified-names, 10, mpos)
-            mend = modified-names.len
+            mend = modified-names.len-bytes()
             mnl >= 0 -> mend = mnl
             mline = util.str-range(modified-names, mpos, mend)
+            #{overflow=wrap}
             print('  ' - mline)
+            #{overflow=wrap}
             mpos = mnl + 1
             mnl < 0 -> break
         } (true)
@@ -802,7 +857,7 @@ cmd-status = (argc i64) {
     ; Detect untracked files — files in work tree not in index
     untracked-names str = ''
     untracked-count i64 = 0
-    work-tree.len > 0 -> {
+    work-tree.len() > 0 -> {
         untracked-names, untracked-count = scan-untracked(work-tree, work-tree, names, count)
     }
 
@@ -811,12 +866,14 @@ cmd-status = (argc i64) {
         print('Untracked files:')
         upos = 0
         {
-            upos >= untracked-names.len -> break
+            upos >= untracked-names.len-bytes() -> break
             unl = util.find-byte-str(untracked-names, 10, upos)
-            uend = untracked-names.len
+            uend = untracked-names.len-bytes()
             unl >= 0 -> uend = unl
             uline = util.str-range(untracked-names, upos, uend)
+            #{overflow=wrap}
             print('  ' - uline)
+            #{overflow=wrap}
             upos = unl + 1
             unl < 0 -> break
         } (true)
@@ -847,13 +904,15 @@ scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untr
             is-dotdot = util.str-eq(fname, '..')
             is-git = util.str-eq(fname, '.git')
             is-dot == false && is-dotdot == false && is-git == false -> {
+                #{overflow=wrap}
                 full-path = dir - '/' - fname
                 ; compute relative path from base-dir
                 rel-path = fname
-                base-len = base-dir.len
-                full-len = full-path.len
+                base-len = base-dir.len-bytes()
+                full-len = full-path.len-bytes()
                 full-len > base-len -> {
                     ; skip base-dir + '/' prefix
+                    #{overflow=wrap}
                     rel-path = util.str-range(full-path, base-len + 1, full-len)
                 }
                 isf = fs.is-file(full-path)
@@ -863,7 +922,7 @@ scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untr
                     pos = 0
                     j <- [0..index-count): {
                         nl = util.find-byte-str(index-names, 10, pos)
-                        end = index-names.len
+                        end = index-names.len-bytes()
                         nl >= 0 -> end = nl
                         nm = util.str-range(index-names, pos, end)
                         same = util.str-eq(nm, rel-path)
@@ -871,11 +930,14 @@ scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untr
                             in-index = true
                             break
                         }
+                        #{overflow=wrap}
                         pos = nl + 1
                         nl < 0 -> break
                     }
                     in-index == false -> {
+                        #{overflow=wrap}
                         untracked-names = untracked-names - rel-path - '\n'
+                        #{overflow=wrap}
                         untracked-count = untracked-count + 1
                     }
                 }
@@ -885,6 +947,7 @@ scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untr
                         ; recursively scan subdirectory
                         sub-names, sub-count = scan-untracked(base-dir, full-path, index-names, index-count)
                         untracked-names = untracked-names - sub-names
+                        #{overflow=wrap}
                         untracked-count = untracked-count + sub-count
                     }
                 }
@@ -945,15 +1008,15 @@ cmd-branch = (argc i64) {
     cur-branch, _det, cur-ok = refs.current-branch(git-dir)
     pos = 0
     {
-        pos >= names.len -> break
+        pos >= names.len() -> break
         nl = util.find-byte-str(names, 10, pos)
-        end = names.len
+        end = names.len()
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
         is-cur = true
-        nm.len != cur-branch.len -> is-cur = false
+        nm.len() != cur-branch.len() -> is-cur = false
         is-cur == true -> {
-            j <- [0..nm.len): {
+            j <- [0..nm.len()): {
                 nm[j] != cur-branch[j] -> {
                     is-cur = false
                     break
@@ -962,6 +1025,7 @@ cmd-branch = (argc i64) {
         }
         is-cur == true -> print('* {nm}')
         is-cur == false -> print('  {nm}')
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     } (true)
@@ -986,9 +1050,11 @@ cmd-checkout = (argc i64) {
     has-separator = false
     file-start = argc
     i <- [1..argc): {
+        #{overflow=wrap}
         a = os.arg(i + 1)
         a == '--' -> {
             has-separator = true
+            #{overflow=wrap}
             file-start = i + 1
         }
     }
@@ -1015,24 +1081,27 @@ cmd-checkout = (argc i64) {
 
         ; Restore each requested file
         j <- [file-start..argc): {
+            #{overflow=wrap}
             req-file = os.arg(j + 1)
             ; find this file in the flat list
             pos = 0
             i2 <- [0..flat-count): {
                 nl = util.find-byte-str(flat-paths, 10, pos)
-                end = flat-paths.len
+                end = flat-paths.len()
                 nl >= 0 -> end = nl
                 nm = util.str-range(flat-paths, pos, end)
                 same = util.str-eq(nm, req-file)
                 same == true -> {
                     ; read blob and restore
+                    #{overflow=wrap}
                     hx = util.str-range(flat-hexoids, i2 * 40, i2 * 40 + 40)
                     file-oid, oid-ok = oid.oid-from-hex(hx)
                     oid-ok == true -> {
                         b-kind, b-data, b-read-ok = object.read-loose(git-dir, file-oid)
                         b-read-ok == true -> {
                             full-path = req-file
-                            work-tree.len > 0 -> {
+                            work-tree.len() > 0 -> {
+                                #{overflow=wrap}
                                 full-path = work-tree - '/' - req-file
                             }
                             ; ensure parent dir
@@ -1046,6 +1115,7 @@ cmd-checkout = (argc i64) {
                     }
                     break
                 }
+                #{overflow=wrap}
                 pos = nl + 1
                 nl < 0 -> break
             }
@@ -1056,6 +1126,7 @@ cmd-checkout = (argc i64) {
 
     ; Branch checkout mode
     name = os.arg(2)
+    #{overflow=wrap}
     ref-name = 'refs/heads/' - name
     o, ref-ok = refs.read-ref(git-dir, ref-name)
     ref-ok == false -> {
@@ -1121,9 +1192,12 @@ cmd-tag = (argc i64) {
             tag-name = os.arg(3)
             tag-msg = ''
             i <- [4..argc): {
+                #{overflow=wrap}
                 a = os.arg(i + 1)
                 a == '-m' -> {
+                    #{overflow=wrap}
                     i < argc - 1 -> {
+                        #{overflow=wrap}
                         tag-msg = os.arg(i + 2)
                     }
                 }
@@ -1180,12 +1254,13 @@ cmd-tag = (argc i64) {
     names, count = refs.list-tags(git-dir)
     pos = 0
     {
-        pos >= names.len -> break
+        pos >= names.len() -> break
         nl = util.find-byte-str(names, 10, pos)
-        end = names.len
+        end = names.len()
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
         print(nm)
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     } (true)
@@ -1223,7 +1298,7 @@ cmd-cat-file = (argc i64) {
     opt: {
         '-t' -> print(kind)
         '-s' -> {
-            sz = util.i64-to-str(data.len)
+            sz = util.i64-to-str(data.len())
             print(sz)
         }
         '-p' -> {
@@ -1244,6 +1319,7 @@ cmd-hash-object = (argc i64) {
     write = false
     path = ''
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '-w' -> write = true
         arg != '-w' -> path = arg
@@ -1309,11 +1385,11 @@ cmd-ls-tree = (argc i64) {
             ; Parse tree oid directly from commit data instead of calling
             ; revwalk.commit-tree-oid to avoid cross-module variable issues
             sp-c = util.find-byte-str(data, 10, 0)
-            first-line-end = data.len
+            first-line-end = data.len()
             sp-c >= 0 -> first-line-end = sp-c
             first-line = util.str-range(data, 0, first-line-end)
             first-line.starts-with('tree ') -> {
-                tree-hex = util.str-range(first-line, 5, first-line.len)
+                tree-hex = util.str-range(first-line, 5, first-line.len())
                 o, ref-ok = oid.oid-from-hex(tree-hex)
                 ref-ok == false -> {
                     print('fatal: could not parse tree oid')
@@ -1352,19 +1428,23 @@ cmd-ls-tree = (argc i64) {
         m != 0 -> {
             tmp []byte = with-cap(16)
             {
+                #{overflow=wrap}
                 tmp.push(48 + (m % 8))
+                #{overflow=wrap}
                 m = m / 8
                 m == 0 -> break
             } (true)
-            L = tmp.len
+            L = tmp.len()
             j <- [0..L): {
                 cs str = with-len(1)
+                #{overflow=wrap}
                 cs[0] = tmp[L - 1 - j]
                 mode-str = mode-str - cs
             }
         }
-        mode-str.len < 6 -> {
-            pad-n = 6 - mode-str.len
+        mode-str.len-bytes() < 6 -> {
+            #{overflow=wrap}
+            pad-n = 6 - mode-str.len-bytes()
             j <- [0..pad-n): {
                 mode-str = '0' - mode-str
             }
@@ -1389,10 +1469,11 @@ cmd-ls-files = (argc i64) {
     pos = 0
     i <- [0..count): {
         nl = util.find-byte-str(names, 10, pos)
-        end = names.len
+        end = names.len()
         nl >= 0 -> end = nl
         nm = util.str-range(names, pos, end)
         print(nm)
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     }
@@ -1499,7 +1580,8 @@ cmd-config = (argc i64) {
         return
     }
     section = util.str-range(key, 0, dot)
-    skey = util.str-range(key, dot + 1, key.len)
+    #{overflow=wrap}
+    skey = util.str-range(key, dot + 1, key.len())
     {
         argc >= 3 -> {
             val = os.arg(3)
@@ -1582,6 +1664,7 @@ cmd-rm = (argc i64) {
     }
     cached = false
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '--cached' -> cached = true
     }
@@ -1604,8 +1687,9 @@ cmd-rm = (argc i64) {
     ; Remove from working tree unless --cached
     cached == false -> {
         full-path = path
-        work-tree.len > 0 -> {
+        work-tree.len() > 0 -> {
             sl = '/'
+            #{overflow=wrap}
             full-path = work-tree - sl - path
         }
         fs.remove(full-path)
@@ -1628,6 +1712,7 @@ cmd-reset = (argc i64) {
     hard = false
     target = 'HEAD'
     i <- [1..argc): {
+        #{overflow=wrap}
         arg = os.arg(i + 1)
         arg == '--hard' -> hard = true
         arg != '--hard' -> target = arg
@@ -1644,6 +1729,7 @@ cmd-reset = (argc i64) {
     branch, detached, branch-ok = refs.current-branch(git-dir)
     {
         branch-ok == true && detached == false -> {
+            #{overflow=wrap}
             ref-name = 'refs/heads/' - branch
             refs.write-ref(git-dir, ref-name, target-oid)
         }

@@ -27,7 +27,7 @@
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len == 0 -> {
+    data.len() == 0 -> {
         img = nil
         return
     }
@@ -80,6 +80,7 @@ pnm-load-binary = (data str, pos i64, bands i64) (img ?image) {
     maxval, pos = pnm-read-int(data, pos)
 
     ; single whitespace after maxval, then binary data
+    #{overflow=wrap}
     pos = pos + 1
     {
 w <= 0 || h <= 0 || maxval <= 0 || w > 65535 || h > 65535 -> {
@@ -92,11 +93,13 @@ img = nil
             return
         }
     }
+    #{overflow=wrap}
     n = w * h * bands
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, bands, _d)
-    tmp.data.len >= n -> {
+    tmp.data.len() >= n -> {
         i <- [0..n): {
+            #{overflow=wrap}
             tmp.data[i] = data[pos + i] & 255
         }
     }
@@ -121,6 +124,7 @@ img = nil
             return
         }
     }
+    #{overflow=wrap}
     n = w * h * bands
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, bands, _d)
@@ -139,14 +143,15 @@ img = nil
 pnm-read-int = (data str, pos i64) (val i64, new-pos i64) {
     val = 0
     new-pos = pos
-    data.len == 0 -> return
+    data.len-bytes() == 0 -> return
 
     ; skip whitespace and comments
     {
-        new-pos < data.len -> {
+        new-pos < data.len-bytes() -> {
             c = data[new-pos] & 255
             {
                 c == 32 || c == 10 || c == 13 || c == 9 -> {
+                    #{overflow=wrap}
                     new-pos = new-pos + 1
                 }
 
@@ -154,28 +159,32 @@ pnm-read-int = (data str, pos i64) (val i64, new-pos i64) {
 
                     ; comment — skip to end of line
                     {
+                        #{overflow=wrap}
                         new-pos = new-pos + 1
-                    } (new-pos < data.len && (data[new-pos] & 255) != 10)
-                    new-pos < data.len -> new-pos = new-pos + 1
+                    } (new-pos < data.len-bytes() && (data[new-pos] & 255) != 10)
+                    #{overflow=wrap}
+                    new-pos < data.len-bytes() -> new-pos = new-pos + 1
                 }
 
                 -> break
             }
         }
-    } (new-pos < data.len)
+    } (new-pos < data.len-bytes())
 
     ; read digits
     {
-        new-pos < data.len -> {
+        new-pos < data.len-bytes() -> {
             c = data[new-pos] & 255
             c >= 48 && c <= 57 -> {
+                #{overflow=wrap}
                 val = val * 10 + (c - 48)
+                #{overflow=wrap}
                 new-pos = new-pos + 1
             }
 
             -> break
         }
-    } (new-pos < data.len && (data[new-pos] & 255) >= 48 && (data[new-pos] & 255) <= 57)
+    } (new-pos < data.len-bytes() && (data[new-pos] & 255) >= 48 && (data[new-pos] & 255) <= 57)
 }
 
 ; pnm.save: save an image as binary PNM
@@ -215,6 +224,7 @@ save-binary = (path str, img image) (ok bool) {
 pnm-write-p6 = (path str, img image) (ok bool) {
 
     ; Build header: "P6\n{w} {h}\n255\n"
+    #{overflow=wrap}
     hdr = 'P6\n' - img.width.to-str() - ' ' - img.height.to-str() - '\n255\n'
     wfd = fs.open-write(path)
     wfd < 0 -> {
@@ -222,9 +232,10 @@ pnm-write-p6 = (path str, img image) (ok bool) {
         return
     }
     hdr-bytes = hdr
-    fs.write(wfd, hdr-bytes, hdr-bytes.len)
+    fs.write(wfd, hdr-bytes, hdr-bytes.len-bytes())
 
     ; Write pixel data
+    #{overflow=wrap}
     n = img.width * img.height * img.bands
     {
         img.bands >= 3 -> {
@@ -236,37 +247,49 @@ pnm-write-p6 = (path str, img image) (ok bool) {
         img.bands == 1 -> {
 
             ; Grayscale -> R=G=B=gray
+            #{overflow=wrap}
             pix str = with-len(img.width * img.height * 3)
             i <- [0..img.width * img.height): {
+                #{overflow=wrap}
                 pix[i * 3] = img.data[i]
+                #{overflow=wrap}
                 pix[i * 3 + 1] = img.data[i]
+                #{overflow=wrap}
                 pix[i * 3 + 2] = img.data[i]
             }
-            fs.write(wfd, pix, pix.len)
+            fs.write(wfd, pix, pix.len())
         }
 
         img.bands == 2 -> {
 
             ; Gray + Alpha -> RGB with gray
+            #{overflow=wrap}
             pix str = with-len(img.width * img.height * 3)
             i <- [0..img.width * img.height): {
+                #{overflow=wrap}
                 pix[i * 3] = img.data[i * 2]
+                #{overflow=wrap}
                 pix[i * 3 + 1] = img.data[i * 2]
+                #{overflow=wrap}
                 pix[i * 3 + 2] = img.data[i * 2]
             }
-            fs.write(wfd, pix, pix.len)
+            fs.write(wfd, pix, pix.len())
         }
 
         img.bands >= 4 -> {
 
             ; RGBA -> RGB (drop alpha)
+            #{overflow=wrap}
             pix str = with-len(img.width * img.height * 3)
             i <- [0..img.width * img.height): {
+                #{overflow=wrap}
                 pix[i * 3] = img.data[i * 4]
+                #{overflow=wrap}
                 pix[i * 3 + 1] = img.data[i * 4 + 1]
+                #{overflow=wrap}
                 pix[i * 3 + 2] = img.data[i * 4 + 2]
             }
-            fs.write(wfd, pix, pix.len)
+            fs.write(wfd, pix, pix.len())
         }
     }
 
@@ -279,6 +302,7 @@ pnm-write-p6 = (path str, img image) (ok bool) {
 ; img image: grayscale image
 ; returns ok bool
 pnm-write-p5 = (path str, img image) (ok bool) {
+    #{overflow=wrap}
     hdr = 'P5\n' - img.width.to-str() - ' ' - img.height.to-str() - '\n255\n'
     wfd = fs.open-write(path)
     wfd < 0 -> {
@@ -286,29 +310,36 @@ pnm-write-p5 = (path str, img image) (ok bool) {
         return
     }
     hdr-bytes = hdr
-    fs.write(wfd, hdr-bytes, hdr-bytes.len)
+    fs.write(wfd, hdr-bytes, hdr-bytes.len-bytes())
     {
         img.bands == 1 -> {
 
             ; Direct grayscale
+            #{overflow=wrap}
             fs.write(wfd, img.data, img.width * img.height)
         }
 
         -> {
 
             ; Convert to grayscale using luminance
+            #{overflow=wrap}
             npix = img.width * img.height
             gray str = with-len(npix)
             i <- [0..npix): {
                 {
                     img.bands >= 3 -> {
+                        #{overflow=wrap}
                         r = img.data[i * img.bands]
+                        #{overflow=wrap}
                         g = img.data[i * img.bands + 1]
+                        #{overflow=wrap}
                         b = img.data[i * img.bands + 2]
+                        #{overflow=wrap}
                         gray[i] = (r * 299 + g * 587 + b * 114) / 1000
                     }
 
                     -> {
+                        #{overflow=wrap}
                         gray[i] = img.data[i * img.bands]
                     }
                 }
@@ -347,35 +378,46 @@ pnm-write-p3 = (path str, img image) (ok bool) {
         ok = false
         return
     }
+    #{overflow=wrap}
     hdr = 'P3\n' - img.width.to-str() - ' ' - img.height.to-str() - '\n255\n'
     hdr-bytes = hdr
-    fs.write(wfd, hdr-bytes, hdr-bytes.len)
+    fs.write(wfd, hdr-bytes, hdr-bytes.len-bytes())
+    #{overflow=wrap}
     npix = img.width * img.height
     i <- [0..npix): {
         {
             img.bands >= 3 -> {
+                #{overflow=wrap}
                 r = img.data[i * img.bands]
+                #{overflow=wrap}
                 g = img.data[i * img.bands + 1]
+                #{overflow=wrap}
                 b = img.data[i * img.bands + 2]
+                #{overflow=wrap}
                 line = r.to-str() - ' ' - g.to-str() - ' ' - b.to-str() - '\n'
                 lb = line.to-bytes()
-                fs.write(wfd, lb, lb.len)
+                fs.write(wfd, lb, lb.len())
             }
 
             img.bands == 1 -> {
                 v = img.data[i]
+                #{overflow=wrap}
                 line = v.to-str() - ' ' - v.to-str() - ' ' - v.to-str() - '\n'
                 lb = line.to-bytes()
-                fs.write(wfd, lb, lb.len)
+                fs.write(wfd, lb, lb.len())
             }
 
             -> {
+                #{overflow=wrap}
                 r = img.data[i * img.bands]
+                #{overflow=wrap}
                 g = img.data[i * img.bands + 1]
+                #{overflow=wrap}
                 b = img.data[i * img.bands + 2]
+                #{overflow=wrap}
                 line = r.to-str() - ' ' - g.to-str() - ' ' - b.to-str() - '\n'
                 lb = line.to-bytes()
-                fs.write(wfd, lb, lb.len)
+                fs.write(wfd, lb, lb.len())
             }
         }
     }
@@ -393,27 +435,35 @@ pnm-write-p2 = (path str, img image) (ok bool) {
         ok = false
         return
     }
+    #{overflow=wrap}
     hdr = 'P2\n' - img.width.to-str() - ' ' - img.height.to-str() - '\n255\n'
     hdr-bytes = hdr
-    fs.write(wfd, hdr-bytes, hdr-bytes.len)
+    fs.write(wfd, hdr-bytes, hdr-bytes.len-bytes())
+    #{overflow=wrap}
     npix = img.width * img.height
     i <- [0..npix): {
         {
             img.bands == 1 -> {
                 v = img.data[i]
+                #{overflow=wrap}
                 line = v.to-str() - '\n'
             }
 
             -> {
+                #{overflow=wrap}
                 r = img.data[i * img.bands]
+                #{overflow=wrap}
                 g = img.data[i * img.bands + 1]
+                #{overflow=wrap}
                 b = img.data[i * img.bands + 2]
+                #{overflow=wrap}
                 v = (r * 299 + g * 587 + b * 114) / 1000
+                #{overflow=wrap}
                 line = v.to-str() - '\n'
             }
         }
         lb = line.to-bytes()
-        fs.write(wfd, lb, lb.len)
+        fs.write(wfd, lb, lb.len())
     }
     fs.close(wfd)
     ok = true

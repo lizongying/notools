@@ -65,13 +65,13 @@ tokenize = (out-tok []i64, out-val []str) {
 
                 ; Try to parse as number; if fails, treat as string
                 is-num = true
-                j <- [0..s.len): {
+                j <- [0..s.len-bytes()): {
                     c = s[j]
                     is-digit = c >= 48 && c <= 57
                     is-sign = j == 0 && c == 45
                     ! is-digit && ! is-sign -> is-num = false
                 }
-                is-num == true && s.len > 0 -> {
+                is-num == true && s.len-bytes() > 0 -> {
                     out-tok.push(EXPR-TOK-NUM)
                     out-val.push(s)
                 }
@@ -92,26 +92,28 @@ atoi = (s str) (v i64) {
     neg = false
     start = 0
     {
-        s.len > 0 -> {
+        s.len-bytes() > 0 -> {
             s[0] == 45 -> {
                 neg = true
                 start = 1
             }
         }
     }
-    i <- [start..s.len): {
+    i <- [start..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
+    #{overflow=wrap}
     neg == true -> v = 0 - v
 }
 
 ; Check if a string looks like an integer
 is-num-str = (s str) (yes bool) {
     yes = false
-    s.len == 0 -> return
+    s.len-bytes() == 0 -> return
     yes = true
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
         is-digit = c >= 48 && c <= 57
         is-sign = i == 0 && c == 45
@@ -129,13 +131,14 @@ is-truthy = (tok i64, val str) (r i64) {
         }
 
         tok == EXPR-TOK-STR -> {
-            val.len > 0 -> r = 1
+            val.len-bytes() > 0 -> r = 1
         }
     }
 }
 
 ; peek: return current token type
 peek = (toks []i64, pos []i64) (t i64) {
+    #{index-out=0}
     t = toks[pos[0]]
 }
 
@@ -145,6 +148,7 @@ match-op = (toks []i64, vals []str, pos []i64, op str) (yes bool) {
     {
         toks[pos[0]] == EXPR-TOK-OP -> {
             vals[pos[0]] == op -> {
+                #{overflow=wrap}
                 pos[0] = pos[0] + 1
                 yes = true
             }
@@ -159,67 +163,84 @@ primary = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
     t = peek(toks, pos)
     {
         t == EXPR-TOK-NUM -> {
+            #{index-out=0}
             rt = toks[pos[0]]
+            #{overflow=wrap}
             rv = vals[pos[0]] - '' - ''
+            #{overflow=wrap}
             pos[0] = pos[0] + 1
             return
         }
 
         t == EXPR-TOK-STR -> {
+            #{index-out=0}
             rt = toks[pos[0]]
+            #{overflow=wrap}
             rv = vals[pos[0]] - '' - ''
+            #{overflow=wrap}
             pos[0] = pos[0] + 1
             return
         }
 
         t == EXPR-TOK-LP -> {
+            #{overflow=wrap}
             pos[0] = pos[0] + 1
             rt, rv = do-or(toks, vals, pos)
             rp = peek(toks, pos)
+            #{overflow=wrap}
             rp == EXPR-TOK-RP -> pos[0] = pos[0] + 1
             return
         }
 
         t == EXPR-TOK-OP -> {
+            #{overflow=wrap}
             v = vals[pos[0]] - ''
             v == '-' -> {
+                #{overflow=wrap}
                 pos[0] = pos[0] + 1
                 ct, cv = primary(toks, vals, pos)
                 n = atoi(cv)
+                #{overflow=wrap}
                 n = 0 - n
                 rt = EXPR-TOK-NUM
                 rv = n.to-str()
                 return
             }
             v == '+' -> {
+                #{overflow=wrap}
                 pos[0] = pos[0] + 1
                 rt, rv = primary(toks, vals, pos)
                 return
             }
             v == 'length' -> {
+                #{overflow=wrap}
                 pos[0] = pos[0] + 1
                 ct, cv = primary(toks, vals, pos)
                 rt = EXPR-TOK-NUM
-                tlen = cv.len
+                tlen = cv.len()
                 rv = tlen.to-str()
                 return
             }
             v == 'substr' -> {
+                #{overflow=wrap}
                 pos[0] = pos[0] + 1
                 s-t, s-v = primary(toks, vals, pos)
                 p-t, p-v = primary(toks, vals, pos)
                 l-t, l-v = primary(toks, vals, pos)
                 start = atoi(p-v)
                 ; POSIX substr: 1-based, negative start counts from end
+                #{overflow=wrap}
                 start > 0 -> start = start - 1
-                start < 0 -> start = s-v.len + start
+                #{overflow=wrap}
+                start < 0 -> start = s-v.len() + start
                 length = atoi(l-v)
+                #{overflow=wrap}
                 end = start + length
-                end > s-v.len -> end = s-v.len
+                end > s-v.len() -> end = s-v.len()
                 start < 0 -> start = 0
                 rt = EXPR-TOK-STR
-                start >= s-v.len -> rv = ''
-                start < s-v.len -> rv = s-v.slice(start, end)
+                start >= s-v.len() -> rv = ''
+                start < s-v.len() -> rv = s-v.slice(start, end)
                 return
             }
         }
@@ -235,17 +256,21 @@ mul = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
     {
         t = peek(toks, pos)
         t != EXPR-TOK-OP -> break
+        #{overflow=wrap}
         v = vals[pos[0]] - ''
         v != '*' && v != '/' && v != '%' -> break
+        #{overflow=wrap}
         pos[0] = pos[0] + 1
         rt2, rv2 = primary(toks, vals, pos)
         a = atoi(cur-v)
         b = atoi(rv2)
         r = 0
         {
+            #{overflow=wrap}
             v == '*' -> r = a * b
 
             v == '/' -> {
+                #{overflow=wrap}
                 b != 0 -> r = a / b
             }
 
@@ -268,16 +293,20 @@ add = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
     {
         t = peek(toks, pos)
         t != EXPR-TOK-OP -> break
+        #{overflow=wrap}
         v = vals[pos[0]] - ''
         v != '+' && v != '-' -> break
+        #{overflow=wrap}
         pos[0] = pos[0] + 1
         rt2, rv2 = mul(toks, vals, pos)
         a = atoi(cur-v)
         b = atoi(rv2)
         r = 0
         {
+            #{overflow=wrap}
             v == '+' -> r = a + b
 
+            #{overflow=wrap}
             v == '-' -> r = a - b
         }
         cur-t = EXPR-TOK-NUM
@@ -299,8 +328,8 @@ parse-match = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
         ; Simplified: count leading characters of rv that match pattern rv2
         matched-len = 0
         {
-            rv2.len > 0 -> {
-                cur-v.starts-with(rv2) -> matched-len = rv2.len
+            rv2.len() > 0 -> {
+                cur-v.starts-with(rv2) -> matched-len = rv2.len()
             }
         }
         cur-t = EXPR-TOK-NUM
@@ -324,6 +353,7 @@ cmp = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
             return
         }
     }
+    #{overflow=wrap}
     v = vals[pos[0]] - ''
     {
         v != '=' && v != '!=' && v != '<' && v != '<=' && v != '>' && v != '>=' -> {
@@ -332,6 +362,7 @@ cmp = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
             return
         }
     }
+    #{overflow=wrap}
     pos[0] = pos[0] + 1
     rt2, rv2 = parse-match(toks, vals, pos)
     ; Comparison: if both look like integers, compare numerically; else lexically
@@ -415,6 +446,7 @@ do-or = (toks []i64, vals []str, pos []i64) (rt i64, rv str) {
         {
             t1 == 0 -> {
                 cur-t = rt2
+                #{overflow=wrap}
                 cur-v = rv2 - ''
             }
         }

@@ -10,8 +10,9 @@
 ; atoi: parse a non-negative integer from a string
 atoi = (s str) (v i64) {
     v = 0
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
 }
@@ -19,7 +20,8 @@ atoi = (s str) (v i64) {
 ; parse-size: parse a size with optional K/M suffix
 parse-size = (s str) (n i64) {
     n = 0
-    last = s.len - 1
+    #{overflow=wrap}
+    last = s.len-bytes() - 1
     last < 0 -> return
     mult = 1
     c = s[last]
@@ -33,12 +35,15 @@ parse-size = (s str) (n i64) {
         c == 77 -> mult = 1048576; M
     }
 
+    #{overflow=wrap}
     end = last + 1
     mult > 1 -> end = last
     i <- [0..end): {
         ch = s[i]
+        #{overflow=wrap}
         ch >= 48 && ch <= 57 -> n = n * 10 + (ch - 48)
     }
+    #{overflow=wrap}
     n = n * mult
 }
 
@@ -47,7 +52,9 @@ gen-suffix = (idx i64, width i64) (suf str) {
     chars = 'abcdefghijklmnopqrstuvwxyz'
     buf = ' '.repeat(width)
     i <- [0..width): {
+        #{overflow=wrap}
         buf[width - 1 - i] = chars[idx % 26]
+        #{overflow=wrap}
         idx = idx / 26
     }
     suf = buf
@@ -58,7 +65,7 @@ write-chunk = (prefix str, file-idx i64, suffix-len i64, chunk str) {
     suf = gen-suffix(file-idx, suffix-len)
     fname = prefix - suf
     fd = fs.open-write(fname)
-    fs.write(fd, chunk, chunk.len)
+    fs.write(fd, chunk, chunk.len-bytes())
     fs.close(fd)
 }
 
@@ -79,28 +86,34 @@ split = () {
             -> {
                 a = arg(i)
                 {
+                    #{overflow=wrap}
                     a == '-l' -> {
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             lines-per = atoi(arg(i + 1))
                             skip-next = true
                         }
                     }
 
+                    #{overflow=wrap}
                     a == '-b' -> {
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             bytes-per = parse-size(arg(i + 1))
                             skip-next = true
                         }
                     }
 
+                    #{overflow=wrap}
                     a == '-a' -> {
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             suffix-len = atoi(arg(i + 1))
                             skip-next = true
                         }
                     }
 
-                    a.starts-with('-') && a.len > 1 -> {
+                    a.starts-with('-') && a.len-bytes() > 1 -> {
                     }
 
                     ! a.starts-with('-') -> {
@@ -130,6 +143,7 @@ split = () {
 
         -> {
             fs.is-file(infile) == false -> {
+                #{overflow=wrap}
                 eprint('split: ' - infile - ': No such file or directory')
                 os.exit(1)
             }
@@ -150,14 +164,16 @@ split = () {
         bytes-per > 0 -> {
 
             ; Split by bytes
-            total = content.len
+            total = content.len-bytes()
             pos = 0
             {
                 pos < total -> {
+                    #{overflow=wrap}
                     end = pos + bytes-per
                     end > total -> end = total
                     chunk = content.slice(pos, end)
                     write-chunk(prefix, file-idx, suffix-len, chunk)
+                    #{overflow=wrap}
                     file-idx = file-idx + 1
                     pos = end
                 }
@@ -169,22 +185,26 @@ split = () {
             ; Split by lines
             start = 0
             line-count = 0
-            j <- [0..content.len): {
+            j <- [0..content.len-bytes()): {
                 content[j] == 10 -> {
+                    #{overflow=wrap}
                     line-count = line-count + 1
                     line-count >= lines-per -> {
+                        #{overflow=wrap}
                         end = j + 1
                         chunk = content.slice(start, end)
                         write-chunk(prefix, file-idx, suffix-len, chunk)
+                        #{overflow=wrap}
                         file-idx = file-idx + 1
                         start = end
                         line-count = 0
                     }
                 }
             }
-            start < content.len -> {
-                chunk = content.slice(start, content.len)
+            start < content.len-bytes() -> {
+                chunk = content.slice(start, content.len-bytes())
                 write-chunk(prefix, file-idx, suffix-len, chunk)
+                #{overflow=wrap}
                 file-idx = file-idx + 1
             }
         }

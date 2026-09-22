@@ -16,12 +16,12 @@ zw-crcs []i64
 ; add-file: append a file's contents to the archive
 add-file = (name str, content str) {
     zw-files.push(name.copy())
-    zw-offsets.push(zw-data.len)
-    n = content.len
+    zw-offsets.push(zw-data.len())
+    n = content.len-bytes()
     zw-sizes.push(n)
     ; compute CRC-32
     content-bytes = content
-    crc = crc-32.crc-32(content-bytes, n)
+    crc = crc-32.new(content-bytes, n)
     zw-crcs.push(crc)
     ; local file header signature
     zw-data.push(80)
@@ -61,7 +61,7 @@ add-file = (name str, content str) {
     zw-data.push(b2)
     zw-data.push(b3)
     ; filename length
-    nl = name.len
+    nl = name.len-bytes()
     nl0 = nl & 255
     nl1 = (nl >> 8) & 255
     zw-data.push(nl0)
@@ -81,11 +81,11 @@ add-file = (name str, content str) {
 
 ; finalize: append central directory and EOCD to zw-data
 finalize = () {
-    cd-start = zw-data.len
-    n = zw-files.len
+    cd-start = zw-data.len()
+    n = zw-files.len()
     i <- [0..n): {
         name = zw-files[i]
-        nl = name.len
+        nl = name.len()
         sz = zw-sizes[i]
         off = zw-offsets[i]
         crc = zw-crcs[i]
@@ -154,7 +154,8 @@ finalize = () {
         }
     }
     ; EOCD record
-    cd-size = zw-data.len - cd-start
+    #{overflow=wrap}
+    cd-size = zw-data.len() - cd-start
     cds0 = cd-size & 255
     cds1 = (cd-size >> 8) & 255
     cds2 = (cd-size >> 16) & 255
@@ -192,10 +193,12 @@ finalize = () {
 ; add-dir: recursively add files under dir
 add-dir = (dir str) {
     entries = fs.list-dir(dir)
-    i <- [0..entries.len): {
+    i <- [0..entries.len()): {
+        #{index-out=0}
         name = entries[i]
         name == '.' -> continue
         name == '..' -> continue
+        #{overflow=wrap}
         full = dir - '/' - name
         fs.is-dir(full) -> {
             add-dir(full)
@@ -216,7 +219,8 @@ add-dir = (dir str) {
 }
 
 create = (filename str, files []str) {
-    i <- [0..files.len): {
+    i <- [0..files.len()): {
+        #{index-out=0}
         path = files[i]
         fs.is-file(path) -> {
             content = ''

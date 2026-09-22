@@ -31,6 +31,7 @@
 png-crc32 = (data str, start i64, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
+        #{overflow=wrap}
         b = data[start + i] & 255
         crc = crc ^ b
         j <- [0..8): {
@@ -56,7 +57,7 @@ png-crc32 = (data str, start i64, len i64) (crc i64) {
 load = (path str) (img ?image) {
     ; CRC32 uses bitwise computation, no table init needed
     data = fs.read-file(path)
-    data.len < 24 -> {
+    data.len() < 24 -> {
         img = nil
         return
     }
@@ -84,54 +85,67 @@ load = (path str) (img ?image) {
 
     ; Parse chunks
     {
-        pos < data.len -> {
+        pos < data.len() -> {
+            #{overflow=wrap}
             {
-                pos + 8 > data.len -> break
+                pos + 8 > data.len() -> break
             }
 
             ; Read chunk length (big-endian 32-bit)
             chunk-len = ((data[pos] & 255) << 24) | ((data[pos + 1] & 255) << 16) | ((data[pos + 2] & 255) << 8) | (data[pos + 3] & 255)
+            #{overflow=wrap}
             pos = pos + 4
 
             ; Read chunk type (4 bytes)
+            #{overflow=wrap}
             chunk-type = data.slice(pos, pos + 4)
+            #{overflow=wrap}
             pos = pos + 4
             chunk-type == 'IHDR' -> {
 
                 ; IHDR: width(4) height(4) bitdepth(1) colortype(1) compression(1) filter(1) interlace(1)
                 w = ((data[pos] & 255) << 24) | ((data[pos + 1] & 255) << 16) | ((data[pos + 2] & 255) << 8) | (data[pos + 3] & 255)
                 h = ((data[pos + 4] & 255) << 24) | ((data[pos + 5] & 255) << 16) | ((data[pos + 6] & 255) << 8) | (data[pos + 7] & 255)
+                #{overflow=wrap}
                 bit-depth = data[pos + 8] & 255
+                #{overflow=wrap}
                 color-type = data[pos + 9] & 255
+                #{overflow=wrap}
                 compression = data[pos + 10] & 255
+                #{overflow=wrap}
                 filter = data[pos + 11] & 255
+                #{overflow=wrap}
                 interlace = data[pos + 12] & 255
             }
             chunk-type == 'IDAT' -> {
 
                 ; Append to idat-data
                 i <- [0..chunk-len): {
+                    #{overflow=wrap}
                     idat-data.push(data[pos + i] & 255)
                 }
             }
             chunk-type == 'PLTE' -> {
                 has-palette = true
                 i <- [0..chunk-len): {
+                    #{overflow=wrap}
                     palette.push(data[pos + i] & 255)
                 }
             }
             chunk-type == 'tRNS' -> {
                 has-trns = true
                 i <- [0..chunk-len): {
+                    #{overflow=wrap}
                     trns.push(data[pos + i] & 255)
                 }
             }
             chunk-type == 'IEND' -> {
                 break
             }
+            #{overflow=wrap}
             pos = pos + chunk-len + 4
         }
-    } (pos < data.len)
+    } (pos < data.len())
     {
 w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
 img = nil
@@ -166,6 +180,7 @@ img = nil
     bytes-per-pixel = bands
     {
         bit-depth == 16 -> {
+            #{overflow=wrap}
             bytes-per-pixel = bands * 2
         }
     }
@@ -182,11 +197,13 @@ img = nil
     }
     {
         is-u16 -> {
+            #{overflow=wrap}
             _d str = with-len(w * h * bands * 2)
             tmp = image.new-u16(w, h, bands)
         }
 
         -> {
+            #{overflow=wrap}
             _d str = with-len(w * h * bands)
             tmp = image.new-from-data(w, h, bands, _d)
         }
@@ -232,12 +249,16 @@ img = nil
                 sy-step = pass-steps-y[pass]
 
                 ; Number of pixels per row in this pass
+                #{overflow=wrap}
                 pass-w = (w - sx-start + sx-step - 1) / sx-step
+                #{overflow=wrap}
                 pass-h = (h - sy-start + sy-step - 1) / sy-step
 
                 {
                     pass-w > 0 && pass-h > 0 -> {
+                        #{overflow=wrap}
                         pass-stride = pass-w * bytes-per-pixel
+                        #{overflow=wrap}
                         pass-row-len = pass-stride + 1
 
                         ; Allocate previous row for filtering
@@ -247,9 +268,11 @@ img = nil
                         }
 
                         py <- [0..pass-h): {
+                            #{overflow=wrap}
                             {
-                                raw-pos + pass-row-len > raw.len -> break
+                                raw-pos + pass-row-len > raw.len() -> break
                             }
+                            #{overflow=wrap}
                             img-y = sy-start + py * sy-step
 
                             ; Read filter type
@@ -258,6 +281,7 @@ img = nil
                             ; Copy current row
                             pass-cur str = with-len(pass-stride)
                             pi <- [0..pass-stride): {
+                                #{overflow=wrap}
                                 pass-cur[pi] = raw[raw-pos + 1 + pi]
                             }
 
@@ -269,12 +293,14 @@ img = nil
 
                                 filter-type == 1 -> {
                                     pi <- [bytes-per-pixel..pass-stride): {
+                                        #{overflow=wrap}
                                         pass-cur[pi] = pass-cur[pi] + pass-cur[pi - bytes-per-pixel]
                                     }
                                 }
 
                                 filter-type == 2 -> {
                                     pi <- [0..pass-stride): {
+                                        #{overflow=wrap}
                                         pass-cur[pi] = pass-cur[pi] + pass-prev[pi]
                                     }
                                 }
@@ -283,9 +309,11 @@ img = nil
                                     pi <- [0..pass-stride): {
                                         left = 0
                                         pi >= bytes-per-pixel -> {
+                                            #{overflow=wrap}
                                             left = pass-cur[pi - bytes-per-pixel]
                                         }
                                         above = pass-prev[pi]
+                                        #{overflow=wrap}
                                         pass-cur[pi] = pass-cur[pi] + (left + above) / 2
                                     }
                                 }
@@ -294,22 +322,28 @@ img = nil
                                     pi <- [0..pass-stride): {
                                         left = 0
                                         pi >= bytes-per-pixel -> {
+                                            #{overflow=wrap}
                                             left = pass-cur[pi - bytes-per-pixel]
                                         }
                                         above = pass-prev[pi]
                                         above-left = 0
                                         pi >= bytes-per-pixel -> {
+                                            #{overflow=wrap}
                                             above-left = pass-prev[pi - bytes-per-pixel]
                                         }
+                                        #{overflow=wrap}
                                         p = left + above - above-left
+                                        #{overflow=wrap}
                                         pa = left - above-left
                                         {
                                             pa < 0 -> pa = -pa
                                         }
+                                        #{overflow=wrap}
                                         pb = above - above-left
                                         {
                                             pb < 0 -> pb = -pb
                                         }
+                                        #{overflow=wrap}
                                         pc = p - above-left
                                         {
                                             pc < 0 -> pc = -pc
@@ -328,6 +362,7 @@ img = nil
                                                 predictor = above-left
                                             }
                                         }
+                                        #{overflow=wrap}
                                         pass-cur[pi] = pass-cur[pi] + predictor
                                     }
                                 }
@@ -335,30 +370,39 @@ img = nil
 
                             ; Write pixels to image at correct positions
                             px <- [0..pass-w): {
+                                #{overflow=wrap}
                                 img-x = sx-start + px * sx-step
                                 {
                                     img-x < w && img-y < h -> {
                                         {
                                             color-type == 3 -> {
                                                 idx = pass-cur[px]
+                                                #{overflow=wrap}
                                                 {
-                                                    idx * 3 + 2 < palette.len -> {
+                                                    idx * 3 + 2 < palette.len() -> {
+                                                        #{overflow=wrap}
                                                         dst = (img-y * w + img-x) * 3
+                                                        #{overflow=wrap}
                                                         tmp.data[dst] = palette[idx * 3]
+                                                        #{overflow=wrap}
                                                         tmp.data[dst + 1] = palette[idx * 3 + 1]
+                                                        #{overflow=wrap}
                                                         tmp.data[dst + 2] = palette[idx * 3 + 2]
                                                     }
                                                 }
                                             }
 
                                             color-type == 0 -> {
+                                                #{overflow=wrap}
                                                 dst = img-y * w + img-x
                                                 tmp.data[dst] = pass-cur[px]
                                             }
 
                                             -> {
+                                                #{overflow=wrap}
                                                 dst = (img-y * w + img-x) * bands
                                                 b <- [0..bands): {
+                                                    #{overflow=wrap}
                                                     tmp.data[dst + b] = pass-cur[px * bytes-per-pixel + b]
                                                 }
                                             }
@@ -372,6 +416,7 @@ img = nil
                                 pass-prev[pi] = pass-cur[pi]
                             }
 
+                            #{overflow=wrap}
                             raw-pos = raw-pos + pass-row-len
                         }
                     }
@@ -381,7 +426,9 @@ img = nil
 
         -> {
             ; Non-interlaced
+            #{overflow=wrap}
             stride = w * bytes-per-pixel
+            #{overflow=wrap}
             row-len = stride + 1
 
             ; Allocate filtered row buffers
@@ -390,15 +437,18 @@ img = nil
                 prev-row[i] = 0
             }
             y <- [0..h): {
+                #{overflow=wrap}
                 row-start = y * row-len
+                #{overflow=wrap}
                 {
-                    row-start + row-len > raw.len -> break
+                    row-start + row-len > raw.len() -> break
                 }
                 filter-type = raw[row-start]
 
                 ; Copy current row
                 cur-row str = with-len(stride)
                 i <- [0..stride): {
+                    #{overflow=wrap}
                     cur-row[i] = raw[row-start + 1 + i]
                 }
 
@@ -412,6 +462,7 @@ img = nil
 
                         ; Sub: raw + left
                         x <- [bytes-per-pixel..stride): {
+                            #{overflow=wrap}
                             cur-row[x] = cur-row[x] + cur-row[x - bytes-per-pixel]
                         }
                     }
@@ -420,6 +471,7 @@ img = nil
 
                         ; Up: raw + above
                         x <- [0..stride): {
+                            #{overflow=wrap}
                             cur-row[x] = cur-row[x] + prev-row[x]
                         }
                     }
@@ -430,9 +482,11 @@ img = nil
                         x <- [0..stride): {
                             left = 0
                             x >= bytes-per-pixel -> {
+                                #{overflow=wrap}
                                 left = cur-row[x - bytes-per-pixel]
                             }
                             above = prev-row[x]
+                            #{overflow=wrap}
                             cur-row[x] = cur-row[x] + (left + above) / 2
                         }
                     }
@@ -443,24 +497,30 @@ img = nil
                         x <- [0..stride): {
                             left = 0
                             x >= bytes-per-pixel -> {
+                                #{overflow=wrap}
                                 left = cur-row[x - bytes-per-pixel]
                             }
                             above = prev-row[x]
                             above-left = 0
                             x >= bytes-per-pixel -> {
+                                #{overflow=wrap}
                                 above-left = prev-row[x - bytes-per-pixel]
                             }
 
                             ; Paeth predictor
+                            #{overflow=wrap}
                             p = left + above - above-left
+                            #{overflow=wrap}
                             pa = left - above-left
                             {
                                 pa < 0 -> pa = -pa
                             }
+                            #{overflow=wrap}
                             pb = above - above-left
                             {
                                 pb < 0 -> pb = -pb
                             }
+                            #{overflow=wrap}
                             pc = p - above-left
                             {
                                 pc < 0 -> pc = -pc
@@ -479,6 +539,7 @@ img = nil
                                     predictor = above-left
                                 }
                             }
+                            #{overflow=wrap}
                             cur-row[x] = cur-row[x] + predictor
                         }
                     }
@@ -491,10 +552,14 @@ img = nil
                         ; Indexed color (always 8-bit)
                         x <- [0..w): {
                             idx = cur-row[x]
+                            #{overflow=wrap}
                             {
-                                idx * 3 + 2 < palette.len -> {
+                                idx * 3 + 2 < palette.len() -> {
+                                    #{overflow=wrap}
                                     image.set-pixel(tmp, x, y, 0, palette[idx * 3])
+                                    #{overflow=wrap}
                                     image.set-pixel(tmp, x, y, 1, palette[idx * 3 + 1])
+                                    #{overflow=wrap}
                                     image.set-pixel(tmp, x, y, 2, palette[idx * 3 + 2])
                                 }
                             }
@@ -530,6 +595,7 @@ img = nil
                                     }
 
                                     -> {
+                                        #{overflow=wrap}
                                         image.set-pixel(tmp, x, y, b, cur-row[x * bands + b])
                                     }
                                 }
@@ -554,7 +620,7 @@ img = nil
                     ; Grayscale tRNS: 2 bytes (16-bit gray value)
                     ; Pixels matching this value get alpha=0, others alpha=255
                     {
-                        trns.len >= 2 -> {
+                        trns.len() >= 2 -> {
                             trns-val = ((trns[0] & 255) << 8) | (trns[1] & 255)
                             ; Create RGBA image
                             rgba-img = image.new(w, h, 4)
@@ -574,9 +640,13 @@ img = nil
                                         }
                                     }
                                 }
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4] = g
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 1] = g
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 2] = g
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 3] = a
                             }
                             tmp = rgba-img
@@ -588,14 +658,17 @@ img = nil
                     ; RGB tRNS: 6 bytes (R, G, B — each 16-bit)
                     ; Pixels matching get alpha=0, others alpha=255
                     {
-                        trns.len >= 6 -> {
+                        trns.len() >= 6 -> {
                             trns-r = ((trns[0] & 255) << 8) | (trns[1] & 255)
                             trns-g = ((trns[2] & 255) << 8) | (trns[3] & 255)
                             trns-b = ((trns[4] & 255) << 8) | (trns[5] & 255)
                             rgba-img = image.new(w, h, 4)
                             i <- [0..w * h): {
+                                #{overflow=wrap}
                                 r = tmp.data[i * 3]
+                                #{overflow=wrap}
                                 g = tmp.data[i * 3 + 1]
+                                #{overflow=wrap}
                                 b = tmp.data[i * 3 + 2]
                                 a = 255
                                 {
@@ -611,9 +684,13 @@ img = nil
                                         }
                                     }
                                 }
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4] = r
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 1] = g
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 2] = b
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 3] = a
                             }
                             tmp = rgba-img
@@ -628,6 +705,7 @@ img = nil
                         has-palette -> {
                             rgba-img = image.new(w, h, 4)
                             i <- [0..w * h): {
+                                #{overflow=wrap}
                                 idx = tmp.data[i * 3]  ; This was set from palette R
                                 ; Actually for indexed, tmp already has RGB expanded.
                                 ; We need the original index, but it's lost.
@@ -635,23 +713,31 @@ img = nil
                                 ; This is inefficient but correct for tRNS on indexed.
                                 ; Better: store indices during decode.
                                 ; For now, copy RGB and set alpha from palette tRNS
+                                #{overflow=wrap}
                                 r = tmp.data[i * 3]
+                                #{overflow=wrap}
                                 g = tmp.data[i * 3 + 1]
+                                #{overflow=wrap}
                                 b = tmp.data[i * 3 + 2]
                                 a = 255
                                 ; Search palette for matching entry
-                                pi <- [0..palette.len / 3): {
+                                pi <- [0..palette.len() / 3): {
+                                    #{overflow=wrap}
                                     {
                                         palette[pi * 3] == r && palette[pi * 3 + 1] == g && palette[pi * 3 + 2] == b -> {
                                             {
-                                                pi < trns.len -> a = trns[pi]
+                                                pi < trns.len() -> a = trns[pi]
                                             }
                                         }
                                     }
                                 }
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4] = r
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 1] = g
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 2] = b
+                                #{overflow=wrap}
                                 rgba-img.data[i * 4 + 3] = a
                             }
                             tmp = rgba-img
@@ -696,10 +782,14 @@ save = (path str, img image) (ok bool) {
     {
         bit-depth == 16 -> bytes-per-channel = 2
     }
+    #{overflow=wrap}
     stride = img.width * bands * bytes-per-channel
+    #{overflow=wrap}
     row-len = stride + 1
+    #{overflow=wrap}
     raw str = with-len(row-len * img.height)
     y <- [0..img.height): {
+        #{overflow=wrap}
         raw[y * row-len] = 0
         {
             img.bands == bands -> {
@@ -708,11 +798,14 @@ save = (path str, img image) (ok bool) {
                         v = image.get-pixel(img, x, y, b)
                         {
                             bit-depth == 16 -> {
+                                #{overflow=wrap}
                                 raw[y * row-len + 1 + (x * bands + b) * 2] = (v >> 8) & 255
+                                #{overflow=wrap}
                                 raw[y * row-len + 1 + (x * bands + b) * 2 + 1] = v & 255
                             }
 
                             -> {
+                                #{overflow=wrap}
                                 raw[y * row-len + 1 + x * bands + b] = v
                             }
                         }
@@ -731,6 +824,7 @@ save = (path str, img image) (ok bool) {
                                     r = image.get-pixel(img, x, y, 0)
                                     g = image.get-pixel(img, x, y, 1)
                                     b = image.get-pixel(img, x, y, 2)
+                                    #{overflow=wrap}
                                     v = (r * 299 + g * 587 + b * 114) / 1000
                                 }
 
@@ -740,11 +834,14 @@ save = (path str, img image) (ok bool) {
                             }
                             {
                                 bit-depth == 16 -> {
+                                    #{overflow=wrap}
                                     raw[y * row-len + 1 + x * 2] = (v >> 8) & 255
+                                    #{overflow=wrap}
                                     raw[y * row-len + 1 + x * 2 + 1] = v & 255
                                 }
 
                                 -> {
+                                    #{overflow=wrap}
                                     raw[y * row-len + 1 + x] = v
                                 }
                             }
@@ -766,11 +863,14 @@ save = (path str, img image) (ok bool) {
                                 }
                                 {
                                     bit-depth == 16 -> {
+                                        #{overflow=wrap}
                                         raw[y * row-len + 1 + (x * bands + i) * 2] = (v >> 8) & 255
+                                        #{overflow=wrap}
                                         raw[y * row-len + 1 + (x * bands + i) * 2 + 1] = v & 255
                                     }
 
                                     -> {
+                                        #{overflow=wrap}
                                         raw[y * row-len + 1 + x * bands + i] = v
                                     }
                                 }
@@ -786,7 +886,8 @@ save = (path str, img image) (ok bool) {
     compressed = gzip.gzip-compress(raw)
 
     ; Build PNG file
-    buf []byte = with-cap(8 + 25 + 12 + compressed.len + 12 + 12)
+    #{overflow=wrap}
+    buf []byte = with-cap(8 + 25 + 12 + compressed.len() + 12 + 12)
 
     ; PNG signature
     buf.push(137)
@@ -814,7 +915,7 @@ save = (path str, img image) (ok bool) {
         ok = false
         return
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }
@@ -849,7 +950,7 @@ png-build-ihdr = (w i64, h i64, bit-depth i64, color-type i64) (data []byte) {
 png-write-chunk = (out []byte, type-str str, data []byte) {
 
     ; Length (big-endian)
-    len = data.len
+    len = data.len()
     out.push((len >> 24) & 255)
     out.push((len >> 16) & 255)
     out.push((len >> 8) & 255)
@@ -862,7 +963,7 @@ png-write-chunk = (out []byte, type-str str, data []byte) {
     }
 
     ; Data
-    i <- [0..data.len): {
+    i <- [0..data.len()): {
         out.push(data[i])
     }
 
@@ -870,14 +971,15 @@ png-write-chunk = (out []byte, type-str str, data []byte) {
     crc-data = type-str.to-bytes()
 
     ; Build a combined buffer for CRC
-    combined []byte = with-cap(4 + data.len)
+    #{overflow=wrap}
+    combined []byte = with-cap(4 + data.len())
     i <- [0..4): {
         combined.push(type-bytes[i])
     }
-    i <- [0..data.len): {
+    i <- [0..data.len()): {
         combined.push(data[i])
     }
-    crc = png-crc32-combined(combined, combined.len)
+    crc = png-crc32-combined(combined, combined.len())
     out.push((crc >> 24) & 255)
     out.push((crc >> 16) & 255)
     out.push((crc >> 8) & 255)
@@ -889,7 +991,7 @@ png-write-chunk = (out []byte, type-str str, data []byte) {
 ; type-str str: chunk type
 ; data []byte: chunk data (already byte array)
 png-write-chunk-raw = (out []byte, type-str str, data []byte) {
-    len = data.len
+    len = data.len()
     out.push((len >> 24) & 255)
     out.push((len >> 16) & 255)
     out.push((len >> 8) & 255)
@@ -898,19 +1000,20 @@ png-write-chunk-raw = (out []byte, type-str str, data []byte) {
     i <- [0..4): {
         out.push(type-bytes[i])
     }
-    i <- [0..data.len): {
+    i <- [0..data.len()): {
         out.push(data[i])
     }
 
     ; CRC
-    combined []byte = with-cap(4 + data.len)
+    #{overflow=wrap}
+    combined []byte = with-cap(4 + data.len())
     i <- [0..4): {
         combined.push(type-bytes[i])
     }
-    i <- [0..data.len): {
+    i <- [0..data.len()): {
         combined.push(data[i])
     }
-    crc = png-crc32-combined(combined, combined.len)
+    crc = png-crc32-combined(combined, combined.len())
     out.push((crc >> 24) & 255)
     out.push((crc >> 16) & 255)
     out.push((crc >> 8) & 255)

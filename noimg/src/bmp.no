@@ -27,7 +27,7 @@
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len < 54 -> {
+    data.len() < 54 -> {
         img = nil
         return
     }
@@ -41,27 +41,28 @@ load = (path str) (img ?image) {
     }
 
     ; Read DIB header offset
-    data-offset = (data[10] & 255) | ((data[11] & 255) << 8) | ((data[12] & 255) << 16) | ((data[13] & 255) << 24)
+    data-offset i64 = (data[10] & 255) | ((data[11] & 255) << 8) | ((data[12] & 255) << 16) | ((data[13] & 255) << 24)
 
     ; Read BITMAPINFOHEADER
-    hdr-size = (data[14] & 255) | ((data[15] & 255) << 8) | ((data[16] & 255) << 16) | ((data[17] & 255) << 24)
+    hdr-size i64 = (data[14] & 255) | ((data[15] & 255) << 8) | ((data[16] & 255) << 16) | ((data[17] & 255) << 24)
 
     ; Width (signed 32-bit, little-endian)
-    w = (data[18] & 255) | ((data[19] & 255) << 8) | ((data[20] & 255) << 16) | ((data[21] & 255) << 24)
+    w i64 = (data[18] & 255) | ((data[19] & 255) << 8) | ((data[20] & 255) << 16) | ((data[21] & 255) << 24)
 
     ; Height (signed 32-bit, little-endian)
-    h = (data[22] & 255) | ((data[23] & 255) << 8) | ((data[24] & 255) << 16) | ((data[25] & 255) << 24)
+    h i64 = (data[22] & 255) | ((data[23] & 255) << 8) | ((data[24] & 255) << 16) | ((data[25] & 255) << 24)
 
     ; Top-down if height is negative
     top-down = false
     h > 2147483647 -> {
 
         ; negative value in 32-bit — flip
+        #{overflow=wrap}
         h = 4294967296 - h
         top-down = true
     }
-    bpp = (data[28] & 255) | ((data[29] & 255) << 8)
-    compression = (data[30] & 255) | ((data[31] & 255) << 8) | ((data[32] & 255) << 16) | ((data[33] & 255) << 24)
+    bpp i64 = (data[28] & 255) | ((data[29] & 255) << 8)
+    compression i64 = (data[30] & 255) | ((data[31] & 255) << 8) | ((data[32] & 255) << 16) | ((data[33] & 255) << 24)
     {
         compression != 0 -> {
             img = nil
@@ -80,28 +81,40 @@ img = nil
     }
     bands = 3
     bpp == 32 -> bands = 4
+    #{overflow=wrap}
     _d str = with-len(w * h * bands)
     tmp = image.new-from-data(w, h, bands, _d)
 
     ; Row size is padded to 4-byte boundary
+    #{overflow=wrap}
     row-bytes = w * (bpp / 8)
     row-padded = (row-bytes + 3) & ~3
 
     ; row-padded aligned to 4
+    #{overflow=wrap}
     pad = row-padded - row-bytes
     y <- [0..h): {
         src-y = y
+        #{overflow=wrap}
         top-down == false -> src-y = h - 1 - y
+        #{overflow=wrap}
         row-start = data-offset + src-y * row-padded
         x <- [0..w): {
+            #{overflow=wrap}
             b = data[row-start + x * (bpp / 8)] & 255
+            #{overflow=wrap}
             g = data[row-start + x * (bpp / 8) + 1] & 255
+            #{overflow=wrap}
             r = data[row-start + x * (bpp / 8) + 2] & 255
+            #{overflow=wrap}
             dst = (y * w + x) * bands
             tmp.data[dst] = r
+            #{overflow=wrap}
             tmp.data[dst + 1] = g
+            #{overflow=wrap}
             tmp.data[dst + 2] = b
             bands == 4 -> {
+                #{overflow=wrap}
                 tmp.data[dst + 3] = data[row-start + x * 4 + 3] & 255
             }
         }
@@ -122,10 +135,14 @@ save = (path str, img image) (ok bool) {
         bpp = 32
         src-bands = 4
     }
+    #{overflow=wrap}
     row-bytes = w * (bpp / 8)
     row-padded = (row-bytes + 3) & ~3
+    #{overflow=wrap}
     pad = row-padded - row-bytes
+    #{overflow=wrap}
     image-size = row-padded * h
+    #{overflow=wrap}
     file-size = 14 + 40 + image-size
 
     ; Build output buffer using with-cap + push
@@ -217,17 +234,22 @@ save = (path str, img image) (ok bool) {
 
     ; --- Pixel data (bottom-up, BGR) ---
     y <- [0..h): {
+        #{overflow=wrap}
         src-y = h - 1 - y
         x <- [0..w): {
+            #{overflow=wrap}
             src-idx = (src-y * w + x) * img.bands
             r = img.data[src-idx]
+            #{overflow=wrap}
             g = img.data[src-idx + 1]
+            #{overflow=wrap}
             b = img.data[src-idx + 2]
             buf.push(b)
             buf.push(g)
             buf.push(r)
             bpp == 32 -> {
                 img.bands >= 4 -> {
+                    #{overflow=wrap}
                     buf.push(img.data[src-idx + 3])
                 }
 
@@ -249,7 +271,7 @@ save = (path str, img image) (ok bool) {
         ok = false
         return
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }

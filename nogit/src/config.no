@@ -20,17 +20,20 @@ trim-ws = (s str) (out str) {
     ; find start
     start = 0
     {
-        start >= s.len -> break
+        start >= s.len-bytes() -> break
         c = s[start]
+        #{overflow=wrap}
         c == 32 || c == 9 -> start = start + 1
         c != 32 && c != 9 -> break
     } (true)
 
     ; find end
-    end = s.len
+    end = s.len-bytes()
     {
         end <= start -> break
+        #{overflow=wrap}
         c = s[end - 1]
+        #{overflow=wrap}
         c == 32 || c == 9 || c == 10 || c == 13 -> end = end - 1
         c != 32 && c != 9 && c != 10 && c != 13 -> break
     } (true)
@@ -39,10 +42,11 @@ trim-ws = (s str) (out str) {
 
 to-lower-local = (s str) (out str) {
     out = ''
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
         {
             c >= 65 && c <= 90 -> {
+                #{overflow=wrap}
                 lc = c + 32
                 cs str = with-len(1)
                 cs[0] = lc
@@ -76,7 +80,12 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
     ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
     isf = fs.is-file(p)
     isf == false -> return
-    content = fs.read-file(p)
+    ; fs.read-file 現在回傳 []byte。本函式後續以「位元組位移」掃描內容
+    ; （find-byte-str / str-range / len-bytes），故先做 1:1 位元組轉字串。
+    ; 用 to-bytes-str（回傳 str、逐位元組拷貝），不是 to-str——後者回傳
+    ; ?str 且會按碼點重新編碼，對多位元組 UTF-8 會損壞內容。
+    content-bytes []byte = fs.read-file(p)
+    content = content-bytes.to-bytes-str()
 
     ; parse section name and optional subsection from `section` param
     ; if section contains '.', split into section + subsection
@@ -87,14 +96,14 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
     in-section = false
     current-section str = ''
     {
-        pos >= content.len -> break
+        pos >= content.len-bytes() -> break
         nl = util.find-byte-str(content, 10, pos)
-        end = content.len
+        end = content.len-bytes()
         nl >= 0 -> end = nl
         line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
         {
-            trimmed.len == 0 ->
+            trimmed.len-bytes() == 0 ->
 
             -> {
 
@@ -114,10 +123,13 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
                                     sname = util.str-range(inner, 0, dq)
                                     sname = trim-ws(sname)
                                     sname-upper = to-lower-local(sname)
+                                    #{overflow=wrap}
                                     dq2 = util.find-byte-str(inner, 34, dq + 1)
                                     dq2 >= 0 -> {
+                                        #{overflow=wrap}
                                         subsec = util.str-range(inner, dq + 1, dq2)
                                         dot str = '.'
+                                        #{overflow=wrap}
                                         current-section = sname-upper - dot - subsec
                                     }
                                 }
@@ -148,13 +160,15 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
                                 target-key-upper = to-lower-local(key)
                                 key-same = util.str-eq(k-upper, target-key-upper)
                                 key-same == true -> {
-                                    v = util.str-range(trimmed, eq + 1, trimmed.len)
+                                    #{overflow=wrap}
+                                    v = util.str-range(trimmed, eq + 1, trimmed.len-bytes())
                                     v = trim-ws(v)
 
                                     ; strip surrounding quotes if present
-                                    v.len >= 2 -> {
+                                    v.len-bytes() >= 2 -> {
                                         v[0] == 34 -> {
-                                            v2 = util.str-range(v, 1, v.len - 1)
+                                            #{overflow=wrap}
+                                            v2 = util.str-range(v, 1, v.len-bytes() - 1)
                                             v = v2
                                         }
                                     }
@@ -169,6 +183,7 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
             }
         }
 
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     } (true)
@@ -189,21 +204,21 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
     ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
     isf = fs.is-file(p)
     content = ''
-    isf == true -> content = fs.read-file(p)
+    isf == true -> content = fs.read-file(p).to-bytes-str()
     sect-upper = to-lower-local(section)
     target-key-upper = to-lower-local(key)
 
     ; Pass 1: find section start/end and key position
     sec-start = -1
-    sec-end = content.len
+    sec-end = content.len-bytes()
     key-pos = -1
     pos = 0
     in-section = false
     current-section str = ''
     {
-        pos >= content.len -> break
+        pos >= content.len-bytes() -> break
         nl = util.find-byte-str(content, 10, pos)
-        end = content.len
+        end = content.len-bytes()
         nl >= 0 -> end = nl
         line = util.str-range(content, pos, end)
         trimmed = trim-ws(line)
@@ -241,6 +256,7 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
                 }
             }
         }
+        #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
     } (true)
@@ -251,11 +267,13 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
         ; Key exists in section: replace the line
         ; Find end of the key line
         nl2 = util.find-byte-str(content, 10, key-pos)
-        key-line-end = content.len
+        key-line-end = content.len-bytes()
         nl2 >= 0 -> key-line-end = nl2
         before = util.str-range(content, 0, key-pos)
-        after = util.str-range(content, key-line-end, content.len)
+        after = util.str-range(content, key-line-end, content.len-bytes())
+        #{overflow=wrap}
         new-line = '\t' - key - ' = ' - value
+        #{overflow=wrap}
         new-content = before - new-line - after
         util.write-file-simple(p, new-content)
         ok = true
@@ -270,8 +288,10 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
 
         ; Insert the new key before the next section (or at end)
         before = util.str-range(content, 0, insert-pos)
-        after = util.str-range(content, insert-pos, content.len)
+        after = util.str-range(content, insert-pos, content.len-bytes())
+        #{overflow=wrap}
         new-line = '\t' - key - ' = ' - value - '\n'
+        #{overflow=wrap}
         new-content = before - new-line - after
         util.write-file-simple(p, new-content)
         ok = true
@@ -280,10 +300,13 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
 
     ; Section doesn't exist: append section + key at end of file
     new-content = content
-    new-content.len > 0 -> {
+    new-content.len-bytes() > 0 -> {
+        #{overflow=wrap}
         new-content = new-content - '\n'
     }
+    #{overflow=wrap}
     new-content = new-content - '[' - section - ']\n'
+    #{overflow=wrap}
     new-content = new-content - '\t' - key - ' = ' - value - '\n'
     util.write-file-simple(p, new-content)
     ok = true

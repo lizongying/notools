@@ -17,7 +17,9 @@ oid.to-hex = () (out str) {
     hex-chars = '0123456789abcdef'
     i <- [0..20): {
         b = .id[i]
+        #{overflow=wrap}
         out[i * 2] = hex-chars[(b >> 4) & 15]
+        #{overflow=wrap}
         out[i * 2 + 1] = hex-chars[b & 15]
     }
 }
@@ -77,11 +79,13 @@ oid.is-zero = () (yes bool) {
 ; the end. Mutating the nested [20]byte array field of a return-parameter
 ; struct directly does not persist in nolang, so we copy through a local.
 oid-from-hex = (s str) (o oid, ok bool) {
-    s.len != 40 -> return
+    s.len-bytes() != 40 -> return
     tmp oid
     i <- [0..20): {
-        c0 byte = s[i * 2]
-        c1 byte = s[i * 2 + 1]
+        #{overflow=wrap}
+        c0 byte = s.byte(i * 2)
+        #{overflow=wrap}
+        c1 byte = s.byte(i * 2 + 1)
         hi = util.hexdigit(c0)
         lo = util.hexdigit(c1)
         hi < 0 || lo < 0 -> return
@@ -119,12 +123,17 @@ sha1-hex = (data str) (out str) {
     h3 u32 = 0x10325476
     h4 u32 = 0xc3d2e1f0
 
-    mlen = data.len
+    mlen = data.len-bytes()
+    #{overflow=wrap}
     bitlen i64 = mlen * 8
+    #{overflow=wrap}
     total = mlen + 1
     rem = total % 64
+    #{overflow=wrap}
     z = 56 - rem
+    #{overflow=wrap}
     z < 0 -> z = z + 64
+    #{overflow=wrap}
     plen = total + z + 8
 
     msg str = with-len(plen)
@@ -133,45 +142,65 @@ sha1-hex = (data str) (out str) {
     }
     msg[mlen] = 0x80
     i <- [0..z): {
+        #{overflow=wrap}
         msg[mlen + 1 + i] = 0
     }
     hi i64 = (bitlen >> 32) & 0xffffffff
     lo i64 = bitlen & 0xffffffff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 0] = (hi >> 24) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 1] = (hi >> 16) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 2] = (hi >> 8) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 3] = hi & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 4] = (lo >> 24) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 5] = (lo >> 16) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 6] = (lo >> 8) & 0xff
+    #{overflow=wrap}
     msg[mlen + 1 + z + 7] = lo & 0xff
 
+    #{overflow=wrap}
     nchunks = plen / 64
     w [80]u32
     t u32
     ci <- [0..nchunks): {
+        #{overflow=wrap}
         off = ci * 64
         j <- [0..16): {
 
-            ; NOTE: indexing a str yields a byte 0-255, but assigning a byte
-            ; value > 127 into a u32 SIGN-extends it (e.g. 0x80 -> 0xffffff80).
-            ; Mask with & 0xff to force zero-extension before the shift/OR.
-            a u32 = msg[off + j * 4] & 0xff
-            b u32 = msg[off + j * 4 + 1] & 0xff
-            c u32 = msg[off + j * 4 + 2] & 0xff
-            d u32 = msg[off + j * 4 + 3] & 0xff
-            w[j] = a
+            ; NOTE: `str[i]` now yields a *codepoint*, so byte access must go
+            ; through s.byte(i). Assigning a byte value > 127 into a u32
+            ; SIGN-extends it (e.g. 0x80 -> 0xffffff80), so mask with & 0xff
+            ; to force zero-extension before the shift/OR.
+            #{overflow=wrap}
+            w0 u32 = msg.byte(off + j * 4) & 0xff
+            #{overflow=wrap}
+            w1 u32 = msg.byte(off + j * 4 + 1) & 0xff
+            #{overflow=wrap}
+            w2 u32 = msg.byte(off + j * 4 + 2) & 0xff
+            #{overflow=wrap}
+            w3 u32 = msg.byte(off + j * 4 + 3) & 0xff
+            w[j] = w0
             w[j] = (w[j] << 24) & 4294967295
-            t = (b << 16) & 4294967295
+            t = (w1 << 16) & 4294967295
             w[j] = w[j] | t
-            t = (c << 8) & 4294967295
+            t = (w2 << 8) & 4294967295
             w[j] = w[j] | t
-            w[j] = w[j] | d
+            w[j] = w[j] | w3
         }
         j <- [16..80): {
+            #{overflow=wrap}
             v u32 = w[j - 3]
+            #{overflow=wrap}
             v = v ^ w[j - 8]
+            #{overflow=wrap}
             v = v ^ w[j - 14]
+            #{overflow=wrap}
             v = v ^ w[j - 16]
             w[j] = rotate-left(v, 1) & 4294967295
         }
@@ -205,9 +234,13 @@ sha1-hex = (data str) (out str) {
                 k = 0xca62c1d6
             }
             ta u32 = rotate-left(a, 5) & 4294967295
+            #{overflow=wrap}
             temp u32 = ta + f
+            #{overflow=wrap}
             temp = temp + e
+            #{overflow=wrap}
             temp = temp + k
+            #{overflow=wrap}
             temp = temp + w[j]
             e = d
             d = c
@@ -215,10 +248,15 @@ sha1-hex = (data str) (out str) {
             b = a
             a = temp
         }
+        #{overflow=wrap}
         h0 = h0 + a
+        #{overflow=wrap}
         h1 = h1 + b
+        #{overflow=wrap}
         h2 = h2 + c
+        #{overflow=wrap}
         h3 = h3 + d
+        #{overflow=wrap}
         h4 = h4 + e
     }
 
@@ -249,7 +287,9 @@ sha1-hex = (data str) (out str) {
     out str = with-len(40)
     i <- [0..20): {
         b = dig[i]
+        #{overflow=wrap}
         out[i * 2] = hex-chars[(b >> 4) & 15]
+        #{overflow=wrap}
         out[i * 2 + 1] = hex-chars[b & 15]
     }
 }
@@ -262,12 +302,14 @@ sha1-hex = (data str) (out str) {
 ; Pure-Nolang SHA-1 (sha1-hex) operating on str — no std sha1, no []byte
 ; crossing a module boundary, so it is robust against the compiler bugs.
 hash-object = (kind str, data str) (o oid) {
-    hdr = object-header(kind, data.len)
-    buf str = with-len(hdr.len + data.len)
-    i <- [0..hdr.len): {
+    hdr = object-header(kind, data.len-bytes())
+    #{overflow=wrap}
+    buf str = with-len(hdr.len-bytes() + data.len-bytes())
+    i <- [0..hdr.len-bytes()): {
         buf[i] = hdr[i]
     }
-    i <- [0..data.len): {
+    i <- [0..data.len-bytes()): {
+        #{overflow=wrap}
         buf[hdr.len + i] = data[i]
     }
     hx str = sha1-hex(buf)

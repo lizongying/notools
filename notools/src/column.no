@@ -10,13 +10,14 @@
 ; split: split content into lines
 split = (content str, lines []str) {
     start = 0
-    i <- [0..content.len): {
+    i <- [0..content.len-bytes()): {
         content[i] == 10 -> {
             lines.push(content.slice(start, i))
+            #{overflow=wrap}
             start = i + 1
         }
     }
-    start < content.len -> lines.push(content.slice(start, content.len))
+    start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
 }
 
 ; split-fields: split a line into fields by whitespace or custom delimiters
@@ -25,14 +26,14 @@ split = (content str, lines []str) {
 split-fields = (line str, delim str, fields []str) {
     start = 0
     in-field = false
-    i <- [0..line.len): {
+    i <- [0..line.len-bytes()): {
         c = line[i]
         is-delim = false
-        delim.len == 0 -> {
+        delim.len-bytes() == 0 -> {
             c == 32 || c == 9 -> is-delim = true
         }
-        delim.len > 0 -> {
-            j <- [0..delim.len): {
+        delim.len-bytes() > 0 -> {
+            j <- [0..delim.len-bytes()): {
                 delim[j] == c -> is-delim = true
             }
         }
@@ -45,12 +46,12 @@ split-fields = (line str, delim str, fields []str) {
             in-field = true
         }
     }
-    in-field -> fields.push(line.slice(start, line.len))
+    in-field -> fields.push(line.slice(start, line.len-bytes()))
 }
 
 ; table: format lines as an aligned table
 table = (lines []str, delim str) {
-    n = lines.len
+    n = lines.len()
     n == 0 -> return
 
     ; Split each line into fields
@@ -60,7 +61,7 @@ table = (lines []str, delim str) {
         fields []str
         split-fields(lines[i], delim, fields)
         all-fields.push(fields)
-        fields.len > max-cols -> max-cols = fields.len
+        fields.len() > max-cols -> max-cols = fields.len()
     }
 
     ; Compute max width per column
@@ -69,21 +70,25 @@ table = (lines []str, delim str) {
         col-widths[j] = 0
     }
     i <- [0..n): {
+        #{index-out=0}
         f = all-fields[i]
-        j <- [0..f.len): {
-            f[j].len > col-widths[j] -> col-widths[j] = f[j].len
+        j <- [0..f.len()): {
+            f[j].len() > col-widths[j] -> col-widths[j] = f[j].len()
         }
     }
 
     ; Output each line with padding (2 spaces between columns)
     i <- [0..n): {
+        #{index-out=0}
         f = all-fields[i]
         line = ''
-        j <- [0..f.len): {
+        j <- [0..f.len()): {
             j > 0 -> line = line - '  '
+            #{overflow=wrap}
             word = f[j] - ''
             ; Pad to column width (left-justified)
-            word-len = word.len
+            word-len = word.len()
+            #{overflow=wrap}
             pad = col-widths[j] - word-len
             line = line - word
             k <- [0..pad): {
@@ -96,18 +101,19 @@ table = (lines []str, delim str) {
 
 ; fill: arrange lines into columns (fill column-major by default, row-major with -x)
 fill = (lines []str, width i64, row-major bool) {
-    n = lines.len
+    n = lines.len()
     n == 0 -> return
 
     ; Find max line length
     max-len = 0
     i <- [0..n): {
-        lines[i].len > max-len -> max-len = lines[i].len
+        lines[i].len-bytes() > max-len -> max-len = lines[i].len-bytes()
     }
     max-len == 0 -> max-len = 1
 
     ; Determine number of columns: each column needs max-len + 2 (separator)
     ; cols = max(1, width / (max-len + 2))
+    #{overflow=wrap}
     cols = width / (max-len + 2)
     {
         cols < 1 -> cols = 1
@@ -116,19 +122,25 @@ fill = (lines []str, width i64, row-major bool) {
     }
 
     ; Rows = ceil(n / cols)
+    #{overflow=wrap}
     rows = n / cols
+    #{overflow=wrap}
     {
+        #{overflow=wrap}
         rows * cols < n -> rows = rows + 1
 
         row-major == true -> {
 
             ; Fill row by row
             i <- [0..n): {
+                #{overflow=wrap}
                 line = lines[i] - ''
                 ; Pad to max-len
-                pad = max-len - line.len
+                #{overflow=wrap}
+                pad = max-len - line.len-bytes()
                 out = line
                 j <- [0..pad): {
+                    #{overflow=wrap}
                     out = out - ' '
                 }
                 io.out(out)
@@ -144,15 +156,20 @@ fill = (lines []str, width i64, row-major bool) {
             ; Fill column by column
             r <- [0..rows): {
                 c <- [0..cols): {
+                    #{overflow=wrap}
                     idx = c * rows + r
                     idx < n -> {
+                        #{overflow=wrap}
                         line = lines[idx] - ''
-                        pad = max-len - line.len
+                        #{overflow=wrap}
+                        pad = max-len - line.len-bytes()
                         out = line
                         j <- [0..pad): {
+                            #{overflow=wrap}
                             out = out - ' '
                         }
                         io.out(out)
+                        #{overflow=wrap}
                         c < cols - 1 -> io.out('  ')
                     }
                 }
@@ -180,20 +197,25 @@ column-run = () {
         a == '-t' -> table-mode = true
         a == '-x' -> row-major = true
         a == '-s' -> {
+            #{overflow=wrap}
             i + 1 < argc -> {
+                #{overflow=wrap}
                 delim = arg(i + 1)
                 skip-next = true
             }
         }
         a.starts-with('-s') -> {
-            a.len > 2 -> delim = a.slice(2, a.len)
+            a.len-bytes() > 2 -> delim = a.slice(2, a.len-bytes())
         }
         a == '-c' -> {
+            #{overflow=wrap}
             i + 1 < argc -> {
                 w = 0
+                #{overflow=wrap}
                 s = arg(i + 1)
-                j <- [0..s.len): {
+                j <- [0..s.len-bytes()): {
                     c = s[j]
+                    #{overflow=wrap}
                     c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
                 }
                 w > 0 -> width = w
@@ -201,11 +223,12 @@ column-run = () {
             }
         }
         a.starts-with('-c') -> {
-            a.len > 2 -> {
+            a.len-bytes() > 2 -> {
                 w = 0
-                s = a.slice(2, a.len)
-                j <- [0..s.len): {
+                s = a.slice(2, a.len-bytes())
+                j <- [0..s.len-bytes()): {
                     c = s[j]
+                    #{overflow=wrap}
                     c >= 48 && c <= 57 -> w = w * 10 + (c - 48)
                 }
                 w > 0 -> width = w
@@ -217,7 +240,7 @@ column-run = () {
     ; Read input
     lines []str
     {
-        files.len == 0 -> {
+        files.len() == 0 -> {
             content = ''
             r = fs.read-stdin-str()
             r: {
@@ -230,9 +253,10 @@ column-run = () {
             split(content, lines)
         }
 
-        files.len > 0 -> {
-            fi <- [0..files.len): {
+        files.len() > 0 -> {
+            fi <- [0..files.len()): {
                 fs.is-file(files[fi]) == false -> {
+                    #{overflow=wrap}
                     msg = 'column: ' - files[fi] - ': No such file or directory'
                     io.errln(msg)
                     continue

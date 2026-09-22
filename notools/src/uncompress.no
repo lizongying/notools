@@ -21,7 +21,9 @@ uncompress-cmd = () {
                 f = a
 
                 fs.is-file(f) == false -> {
+                    #{overflow=wrap}
                     eprint('uncompress: ' - f - ': No such file')
+                    #{overflow=wrap}
                     i = i + 1
                     continue
                 }
@@ -37,21 +39,24 @@ uncompress-cmd = () {
                 data = content
                 out = lzw-decompress(data)
 
-                out.len == 0 -> {
+                out.len() == 0 -> {
+                    #{overflow=wrap}
                     eprint('uncompress: ' - f - ': not in compressed format')
+                    #{overflow=wrap}
                     i = i + 1
                     continue
                 }
 
                 {
                     to-stdout -> {
-                        s = out.to-str()
+                        s = out.to-bytes-str()
                         io.out(s)
                     }
 
                     -> {
                         out-name = f
-                        f.ends-with('.Z') -> out-name = f.slice(0, f.len - 2)
+                        #{overflow=wrap}
+                        f.ends-with('.Z') -> out-name = f.slice(0, f.len-bytes() - 2)
                         fs.write-file(out-name, out)
                         fs.remove(f)
                     }
@@ -59,6 +64,7 @@ uncompress-cmd = () {
             }
         }
 
+        #{overflow=wrap}
         i = i + 1
     } (i < argc)
 
@@ -75,11 +81,11 @@ uncompress-cmd = () {
             }
             data = content
             out = lzw-decompress(data)
-            out.len == 0 -> {
+            out.len() == 0 -> {
                 eprint('uncompress: not in compressed format')
                 os.exit(1)
             }
-            s = out.to-str()
+            s = out.to-bytes-str()
             io.out(s)
         }
     }
@@ -89,7 +95,7 @@ uncompress-cmd = () {
 ; data []byte: compressed data with header
 ; returns out []byte: decompressed data (empty if invalid)
 lzw-decompress = (data []byte) (out []byte) {
-    data-len = data.len
+    data-len = data.len()
     {
         data-len < 3 -> return
 
@@ -112,6 +118,7 @@ lzw-decompress = (data []byte) (out []byte) {
     ; Calculate max-codes = 2^max-bits
     max-codes = 1
     j <- [0..max-bits): {
+        #{overflow=wrap}
         max-codes = max-codes * 2
     }
 
@@ -148,7 +155,9 @@ lzw-decompress = (data []byte) (out []byte) {
         ; Fill bit buffer
         {
             bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+            #{overflow=wrap}
             bit-count = bit-count + 8
+            #{overflow=wrap}
             pos = pos + 1
         } (bit-count < cur-bits && pos < data-len)
         bit-count < cur-bits -> break
@@ -156,7 +165,9 @@ lzw-decompress = (data []byte) (out []byte) {
         ; Extract code
         code = bit-buf & ((1 << cur-bits) - 1)
         bit-buf = bit-buf >> cur-bits
+        #{overflow=wrap}
         bit-count = bit-count - cur-bits
+        #{overflow=wrap}
         codes-read = codes-read + 1
 
         ; Handle CLEAR code
@@ -164,17 +175,22 @@ lzw-decompress = (data []byte) (out []byte) {
             block-mode == 1 && code == clear-code -> {
 
                 ; Skip alignment padding
+                #{overflow=wrap}
                 pad = 8 - (codes-read % 8)
                 pad < 8 -> {
+                    #{overflow=wrap}
                     skip-bits = pad * cur-bits
                     {
                         bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+                        #{overflow=wrap}
                         bit-count = bit-count + 8
+                        #{overflow=wrap}
                         pos = pos + 1
                     } (bit-count < skip-bits && pos < data-len)
                     consume = skip-bits
                     consume > bit-count -> consume = bit-count
                     bit-buf = bit-buf >> consume
+                    #{overflow=wrap}
                     bit-count = bit-count - consume
                 }
                 ; Reset dictionary
@@ -198,14 +214,17 @@ lzw-decompress = (data []byte) (out []byte) {
                     ; Follow prefix chain from old-code to get first byte
                     tc = old-code
                     {
+                        #{index-out=0}
                         tc = prefix[tc]
                     } (prefix[tc] != -1)
+                    #{index-out=0}
                     fb = suffix[tc]
                     ; Build string: old_string + first_byte
                     tc = old-code
                     stack.push(fb)
                     {
                         stack.push(suffix[tc])
+                        #{index-out=0}
                         tc = prefix[tc]
                     } (prefix[tc] != -1)
                     stack.push(suffix[tc])
@@ -217,6 +236,7 @@ lzw-decompress = (data []byte) (out []byte) {
                 ; Normal case: code is in dictionary
                 {
                     stack.push(suffix[c])
+                    #{index-out=0}
                     c = prefix[c]
                 } (prefix[c] != -1)
                 stack.push(suffix[c])
@@ -224,18 +244,22 @@ lzw-decompress = (data []byte) (out []byte) {
         }
 
         ; Output string (stack is in reverse order)
-        fi <- [0..stack.len): {
-            out.push(stack[stack.len - 1 - fi])
+        fi <- [0..stack.len()): {
+            #{overflow=wrap}
+            out.push(stack[stack.len() - 1 - fi])
         }
 
         ; Get first byte of output
-        first-byte = stack[stack.len - 1]
+        #{overflow=wrap}
+        #{index-out=0}
+        first-byte = stack[stack.len() - 1]
 
         ; Add to dictionary
         {
             first == false -> {
                 prefix[next-code] = old-code
                 suffix[next-code] = first-byte
+                #{overflow=wrap}
                 next-code = next-code + 1
 
                 ; Check code width increase
@@ -243,19 +267,25 @@ lzw-decompress = (data []byte) (out []byte) {
                     cur-bits < max-bits -> {
 
                         ; Skip alignment padding
+                        #{overflow=wrap}
                         pad = 8 - (codes-read % 8)
                         pad < 8 -> {
+                            #{overflow=wrap}
                             skip-bits = pad * cur-bits
                             {
                                 bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+                                #{overflow=wrap}
                                 bit-count = bit-count + 8
+                                #{overflow=wrap}
                                 pos = pos + 1
                             } (bit-count < skip-bits && pos < data-len)
                             consume = skip-bits
                             consume > bit-count -> consume = bit-count
                             bit-buf = bit-buf >> consume
+                            #{overflow=wrap}
                             bit-count = bit-count - consume
                         }
+                        #{overflow=wrap}
                         cur-bits = cur-bits + 1
                         codes-read = 0
                     }

@@ -21,19 +21,20 @@ split-input = (mode i64, tokens []str) {
         }
     }
     {
-        content.len == 0 -> return
+        content.len-bytes() == 0 -> return
 
         mode == 1 -> {
 
             ; NUL-separated
             start = 0
-            i <- [0..content.len): {
+            i <- [0..content.len-bytes()): {
                 content[i] == 0 -> {
                     tokens.push(content.slice(start, i))
+                    #{overflow=wrap}
                     start = i + 1
                 }
             }
-            start < content.len -> tokens.push(content.slice(start, content.len))
+            start < content.len-bytes() -> tokens.push(content.slice(start, content.len-bytes()))
         }
 
         mode == 0 -> {
@@ -41,7 +42,7 @@ split-input = (mode i64, tokens []str) {
             ; Whitespace-separated
             start = 0
             in-field = false
-            i <- [0..content.len): {
+            i <- [0..content.len-bytes()): {
                 c = content[i]
                 is-space = c == 32 || c == 9 || c == 10 || c == 13
                 is-space && in-field -> {
@@ -53,7 +54,7 @@ split-input = (mode i64, tokens []str) {
                     in-field = true
                 }
             }
-            in-field -> tokens.push(content.slice(start, content.len))
+            in-field -> tokens.push(content.slice(start, content.len-bytes()))
         }
     }
 }
@@ -78,10 +79,12 @@ run-cmd = (cmd str, trace bool) (code i64) {
 
 ; join: join a vec of strings with separator
 join = (parts []str, sep str) (out str) {
-    n = parts.len
+    n = parts.len()
     n == 0 -> return
+    #{index-out=0}
     out = parts[0]
     i <- [1..n): {
+        #{overflow=wrap}
         out = out - sep - parts[i]
     }
 }
@@ -103,14 +106,17 @@ xargs-run = () {
         a == '-r' -> no-run-if-empty = true
         a == '--no-run-if-empty' -> no-run-if-empty = true
         a == '-I' -> {
+            #{overflow=wrap}
             i = i + 1
             i < argc -> replace-str = arg(i)
+            #{overflow=wrap}
             cmd-start = i + 1
         }
-        a.starts-with('-I') && a.len > 2 -> {
-            replace-str = a.slice(2, a.len)
+        a.starts-with('-I') && a.len-bytes() > 2 -> {
+            replace-str = a.slice(2, a.len-bytes())
         }
         a == '-n' -> {
+            #{overflow=wrap}
             i = i + 1
             i < argc -> {
                 v = arg(i).to-i64()
@@ -122,13 +128,15 @@ xargs-run = () {
                     err -> *
                 }
             }
+            #{overflow=wrap}
             cmd-start = i + 1
         }
-        a.starts-with('-n') && a.len > 2 -> {
-            s = a.slice(2, a.len)
+        a.starts-with('-n') && a.len-bytes() > 2 -> {
+            s = a.slice(2, a.len-bytes())
             n = 0
-            j <- [0..s.len): {
+            j <- [0..s.len()): {
                 c = s[j]
+                #{overflow=wrap}
                 c >= 48 && c <= 57 -> n = n * 10 + (c - 48)
             }
             n > 0 -> max-args = n
@@ -147,7 +155,7 @@ xargs-run = () {
 
     ; If no command, default to /bin/echo
     {
-        base-args.len == 0 -> {
+        base-args.len() == 0 -> {
             base-args.push('echo')
         }
     }
@@ -157,7 +165,7 @@ xargs-run = () {
     split-input(mode, tokens)
 
     {
-        tokens.len == 0 -> {
+        tokens.len() == 0 -> {
             no-run-if-empty -> os.exit(0)
             ; Run command with no extra args
             cmd = join(base-args, ' ')
@@ -166,10 +174,11 @@ xargs-run = () {
         }
 
         ; Mode 1: -I replace mode
-        replace-str.len > 0 -> {
-            j <- [0..tokens.len): {
+        replace-str.len-bytes() > 0 -> {
+            j <- [0..tokens.len()): {
                 parts []str
-                k <- [0..base-args.len): {
+                k <- [0..base-args.len()): {
+                    #{index-out=0}
                     arg-str = base-args[k]
                     arg-str == replace-str -> {
                         parts.push(tokens[j])
@@ -184,12 +193,16 @@ xargs-run = () {
                             result = ''
                             start = 0
                             {
+                                #{overflow=wrap}
                                 result = result - arg-str.slice(start, pos)
+                                #{overflow=wrap}
                                 result = result - tokens[j]
-                                start = pos + replace-str.len
+                                #{overflow=wrap}
+                                start = pos + replace-str.len-bytes()
                                 pos = arg-str.index-from(replace-str, start)
                             } (pos >= 0)
-                            result = result - arg-str.slice(start, arg-str.len)
+                            #{overflow=wrap}
+                            result = result - arg-str.slice(start, arg-str.len())
                             parts.push(result)
                         }
                         pos < 0 -> {
@@ -208,32 +221,34 @@ xargs-run = () {
         max-args > 0 -> {
             idx = 0
             {
-                idx < tokens.len -> {
+                idx < tokens.len() -> {
                     batch []str
-                    k <- [0..base-args.len): {
+                    k <- [0..base-args.len()): {
                         batch.push(base-args[k])
                     }
+                    #{overflow=wrap}
                     end = idx + max-args
-                    end > tokens.len -> end = tokens.len
+                    end > tokens.len() -> end = tokens.len()
                     k <- [idx..end): {
                         batch.push(tokens[k])
                     }
                     cmd = join(batch, ' ')
                     code = run-cmd(cmd, trace)
                     code != 0 -> os.exit(code)
+                    #{overflow=wrap}
                     idx = idx + max-args
                 }
-            } (idx < tokens.len)
+            } (idx < tokens.len())
             os.exit(0)
         }
     }
 
     ; Mode 3: default — all tokens at once
     all-args []str
-    k <- [0..base-args.len): {
+    k <- [0..base-args.len()): {
         all-args.push(base-args[k])
     }
-    k <- [0..tokens.len): {
+    k <- [0..tokens.len()): {
         all-args.push(tokens[k])
     }
     cmd = join(all-args, ' ')

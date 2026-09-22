@@ -31,7 +31,7 @@
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len < 18 -> {
+    data.len() < 18 -> {
         img = nil
         return
     }
@@ -60,6 +60,7 @@ img = nil
     top-down = (descriptor & 32) != 0
 
     ; Skip image ID
+    #{overflow=wrap}
     pos = 18 + id-len
 
     ; Skip color map if present
@@ -68,8 +69,10 @@ img = nil
         ; cmap entries (bytes 4-5), entry-size (byte 7)
         cm-entries = (data[4] & 255) | ((data[5] & 255) << 8)
         cm-size = data[7] & 255
+        #{overflow=wrap}
         pos = pos + cm-entries * ((cm-size + 7) / 8)
     }
+    #{overflow=wrap}
     bands = depth / 8
     {
         image-type == 2 || image-type == 3 -> {
@@ -99,14 +102,18 @@ img = nil
 ; top-down bool: whether rows are top-down
 ; returns img ?image
 tga-load-uncompressed = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img ?image) {
+    #{overflow=wrap}
     n = w * h * bands
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, bands, _d)
     y <- [0..h): {
         src-y = y
+        #{overflow=wrap}
         top-down == false -> src-y = h - 1 - y
         x <- [0..w): {
+            #{overflow=wrap}
             src = pos + (src-y * w + x) * bands
+            #{overflow=wrap}
             dst = (y * w + x) * bands
             {
                 bands == 1 -> {
@@ -116,15 +123,22 @@ tga-load-uncompressed = (data str, pos i64, w i64, h i64, bands i64, top-down bo
                 bands == 3 -> {
 
                     ; TGA stores BGRA, we store RGBA
+                    #{overflow=wrap}
                     tmp.data[dst] = data[src + 2] & 255
+                    #{overflow=wrap}
                     tmp.data[dst + 1] = data[src + 1] & 255
+                    #{overflow=wrap}
                     tmp.data[dst + 2] = data[src] & 255
                 }
 
                 bands == 4 -> {
+                    #{overflow=wrap}
                     tmp.data[dst] = data[src + 2] & 255
+                    #{overflow=wrap}
                     tmp.data[dst + 1] = data[src + 1] & 255
+                    #{overflow=wrap}
                     tmp.data[dst + 2] = data[src] & 255
+                    #{overflow=wrap}
                     tmp.data[dst + 3] = data[src + 3] & 255
                 }
             }
@@ -139,35 +153,47 @@ tga-load-uncompressed = (data str, pos i64, w i64, h i64, bands i64, top-down bo
 ;   bit 7 = 0 → raw packet (count+1 raw pixels follow)
 ; returns img ?image
 tga-load-rle = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img ?image) {
+    #{overflow=wrap}
     n = w * h * bands
     _d str = with-len(n)
     tmp = image.new-from-data(w, h, bands, _d)
+    #{overflow=wrap}
     total-pixels = w * h
     pixels-read = 0
     p = pos
     {
         pixels-read < total-pixels -> {
             header = data[p] & 255
+            #{overflow=wrap}
             p = p + 1
+            #{overflow=wrap}
             count = (header & 127) + 1
             {
                 header >= 128 -> {
 
                     ; Run-length packet: 1 pixel repeated
                     r = data[p] & 255
+                    #{overflow=wrap}
                     g = data[p + 1] & 255
+                    #{overflow=wrap}
                     b = data[p + 2] & 255
                     a = 255
+                    #{overflow=wrap}
                     bands == 4 -> a = data[p + 3] & 255
+                    #{overflow=wrap}
                     p = p + bands
                     i <- [0..count): {
                         {
                             pixels-read >= total-pixels -> break
                         }
                         pixel-idx = pixels-read
+                        #{overflow=wrap}
                         src-y = pixel-idx / w
+                        #{overflow=wrap}
                         src-x = pixel-idx - src-y * w
+                        #{overflow=wrap}
                         top-down == false -> src-y = h - 1 - src-y
+                        #{overflow=wrap}
                         dst = (src-y * w + src-x) * bands
                         {
                             bands == 1 -> {
@@ -176,17 +202,23 @@ tga-load-rle = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img 
 
                             bands == 3 -> {
                                 tmp.data[dst] = b
+                                #{overflow=wrap}
                                 tmp.data[dst + 1] = g
+                                #{overflow=wrap}
                                 tmp.data[dst + 2] = r
                             }
 
                             bands == 4 -> {
                                 tmp.data[dst] = b
+                                #{overflow=wrap}
                                 tmp.data[dst + 1] = g
+                                #{overflow=wrap}
                                 tmp.data[dst + 2] = r
+                                #{overflow=wrap}
                                 tmp.data[dst + 3] = a
                             }
                         }
+                        #{overflow=wrap}
                         pixels-read = pixels-read + 1
                     }
                 }
@@ -199,15 +231,23 @@ tga-load-rle = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img 
                             pixels-read >= total-pixels -> break
                         }
                         r = data[p] & 255
+                        #{overflow=wrap}
                         g = data[p + 1] & 255
+                        #{overflow=wrap}
                         b = data[p + 2] & 255
                         a = 255
+                        #{overflow=wrap}
                         bands == 4 -> a = data[p + 3] & 255
+                        #{overflow=wrap}
                         p = p + bands
                         pixel-idx = pixels-read
+                        #{overflow=wrap}
                         src-y = pixel-idx / w
+                        #{overflow=wrap}
                         src-x = pixel-idx - src-y * w
+                        #{overflow=wrap}
                         top-down == false -> src-y = h - 1 - src-y
+                        #{overflow=wrap}
                         dst = (src-y * w + src-x) * bands
                         {
                             bands == 1 -> {
@@ -216,17 +256,23 @@ tga-load-rle = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img 
 
                             bands == 3 -> {
                                 tmp.data[dst] = b
+                                #{overflow=wrap}
                                 tmp.data[dst + 1] = g
+                                #{overflow=wrap}
                                 tmp.data[dst + 2] = r
                             }
 
                             bands == 4 -> {
                                 tmp.data[dst] = b
+                                #{overflow=wrap}
                                 tmp.data[dst + 1] = g
+                                #{overflow=wrap}
                                 tmp.data[dst + 2] = r
+                                #{overflow=wrap}
                                 tmp.data[dst + 3] = a
                             }
                         }
+                        #{overflow=wrap}
                         pixels-read = pixels-read + 1
                     }
                 }
@@ -243,6 +289,7 @@ tga-load-rle = (data str, pos i64, w i64, h i64, bands i64, top-down bool) (img 
 ; img image: image to save
 ; returns ok bool
 save = (path str, img image) (ok bool) {
+    #{overflow=wrap}
     depth = img.bands * 8
     {
         img.bands == 1 -> {
@@ -274,8 +321,11 @@ save = (path str, img image) (ok bool) {
 tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bool) {
     w = img.width
     h = img.height
+    #{overflow=wrap}
     bands = depth / 8
+    #{overflow=wrap}
     data-size = w * h * bands
+    #{overflow=wrap}
     total-size = 18 + data-size
     buf []byte = with-cap(total-size)
 
@@ -316,6 +366,7 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
     ; --- Pixel data (top-down) ---
     y <- [0..h): {
         x <- [0..w): {
+            #{overflow=wrap}
             src = (y * w + x) * img.bands
             {
                 bands == 1 -> {
@@ -325,8 +376,11 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
 
                     -> {
                         r = img.data[src]
+                        #{overflow=wrap}
                         g = img.data[src + 1]
+                        #{overflow=wrap}
                         b = img.data[src + 2]
+                        #{overflow=wrap}
                         buf.push((r * 299 + g * 587 + b * 114) / 1000)
                     }
                 }
@@ -336,7 +390,9 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
                     ; TGA stores BGR
                     {
                         img.bands >= 3 -> {
+                            #{overflow=wrap}
                             buf.push(img.data[src + 2])
+                            #{overflow=wrap}
                             buf.push(img.data[src + 1])
                             buf.push(img.data[src])
                         }
@@ -352,15 +408,20 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
 
                 bands == 4 -> {
                     img.bands >= 4 -> {
+                        #{overflow=wrap}
                         buf.push(img.data[src + 2])
+                        #{overflow=wrap}
                         buf.push(img.data[src + 1])
                         buf.push(img.data[src])
+                        #{overflow=wrap}
                         buf.push(img.data[src + 3])
                     }
 
                     -> {
                         r = img.data[src]
+                        #{overflow=wrap}
                         g = img.data[src + 1]
+                        #{overflow=wrap}
                         b = img.data[src + 2]
                         buf.push(b)
                         buf.push(g)
@@ -378,7 +439,7 @@ tga-write-uncompressed = (path str, img image, image-type i64, depth i64) (ok bo
         ok = false
         return
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }

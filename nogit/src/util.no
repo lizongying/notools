@@ -16,9 +16,11 @@ char-str = (c byte) (s str) {
 ; start i64, end i64: half-open range
 ; returns out str: string of those bytes
 bytes-range = (data []byte, start i64, end i64) (out str) {
+    #{overflow=wrap}
     n = end - start
     out str = with-len(n)
     i <- [0..n): {
+        #{overflow=wrap}
         out[i] = data[start + i]
     }
 }
@@ -27,7 +29,7 @@ bytes-range = (data []byte, start i64, end i64) (out str) {
 ; data []byte: source bytes
 ; returns out str: string of the same bytes
 bytes-to-str = (data []byte) (out str) {
-    out = bytes-range(data, 0, data.len)
+    out = bytes-range(data, 0, data.len())
 }
 
 ; str-range: copy byte-string chars in the half-open range [start, end) into a
@@ -45,12 +47,12 @@ str-range = (s str, start i64, end i64) (out str) {
 mkdir-all = (p str) (ok bool) {
     ok = true
     cur str = ''
-    i <- [0..p.len): {
-        c = p[i]
+    i <- [0..p.len-bytes()): {
+        c = p.byte(i)
         ch = char-str(c)
         cur = cur - ch
         c == '/' -> {
-            cur.len > 0 -> {
+            cur.len-bytes() > 0 -> {
                 {
                     fs.is-dir(cur) ->
 
@@ -86,8 +88,11 @@ mkdir-all = (p str) (ok bool) {
 ; returns v i64: the integer value
 read-u32-be = (data []byte, pos i64) (v i64) {
     v = data[pos]
+    #{overflow=wrap}
     v = (v << 8) | data[pos + 1]
+    #{overflow=wrap}
     v = (v << 8) | data[pos + 2]
+    #{overflow=wrap}
     v = (v << 8) | data[pos + 3]
 }
 
@@ -97,8 +102,11 @@ read-u32-be = (data []byte, pos i64) (v i64) {
 ; v i64: value to write (low 32 bits used)
 write-u32-be = (buf []byte, pos i64, v i64) {
     buf[pos] = (v >> 24) & 255
+    #{overflow=wrap}
     buf[pos + 1] = (v >> 16) & 255
+    #{overflow=wrap}
     buf[pos + 2] = (v >> 8) & 255
+    #{overflow=wrap}
     buf[pos + 3] = v & 255
 }
 
@@ -108,6 +116,7 @@ write-u32-be = (buf []byte, pos i64, v i64) {
 ; returns v i64: value
 read-u16-be = (data []byte, pos i64) (v i64) {
     v = data[pos]
+    #{overflow=wrap}
     v = (v << 8) | data[pos + 1]
 }
 
@@ -117,6 +126,7 @@ read-u16-be = (data []byte, pos i64) (v i64) {
 ; v i64: value
 write-u16-be = (buf []byte, pos i64, v i64) {
     buf[pos] = (v >> 8) & 255
+    #{overflow=wrap}
     buf[pos + 1] = v & 255
 }
 
@@ -127,7 +137,7 @@ write-u16-be = (buf []byte, pos i64, v i64) {
 ; returns pos i64: index of first match, or -1 if not found
 find-byte = (data []byte, b byte, from i64) (pos i64) {
     pos = -1
-    i <- [from..data.len): {
+    i <- [from..data.len()): {
         data[i] == b -> {
             pos = i
             break
@@ -139,7 +149,7 @@ find-byte = (data []byte, b byte, from i64) (pos i64) {
 ; per byte). Used by the object layer which carries Git bytes as str.
 find-byte-str = (s str, b byte, from i64) (pos i64) {
     pos = -1
-    i <- [from..s.len): {
+    i <- [from..s.len-bytes()): {
         s[i] == b -> {
             pos = i
             break
@@ -153,14 +163,18 @@ find-byte-str = (s str, b byte, from i64) (pos i64) {
 ; returns out str: s without a trailing newline
 trim-newline = (s str) (out str) {
     out = s
-    L = out.len
+    L = out.len-bytes()
     {
+        #{overflow=wrap}
         L > 0 -> {
             out[L - 1] == 10 -> {
+                #{overflow=wrap}
                 L = L - 1
                 out = str-range(out, 0, L)
                 L > 0 -> {
+                    #{overflow=wrap}
                     out[L - 1] == 13 -> {
+                        #{overflow=wrap}
                         out = str-range(out, 0, L - 1)
                     }
                 }
@@ -177,10 +191,13 @@ trim-newline = (s str) (out str) {
 hexdigit = (c byte) (v i64) {
     v = -1
     {
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = c - 48
 
+        #{overflow=wrap}
         c >= 97 && c <= 102 -> v = c - 87
 
+        #{overflow=wrap}
         c >= 65 && c <= 70 -> v = c - 55
     }
 }
@@ -189,11 +206,14 @@ hexdigit = (c byte) (v i64) {
 ; s str: even-length hex string
 ; returns out []byte, ok bool: decoded bytes, ok=false if invalid / odd length
 hex-decode = (s str) (out []byte, ok bool) {
-    s.len % 2 != 0 -> return
-    tmp []byte = with-len(s.len / 2)
-    i <- [0..tmp.len): {
-        hi = hexdigit(s[i * 2])
-        lo = hexdigit(s[i * 2 + 1])
+    s.len-bytes() % 2 != 0 -> return
+    #{overflow=wrap}
+    tmp []byte = with-len(s.len-bytes() / 2)
+    i <- [0..tmp.len()): {
+        #{overflow=wrap}
+        hi = hexdigit(s.byte(i * 2))
+        #{overflow=wrap}
+        lo = hexdigit(s.byte(i * 2 + 1))
         hi < 0 || lo < 0 -> return
         tmp[i] = (hi << 4) | lo
     }
@@ -206,10 +226,13 @@ hex-decode = (s str) (out []byte, ok bool) {
 ; returns out str: hex string
 hex-encode = (data []byte) (out str) {
     hex-chars = '0123456789abcdef'
-    out str = with-len(data.len * 2)
-    i <- [0..data.len): {
+    #{overflow=wrap}
+    out str = with-len(data.len() * 2)
+    i <- [0..data.len()): {
         b = data[i]
+        #{overflow=wrap}
         out[i * 2] = hex-chars[(b >> 4) & 15]
+        #{overflow=wrap}
         out[i * 2 + 1] = hex-chars[b & 15]
     }
 }
@@ -227,14 +250,17 @@ i64-to-str = (n i64) (out str) {
     tmp []byte = with-cap(20)
     x = n
     {
+        #{overflow=wrap}
         tmp.push(48 + (x % 10))
+        #{overflow=wrap}
         x = x / 10
         x == 0 -> break
     } (true)
     out = ''
-    L = tmp.len
+    L = tmp.len()
     i <- [0..L): {
         cb str = with-len(1)
+        #{overflow=wrap}
         cb[0] = tmp[L - 1 - i]
         out = out - cb
     }
@@ -245,15 +271,16 @@ i64-to-str = (n i64) (out str) {
 ; returns yes bool: true if equal
 str-eq = (a str, b str) (yes bool) {
     yes = false
-    a.len != b.len -> return
+    a.len-bytes() != b.len-bytes() -> return
     yes = true
     i = 0
     {
-        i >= a.len -> break
+        i >= a.len-bytes() -> break
         a[i] != b[i] -> {
             yes = false
             return
         }
+        #{overflow=wrap}
         i = i + 1
     } (true)
 }
@@ -270,7 +297,7 @@ read-file-str = (p str) (out str, ok bool) {
             return
         }
     }
-    out = fs.read-file(p)
+    out = fs.read-file(p).to-bytes-str()
     ok = true
 }
 
@@ -280,7 +307,7 @@ read-file-str = (p str) (out str, ok bool) {
 write-file-simple = (p str, content str) (ok bool) {
     ok = false
     fd = fs.open-write(p)
-    fs.write(fd, content, content.len)
+    fs.write(fd, content, content.len-bytes())
     fs.close(fd)
     ok = true
 }

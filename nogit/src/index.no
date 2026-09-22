@@ -48,13 +48,17 @@ i64-to-byte-at = (buf str, pos i64, v i64) {
 
 i64-to-u32-be-at = (buf str, pos i64, v i64) {
     buf[pos] = (v >> 24) & 0xff
+    #{overflow=wrap}
     buf[pos + 1] = (v >> 16) & 0xff
+    #{overflow=wrap}
     buf[pos + 2] = (v >> 8) & 0xff
+    #{overflow=wrap}
     buf[pos + 3] = v & 0xff
 }
 
 i64-to-u16-be-at = (buf str, pos i64, v i64) {
     buf[pos] = (v >> 8) & 0xff
+    #{overflow=wrap}
     buf[pos + 1] = v & 0xff
 }
 
@@ -76,7 +80,7 @@ read-u16-be-local = (s str, pos i64) (v i64) {
 ; Wraps util.find-byte-str (which returns -1) converting to s.len.
 find-newline-local = (s str, from i64) (pos i64) {
     pos = util.find-byte-str(s, 10, from)
-    pos < 0 -> pos = s.len
+    pos < 0 -> pos = s.len-bytes()
 }
 
 ; ═══════════════════════════════════════════════
@@ -112,14 +116,14 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         }
 
         -> {
-            content = fs.read-file(p)
+            content = fs.read-file(p).to-bytes-str()
             file-ok = true
         }
     }
     {
         file-ok == false -> return
 
-        content.len < 12 -> return
+        content.len-bytes() < 12 -> return
 
         ; verify signature "DIRC"
         content[0] != 68 -> return; D
@@ -148,37 +152,45 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
     modes = ''
     pos = 12
     i <- [0..count): {
-        pos + 62 > content.len -> {
+        #{overflow=wrap}
+        pos + 62 > content.len-bytes() -> {
             count = i
             break
         }
 
         ; skip ctime(8), mtime(8), dev(4), ino(4) = 24 bytes
+        #{overflow=wrap}
         pos = pos + 24
 
         ; mode (4 bytes BE)
         mode-val i64
         mode-val = read-u32-be-local(content, pos)
+        #{overflow=wrap}
         pos = pos + 4
 
         ; skip uid(4), gid(4), size(4) = 12 bytes
+        #{overflow=wrap}
         pos = pos + 12
 
         ; sha1 (20 bytes)
         oid-bytes str = with-len(20)
         k <- [0..20): {
+            #{overflow=wrap}
             oid-bytes[k] = content[pos + k]
         }
+        #{overflow=wrap}
         pos = pos + 20
 
         ; flags (2 bytes BE) — lower 12 bits = name length
         flags i64
         flags = read-u16-be-local(content, pos)
+        #{overflow=wrap}
         pos = pos + 2
         name-len = flags & 0xfff
 
         ; name (name-len bytes, then NUL, then padding)
         nm = content[pos..pos + name-len)
+        #{overflow=wrap}
         names = names - nm - '\n'
 
         ; hex oid
@@ -196,16 +208,22 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
 
         ; mode as decimal
         ms = util.i64-to-str(mode-val)
+        #{overflow=wrap}
         modes = modes - ms - '\n'
 
         ; advance past name + NUL
         ; pad entry length to 8-byte boundary
+        #{overflow=wrap}
         entry-start = pos - 62
+        #{overflow=wrap}
         entry-len = 62 + name-len + 1
         rem = entry-len % 8
+        #{overflow=wrap}
         rem > 0 -> entry-len = entry-len + (8 - rem)
+        #{overflow=wrap}
         pos = entry-start + entry-len
-        pos > content.len -> {
+        pos > content.len-bytes() -> {
+            #{overflow=wrap}
             count = i + 1
             break
         }
@@ -231,14 +249,14 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
         }
 
         -> {
-            content = fs.read-file(p)
+            content = fs.read-file(p).to-bytes-str()
             file-ok = true
         }
     }
     {
         file-ok == false -> return
 
-        content.len < 12 -> return
+        content.len-bytes() < 12 -> return
 
         ; verify signature
         content[0] != 68 -> return
@@ -255,36 +273,53 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
     ; skip to entry idx
     pos = 12
     i <- [0..idx): {
-        pos + 62 > content.len -> return
+        #{overflow=wrap}
+        pos + 62 > content.len-bytes() -> return
+        #{overflow=wrap}
         pos = pos + 24; skip ctime/mtime/dev/ino
+        #{overflow=wrap}
         pos = pos + 4; skip mode
+        #{overflow=wrap}
         pos = pos + 12; skip uid/gid/size
+        #{overflow=wrap}
         pos = pos + 20; skip sha1
         flags = read-u16-be-local(content, pos)
+        #{overflow=wrap}
         pos = pos + 2
         skip-name-len = flags & 0xfff
+        #{overflow=wrap}
         entry-start = pos - 62
+        #{overflow=wrap}
         entry-len = 62 + skip-name-len + 1
         rem = entry-len % 8
+        #{overflow=wrap}
         rem > 0 -> entry-len = entry-len + (8 - rem)
+        #{overflow=wrap}
         pos = entry-start + entry-len
     }
 
     ; now at entry idx
-    pos + 62 > content.len -> return
+    #{overflow=wrap}
+    pos + 62 > content.len-bytes() -> return
+    #{overflow=wrap}
     pos = pos + 24; skip ctime/mtime/dev/ino
     mode = read-u32-be-local(content, pos)
+    #{overflow=wrap}
     pos = pos + 4
+    #{overflow=wrap}
     pos = pos + 12; skip uid/gid/size
 
     ; read oid
     tmp oid
     k <- [0..20): {
+        #{overflow=wrap}
         tmp.id[k] = content[pos + k]
     }
     o = tmp
+    #{overflow=wrap}
     pos = pos + 20
     flags = read-u16-be-local(content, pos)
+    #{overflow=wrap}
     pos = pos + 2
     name-len = flags & 0xfff
     name = content[pos..pos + name-len)
@@ -351,7 +386,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 
         ; parse mode
         mode-val i64 = 0
-        k <- [0..ms.len): {
+        k <- [0..ms.len-bytes()): {
+            #{overflow=wrap}
             mode-val = mode-val * 10 + (ms[k] - 48)
         }
 
@@ -361,7 +397,9 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         ; parse oid
         entry-oid oid
         k <- [0..20): {
+            #{overflow=wrap}
             c0 = hx[k * 2]
+            #{overflow=wrap}
             c1 = hx[k * 2 + 1]
             hi = util.hexdigit(c0)
             lo = util.hexdigit(c1)
@@ -371,6 +409,7 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         ; build entry (62 bytes fixed + name + NUL + padding)
         ; populate stat fields using fs.stat-* builtins
         ; build the full file path for stat lookup
+        #{overflow=wrap}
         stat-path = work-dir - '/' - nm
         stat-ok = fs.is-file(stat-path)
 
@@ -383,7 +422,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
             st-mtime = fs.stat-mtime(stat-path)
             st-uid = fs.stat-uid(stat-path)
             st-gid = fs.stat-gid(stat-path)
-            st-size = fs.stat-size(stat-path)
+            st-size, st-sok = os.stat-size(stat-path)
+            st-sok == false -> st-size = 0
         }
 
         ; ctime(8) — use mtime as ctime (Nolang has no stat-ctime)
@@ -431,7 +471,7 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         out = out - oid-bytes
 
         ; flags(2) — name length in lower 12 bits
-        name-len = nm.len
+        name-len = nm.len-bytes()
         name-len > 0xfff -> name-len = 0xfff
         flags-bytes str = with-len(2)
         i64-to-u16-be-at(flags-bytes, 0, name-len)
@@ -445,9 +485,11 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 
         ; pad to 8-byte boundary
         ; entry total so far = 62 + nm.len + 1
-        entry-total = 62 + nm.len + 1
+        #{overflow=wrap}
+        entry-total = 62 + nm.len-bytes() + 1
         rem = entry-total % 8
         rem > 0 -> {
+            #{overflow=wrap}
             pad-count = 8 - rem
             k <- [0..pad-count): {
                 pb str = with-len(1)
@@ -457,7 +499,9 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         }
 
         ; advance positions for next entry
+        #{overflow=wrap}
         name-pos = nl + 1
+        #{overflow=wrap}
         mode-pos = nl2 + 1
     }
 
@@ -467,7 +511,9 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 
     ; convert hex to 20 raw bytes
     k <- [0..20): {
+        #{overflow=wrap}
         c0 = trailer-hex[k * 2]
+        #{overflow=wrap}
         c1 = trailer-hex[k * 2 + 1]
         hi = util.hexdigit(c0)
         lo = util.hexdigit(c1)
@@ -517,6 +563,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                 np i64 = 0
                 k <- [0..scan-j): {
                     nl-k = find-newline-local(names, np)
+                    #{overflow=wrap}
                     np = nl-k + 1
                 }
                 nj-end = find-newline-local(names, np)
@@ -530,6 +577,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                     bp i64 = 0
                     k <- [0..best-j): {
                         nl-b = find-newline-local(names, bp)
+                        #{overflow=wrap}
                         bp = nl-b + 1
                     }
                     bj-end = find-newline-local(names, bp)
@@ -547,6 +595,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
             np i64 = 0
             k <- [0..best-j): {
                 nl-k = find-newline-local(names, np)
+                #{overflow=wrap}
                 np = nl-k + 1
             }
             nj-end = find-newline-local(names, np)
@@ -559,13 +608,16 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
             mp i64 = 0
             k <- [0..best-j): {
                 ml-k = find-newline-local(modes-str, mp)
+                #{overflow=wrap}
                 mp = ml-k + 1
             }
             mj-end = find-newline-local(modes-str, mp)
             nj-mode = modes-str[mp..mj-end)
 
+            #{overflow=wrap}
             sorted-names = sorted-names - nj-name - '\n'
             sorted-oids = sorted-oids - nj-oid
+            #{overflow=wrap}
             sorted-modes = sorted-modes - nj-mode - '\n'
             placed[best-j] = 49 ; '1' = placed
         }
@@ -577,8 +629,8 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
 ; in the index context, so no directory '/' rule needed.
 ; Returns <0 if a < b, 0 if equal, >0 if a > b.
 name-cmp-index = (a str, b str) (r i64) {
-    la = a.len
-    lb = b.len
+    la = a.len-bytes()
+    lb = b.len-bytes()
     len = la
     lb < len -> len = lb
     r = 0
@@ -595,6 +647,7 @@ name-cmp-index = (a str, b str) (r i64) {
                 r = 1
                 return
             }
+            #{overflow=wrap}
             i = i + 1
         }
     } (i < len)
@@ -649,9 +702,12 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
             same == true -> {
 
                 ; replace with new entry
+                #{overflow=wrap}
                 new-names = new-names - path - '\n'
                 new-oids = new-oids - new-hex
+                #{overflow=wrap}
                 new-modes = new-modes - mode-str - '\n'
+                #{overflow=wrap}
                 new-count = new-count + 1
                 found = true
             }
@@ -659,26 +715,34 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
             -> {
 
                 ; keep existing
+                #{overflow=wrap}
                 new-names = new-names - nm - '\n'
                 old-hex = ri-hexoids[i * 40..i * 40 + 40)
                 new-oids = new-oids - old-hex
+                #{overflow=wrap}
                 new-modes = new-modes - old-ms - '\n'
+                #{overflow=wrap}
                 new-count = new-count + 1
             }
         }
 
         ; advance positions
+        #{overflow=wrap}
         pos = nl + 1
+        #{overflow=wrap}
         mode-pos = mnl2 + 1
-        nl >= ri-names.len -> break
+        nl >= ri-names.len() -> break
     }
 
     ; if path was not found, append new entry
     {
         found == false -> {
+            #{overflow=wrap}
             new-names = new-names - path - '\n'
             new-oids = new-oids - new-hex
+            #{overflow=wrap}
             new-modes = new-modes - mode-str - '\n'
+            #{overflow=wrap}
             new-count = new-count + 1
         }
     }
@@ -729,18 +793,23 @@ index-remove = (git-dir str, path str) (ok bool) {
             same == true ->
 
             -> {
+                #{overflow=wrap}
                 new-names = new-names - nm - '\n'
                 old-hex = ri-hexoids[i * 40..i * 40 + 40)
                 new-oids = new-oids - old-hex
+                #{overflow=wrap}
                 new-modes = new-modes - old-ms - '\n'
+                #{overflow=wrap}
                 new-count = new-count + 1
             }
         }
 
         ; advance positions
+        #{overflow=wrap}
         pos = nl + 1
+        #{overflow=wrap}
         mode-pos = mnl2 + 1
-        nl >= ri-names.len -> break
+        nl >= ri-names.len() -> break
     }
     ; sort entries before writing (Git requires base_name_compare order)
     sorted-names str

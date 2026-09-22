@@ -10,8 +10,9 @@
 
 atoi = (s str) (v i64) {
     v = 0
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
 }
@@ -49,7 +50,9 @@ xxd-run = () {
                     }
 
                     a == '-c' -> {
+                        #{overflow=wrap}
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             cols = atoi(arg(i + 1))
                             cols-set = true
                             skip-next = true
@@ -58,7 +61,9 @@ xxd-run = () {
                     }
 
                     a == '-g' -> {
+                        #{overflow=wrap}
                         i + 1 < argc -> {
+                            #{overflow=wrap}
                             group = atoi(arg(i + 1))
                             group-set = true
                             skip-next = true
@@ -67,16 +72,16 @@ xxd-run = () {
                     }
 
                     a.starts-with('-c') -> {
-                        a.len > 2 -> {
-                            cols = atoi(a.slice(2, a.len))
+                        a.len-bytes() > 2 -> {
+                            cols = atoi(a.slice(2, a.len-bytes()))
                             cols-set = true
                             handled = true
                         }
                     }
 
                     a.starts-with('-g') -> {
-                        a.len > 2 -> {
-                            group = atoi(a.slice(2, a.len))
+                        a.len-bytes() > 2 -> {
+                            group = atoi(a.slice(2, a.len-bytes()))
                             group-set = true
                             handled = true
                         }
@@ -106,7 +111,7 @@ xxd-run = () {
 
     data []byte
     {
-        files.len == 0 -> {
+        files.len() == 0 -> {
             inp []byte
             r = fs.read-stdin()
             r: {
@@ -120,9 +125,11 @@ xxd-run = () {
         }
 
         -> {
-            fi <- [0..files.len): {
+            fi <- [0..files.len()): {
+                #{index-out=0}
                 f = files[fi]
                 fs.is-file(f) == false -> {
+                    #{overflow=wrap}
                     io.errln('xxd: ' - f - ': No such file or directory')
                     os.exit(1)
                 }
@@ -136,7 +143,7 @@ xxd-run = () {
                     }
                 }
                 b = inp
-                k <- [0..b.len): {
+                k <- [0..b.len()): {
                     data.push(b[k])
                 }
             }
@@ -157,18 +164,24 @@ dump-pure = (data []byte, cols i64) {
     hex-digits = '0123456789abcdef'
     space = ' '
     offset = 0
-    n = data.len
+    n = data.len()
     {
         offset < n -> {
+            #{overflow=wrap}
             line-n = n - offset
             line-n > cols -> line-n = cols
+            #{overflow=wrap}
             line = space.repeat(line-n * 2)
             j <- [0..line-n): {
+                #{overflow=wrap}
                 b = data[offset + j] & 255
+                #{overflow=wrap}
                 line[j * 2] = hex-digits[(b >> 4) & 15]
+                #{overflow=wrap}
                 line[j * 2 + 1] = hex-digits[b & 15]
             }
             print(line)
+            #{overflow=wrap}
             offset = offset + cols
         }
     } (offset < n)
@@ -178,26 +191,33 @@ dump-pure = (data []byte, cols i64) {
 canonical = (data []byte, cols i64, group i64) {
     hex-digits = '0123456789abcdef'
     space = ' '
+    #{overflow=wrap}
     ngroups = cols / group
+    #{overflow=wrap}
     rem = cols - (ngroups * group)
     hex-width = 0
     {
+        #{overflow=wrap}
         rem > 0 -> hex-width = ngroups * (group * 2 + 1) + rem * 2
 
+        #{overflow=wrap}
         rem == 0 -> hex-width = ngroups * (group * 2 + 1) - 1
     }
 
     offset = 0
-    n = data.len
+    n = data.len()
     {
         offset < n -> {
+            #{overflow=wrap}
             line-n = n - offset
             line-n > cols -> line-n = cols
+            #{overflow=wrap}
             line-len = 8 + 2 + hex-width + 2 + line-n
             line = space.repeat(line-len)
             ; 8 位地址（小写十六进制，零填充）
             a = offset
             k <- [0..8): {
+                #{overflow=wrap}
                 line[7 - k] = hex-digits[a & 15]
                 a = a >> 4
             }
@@ -209,28 +229,37 @@ canonical = (data []byte, cols i64, group i64) {
                 {
                     j > 0 && (j % group == 0) -> {
                         line[hi] = ' '
+                        #{overflow=wrap}
                         hi = hi + 1
                     }
                 }
+                #{overflow=wrap}
                 b = data[offset + j] & 255
                 line[hi] = hex-digits[(b >> 4) & 15]
+                #{overflow=wrap}
                 hi = hi + 1
                 line[hi] = hex-digits[b & 15]
+                #{overflow=wrap}
                 hi = hi + 1
             }
             ; 剩余位置已是空格（来自 repeat 预填充）
             ; 跳过 2 个分隔空格（已预填充）
+            #{overflow=wrap}
             ascii-start = 10 + hex-width + 2
             ; ASCII 区段
             j <- [0..line-n): {
+                #{overflow=wrap}
                 b = data[offset + j] & 255
                 {
+                    #{overflow=wrap}
                     b >= 32 && b < 127 -> line[ascii-start + j] = b
 
+                    #{overflow=wrap}
                     -> line[ascii-start + j] = '.'
                 }
             }
             print(line)
+            #{overflow=wrap}
             offset = offset + cols
         }
     } (offset < n)
@@ -239,7 +268,7 @@ canonical = (data []byte, cols i64, group i64) {
 ; reverse: 从十六进制还原为二进制
 reverse = (data []byte, pure-mode bool) {
     out []byte
-    n = data.len
+    n = data.len()
     {
         pure-mode == true -> {
 
@@ -250,10 +279,13 @@ reverse = (data []byte, pure-mode bool) {
                 c = data[i] & 255
                 v = -1
                 {
+                    #{overflow=wrap}
                     c >= 48 && c <= 57 -> v = c - 48
 
+                    #{overflow=wrap}
                     c >= 65 && c <= 70 -> v = c - 55
 
+                    #{overflow=wrap}
                     c >= 97 && c <= 102 -> v = c - 87
                 }
 
@@ -281,6 +313,7 @@ reverse = (data []byte, pure-mode bool) {
                 c = data[i] & 255
                 c == 10 -> {
                     parse-format-line(data, line-start, i, out)
+                    #{overflow=wrap}
                     line-start = i + 1
                 }
             }
@@ -290,7 +323,7 @@ reverse = (data []byte, pure-mode bool) {
 
     ; 写入二进制到 stdout
     fd = fs.open-write('/dev/stdout')
-    fs.write(fd, out, out.len)
+    fs.write(fd, out, out.len())
 }
 
 ; parse-format-line: 解析 xxd 格式行，提取十六进制字节
@@ -306,6 +339,7 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
     {
         colon < 0 -> return
     }
+    #{overflow=wrap}
     pos = colon + 1
     cnt = 0
     hi-c = 0
@@ -315,6 +349,7 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
             c = data[pos] & 255
             {
                 c == 32 -> {
+                    #{overflow=wrap}
                     spaces = spaces + 1
                     spaces >= 2 -> pos = end
                 }
@@ -326,10 +361,13 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
                 pos < end -> {
                     v = -1
                     {
+                        #{overflow=wrap}
                         c >= 48 && c <= 57 -> v = c - 48
 
+                        #{overflow=wrap}
                         c >= 65 && c <= 70 -> v = c - 55
 
+                        #{overflow=wrap}
                         c >= 97 && c <= 102 -> v = c - 87
                     }
 
@@ -348,6 +386,7 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
                     }
                 }
             }
+            #{overflow=wrap}
             pos = pos + 1
         }
     } (pos < end)

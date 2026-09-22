@@ -35,6 +35,7 @@ store-path = (store-dir str, name str, ver str) (path str) {
     ; replace / in name (scoped packages like @scope/pkg)
     safe-name = name
     safe-name = utils.replace(safe-name, '/', '+')
+    #{overflow=wrap}
     path = store-dir - '/' - safe-name - '@' - ver
 }
 
@@ -69,6 +70,7 @@ link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
     name.starts-with('@') -> {
         slash-pos = name.index('/')
         slash-pos >= 0 -> {
+            #{overflow=wrap}
             scope-dir = dest-dir - '/' - name.slice(0, slash-pos)
             fs.is-dir(scope-dir) -> {
                 mk = path{
@@ -76,16 +78,20 @@ link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
                 }
                 mk.make-dir()
             }
-            pkg-name = name.slice(slash-pos + 1, name.len)
+            #{overflow=wrap}
+            pkg-name = name.slice(slash-pos + 1, name.len-bytes())
+            #{overflow=wrap}
             dest = scope-dir - '/' - pkg-name
         }
     }
     ; remove existing symlink or file
     fs.is-file(dest) -> fs.remove(dest)
     fs.is-dir(dest) -> {
+        #{overflow=wrap}
         process.process-system('rm -rf ' - dest)
     }
     ; create symlink
+    #{overflow=wrap}
     cmd = 'ln -s ' - pkg-path - ' ' - dest
     code = process.process-system(cmd)
     ok = code == 0
@@ -132,22 +138,23 @@ link-to-node-modules = (store-dir str, name str, ver str, nm-dir str) (ok bool) 
 
 link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
     ok = true
-    deps.len == 0 -> return
+    deps.len-bytes() == 0 -> return
     dep-obj = json.parse(deps)
     dep-obj: {
         ok -> {
             keys = it.obj-keys-str()
-            n = keys.len
+            n = keys.len()
             i <- [0..n): {
                 dep-name = keys[i]
                 dep-ver-val = it.get(dep-name)
                 dep-ver-val: {
                     ok -> {
                         dep-ver = dep-ver-val.str()
-                        dep-ver.starts-with('^') -> dep-ver = dep-ver.slice(1, dep-ver.len)
-                        dep-ver.starts-with('~') -> dep-ver = dep-ver.slice(1, dep-ver.len)
-                        dep-ver.starts-with('=') -> dep-ver = dep-ver.slice(1, dep-ver.len)
+                        dep-ver.starts-with('^') -> dep-ver = dep-ver.slice(1, dep-ver.len())
+                        dep-ver.starts-with('~') -> dep-ver = dep-ver.slice(1, dep-ver.len())
+                        dep-ver.starts-with('=') -> dep-ver = dep-ver.slice(1, dep-ver.len())
                         ; link into package's node_modules
+                        #{overflow=wrap}
                         pkg-nm = package-dir(store-dir, name, ver) - '/node_modules'
                         nm-exists = fs.is-dir(pkg-nm)
                         nm-exists == false -> {
@@ -196,18 +203,17 @@ create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
         v = json.parse(content)
         v: {
             ok -> {
-                bin-obj = it.get('bin')
+                bin-obj ?json = it.get('bin')
                 bin-obj: {
                     ok -> {
                         ; bin can be string (single) or object
-                        bin-kind = it.kind()
-                        bin-kind == json-kind.str -> {
+                        it.is-str() -> {
                             bin-name, str-ok = it.str()
                             link-bin(pkg-path, bin-name, bin-dir, name)
                         }
-                        bin-kind == json-kind.obj -> {
+                        it.is-obj() -> {
                             keys = it.obj-keys-str()
-                            n = keys.len
+                            n = keys.len()
                             j <- [0..n): {
                                 bin-name = keys[j]
                                 link-bin(pkg-path, bin-name, bin-dir, name)
@@ -245,8 +251,10 @@ link-bin = (pkg-path str, bin-name str, bin-dir str, pkg-name str) {
     link = bin-dir - '/' - bin-name
     ; remove existing
     fs.is-file(link) -> fs.remove(link)
+    #{overflow=wrap}
     cmd = 'ln -s ' - target - ' ' - link
     process.process-system(cmd)
+    #{overflow=wrap}
     process.process-system('chmod +x ' - link)
 }
 
@@ -277,11 +285,13 @@ create-node-links = (store-dir str, names str, versions str, nm-dir str) (ok boo
     ok = true
     name-lines = names.split('\n')
     ver-lines = versions.split('\n')
-    n = name-lines.len
+    n = name-lines.len()
     i <- [0..n): {
+        #{index-out=0}
         name = name-lines[i]
+        #{index-out=0}
         ver = ver-lines[i]
-        name.len > 0 && ver.len > 0 -> {
+        name.len() > 0 && ver.len() > 0 -> {
             link-ok = link-to-node-modules(store-dir, name, ver, nm-dir)
             link-ok == false -> ok = false
         }

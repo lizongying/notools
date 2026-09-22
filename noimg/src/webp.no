@@ -19,14 +19,17 @@ webp-br-read = (data str, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i6
     {
         cnt < n -> {
             {
-                pos < data.len -> {
+                pos < data.len-bytes() -> {
                     b = data[pos] & 255
                     buf = buf | (b << cnt)
+                    #{overflow=wrap}
                     cnt = cnt + 8
+                    #{overflow=wrap}
                     pos = pos + 1
                 }
 
                 -> {
+                    #{overflow=wrap}
                     cnt = cnt + 8
                 }
             }
@@ -34,6 +37,7 @@ webp-br-read = (data str, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i6
     } (cnt < n)
     val = buf & ((1 << n) - 1)
     buf = buf >> n
+    #{overflow=wrap}
     cnt = cnt - n
     new-pos = pos
     new-buf = buf
@@ -46,9 +50,10 @@ webp-br-read-bit = (data str, pos i64, buf i64, cnt i64) (val i64, new-pos i64, 
     {
         cnt == 0 -> {
             {
-                pos < data.len -> {
+                pos < data.len-bytes() -> {
                     buf = data[pos] & 255
                     cnt = 8
+                    #{overflow=wrap}
                     pos = pos + 1
                 }
 
@@ -61,6 +66,7 @@ webp-br-read-bit = (data str, pos i64, buf i64, cnt i64) (val i64, new-pos i64, 
     }
     val = buf & 1
     buf = buf >> 1
+    #{overflow=wrap}
     cnt = cnt - 1
     new-pos = pos
     new-buf = buf
@@ -80,6 +86,7 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         cl = code-lens[i]
         {
             cl > 0 -> {
+                #{overflow=wrap}
                 out-count[cl] = out-count[cl] + 1
             }
         }
@@ -98,6 +105,7 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         {
             cl > 0 -> {
                 out-codes[si] = next-code[cl]
+                #{overflow=wrap}
                 next-code[cl] = next-code[cl] + 1
             }
         }
@@ -115,8 +123,10 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
         found == false && L <= 15 -> {
             bit, pos, buf, cnt = webp-br-read-bit(data, pos, buf, cnt)
             code = (code << 1) | bit
+            #{overflow=wrap}
             {
                 count[L] > 0 && code >= first[L] && code <= first[L] + count[L] - 1 -> {
+                    #{overflow=wrap}
                     offset = code - first[L]
                     c = 0
                     si <- [0..n-symbols): {
@@ -128,12 +138,14 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
                                         found = true
                                     }
                                 }
+                                #{overflow=wrap}
                                 c = c + 1
                             }
                         }
                     }
                 }
             }
+            #{overflow=wrap}
             L = L + 1
         }
     } (found == false && L <= 15)
@@ -192,18 +204,24 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64, n-syms i64) (code-
                     {
                         msym <= 15 -> {
                             code-lens[sym-idx] = msym
+                            #{overflow=wrap}
                             sym-idx = sym-idx + 1
                         }
 
                         msym == 16 -> {
                             ext, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 2)
+                            #{overflow=wrap}
                             repeat = 3 + ext
+                            #{overflow=wrap}
                             {
                                 sym-idx > 0 && sym-idx + repeat <= n-syms -> {
+                                    #{overflow=wrap}
                                     prev = code-lens[sym-idx - 1]
                                     r <- [0..repeat): {
+                                        #{overflow=wrap}
                                         code-lens[sym-idx + r] = prev
                                     }
+                                    #{overflow=wrap}
                                     sym-idx = sym-idx + repeat
                                 }
 
@@ -215,12 +233,16 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64, n-syms i64) (code-
 
                         msym == 17 -> {
                             ext, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                            #{overflow=wrap}
                             repeat = 3 + ext
+                            #{overflow=wrap}
                             {
                                 sym-idx + repeat <= n-syms -> {
                                     r <- [0..repeat): {
+                                        #{overflow=wrap}
                                         code-lens[sym-idx + r] = 0
                                     }
+                                    #{overflow=wrap}
                                     sym-idx = sym-idx + repeat
                                 }
 
@@ -253,7 +275,9 @@ webp-decode-meta-huff = (data str, pos i64, buf i64, cnt i64, n-syms i64) (code-
 ; img-h i64: sub-image height
 ; returns out []byte: ARGB pixel data (4 bytes per pixel), new-pos, new-buf, new-cnt
 webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h i64) (out []byte, new-pos i64, new-buf i64, new-cnt i64) {
+    #{overflow=wrap}
     sub-n = img-w * img-h
+    #{overflow=wrap}
     sub-argb []byte = with-len(sub-n * 4)
 
     ; Read color cache config for sub-image
@@ -267,6 +291,7 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
     }
 
     ; Decode 5 Huffman tables for sub-image
+    #{overflow=wrap}
     sub-n-syms = 256 + sub-cc-size
 
     sub-lens-0 []byte = with-len(sub-n-syms)
@@ -308,6 +333,7 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
     webp-build-huff-codes(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4)
 
     ; Color cache for sub-image
+    #{overflow=wrap}
     sub-cc-cache []byte = with-len(sub-cc-size * 4)
 
     ; Decode all pixels
@@ -357,30 +383,42 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
                         }
                     }
 
+                    #{overflow=wrap}
                     sub-argb[sub-px * 4] = s-alpha
+                    #{overflow=wrap}
                     sub-argb[sub-px * 4 + 1] = s-red
+                    #{overflow=wrap}
                     sub-argb[sub-px * 4 + 2] = sgreen
+                    #{overflow=wrap}
                     sub-argb[sub-px * 4 + 3] = s-blue
                 }
 
                 -> {
                     ; Color cache or LZ77 reference
+                    #{overflow=wrap}
                     s-cc-idx = sgreen - 256
                     {
                         s-cc-idx < sub-cc-size -> {
+                            #{overflow=wrap}
                             sub-argb[sub-px * 4] = sub-cc-cache[s-cc-idx * 4]
+                            #{overflow=wrap}
                             sub-argb[sub-px * 4 + 1] = sub-cc-cache[s-cc-idx * 4 + 1]
+                            #{overflow=wrap}
                             sub-argb[sub-px * 4 + 2] = sub-cc-cache[s-cc-idx * 4 + 2]
+                            #{overflow=wrap}
                             sub-argb[sub-px * 4 + 3] = sub-cc-cache[s-cc-idx * 4 + 3]
                         }
 
                         -> {
                             ; LZ77 back-reference
+                            #{overflow=wrap}
                             s-len = sgreen - 256 - sub-cc-size
+                            #{overflow=wrap}
                             s-len = s-len + 1
                             s-dist-code, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
                             {
                                 s-dist-code <= 3 -> {
+                                    #{overflow=wrap}
                                     s-dist = s-dist-code + 1
                                 }
 
@@ -389,20 +427,28 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
                                     s-extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, s-dist-extra)
                                     s-odd = s-dist-code & 1
                                     s-dist-offset = (2 + s-odd) << s-dist-extra
+                                    #{overflow=wrap}
                                     s-dist = s-dist-offset + 1 + s-extra-val
                                 }
                             }
                             s-li <- [0..s-len): {
+                                #{overflow=wrap}
                                 {
                                     sub-px - s-dist + s-li >= 0 && sub-px + s-li < sub-n -> {
+                                        #{overflow=wrap}
                                         s-src = sub-px - s-dist + s-li
+                                        #{overflow=wrap}
                                         sub-argb[(sub-px + s-li) * 4] = sub-argb[s-src * 4]
+                                        #{overflow=wrap}
                                         sub-argb[(sub-px + s-li) * 4 + 1] = sub-argb[s-src * 4 + 1]
+                                        #{overflow=wrap}
                                         sub-argb[(sub-px + s-li) * 4 + 2] = sub-argb[s-src * 4 + 2]
+                                        #{overflow=wrap}
                                         sub-argb[(sub-px + s-li) * 4 + 3] = sub-argb[s-src * 4 + 3]
                                     }
                                 }
                             }
+                            #{overflow=wrap}
                             sub-px = sub-px + s-len - 1
                         }
                     }
@@ -412,18 +458,27 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
             ; Update color cache
             {
                 sub-cc-size > 0 -> {
+                    #{overflow=wrap}
                     sa0 = sub-argb[sub-px * 4]
+                    #{overflow=wrap}
                     sr0 = sub-argb[sub-px * 4 + 1]
+                    #{overflow=wrap}
                     sg0 = sub-argb[sub-px * 4 + 2]
+                    #{overflow=wrap}
                     sb0 = sub-argb[sub-px * 4 + 3]
                     s-hash = (sa0 * 506832829 + sr0 * 6454117 + sg0 * 2654435761 + sb0 * 40503) & (sub-cc-size - 1)
+                    #{overflow=wrap}
                     sub-cc-cache[s-hash * 4] = sa0
+                    #{overflow=wrap}
                     sub-cc-cache[s-hash * 4 + 1] = sr0
+                    #{overflow=wrap}
                     sub-cc-cache[s-hash * 4 + 2] = sg0
+                    #{overflow=wrap}
                     sub-cc-cache[s-hash * 4 + 3] = sb0
                 }
             }
 
+            #{overflow=wrap}
             sub-px = sub-px + 1
         }
     } (sub-px < sub-n)
@@ -444,23 +499,26 @@ webp-decode-argb-image = (data str, pos i64, buf i64, cnt i64, img-w i64, img-h 
 ; has-alpha bool: whether alpha channel is present
 ; returns pixels []byte: decoded pixel data (RGB or RGBA)
 webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixels []byte) {
+    #{overflow=wrap}
     n-pixels = w * h
     bands = 3
     has-alpha == true -> bands = 4
 
     ; ARGB buffer (4 bytes per pixel internally)
+    #{overflow=wrap}
     argb []byte = with-len(n-pixels * 4)
 
     ; Bit reader: start after 0x2F signature byte
+    #{overflow=wrap}
     pos = vp8l-pos + 1
     buf i64 = 0
     cnt i64 = 0
 
     ; Skip header: width(14), height(14), alpha(1), version(3) = 32 bits
-    _, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
-    _, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
-    _, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
-    _, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+    hdr-w, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
+    hdr-h, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
+    alpha-bit, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+    vp8l-version, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
 
     ; Read transforms (up to 4)
     ; Store transform parameters
@@ -468,6 +526,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     ; Predictor mode bits (ttype 0)
     transform-bits []byte = with-len(4)
     ; Color indexing palette (ttype 3)
+    #{overflow=wrap}
     ci-palette []byte = with-len(256 * 4)  ; ARGB per entry
     ci-palette-size = 0
     ci-bits = 8
@@ -493,6 +552,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                 -> {
                     ttype, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 2)
                     transform-types[n-transforms] = ttype
+                    #{overflow=wrap}
                     n-transforms = n-transforms + 1
                     {
                         ttype == 0 -> {
@@ -501,14 +561,18 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             transform-bits[0] = pbits
                             ; The predictor image is an ARGB sub-image of size
                             ; ((w+3)/4) * ((h+3)/4), decoded with full 5-table Huffman.
+                            #{overflow=wrap}
                             pred-w = (w + 3) / 4
+                            #{overflow=wrap}
                             pred-h = (h + 3) / 4
                             ; Decode the predictor sub-image as ARGB
                             pred-argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, pred-w, pred-h)
                             ; Extract the green channel (byte offset +2) as the predictor mode
+                            #{overflow=wrap}
                             pred-n = pred-w * pred-h
                             pred-img = with-len(pred-n)
                             pi <- [0..pred-n): {
+                                #{overflow=wrap}
                                 pred-img[pi] = pred-argb[pi * 4 + 2]
                             }
                         }
@@ -523,8 +587,11 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             ;   R channel (offset +1) = red_to_blue
                             ;   G channel (offset +2) = green_to_blue
                             ;   B channel (offset +3) = green_to_red
+                            #{overflow=wrap}
                             ct-w = (w + 3) / 4
+                            #{overflow=wrap}
                             ct-h = (h + 3) / 4
+                            #{overflow=wrap}
                             ct-n = ct-w * ct-h
                             ; Decode the color transform sub-image as ARGB
                             ct-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h)
@@ -537,6 +604,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         ttype == 3 -> {
                             ; Color indexing: 8 bits palette size code
                             psize-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
+                            #{overflow=wrap}
                             ci-palette-size = psize-code + 1
                             ; Read palette entries (ARGB, 4 bytes each)
                             pi3 <- [0..ci-palette-size * 4): {
@@ -562,6 +630,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             }
                             ; Decode the color index sub-image with modified width
                             ; The sub-image width = ceil(w / ci-bits), height = h
+                            #{overflow=wrap}
                             ci-sub-w = (w + ci-bits - 1) / ci-bits
                             ci-sub-h = h
                             ci-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ci-sub-w, ci-sub-h)
@@ -583,6 +652,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     }
 
     ; Decode 5 Huffman tables
+    #{overflow=wrap}
     n-huff-syms = 256 + cc-size
 
     huff-lens-0 []byte = with-len(n-huff-syms)
@@ -624,6 +694,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     webp-build-huff-codes(huff-lens-4, n-huff-syms, codes-4, first-4, count-4)
 
     ; Color cache
+    #{overflow=wrap}
     cc-cache []byte = with-len(cc-size * 4)
     ci <- [0..cc-size * 4): {
         cc-cache[ci] = 0
@@ -697,28 +768,39 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     }
 
                     ; Store ARGB
+                    #{overflow=wrap}
                     argb[px-idx * 4] = alpha
+                    #{overflow=wrap}
                     argb[px-idx * 4 + 1] = red
+                    #{overflow=wrap}
                     argb[px-idx * 4 + 2] = green
+                    #{overflow=wrap}
                     argb[px-idx * 4 + 3] = blue
                 }
 
                 -> {
                     ; Color cache or LZ77 reference
+                    #{overflow=wrap}
                     cc-idx = green - 256
                     {
                         cc-idx < cc-size -> {
                             ; Color cache hit
+                            #{overflow=wrap}
                             argb[px-idx * 4] = cc-cache[cc-idx * 4]
+                            #{overflow=wrap}
                             argb[px-idx * 4 + 1] = cc-cache[cc-idx * 4 + 1]
+                            #{overflow=wrap}
                             argb[px-idx * 4 + 2] = cc-cache[cc-idx * 4 + 2]
+                            #{overflow=wrap}
                             argb[px-idx * 4 + 3] = cc-cache[cc-idx * 4 + 3]
                         }
 
                         -> {
                             ; LZ77 back-reference
                             ; Copy length: green - 256 - cc-size + 1
+                            #{overflow=wrap}
                             lz77-len = green - 256 - cc-size
+                            #{overflow=wrap}
                             lz77-len = lz77-len + 1
 
                             ; Read distance code from the distance Huffman table (table 4)
@@ -740,6 +822,7 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             ; Simplified: dist = base + extra_val
                             {
                                 dist-code <= 3 -> {
+                                    #{overflow=wrap}
                                     lz77-dist = dist-code + 1
                                 }
 
@@ -750,21 +833,29 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                                     extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, dist-extra)
                                     odd-bit = dist-code & 1
                                     dist-offset = (2 + odd-bit) << dist-extra
+                                    #{overflow=wrap}
                                     lz77-dist = dist-offset + 1 + extra-val
                                 }
                             }
                             ; Copy lz77-len pixels from distance lz77-dist back
                             li <- [0..lz77-len): {
+                                #{overflow=wrap}
                                 {
                                     px-idx - lz77-dist + li >= 0 && px-idx + li < n-pixels -> {
+                                        #{overflow=wrap}
                                         src-idx = px-idx - lz77-dist + li
+                                        #{overflow=wrap}
                                         argb[(px-idx + li) * 4] = argb[src-idx * 4]
+                                        #{overflow=wrap}
                                         argb[(px-idx + li) * 4 + 1] = argb[src-idx * 4 + 1]
+                                        #{overflow=wrap}
                                         argb[(px-idx + li) * 4 + 2] = argb[src-idx * 4 + 2]
+                                        #{overflow=wrap}
                                         argb[(px-idx + li) * 4 + 3] = argb[src-idx * 4 + 3]
                                     }
                                 }
                             }
+                            #{overflow=wrap}
                             px-idx = px-idx + lz77-len - 1  ; -1 because loop will add 1
                         }
                     }
@@ -774,24 +865,34 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
             ; Update color cache
             {
                 cc-size > 0 -> {
+                    #{overflow=wrap}
                     a0 = argb[px-idx * 4]
+                    #{overflow=wrap}
                     r0 = argb[px-idx * 4 + 1]
+                    #{overflow=wrap}
                     g0 = argb[px-idx * 4 + 2]
+                    #{overflow=wrap}
                     b0 = argb[px-idx * 4 + 3]
                     hash = (a0 * 506832829 + r0 * 6454117 + g0 * 2654435761 + b0 * 40503) & (cc-size - 1)
+                    #{overflow=wrap}
                     cc-cache[hash * 4] = a0
+                    #{overflow=wrap}
                     cc-cache[hash * 4 + 1] = r0
+                    #{overflow=wrap}
                     cc-cache[hash * 4 + 2] = g0
+                    #{overflow=wrap}
                     cc-cache[hash * 4 + 3] = b0
                 }
             }
 
+            #{overflow=wrap}
             px-idx = px-idx + 1
         }
     } (px-idx < n-pixels)
 
     ; Apply inverse transforms in reverse order
     ti <- [0..n-transforms): {
+        #{overflow=wrap}
         ttype = transform-types[n-transforms - 1 - ti]
         {
             ttype == 0 -> {
@@ -800,15 +901,20 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                 ; per 4x4 block. pred-img has dimensions pred-w x pred-h
                 ; where each entry covers a 4x4 block of pixels.
                 pi <- [0..n-pixels): {
+                    #{overflow=wrap}
                     py = pi / w
+                    #{overflow=wrap}
                     px = pi - py * w
                     ; Get the predictor mode for this pixel's 4x4 block
+                    #{overflow=wrap}
                     blk-x = px / 4
+                    #{overflow=wrap}
                     blk-y = py / 4
+                    #{overflow=wrap}
                     blk-idx = blk-y * pred-w + blk-x
                     mode = 0
                     {
-                        blk-idx < pred-img.len -> {
+                        blk-idx < pred-img.len() -> {
                             mode = pred-img[blk-idx]
                         }
                     }
@@ -844,9 +950,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     left-b = 0
                     {
                         px > 0 -> {
+                            #{overflow=wrap}
                             left-a = argb[(pi - 1) * 4]
+                            #{overflow=wrap}
                             left-r = argb[(pi - 1) * 4 + 1]
+                            #{overflow=wrap}
                             left-g = argb[(pi - 1) * 4 + 2]
+                            #{overflow=wrap}
                             left-b = argb[(pi - 1) * 4 + 3]
                         }
                     }
@@ -856,9 +966,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     top-b = 0
                     {
                         py > 0 -> {
+                            #{overflow=wrap}
                             top-a = argb[(pi - w) * 4]
+                            #{overflow=wrap}
                             top-r = argb[(pi - w) * 4 + 1]
+                            #{overflow=wrap}
                             top-g = argb[(pi - w) * 4 + 2]
+                            #{overflow=wrap}
                             top-b = argb[(pi - w) * 4 + 3]
                         }
                     }
@@ -868,9 +982,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     tl-b = 0
                     {
                         px > 0 && py > 0 -> {
+                            #{overflow=wrap}
                             tl-a = argb[(pi - w - 1) * 4]
+                            #{overflow=wrap}
                             tl-r = argb[(pi - w - 1) * 4 + 1]
+                            #{overflow=wrap}
                             tl-g = argb[(pi - w - 1) * 4 + 2]
+                            #{overflow=wrap}
                             tl-b = argb[(pi - w - 1) * 4 + 3]
                         }
                     }
@@ -878,11 +996,16 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     tr-r = top-r
                     tr-g = top-g
                     tr-b = top-b
+                    #{overflow=wrap}
                     {
                         py > 0 && px + 1 < w -> {
+                            #{overflow=wrap}
                             tr-a = argb[(pi - w + 1) * 4]
+                            #{overflow=wrap}
                             tr-r = argb[(pi - w + 1) * 4 + 1]
+                            #{overflow=wrap}
                             tr-g = argb[(pi - w + 1) * 4 + 2]
+                            #{overflow=wrap}
                             tr-b = argb[(pi - w + 1) * 4 + 3]
                         }
                     }
@@ -941,66 +1064,102 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     {
                         mode == 5 -> {
                             ; Average2(Average2(L, TR), T)
+                            #{overflow=wrap}
                             avg-ltr-a = (left-a + tr-a) / 2
+                            #{overflow=wrap}
                             avg-ltr-r = (left-r + tr-r) / 2
+                            #{overflow=wrap}
                             avg-ltr-g = (left-g + tr-g) / 2
+                            #{overflow=wrap}
                             avg-ltr-b = (left-b + tr-b) / 2
+                            #{overflow=wrap}
                             pred-a = (avg-ltr-a + top-a) / 2
+                            #{overflow=wrap}
                             pred-r = (avg-ltr-r + top-r) / 2
+                            #{overflow=wrap}
                             pred-g = (avg-ltr-g + top-g) / 2
+                            #{overflow=wrap}
                             pred-b = (avg-ltr-b + top-b) / 2
                         }
                     }
                     {
                         mode == 6 -> {
                             ; Average2(L, TL)
+                            #{overflow=wrap}
                             pred-a = (left-a + tl-a) / 2
+                            #{overflow=wrap}
                             pred-r = (left-r + tl-r) / 2
+                            #{overflow=wrap}
                             pred-g = (left-g + tl-g) / 2
+                            #{overflow=wrap}
                             pred-b = (left-b + tl-b) / 2
                         }
                     }
                     {
                         mode == 7 -> {
                             ; Average2(L, T)
+                            #{overflow=wrap}
                             pred-a = (left-a + top-a) / 2
+                            #{overflow=wrap}
                             pred-r = (left-r + top-r) / 2
+                            #{overflow=wrap}
                             pred-g = (left-g + top-g) / 2
+                            #{overflow=wrap}
                             pred-b = (left-b + top-b) / 2
                         }
                     }
                     {
                         mode == 8 -> {
                             ; Average2(TL, T)
+                            #{overflow=wrap}
                             pred-a = (tl-a + top-a) / 2
+                            #{overflow=wrap}
                             pred-r = (tl-r + top-r) / 2
+                            #{overflow=wrap}
                             pred-g = (tl-g + top-g) / 2
+                            #{overflow=wrap}
                             pred-b = (tl-b + top-b) / 2
                         }
                     }
                     {
                         mode == 9 -> {
                             ; Average2(T, TR)
+                            #{overflow=wrap}
                             pred-a = (top-a + tr-a) / 2
+                            #{overflow=wrap}
                             pred-r = (top-r + tr-r) / 2
+                            #{overflow=wrap}
                             pred-g = (top-g + tr-g) / 2
+                            #{overflow=wrap}
                             pred-b = (top-b + tr-b) / 2
                         }
                     }
                     {
                         mode == 10 -> {
                             ; Average2(Average2(L, TL), Average2(T, TR))
+                            #{overflow=wrap}
                             avg-ltl-a = (left-a + tl-a) / 2
+                            #{overflow=wrap}
                             avg-ltl-r = (left-r + tl-r) / 2
+                            #{overflow=wrap}
                             avg-ltl-g = (left-g + tl-g) / 2
+                            #{overflow=wrap}
                             avg-ltl-b = (left-b + tl-b) / 2
+                            #{overflow=wrap}
                             avg-ttr-a = (top-a + tr-a) / 2
+                            #{overflow=wrap}
                             avg-ttr-r = (top-r + tr-r) / 2
+                            #{overflow=wrap}
                             avg-ttr-g = (top-g + tr-g) / 2
+                            #{overflow=wrap}
                             avg-ttr-b = (top-b + tr-b) / 2
+                            #{overflow=wrap}
                             pred-a = (avg-ltl-a + avg-ttr-a) / 2
+                            #{overflow=wrap}
                             pred-r = (avg-ltl-r + avg-ttr-r) / 2
+                            #{overflow=wrap}
                             pred-g = (avg-ltl-g + avg-ttr-g) / 2
+                            #{overflow=wrap}
                             pred-b = (avg-ltl-b + avg-ttr-b) / 2
                         }
                     }
@@ -1010,39 +1169,49 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             ; pL = |L.A-TL.A| + |L.R-TL.R| + |L.G-TL.G| + |L.B-TL.B|
                             ; pT = |T.A-TL.A| + |T.R-TL.R| + |T.G-TL.G| + |T.B-TL.B|
                             ; pL < pT -> Left, else Top
+                            #{overflow=wrap}
                             dla = left-a - tl-a
                             {
                                 dla < 0 -> dla = -dla
                             }
+                            #{overflow=wrap}
                             dlr = left-r - tl-r
                             {
                                 dlr < 0 -> dlr = -dlr
                             }
+                            #{overflow=wrap}
                             dlg = left-g - tl-g
                             {
                                 dlg < 0 -> dlg = -dlg
                             }
+                            #{overflow=wrap}
                             dlb = left-b - tl-b
                             {
                                 dlb < 0 -> dlb = -dlb
                             }
+                            #{overflow=wrap}
                             pL = dla + dlr + dlg + dlb
+                            #{overflow=wrap}
                             dta = top-a - tl-a
                             {
                                 dta < 0 -> dta = -dta
                             }
+                            #{overflow=wrap}
                             dtr = top-r - tl-r
                             {
                                 dtr < 0 -> dtr = -dtr
                             }
+                            #{overflow=wrap}
                             dtg = top-g - tl-g
                             {
                                 dtg < 0 -> dtg = -dtg
                             }
+                            #{overflow=wrap}
                             dtb = top-b - tl-b
                             {
                                 dtb < 0 -> dtb = -dtb
                             }
+                            #{overflow=wrap}
                             pT = dta + dtr + dtg + dtb
                             {
                                 pL < pT -> {
@@ -1064,9 +1233,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                         mode == 12 -> {
                             ; ClampAddSubtractFull(L, T, TL) = Clamp(L + T - TL)
                             ; Per channel: val = L + T - TL, clamp to [0, 255]
+                            #{overflow=wrap}
                             val-a = left-a + top-a - tl-a
+                            #{overflow=wrap}
                             val-r = left-r + top-r - tl-r
+                            #{overflow=wrap}
                             val-g = left-g + top-g - tl-g
+                            #{overflow=wrap}
                             val-b = left-b + top-b - tl-b
                             {
                                 val-a < 0 -> val-a = 0
@@ -1095,13 +1268,21 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                             ; Mode 13: ClampAddSubtractHalf(Average2(L,T), TL)
                             ; Per channel: avg = Average2(L,T), val = avg + (avg - TL) / 2
                             ; clamp to [0, 255]
+                            #{overflow=wrap}
                             avg-lt-a = (left-a + top-a) / 2
+                            #{overflow=wrap}
                             avg-lt-r = (left-r + top-r) / 2
+                            #{overflow=wrap}
                             avg-lt-g = (left-g + top-g) / 2
+                            #{overflow=wrap}
                             avg-lt-b = (left-b + top-b) / 2
+                            #{overflow=wrap}
                             val-a = avg-lt-a + (avg-lt-a - tl-a) / 2
+                            #{overflow=wrap}
                             val-r = avg-lt-r + (avg-lt-r - tl-r) / 2
+                            #{overflow=wrap}
                             val-g = avg-lt-g + (avg-lt-g - tl-g) / 2
+                            #{overflow=wrap}
                             val-b = avg-lt-b + (avg-lt-b - tl-b) / 2
                             {
                                 val-a < 0 -> val-a = 0
@@ -1127,9 +1308,13 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                     }
 
                     ; Add residual to prediction
+                    #{overflow=wrap}
                     argb[pi * 4] = (argb[pi * 4] + pred-a) & 255
+                    #{overflow=wrap}
                     argb[pi * 4 + 1] = (argb[pi * 4 + 1] + pred-r) & 255
+                    #{overflow=wrap}
                     argb[pi * 4 + 2] = (argb[pi * 4 + 2] + pred-g) & 255
+                    #{overflow=wrap}
                     argb[pi * 4 + 3] = (argb[pi * 4 + 3] + pred-b) & 255
                 }
             }
@@ -1152,44 +1337,65 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                 ;                     + ((red_to_blue  * (new_red & 0xff)) >> 5)
                 ; Note: two independent >>5 shifts, not a combined one.
                 pi <- [0..n-pixels): {
+                    #{overflow=wrap}
                     py = pi / w
+                    #{overflow=wrap}
                     px = pi - py * w
+                    #{overflow=wrap}
                     blk-x = px / 4
+                    #{overflow=wrap}
                     blk-y = py / 4
+                    #{overflow=wrap}
                     blk-idx = blk-y * ct-w + blk-x
                     ; Read coefficients from ct-img ARGB
                     rtb = 0  ; red_to_blue   (from R channel, signed)
                     gtb = 0  ; green_to_blue (from G channel, signed)
                     gtr = 0  ; green_to_red  (from B channel, signed)
+                    #{overflow=wrap}
                     {
-                        blk-idx * 4 + 3 < ct-img.len -> {
+                        blk-idx * 4 + 3 < ct-img.len() -> {
+                            #{overflow=wrap}
                             raw-r = ct-img[blk-idx * 4 + 1]
+                            #{overflow=wrap}
                             raw-g = ct-img[blk-idx * 4 + 2]
+                            #{overflow=wrap}
                             raw-b = ct-img[blk-idx * 4 + 3]
                             ; Convert to signed: values 128..255 → -128..-1
                             rtb = raw-r
+                            #{overflow=wrap}
                             rtb > 127 -> rtb = rtb - 256
                             gtb = raw-g
+                            #{overflow=wrap}
                             gtb > 127 -> gtb = gtb - 256
                             gtr = raw-b
+                            #{overflow=wrap}
                             gtr > 127 -> gtr = gtr - 256
                         }
                     }
+                    #{overflow=wrap}
                     g = argb[pi * 4 + 2]
+                    #{overflow=wrap}
                     r = argb[pi * 4 + 1]
+                    #{overflow=wrap}
                     b = argb[pi * 4 + 3]
                     ; Apply inverse color transform (two independent >>5)
+                    #{overflow=wrap}
                     new-red = r + ((gtr * g) >> 5)
                     new-red = new-red & 255
                     {
+                        #{overflow=wrap}
                         new-red < 0 -> new-red = new-red + 256
                     }
+                    #{overflow=wrap}
                     argb[pi * 4 + 1] = new-red
+                    #{overflow=wrap}
                     new-blue = b + ((gtb * g) >> 5) + ((rtb * (new-red & 255)) >> 5)
                     new-blue = new-blue & 255
                     {
+                        #{overflow=wrap}
                         new-blue < 0 -> new-blue = new-blue + 256
                     }
+                    #{overflow=wrap}
                     argb[pi * 4 + 3] = new-blue
                 }
             }
@@ -1199,8 +1405,11 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
             ttype == 2 -> {
                 ; Inverse subtract-green: add green to red and blue
                 pi <- [0..n-pixels): {
+                    #{overflow=wrap}
                     g = argb[pi * 4 + 2]
+                    #{overflow=wrap}
                     argb[pi * 4 + 1] = (argb[pi * 4 + 1] + g) & 255
+                    #{overflow=wrap}
                     argb[pi * 4 + 3] = (argb[pi * 4 + 3] + g) & 255
                 }
             }
@@ -1218,30 +1427,45 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
                 ; The 32-bit value is treated as: alpha(8) | red(8) | green(8) | blue(8)
                 ; Bits are packed sequentially across all 4 channels (32 bits total)
                 pi <- [0..n-pixels): {
+                    #{overflow=wrap}
                     py = pi / w
+                    #{overflow=wrap}
                     px = pi - py * w
                     ; Which sub-image pixel contains this pixel's index?
+                    #{overflow=wrap}
                     sub-px = px / ci-bits
+                    #{overflow=wrap}
                     sub-idx = py * ci-sub-w + sub-px
                     ; Which bit position within the sub-image pixel?
+                    #{overflow=wrap}
                     bit-pos = (px - sub-px * ci-bits) * ci-bits
                     ; Extract the index from the 32-bit ARGB value
                     ; The ARGB value is stored as [A, R, G, B] in ci-img
                     ; Reconstruct the 32-bit value: A<<24 | R<<16 | G<<8 | B
+                    #{overflow=wrap}
                     {
-                        sub-idx * 4 + 3 < ci-img.len -> {
+                        sub-idx * 4 + 3 < ci-img.len() -> {
+                            #{overflow=wrap}
                             a-val = ci-img[sub-idx * 4]
+                            #{overflow=wrap}
                             r-val = ci-img[sub-idx * 4 + 1]
+                            #{overflow=wrap}
                             g-val = ci-img[sub-idx * 4 + 2]
+                            #{overflow=wrap}
                             b-val = ci-img[sub-idx * 4 + 3]
                             packed = (a-val << 24) | (r-val << 16) | (g-val << 8) | b-val
+                            #{overflow=wrap}
                             mask = (1 << ci-bits) - 1
                             idx = (packed >> bit-pos) & mask
                             {
                                 idx < ci-palette-size -> {
+                                    #{overflow=wrap}
                                     argb[pi * 4] = ci-palette[idx * 4]
+                                    #{overflow=wrap}
                                     argb[pi * 4 + 1] = ci-palette[idx * 4 + 1]
+                                    #{overflow=wrap}
                                     argb[pi * 4 + 2] = ci-palette[idx * 4 + 2]
+                                    #{overflow=wrap}
                                     argb[pi * 4 + 3] = ci-palette[idx * 4 + 3]
                                 }
                             }
@@ -1253,21 +1477,29 @@ webp-decode-vp8l = (data str, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixel
     }
 
     ; Convert ARGB to output format (RGB or RGBA)
+    #{overflow=wrap}
     pixels = with-len(n-pixels * bands)
     {
         bands == 4 -> {
             i <- [0..n-pixels): {
+                #{overflow=wrap}
                 pixels[i * 4] = argb[i * 4 + 1]
+                #{overflow=wrap}
                 pixels[i * 4 + 1] = argb[i * 4 + 2]
+                #{overflow=wrap}
                 pixels[i * 4 + 2] = argb[i * 4 + 3]
+                #{overflow=wrap}
                 pixels[i * 4 + 3] = argb[i * 4]
             }
         }
 
         -> {
             i <- [0..n-pixels): {
+                #{overflow=wrap}
                 pixels[i * 3] = argb[i * 4 + 1]
+                #{overflow=wrap}
                 pixels[i * 3 + 1] = argb[i * 4 + 2]
+                #{overflow=wrap}
                 pixels[i * 3 + 2] = argb[i * 4 + 3]
             }
         }
@@ -1283,7 +1515,8 @@ webp-read-u32-le = (data str, pos i64) (val i64) {
 webp-parse-vp8 = (data str, pos i64, size i64) (w i64, h i64) {
     w = 0
     h = 0
-    pos + 10 > data.len -> return
+    #{overflow=wrap}
+    pos + 10 > data.len-bytes() -> return
     tag0 = data[pos] & 255
     key-frame = (tag0 & 1) != 0
     key-frame == false -> return
@@ -1301,21 +1534,30 @@ webp-parse-vp8 = (data str, pos i64, size i64) (w i64, h i64) {
 webp-parse-vp8l = (data str, pos i64, size i64) (w i64, h i64) {
     w = 0
     h = 0
-    pos + 5 > data.len -> return
+    #{overflow=wrap}
+    pos + 5 > data.len-bytes() -> return
     (data[pos] & 255) == 47 -> {}
     -> return
+    #{overflow=wrap}
     b1 = data[pos + 1] & 255
+    #{overflow=wrap}
     b2 = data[pos + 2] & 255
+    #{overflow=wrap}
     b3 = data[pos + 3] & 255
+    #{overflow=wrap}
     b4 = data[pos + 4] & 255
+    #{overflow=wrap}
     w = (b1 | ((b2 & 63) << 8)) + 1
+    #{overflow=wrap}
     h = ((b2 >> 6) | (b3 << 2) | ((b4 & 15) << 10)) + 1
 }
 
 ; webp-vp8l-alpha-flag: check if VP8L has alpha
 webp-vp8l-alpha-flag = (data str, pos i64) (has-alpha bool) {
     has-alpha = false
-    pos + 5 > data.len -> return
+    #{overflow=wrap}
+    pos + 5 > data.len-bytes() -> return
+    #{overflow=wrap}
     b4 = data[pos + 4] & 255
     has-alpha = (b4 & 16) != 0
 }
@@ -1328,7 +1570,7 @@ webp-vp8l-alpha-flag = (data str, pos i64) (has-alpha bool) {
 ; returns img ?image: loaded image, nil on error or unsupported format
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len < 12 -> {
+    data.len() < 12 -> {
         img = nil
         return
     }
@@ -1358,19 +1600,27 @@ load = (path str) (img ?image) {
     has-alpha = false
 
     ; Parse RIFF chunks
+    #{overflow=wrap}
     {
-        pos + 8 <= data.len -> {
+        #{overflow=wrap}
+        pos + 8 <= data.len() -> {
+            #{overflow=wrap}
             fourcc = data.slice(pos, pos + 4)
+            #{overflow=wrap}
             chunk-size = webp-read-u32-le(data, pos + 4)
+            #{overflow=wrap}
             chunk-data-pos = pos + 8
             {
                 fourcc == 'VP8X' -> {
+                    #{overflow=wrap}
                     {
-                        chunk-data-pos + 10 <= data.len -> {
+                        chunk-data-pos + 10 <= data.len() -> {
                             has-alpha = (data[chunk-data-pos] & 16) != 0
                             cw = (data[chunk-data-pos + 4] & 255) | ((data[chunk-data-pos + 5] & 255) << 8) | ((data[chunk-data-pos + 6] & 255) << 16)
                             ch = (data[chunk-data-pos + 7] & 255) | ((data[chunk-data-pos + 8] & 255) << 8) | ((data[chunk-data-pos + 9] & 255) << 16)
+                            #{overflow=wrap}
                             w = cw + 1
+                            #{overflow=wrap}
                             h = ch + 1
                         }
                     }
@@ -1394,12 +1644,14 @@ load = (path str) (img ?image) {
                     return
                 }
             }
+            #{overflow=wrap}
             pos = chunk-data-pos + chunk-size
             {
+                #{overflow=wrap}
                 chunk-size & 1 != 0 -> pos = pos + 1
             }
         }
-    } (pos + 8 <= data.len)
+    } (pos + 8 <= data.len())
 
     ; Check if VP8L was found
     {
@@ -1413,6 +1665,7 @@ img = nil
     pixels = webp-decode-vp8l(data, vp8l-pos, w, h, has-alpha)
 
     ; Build image from decoded pixel data
+    #{overflow=wrap}
     _d str = with-len(w * h * bands)
     i <- [0..w * h * bands): {
         _d[i] = pixels[i]
@@ -1432,6 +1685,7 @@ save = (path str, img image) (ok bool) {
     w = img.width
     h = img.height
     has-alpha = img.bands == 4
+    #{overflow=wrap}
     npix = w * h
 
     ; Build VP8L lossless bitstream with real pixel data
@@ -1442,6 +1696,7 @@ save = (path str, img image) (ok bool) {
     ; VP8L bitstream writer
     bit-buf i64 = 0
     bit-count i64 = 0
+    #{overflow=wrap}
     vp8l-data []byte = with-cap(npix * 5 + 256)
 
     ; Helper: flush bytes from bit buffer
@@ -1449,35 +1704,43 @@ save = (path str, img image) (ok bool) {
 
     ; VP8L signature (0x2F)
     bit-buf = bit-buf | (47 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 8
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
 
     ; Width-1 (14 bits)
+    #{overflow=wrap}
     w1 = w - 1
     bit-buf = bit-buf | (w1 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 14
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
 
     ; Height-1 (14 bits)
+    #{overflow=wrap}
     h1 = h - 1
     bit-buf = bit-buf | (h1 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 14
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
@@ -1488,35 +1751,42 @@ save = (path str, img image) (ok bool) {
         has-alpha -> alpha-bit = 1
     }
     bit-buf = bit-buf | (alpha-bit << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 1
     bit-buf = bit-buf | (0 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 3
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
 
     ; No transforms: write 0 for "use transform" bit
     bit-buf = bit-buf | (0 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 1
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
 
     ; Color cache: not used (1 bit = 0)
     bit-buf = bit-buf | (0 << bit-count)
+    #{overflow=wrap}
     bit-count = bit-count + 1
     {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+            #{overflow=wrap}
             bit-count = bit-count - 8
         }
     } (bit-count >= 8)
@@ -1574,11 +1844,13 @@ save = (path str, img image) (ok bool) {
                 mi == 16 -> ml = 2
             }
             bit-buf = bit-buf | (ml << bit-count)
+            #{overflow=wrap}
             bit-count = bit-count + 3
             {
                 bit-count >= 8 -> {
                     vp8l-data.push(bit-buf & 255)
                     bit-buf = bit-buf >> 8
+                    #{overflow=wrap}
                     bit-count = bit-count - 8
                 }
             } (bit-count >= 8)
@@ -1588,11 +1860,13 @@ save = (path str, img image) (ok bool) {
         ; First symbol: code length 9 (meta symbol 9)
         ; Code for meta-sym 9 = 0 (1 bit)
         bit-buf = bit-buf | (0 << bit-count)
+        #{overflow=wrap}
         bit-count = bit-count + 1
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
                 bit-buf = bit-buf >> 8
+                #{overflow=wrap}
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
@@ -1606,16 +1880,20 @@ save = (path str, img image) (ok bool) {
             rep-count >= 6 -> {
                 ; Write repeat-6 (ext=3, 2 bits)
                 bit-buf = bit-buf | (2 << bit-count)
+                #{overflow=wrap}
                 bit-count = bit-count + 2
                 bit-buf = bit-buf | (3 << bit-count)
+                #{overflow=wrap}
                 bit-count = bit-count + 2
                 {
                     bit-count >= 8 -> {
                         vp8l-data.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
+                        #{overflow=wrap}
                         bit-count = bit-count - 8
                     }
                 } (bit-count >= 8)
+                #{overflow=wrap}
                 rep-count = rep-count - 6
             }
         } (rep-count >= 6)
@@ -1623,14 +1901,18 @@ save = (path str, img image) (ok bool) {
             rep-count > 0 -> {
                 ; Write remaining repeats (ext = rep-count - 3)
                 bit-buf = bit-buf | (2 << bit-count)
+                #{overflow=wrap}
                 bit-count = bit-count + 2
+                #{overflow=wrap}
                 ext-val = rep-count - 3
                 bit-buf = bit-buf | (ext-val << bit-count)
+                #{overflow=wrap}
                 bit-count = bit-count + 2
                 {
                     bit-count >= 8 -> {
                         vp8l-data.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
+                        #{overflow=wrap}
                         bit-count = bit-count - 8
                     }
                 } (bit-count >= 8)
@@ -1647,6 +1929,7 @@ save = (path str, img image) (ok bool) {
     ; Since green < 256 always, no LZ77 or color cache references.
     i <- [0..npix): {
         px = i % w
+        #{overflow=wrap}
         py = i / w
         g = image.get-pixel(img, px, py, 1)
         r = image.get-pixel(img, px, py, 0)
@@ -1660,33 +1943,39 @@ save = (path str, img image) (ok bool) {
 
         ; Write green (9 bits)
         bit-buf = bit-buf | (g << bit-count)
+        #{overflow=wrap}
         bit-count = bit-count + 9
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
                 bit-buf = bit-buf >> 8
+                #{overflow=wrap}
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
 
         ; Write red (9 bits)
         bit-buf = bit-buf | (r << bit-count)
+        #{overflow=wrap}
         bit-count = bit-count + 9
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
                 bit-buf = bit-buf >> 8
+                #{overflow=wrap}
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
 
         ; Write blue (9 bits)
         bit-buf = bit-buf | (b << bit-count)
+        #{overflow=wrap}
         bit-count = bit-count + 9
         {
             bit-count >= 8 -> {
                 vp8l-data.push(bit-buf & 255)
                 bit-buf = bit-buf >> 8
+                #{overflow=wrap}
                 bit-count = bit-count - 8
             }
         } (bit-count >= 8)
@@ -1695,11 +1984,13 @@ save = (path str, img image) (ok bool) {
         {
             has-alpha -> {
                 bit-buf = bit-buf | (a << bit-count)
+                #{overflow=wrap}
                 bit-count = bit-count + 9
                 {
                     bit-count >= 8 -> {
                         vp8l-data.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
+                        #{overflow=wrap}
                         bit-count = bit-count - 8
                     }
                 } (bit-count >= 8)
@@ -1715,8 +2006,10 @@ save = (path str, img image) (ok bool) {
     }
 
     ; Build RIFF container with VP8L chunk
-    file-size = 4 + 8 + vp8l-data.len
-    buf []byte = with-cap(12 + 8 + vp8l-data.len)
+    #{overflow=wrap}
+    file-size = 4 + 8 + vp8l-data.len()
+    #{overflow=wrap}
+    buf []byte = with-cap(12 + 8 + vp8l-data.len())
     buf.push(82); R
     buf.push(73); I
     buf.push(70); F
@@ -1734,11 +2027,11 @@ save = (path str, img image) (ok bool) {
     buf.push(80); P
     buf.push(56); 8
     buf.push(76); L
-    buf.push(vp8l-data.len & 255)
+    buf.push(vp8l-data.len() & 255)
     buf.push((vp8l-data.len >> 8) & 255)
     buf.push((vp8l-data.len >> 16) & 255)
     buf.push((vp8l-data.len >> 24) & 255)
-    i <- [0..vp8l-data.len): {
+    i <- [0..vp8l-data.len()): {
         buf.push(vp8l-data[i])
     }
 
@@ -1750,7 +2043,7 @@ save = (path str, img image) (ok bool) {
             return
         }
     }
-    fs.write(wfd, buf, buf.len)
+    fs.write(wfd, buf, buf.len())
     fs.close(wfd)
     ok = true
 }

@@ -10,8 +10,9 @@
 ; atoi: parse a non-negative integer
 atoi = (s str) (v i64) {
     v = 0
-    i <- [0..s.len): {
+    i <- [0..s.len-bytes()): {
         c = s[i]
+        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
 }
@@ -19,9 +20,10 @@ atoi = (s str) (v i64) {
 ; is-pattern: detect whether an argument looks like a pattern
 is-pattern = (s str) (yes bool) {
     yes = false
-    n = s.len
+    n = s.len-bytes()
     n == 0 -> return
     c0 = s[0]
+    #{overflow=wrap}
     cl = s[n - 1]
     {
         ; /literal/
@@ -45,7 +47,9 @@ is-pattern = (s str) (yes bool) {
 ; gen-name: generate output filename xx00, xx01, ...
 gen-name = (idx i64) (name str) {
     suffix = idx.to-str()
-    suffix.len < 2 -> suffix = '0' - suffix
+    #{overflow=wrap}
+    suffix.len-bytes() < 2 -> suffix = '0' - suffix
+    #{overflow=wrap}
     name = 'xx' - suffix
 }
 
@@ -53,7 +57,7 @@ gen-name = (idx i64) (name str) {
 write-section = (file-idx i64, chunk str) {
     fname = gen-name(file-idx)
     fd = fs.open-write(fname)
-    fs.write(fd, chunk, chunk.len)
+    fs.write(fd, chunk, chunk.len-bytes())
     fs.close(fd)
 }
 
@@ -61,14 +65,20 @@ write-section = (file-idx i64, chunk str) {
 ; returns the 0-based line index, or -1 if not found
 find-line = (content str, line-starts []i64, cur-line i64, literal str) (found-line i64) {
     found-line = -1
-    n = line-starts.len
+    n = line-starts.len()
     i <- [cur-line..n): {
+        #{index-out=0}
         start = line-starts[i]
-        end = content.len
-        i + 1 < n -> end = line-starts[i + 1]
+        end = content.len-bytes()
+        #{overflow=wrap}
+        i + 1 < n -> {
+            #{index-out=0}
+            end = line-starts[i + 1]
+        }
         ; strip trailing newline for matching
         line-end = end
         line-end > start -> {
+            #{overflow=wrap}
             content[line-end - 1] == 10 -> line-end = line-end - 1
         }
         line = content.slice(start, line-end)
@@ -115,6 +125,7 @@ csplit = () {
 
         -> {
             fs.is-file(infile) == false -> {
+                #{overflow=wrap}
                 eprint('csplit: ' - infile - ': No such file or directory')
                 os.exit(1)
             }
@@ -133,19 +144,21 @@ csplit = () {
     ; Build line-start positions (byte offset of the first char of each line)
     line-starts []i64
     line-starts.push(0)
-    j <- [0..content.len): {
+    j <- [0..content.len-bytes()): {
+        #{overflow=wrap}
         content[j] == 10 -> line-starts.push(j + 1)
     }
-    num-lines = line-starts.len
+    num-lines = line-starts.len()
 
     ; Process patterns sequentially
     section-start = 0
     cur-line = 0
     file-idx = 0
 
-    p <- [0..patterns.len): {
+    p <- [0..patterns.len()): {
+        #{index-out=0}
         pat = patterns[p]
-        pn = pat.len
+        pn = pat.len()
         pn == 0 -> {
             eprint('csplit: empty pattern')
             os.exit(1)
@@ -164,10 +177,14 @@ csplit = () {
                     os.exit(1)
                 }
                 ; Split point is the start of line n (0-based index n)
-                split-pos = content.len
-                n < num-lines -> split-pos = line-starts[n]
+                split-pos = content.len-bytes()
+                n < num-lines -> {
+                    #{index-out=0}
+                    split-pos = line-starts[n]
+                }
                 chunk = content.slice(section-start, split-pos)
                 write-section(file-idx, chunk)
+                #{overflow=wrap}
                 file-idx = file-idx + 1
                 section-start = split-pos
                 cur-line = n
@@ -179,15 +196,19 @@ csplit = () {
                     eprint('csplit: invalid pattern: ' - pat)
                     os.exit(1)
                 }
+                #{overflow=wrap}
                 inner = pat.slice(1, pn - 1)
                 found = find-line(content, line-starts, cur-line, inner)
                 found < 0 -> {
+                    #{overflow=wrap}
                     eprint('csplit: /' - inner - '/: no match')
                     os.exit(1)
                 }
+                #{index-out=0}
                 split-pos = line-starts[found]
                 chunk = content.slice(section-start, split-pos)
                 write-section(file-idx, chunk)
+                #{overflow=wrap}
                 file-idx = file-idx + 1
                 section-start = split-pos
                 cur-line = found
@@ -199,12 +220,15 @@ csplit = () {
                     eprint('csplit: invalid pattern: ' - pat)
                     os.exit(1)
                 }
+                #{overflow=wrap}
                 inner = pat.slice(1, pn - 1)
                 found = find-line(content, line-starts, cur-line, inner)
                 found < 0 -> {
+                    #{overflow=wrap}
                     eprint('csplit: %' - inner - '%: no match')
                     os.exit(1)
                 }
+                #{index-out=0}
                 split-pos = line-starts[found]
                 ; Skip (do not write) the discarded content
                 section-start = split-pos
@@ -220,9 +244,10 @@ csplit = () {
 
     ; Write remaining content as the final section
     {
-        section-start < content.len -> {
-            chunk = content.slice(section-start, content.len)
+        section-start < content.len-bytes() -> {
+            chunk = content.slice(section-start, content.len-bytes())
             write-section(file-idx, chunk)
+            #{overflow=wrap}
             file-idx = file-idx + 1
         }
     }

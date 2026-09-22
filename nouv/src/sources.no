@@ -51,13 +51,13 @@ parse-source = (spec str) (source str, kind str, ok bool) {
     {
         s.starts-with('-e ') -> {
             kind = SOURCE-EDITABLE
-            source = s.slice(3, s.len).trim()
+            source = s.slice(3, s.len()).trim()
             ok = true
             return
         }
         s.starts-with('--editable ') -> {
             kind = SOURCE-EDITABLE
-            source = s.slice(11, s.len).trim()
+            source = s.slice(11, s.len()).trim()
             ok = true
             return
         }
@@ -67,7 +67,7 @@ parse-source = (spec str) (source str, kind str, ok bool) {
     at-pos = s.index(' @ ')
     {
         at-pos >= 0 -> {
-            source = s.slice(at-pos + 3, s.len).trim()
+            source = s.slice(at-pos + 3, s.len()).trim()
             {
                 ; git+ prefix
                 source.starts-with('git+') -> kind = SOURCE-GIT
@@ -135,7 +135,7 @@ parse-source = (spec str) (source str, kind str, ok bool) {
         s.starts-with('./') || s.starts-with('../') || s.starts-with('file://') -> {
             kind = SOURCE-PATH
             {
-                s.starts-with('file://') -> source = s.slice(7, s.len)
+                s.starts-with('file://') -> source = s.slice(7, s.len())
                 -> source = s
             }
             ok = true
@@ -213,7 +213,7 @@ parse-git-url = (url str) (repo str, ref str, subpath str) {
 
     ; remove git+ prefix
     {
-        repo.starts-with('git+') -> repo = repo.slice(4, repo.len)
+        repo.starts-with('git+') -> repo = repo.slice(4, repo.len-bytes())
     }
 
     ; handle ssh URL format: ssh://git@host/path or git@host:path
@@ -227,7 +227,9 @@ parse-git-url = (url str) (repo str, ref str, subpath str) {
             {
                 colon > 0 -> {
                     host = repo.slice(4, colon)
-                    path-part = repo.slice(colon + 1, repo.len)
+                    #{overflow=wrap}
+                    path-part = repo.slice(colon + 1, repo.len-bytes())
+                    #{overflow=wrap}
                     repo = 'ssh://git@' - host - '/' - path-part
                 }
             }
@@ -238,7 +240,8 @@ parse-git-url = (url str) (repo str, ref str, subpath str) {
     hash-pos = repo.index('#')
     {
         hash-pos >= 0 -> {
-            subpath = repo.slice(hash-pos + 1, repo.len)
+            #{overflow=wrap}
+            subpath = repo.slice(hash-pos + 1, repo.len-bytes())
             repo = repo.slice(0, hash-pos)
         }
     }
@@ -247,7 +250,8 @@ parse-git-url = (url str) (repo str, ref str, subpath str) {
     at-pos = repo.index('@')
     {
         at-pos >= 0 -> {
-            ref = repo.slice(at-pos + 1, repo.len)
+            #{overflow=wrap}
+            ref = repo.slice(at-pos + 1, repo.len-bytes())
             repo = repo.slice(0, at-pos)
         }
     }
@@ -274,10 +278,12 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
     {
         ref == '' -> {
             ; shallow clone without ref
+            #{overflow=wrap}
             code = utils.run-cmd('git clone --depth 1 ' - repo - ' ' - dest)
         }
         -> {
             ; clone with specific ref
+            #{overflow=wrap}
             code = utils.run-cmd('git clone --depth 1 --branch ' - ref - ' ' - repo - ' ' - dest)
         }
     }
@@ -293,8 +299,9 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
         ref != '' -> {
             ; if it's a full hex hash (40 chars), checkout
             {
-                ref.len == 40 -> {
+                ref.len-bytes() == 40 -> {
                     ; assume it's a commit hash, try checkout
+                    #{overflow=wrap}
                     code2 = utils.run-cmd('git -C ' - dest - ' checkout ' - ref)
                     {
                         code2 != 0 -> {
@@ -307,6 +314,7 @@ clone-git = (repo str, ref str, dest str) (ok bool) {
     }
 
     ; remove .git directory to save space
+    #{overflow=wrap}
     utils.run-cmd('rm' - ' ' - '-rf ' - dest - '/.git')
 
     ok = true
@@ -334,16 +342,20 @@ resolve-source = (source str, kind str) (path str, ok bool) {
         SOURCE-GIT -> {
             ; parse git URL
             repo, ref, subpath = parse-git-url(source)
+            #{overflow=wrap}
             cache-dir = settings.get-cache-dir() - '/git'
 
             ; create a hash of the repo+ref for the directory name
+            #{overflow=wrap}
             dir-name = repo.replace-char(47, 95).replace-char(58, 95) - '-' - ref
 
             ; for ref-less, use a generic name
             {
+                #{overflow=wrap}
                 ref == '' -> dir-name = repo.replace-char(47, 95).replace-char(58, 95) - '-default'
             }
 
+            #{overflow=wrap}
             dest = cache-dir - '/' - dir-name
             p = path{
                 p: dest,
@@ -359,6 +371,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
             }
 
             {
+                #{overflow=wrap}
                 subpath != '' -> path = dest - '/' - subpath
                 -> path = dest
             }
@@ -366,6 +379,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
         }
         SOURCE-URL -> {
             ; download to cache
+            #{overflow=wrap}
             cache-dir = settings.get-cache-dir() - '/urls'
             p = path{
                 p: cache-dir,
@@ -376,12 +390,14 @@ resolve-source = (source str, kind str) (path str, ok bool) {
             filename = source
             slash = filename.rindex('/')
             {
-                slash >= 0 -> filename = filename.slice(slash + 1, filename.len)
+                #{overflow=wrap}
+                slash >= 0 -> filename = filename.slice(slash + 1, filename.len-bytes())
             }
             {
                 filename == '' -> filename = 'download'
             }
 
+            #{overflow=wrap}
             dest = cache-dir - '/' - filename
             p2 = path{
                 p: dest,
@@ -401,7 +417,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
                             {
                                 fd <= 0 -> return
                                 -> {
-                                    fs.write(fd, body, body.len)
+                                    fs.write(fd, body, body.len())
                                     fs.close(fd)
                                 }
                             }
@@ -417,7 +433,7 @@ resolve-source = (source str, kind str) (path str, ok bool) {
             ; resolve relative path
             path = source
             {
-                path.starts-with('file://') -> path = path.slice(7, path.len)
+                path.starts-with('file://') -> path = path.slice(7, path.len-bytes())
             }
             ok = true
         }
@@ -446,33 +462,41 @@ extract-inline-value = (table str, key str) (val str) {
     {
         pos < 0 -> return
         -> {
-            start = pos + search.len
+            #{overflow=wrap}
+            start = pos + search.len-bytes()
             ; skip whitespace
             {
+                #{overflow=wrap}
                 start = start + 1
-            } (start < table.len && (table[start] == 32 || table[start] == 9))
+            } (start < table.len-bytes() && (table[start] == 32 || table[start] == 9))
             {
-                start < table.len -> {
+                start < table.len-bytes() -> {
                     c = table[start]
                     {
                         c == 34 -> {
                             ; double-quoted
-                            rest = table.slice(start + 1, table.len)
+                            #{overflow=wrap}
+                            rest = table.slice(start + 1, table.len-bytes())
                             found = rest.index('"')
                             {
                                 found >= 0 -> {
+                                    #{overflow=wrap}
                                     end = start + 1 + found
+                                    #{overflow=wrap}
                                     val = table.slice(start + 1, end)
                                 }
                             }
                         }
                         c == 39 -> {
                             ; single-quoted
-                            rest = table.slice(start + 1, table.len)
+                            #{overflow=wrap}
+                            rest = table.slice(start + 1, table.len-bytes())
                             found = rest.index("'")
                             {
                                 found >= 0 -> {
+                                    #{overflow=wrap}
                                     end = start + 1 + found
+                                    #{overflow=wrap}
                                     val = table.slice(start + 1, end)
                                 }
                             }
@@ -518,12 +542,16 @@ get-source-type = (cfg str, name str) (kind str, spec str) {
                     branch = extract-inline-value(v, 'branch')
                     rev = extract-inline-value(v, 'rev')
                     {
+                        #{overflow=wrap}
                         tag != '' -> spec = spec - '@' - tag
+                        #{overflow=wrap}
                         branch != '' -> spec = spec - '@' - branch
+                        #{overflow=wrap}
                         rev != '' -> spec = spec - '@' - rev
                     }
                     sub = extract-inline-value(v, 'subdirectory')
                     {
+                        #{overflow=wrap}
                         sub != '' -> spec = spec - '#' - sub
                     }
                 }
