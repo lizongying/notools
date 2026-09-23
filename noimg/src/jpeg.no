@@ -532,7 +532,7 @@ img = nil
                                         #{overflow=wrap}
                                         sx = i - sy * w
                                         #{overflow=wrap}
-                                        tmp.data[i] = comp-data-0[sy * comp-w0 + sx]
+                                        tmp.data[i] = comp-data-0[sy * comp-w0 + sx] & 255
                                     }
                                 }
 
@@ -576,11 +576,11 @@ img = nil
                                         cr-val = comp-data-2[cr-y * comp-w0 + cr-x]
 
                                         ; YCbCr → RGB (ITU-R BT.601)
-                                        yf = y-val
+                                        yf = 0.0 + y-val
                                         #{overflow=wrap}
-                                        cbf = cb-val - 128
+                                        cbf = 0.0 + cb-val - 128
                                         #{overflow=wrap}
-                                        crf = cr-val - 128
+                                        crf = 0.0 + cr-val - 128
 
                                         #{overflow=wrap}
                                         r = yf + 1.402 * crf
@@ -589,12 +589,12 @@ img = nil
                                         #{overflow=wrap}
                                         b = yf + 1.772 * cbf
 
-                                        r < 0 -> r = 0
-                                        r > 255 -> r = 255
-                                        g < 0 -> g = 0
-                                        g > 255 -> g = 255
-                                        b < 0 -> b = 0
-                                        b > 255 -> b = 255
+                                        r < 0.0 -> r = 0.0
+                                        r > 255.0 -> r = 255.0
+                                        g < 0.0 -> g = 0.0
+                                        g > 255.0 -> g = 255.0
+                                        b < 0.0 -> b = 0.0
+                                        b > 255.0 -> b = 255.0
 
                                         #{overflow=wrap}
                                         dst = i * 3
@@ -675,18 +675,18 @@ jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset 
 ; cnt i64: bits in buffer
 ; n i64: number of bits to read (1-24)
 ; returns val i64, new-pos i64, new-buf i64, new-cnt i64
-jpeg-read-bits = (data str, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
+jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
     ; Fill buffer until we have enough bits
     {
         cnt < n -> {
             {
-                pos < data.len-bytes() -> {
+                pos < data.len() -> {
                     b = data[pos] & 255
                     ; Skip 0xFF stuffing (FF 00 → FF)
                     b == 255 -> {
                         #{overflow=wrap}
                         {
-                            pos + 1 < data.len-bytes() -> {
+                            pos + 1 < data.len() -> {
                                 #{overflow=wrap}
                                 next = data[pos + 1] & 255
                                 next == 0 -> {
@@ -752,16 +752,16 @@ jpeg-read-bits = (data str, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos 
 ; buf i64: bit buffer
 ; cnt i64: bits in buffer
 ; returns val i64, new-pos i64, new-buf i64, new-cnt i64
-jpeg-read-1-bit = (data str, pos i64, buf i64, cnt i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
+jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
     {
         cnt == 0 -> {
             {
-                pos < data.len-bytes() -> {
+                pos < data.len() -> {
                     b = data[pos] & 255
                     b == 255 -> {
                         #{overflow=wrap}
                         {
-                            pos + 1 < data.len-bytes() -> {
+                            pos + 1 < data.len() -> {
                                 #{overflow=wrap}
                                 next = data[pos + 1] & 255
                                 next == 0 -> {
@@ -823,7 +823,7 @@ jpeg-read-1-bit = (data str, pos i64, buf i64, cnt i64) (val i64, new-pos i64, n
 ; maxcode []byte: max code per length (maxcode[tid*16..])
 ; valptr []byte: value pointer per length (valptr[tid*16..])
 ; returns sym i64, new-pos i64, new-buf i64, new-cnt i64
-jpeg-decode-huff = (data str, pos i64, buf i64, cnt i64, tid i64, lens []byte, vals []byte, counts []byte, maxcode []i64, valptr []i64) (sym i64, new-pos i64, new-buf i64, new-cnt i64) {
+jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte, vals []byte, counts []byte, maxcode []i64, valptr []i64) (sym i64, new-pos i64, new-buf i64, new-cnt i64) {
     code = 0
     l = 0
     found = false
@@ -902,7 +902,7 @@ jpeg-decode-huff = (data str, pos i64, buf i64, cnt i64, tid i64, lens []byte, v
 ; dc-maxcode []byte: DC max codes
 ; dc-valptr []byte: DC value pointers
 ; returns dc-val i64, new-pos i64, new-buf i64, new-cnt i64
-jpeg-decode-dc = (data str, pos i64, buf i64, cnt i64, tid i64, dc-lens []byte, dc-tables []byte, dc-counts []byte, dc-maxcode []i64, dc-valptr []i64) (dc-val i64, new-pos i64, new-buf i64, new-cnt i64) {
+jpeg-decode-dc = (data []byte, pos i64, buf i64, cnt i64, tid i64, dc-lens []byte, dc-tables []byte, dc-counts []byte, dc-maxcode []i64, dc-valptr []i64) (dc-val i64, new-pos i64, new-buf i64, new-cnt i64) {
     ; Decode Huffman symbol to get magnitude category
     s, pos, buf, cnt = jpeg-decode-huff(data, pos, buf, cnt, tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
     ; s = number of additional bits to read
@@ -933,7 +933,7 @@ jpeg-decode-dc = (data str, pos i64, buf i64, cnt i64, tid i64, dc-lens []byte, 
 ; ac-maxcode []byte: AC max codes
 ; ac-valptr []byte: AC value pointers
 ; returns rs i64, new-pos i64, new-buf i64, new-cnt i64
-jpeg-decode-ac = (data str, pos i64, buf i64, cnt i64, tid i64, ac-lens []byte, ac-tables []byte, ac-counts []byte, ac-maxcode []i64, ac-valptr []i64) (rs i64, new-pos i64, new-buf i64, new-cnt i64) {
+jpeg-decode-ac = (data []byte, pos i64, buf i64, cnt i64, tid i64, ac-lens []byte, ac-tables []byte, ac-counts []byte, ac-maxcode []i64, ac-valptr []i64) (rs i64, new-pos i64, new-buf i64, new-cnt i64) {
     rs, pos, buf, cnt = jpeg-decode-huff(data, pos, buf, cnt, tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
     new-pos = pos
     new-buf = buf
@@ -990,7 +990,7 @@ jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
                     cv = 1.0
                     v == 0 -> cv = inv-sqrt2
                     #{overflow=wrap}
-                    sum = sum + cu * cv * block[v * 8 + u] * math.cos((2 * x + 1) * u * pi / 16.0) * math.cos((2 * y + 1) * v * pi / 16.0)
+                    sum = sum + cu * cv * block[v * 8 + u] * math.cos(pi / 16.0 * (2 * x + 1) * u) * math.cos(pi / 16.0 * (2 * y + 1) * v)
                 }
             }
             #{overflow=wrap}
@@ -1003,7 +1003,7 @@ jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
 ; data str: data
 ; pos i64: position
 ; returns val i64
-jpeg-read-u16 = (data str, pos i64) (val i64) {
+jpeg-read-u16 = (data []byte, pos i64) (val i64) {
     val = ((data[pos] & 255) << 8) | (data[pos + 1] & 255)
 }
 
@@ -1701,7 +1701,7 @@ jpeg-dct-8x8 = (block [64]f64) (out [64]f64) {
             x <- [0..8): {
                 y <- [0..8): {
                     #{overflow=wrap}
-                    sum = sum + block[y * 8 + x] * math.cos((2 * x + 1) * u * 3.14159265 / 16.0) * math.cos((2 * y + 1) * v * 3.14159265 / 16.0)
+                    sum = sum + block[y * 8 + x] * math.cos(3.14159265 / 16.0 * (2 * x + 1) * u) * math.cos(3.14159265 / 16.0 * (2 * y + 1) * v)
                 }
             }
             #{overflow=wrap}

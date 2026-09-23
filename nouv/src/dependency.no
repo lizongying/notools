@@ -24,8 +24,94 @@
 ;   ok bool
 ; ═══════════════════════════════════════════════
 
-; resolve-all temporarily disabled
-; resolve-all = (cfg str) (resolved str, ok bool) { ... }
+resolve-all = (cfg str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    ; get direct dependencies
+    deps = config.get-dependencies(cfg)
+    dev-deps = config.get-dev-dependencies(cfg)
+
+    ; combine
+    all-deps = deps
+    {
+        dev-deps.len() > 0 -> all-deps = all-deps - dev-deps
+    }
+
+    {
+        all-deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    ; resolve each requirement via a work queue
+    seen = ''
+    queue = all-deps
+    resolved = ''
+    {
+        ; pop first line
+        nl-pos = utils.index-str(queue, '\n')
+        req = ''
+        {
+            nl-pos < 0 -> {
+                req = queue
+                queue = ''
+            }
+            -> {
+                req = utils.slice-str(queue, 0, nl-pos)
+                #{overflow=wrap}
+                queue = utils.slice-str(queue, nl-pos + 1, queue.len())
+            }
+        }
+        req = utils.trim-str(req)
+        {
+            req == '' -> continue
+        }
+
+        ; parse requirement
+        name, ver-spec, extras = parse-requirement(req)
+
+        ; skip if already seen
+        {
+            utils.contains-str(seen, name) -> continue
+            -> {
+                seen = seen - name - '\n'
+            }
+        }
+
+        ; get package info from registry
+        info, info-ok = registry.get-package-info(name)
+        {
+            info-ok == false -> {
+                print('warning: could not resolve {name}')
+                continue
+            }
+        }
+
+        ; determine best version
+        best-ver, ver-ok = pick-version(info, ver-spec)
+        {
+            ver-ok == false -> {
+                print('warning: no suitable version for {name} ({ver-spec})')
+                continue
+            }
+        }
+
+        ; add to resolved
+        resolved = resolved - name - '==' - best-ver - '\n'
+
+        ; get sub-dependencies
+        sub-deps = get-requires-dist(info, best-ver)
+        {
+            sub-deps.len() > 0 -> {
+                queue = sub-deps - '\n' - queue
+            }
+        }
+    } (queue != '')
+
+    ok = true
+}
 
 ; ═══════════════════════════════════════════════
 ; parse-requirement — parse a PEP 508 requirement string
@@ -176,6 +262,7 @@ upper-bound-compat = (target str) (upper str) {
                     upper = xs - '.0'
         }
                 -> {
+                    #{index-out=0}
                     x = parts[0]
                     y = utils.str-to-i64(parts[1])
                     #{overflow=wrap}
@@ -206,6 +293,7 @@ version-satisfies = (ver str, spec str) (ok bool) {
     n = specs.len()
     i = 0
     {
+        #{index-out=0}
         s = specs[i]
         s = utils.trim-str(s)
         #{overflow=wrap}
@@ -332,6 +420,7 @@ pick-version = (info str, ver-spec str) (ver str, ok bool) {
     n = lines.len()
     i = 0
     {
+        #{index-out=0}
         line = lines[i]
         #{overflow=wrap}
         i = i + 1
@@ -369,6 +458,7 @@ get-requires-dist = (info str, ver str) (deps str) {
     n = lines.len()
     i = 0
     {
+        #{index-out=0}
         line = lines[i]
         #{overflow=wrap}
         i = i + 1
@@ -489,6 +579,7 @@ find-conflicts = (deps str) (conflicts str) {
     n = lines.len()
     i = 0
     {
+        #{index-out=0}
         line = lines[i]
         #{overflow=wrap}
         i = i + 1
@@ -511,6 +602,7 @@ find-conflicts = (deps str) (conflicts str) {
     mn = map-lines.len()
     i = 0
     {
+        #{index-out=0}
         fc-raw = map-lines[i]
         #{overflow=wrap}
         i = i + 1
@@ -526,6 +618,7 @@ find-conflicts = (deps str) (conflicts str) {
                         j = i
                         {
                             j < mn -> {
+                                #{index-out=0}
                                 fc-raw2 = map-lines[j]
                                 fc-entry2 = utils.trim-str(fc-raw2)
                                 #{overflow=wrap}
