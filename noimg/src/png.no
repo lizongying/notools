@@ -31,6 +31,7 @@
 png-crc32 = (data []byte, start i64, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
+
         #{overflow=wrap}
         b = data[start + i] & 255
         crc = crc ^ b
@@ -55,6 +56,7 @@ png-crc32 = (data []byte, start i64, len i64) (crc i64) {
 ; path str: file path
 ; returns img ?image: loaded image, nil on error
 load = (path str) (img ?image) {
+
     ; CRC32 uses bitwise computation, no table init needed
     data = fs.read-file(path)
     data.len() < 24 -> {
@@ -84,7 +86,7 @@ load = (path str) (img ?image) {
     has-palette = false
 
     ; Parse chunks
-    {
+    (pos < data.len()) {
         pos < data.len() -> {
             #{overflow=wrap}
             {
@@ -97,7 +99,6 @@ load = (path str) (img ?image) {
             pos = pos + 4
 
             ; Read chunk type (4 bytes)
-            #{overflow=wrap}
             chunk-type = data.slice(pos, pos + 4).to-bytes-str()
             #{overflow=wrap}
             pos = pos + 4
@@ -145,10 +146,10 @@ load = (path str) (img ?image) {
             #{overflow=wrap}
             pos = pos + chunk-len + 4
         }
-    } (pos < data.len())
+    }
     {
-w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
-img = nil
+        w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
+            img = nil
             return
         }
         {
@@ -180,6 +181,7 @@ img = nil
     bytes-per-pixel = bands
     {
         bit-depth == 16 -> {
+
             #{overflow=wrap}
             bytes-per-pixel = bands * 2
         }
@@ -187,6 +189,7 @@ img = nil
     {
         color-type == 3 -> bytes-per-pixel = 1
     }
+
     ; Decompress IDAT using zlib
     raw = gzip.gzip-decompress(idat-data)
 
@@ -197,6 +200,7 @@ img = nil
     }
     {
         is-u16 -> {
+
             #{overflow=wrap}
             _d str = with-len(w * h * bands * 2)
             tmp = image.new-u16(w, h, bands)
@@ -226,6 +230,7 @@ img = nil
 
     {
         interlace == 1 -> {
+
             ; Adam7 interlacing: 7 passes
             ; Each pass has different starting offset and step
             ; Pass:  start_x, start_y, step_x, step_y
@@ -251,11 +256,13 @@ img = nil
                 ; Number of pixels per row in this pass
                 #{overflow=wrap}
                 pass-w = (w - sx-start + sx-step - 1) / sx-step
+
                 #{overflow=wrap}
                 pass-h = (h - sy-start + sy-step - 1) / sy-step
 
                 {
                     pass-w > 0 && pass-h > 0 -> {
+
                         #{overflow=wrap}
                         pass-stride = pass-w * bytes-per-pixel
                         #{overflow=wrap}
@@ -374,37 +381,35 @@ img = nil
                                 img-x = sx-start + px * sx-step
                                 {
                                     img-x < w && img-y < h -> {
-                                        {
-                                            color-type == 3 -> {
-                                                idx = pass-cur[px]
-                                                #{overflow=wrap}
-                                                {
-                                                    idx * 3 + 2 < palette.len() -> {
-                                                        #{overflow=wrap}
-                                                        dst = (img-y * w + img-x) * 3
-                                                        #{overflow=wrap}
-                                                        tmp.data[dst] = palette[idx * 3]
-                                                        #{overflow=wrap}
-                                                        tmp.data[dst + 1] = palette[idx * 3 + 1]
-                                                        #{overflow=wrap}
-                                                        tmp.data[dst + 2] = palette[idx * 3 + 2]
-                                                    }
-                                                }
-                                            }
-
-                                            color-type == 0 -> {
-                                                #{overflow=wrap}
-                                                dst = img-y * w + img-x
-                                                tmp.data[dst] = pass-cur[px]
-                                            }
-
-                                            -> {
-                                                #{overflow=wrap}
-                                                dst = (img-y * w + img-x) * bands
-                                                b <- [0..bands): {
+                                        color-type == 3 -> {
+                                            idx = pass-cur[px]
+                                            #{overflow=wrap}
+                                            {
+                                                idx * 3 + 2 < palette.len() -> {
                                                     #{overflow=wrap}
-                                                    tmp.data[dst + b] = pass-cur[px * bytes-per-pixel + b]
+                                                    dst = (img-y * w + img-x) * 3
+                                                    #{overflow=wrap}
+                                                    tmp.data[dst] = palette[idx * 3]
+                                                    #{overflow=wrap}
+                                                    tmp.data[dst + 1] = palette[idx * 3 + 1]
+                                                    #{overflow=wrap}
+                                                    tmp.data[dst + 2] = palette[idx * 3 + 2]
                                                 }
+                                            }
+                                        }
+
+                                        color-type == 0 -> {
+                                            #{overflow=wrap}
+                                            dst = img-y * w + img-x
+                                            tmp.data[dst] = pass-cur[px]
+                                        }
+
+                                        -> {
+                                            #{overflow=wrap}
+                                            dst = (img-y * w + img-x) * bands
+                                            b <- [0..bands): {
+                                                #{overflow=wrap}
+                                                tmp.data[dst + b] = pass-cur[px * bytes-per-pixel + b]
                                             }
                                         }
                                     }
@@ -425,6 +430,7 @@ img = nil
         }
 
         -> {
+
             ; Non-interlaced
             #{overflow=wrap}
             stride = w * bytes-per-pixel
@@ -615,133 +621,131 @@ img = nil
     ; Apply tRNS transparency if present
     {
         has-trns -> {
-            {
-                color-type == 0 -> {
-                    ; Grayscale tRNS: 2 bytes (16-bit gray value)
-                    ; Pixels matching this value get alpha=0, others alpha=255
-                    {
-                        trns.len() >= 2 -> {
-                            trns-val = ((trns[0] & 255) << 8) | (trns[1] & 255)
-                            ; Create RGBA image
-                            rgba-img = image.new(w, h, 4)
-                            i <- [0..w * h): {
-                                g = tmp.data[i]
-                                a = 255
-                                {
-                                    is-u16 -> {
-                                        {
-                                            g == trns-val -> a = 0
-                                        }
-                                    }
+            color-type == 0 -> {
 
-                                    -> {
-                                        {
-                                            g == (trns-val >> 8) -> a = 0
-                                        }
-                                    }
+                ; Grayscale tRNS: 2 bytes (16-bit gray value)
+                ; Pixels matching this value get alpha=0, others alpha=255
+                {
+                    trns.len() >= 2 -> {
+                        trns-val = ((trns[0] & 255) << 8) | (trns[1] & 255)
+
+                        ; Create RGBA image
+                        rgba-img = image.new(w, h, 4)
+                        i <- [0..w * h): {
+                            g = tmp.data[i]
+                            a = 255
+                            {
+                                is-u16 -> {
+                                    g == trns-val -> a = 0
                                 }
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4] = g
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 1] = g
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 2] = g
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 3] = a
+
+                                -> {
+                                    g == (trns-val >> 8) -> a = 0
+                                }
                             }
-                            tmp = rgba-img
+
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4] = g
+
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 1] = g
+
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 2] = g
+
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 3] = a
                         }
+                        tmp = rgba-img
                     }
                 }
+            }
 
-                color-type == 2 -> {
-                    ; RGB tRNS: 6 bytes (R, G, B — each 16-bit)
-                    ; Pixels matching get alpha=0, others alpha=255
-                    {
-                        trns.len() >= 6 -> {
-                            trns-r = ((trns[0] & 255) << 8) | (trns[1] & 255)
-                            trns-g = ((trns[2] & 255) << 8) | (trns[3] & 255)
-                            trns-b = ((trns[4] & 255) << 8) | (trns[5] & 255)
-                            rgba-img = image.new(w, h, 4)
-                            i <- [0..w * h): {
-                                #{overflow=wrap}
-                                r = tmp.data[i * 3]
-                                #{overflow=wrap}
-                                g = tmp.data[i * 3 + 1]
-                                #{overflow=wrap}
-                                b = tmp.data[i * 3 + 2]
-                                a = 255
-                                {
-                                    is-u16 -> {
-                                        {
-                                            r == trns-r && g == trns-g && b == trns-b -> a = 0
-                                        }
-                                    }
+            color-type == 2 -> {
 
-                                    -> {
-                                        {
-                                            r == (trns-r >> 8) && g == (trns-g >> 8) && b == (trns-b >> 8) -> a = 0
-                                        }
-                                    }
+                ; RGB tRNS: 6 bytes (R, G, B — each 16-bit)
+                ; Pixels matching get alpha=0, others alpha=255
+                {
+                    trns.len() >= 6 -> {
+                        trns-r = ((trns[0] & 255) << 8) | (trns[1] & 255)
+                        trns-g = ((trns[2] & 255) << 8) | (trns[3] & 255)
+                        trns-b = ((trns[4] & 255) << 8) | (trns[5] & 255)
+                        rgba-img = image.new(w, h, 4)
+                        i <- [0..w * h): {
+                            #{overflow=wrap}
+                            r = tmp.data[i * 3]
+                            #{overflow=wrap}
+                            g = tmp.data[i * 3 + 1]
+                            #{overflow=wrap}
+                            b = tmp.data[i * 3 + 2]
+                            a = 255
+                            {
+                                is-u16 -> {
+                                    r == trns-r && g == trns-g && b == trns-b -> a = 0
                                 }
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4] = r
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 1] = g
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 2] = b
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 3] = a
+
+                                -> {
+                                    r == (trns-r >> 8) && g == (trns-g >> 8) && b == (trns-b >> 8) -> a = 0
+                                }
                             }
-                            tmp = rgba-img
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4] = r
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 1] = g
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 2] = b
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 3] = a
                         }
+                        tmp = rgba-img
                     }
                 }
+            }
 
-                color-type == 3 -> {
-                    ; Indexed tRNS: one alpha byte per palette entry
-                    ; Expand to RGBA
-                    {
-                        has-palette -> {
-                            rgba-img = image.new(w, h, 4)
-                            i <- [0..w * h): {
+            color-type == 3 -> {
+
+                ; Indexed tRNS: one alpha byte per palette entry
+                ; Expand to RGBA
+                {
+                    has-palette -> {
+                        rgba-img = image.new(w, h, 4)
+                        i <- [0..w * h): {
+                            #{overflow=wrap}
+                            idx = tmp.data[i * 3]; This was set from palette R
+
+                            ; Actually for indexed, tmp already has RGB expanded.
+                            ; We need the original index, but it's lost.
+                            ; Instead, match by RGB value to find the index.
+                            ; This is inefficient but correct for tRNS on indexed.
+                            ; Better: store indices during decode.
+                            ; For now, copy RGB and set alpha from palette tRNS
+                            #{overflow=wrap}
+                            r = tmp.data[i * 3]
+                            #{overflow=wrap}
+                            g = tmp.data[i * 3 + 1]
+                            #{overflow=wrap}
+                            b = tmp.data[i * 3 + 2]
+                            a = 255
+
+                            ; Search palette for matching entry
+                            pi <- [0..palette.len() / 3): {
                                 #{overflow=wrap}
-                                idx = tmp.data[i * 3]  ; This was set from palette R
-                                ; Actually for indexed, tmp already has RGB expanded.
-                                ; We need the original index, but it's lost.
-                                ; Instead, match by RGB value to find the index.
-                                ; This is inefficient but correct for tRNS on indexed.
-                                ; Better: store indices during decode.
-                                ; For now, copy RGB and set alpha from palette tRNS
-                                #{overflow=wrap}
-                                r = tmp.data[i * 3]
-                                #{overflow=wrap}
-                                g = tmp.data[i * 3 + 1]
-                                #{overflow=wrap}
-                                b = tmp.data[i * 3 + 2]
-                                a = 255
-                                ; Search palette for matching entry
-                                pi <- [0..palette.len() / 3): {
-                                    #{overflow=wrap}
-                                    {
-                                        palette[pi * 3] == r && palette[pi * 3 + 1] == g && palette[pi * 3 + 2] == b -> {
-                                            {
-                                                pi < trns.len() -> a = trns[pi]
-                                            }
-                                        }
+                                {
+                                    palette[pi * 3] == r && palette[pi * 3 + 1] == g && palette[pi * 3 + 2] == b -> {
+                                        pi < trns.len() -> a = trns[pi]
                                     }
                                 }
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4] = r
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 1] = g
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 2] = b
-                                #{overflow=wrap}
-                                rgba-img.data[i * 4 + 3] = a
                             }
-                            tmp = rgba-img
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4] = r
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 1] = g
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 2] = b
+                            #{overflow=wrap}
+                            rgba-img.data[i * 4 + 3] = a
                         }
+                        tmp = rgba-img
                     }
                 }
             }
@@ -758,6 +762,7 @@ img = nil
 ; img image: image to save
 ; returns ok bool
 save = (path str, img image) (ok bool) {
+
     ; Determine bit depth
     bit-depth = 8
     {
@@ -782,13 +787,17 @@ save = (path str, img image) (ok bool) {
     {
         bit-depth == 16 -> bytes-per-channel = 2
     }
+
     #{overflow=wrap}
     stride = img.width * bands * bytes-per-channel
+
     #{overflow=wrap}
     row-len = stride + 1
+
     #{overflow=wrap}
     raw str = with-len(row-len * img.height)
     y <- [0..img.height): {
+
         #{overflow=wrap}
         raw[y * row-len] = 0
         {
@@ -798,6 +807,7 @@ save = (path str, img image) (ok bool) {
                         v = image.get-pixel(img, x, y, b)
                         {
                             bit-depth == 16 -> {
+
                                 #{overflow=wrap}
                                 raw[y * row-len + 1 + (x * bands + b) * 2] = (v >> 8) & 255
                                 #{overflow=wrap}

@@ -63,10 +63,13 @@ load = (path str) (img ?image) {
     ; Huffman tables: DC and AC, up to 4 each
     #{overflow=wrap}
     dc-tables []byte = with-len(4 * 256)
+
     #{overflow=wrap}
     ac-tables []byte = with-len(4 * 256)
+
     #{overflow=wrap}
     dc-lens []byte = with-len(4 * 16)
+
     #{overflow=wrap}
     ac-lens []byte = with-len(4 * 16)
     dc-counts []byte = with-len(4)
@@ -81,10 +84,11 @@ load = (path str) (img ?image) {
     comp-ac-table []byte = with-len(4)
     comp-q []byte = with-len(4)
     scan-components = 0
-    {
+    (pos < data.len()) {
         pos < data.len() -> {
             {
                 (data[pos] & 255) != 255 -> {
+
                     #{overflow=wrap}
                     pos = pos + 1
                 }
@@ -154,7 +158,7 @@ load = (path str) (img ?image) {
                             #{overflow=wrap}
                             ht-pos = pos + 2
                             #{overflow=wrap}
-                            {
+                            (ht-pos < pos + seg-len) {
                                 #{overflow=wrap}
                                 ht-pos < pos + seg-len -> {
                                     tc-th = data[ht-pos] & 255
@@ -206,7 +210,7 @@ load = (path str) (img ?image) {
                                     #{overflow=wrap}
                                     ht-pos = ht-pos + total-symbols
                                 }
-                            } (ht-pos < pos + seg-len)
+                            }
                             #{overflow=wrap}
                             pos = pos + seg-len
                         }
@@ -218,7 +222,7 @@ load = (path str) (img ?image) {
                             #{overflow=wrap}
                             qt-pos = pos + 2
                             #{overflow=wrap}
-                            {
+                            (qt-pos < pos + seg-len) {
                                 #{overflow=wrap}
                                 qt-pos < pos + seg-len -> {
                                     pq = data[qt-pos] & 255
@@ -258,7 +262,7 @@ load = (path str) (img ?image) {
                                         }
                                     }
                                 }
-                            } (qt-pos < pos + seg-len)
+                            }
                             #{overflow=wrap}
                             pos = pos + seg-len
                         }
@@ -289,8 +293,8 @@ load = (path str) (img ?image) {
 
                             ; Now at scan data — decode
                             {
-w <= 0 || h <= 0 || components <= 0 || w > 65535 || h > 65535 -> {
-img = nil
+                                w <= 0 || h <= 0 || components <= 0 || w > 65535 || h > 65535 -> {
+                                    img = nil
                                     return
                                 }
                             }
@@ -312,6 +316,7 @@ img = nil
                                 #{overflow=wrap}
                                 jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, dc-counts[ti], dc-maxcode, ti * 16, dc-valptr, ti * 16)
                             }
+
                             ; Build AC decode tables
                             ti <- [0..4): {
                                 #{overflow=wrap}
@@ -382,8 +387,10 @@ img = nil
                             ; Decode all MCUs
                             my <- [0..n-mcu-y): {
                                 mx <- [0..n-mcu-x): {
+
                                     ; For each component in scan order
                                     ci <- [0..components): {
+
                                         ; Get quantization table for this component
                                         qt-id = comp-qt[ci]
                                         qt []byte = qt0
@@ -402,6 +409,7 @@ img = nil
                                         ; Decode n-blk-h * n-blk-v blocks
                                         by <- [0..n-blk-v): {
                                             bx <- [0..n-blk-h): {
+
                                                 ; Decode one 8x8 block
                                                 block [64]f64 = [
                                                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -435,30 +443,35 @@ img = nil
 
                                                 ; Decode AC coefficients (1..63 in zigzag order)
                                                 k = 1
-                                                {
+                                                (k < 64) {
                                                     k < 64 -> {
                                                         rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
+
                                                         ; rs = zrun << 4 | size
                                                         zrun = (rs >> 4) & 15
                                                         size = rs & 15
 
                                                         size == 0 -> {
                                                             zrun == 15 -> {
+
                                                                 ; ZRL: skip 16 zeros
                                                                 #{overflow=wrap}
                                                                 k = k + 16
                                                             }
 
                                                             -> {
+
                                                                 ; EOB: rest are zero
                                                                 k = 64
                                                             }
                                                         }
 
                                                         -> {
+
                                                             ; Skip zrun zeros
                                                             #{overflow=wrap}
                                                             k = k + zrun
+
                                                             ; Read 'size' bits for the value
                                                             val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
                                                             val = jpeg-extend-val(val, size)
@@ -475,7 +488,7 @@ img = nil
                                                             k = k + 1
                                                         }
                                                     }
-                                                } (k < 64)
+                                                }
 
                                                 ; IDCT
                                                 pixels [64]f64 = [
@@ -525,6 +538,7 @@ img = nil
                             ; Now convert component data to output image
                             {
                                 components == 1 -> {
+
                                     ; Grayscale
                                     i <- [0..w * h): {
                                         #{overflow=wrap}
@@ -537,6 +551,7 @@ img = nil
                                 }
 
                                 -> {
+
                                     ; YCbCr → RGB
                                     ; Determine subsampling
                                     ; Component 0 (Y): h0, v0
@@ -622,7 +637,7 @@ img = nil
                 }
             }
         }
-    } (pos < data.len())
+    }
 
     ; If we get here without SOS, return nil
     img = nil
@@ -639,28 +654,31 @@ img = nil
 ; valptr []byte: output value pointer per length (output)
 ; vp-off i64: offset into valptr
 jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset i64, n-vals i64, maxcode []i64, mc-off i64, valptr []i64, vp-off i64) {
+
     ; Generate Huffman codes using the JPEG standard algorithm
     code = 0
     idx = 0
     l <- [0..16): {
+
         #{overflow=wrap}
         cnt = lens[lens-offset + l]
         {
             cnt == 0 -> {
+
                 #{overflow=wrap}
                 maxcode[mc-off + l] = -1
             }
 
             -> {
+
                 ; maxcode for this length
                 #{overflow=wrap}
                 maxcode[mc-off + l] = code + cnt - 1
+
                 ; valptr: index into vals array for first code of this length
                 #{overflow=wrap}
                 valptr[vp-off + l] = idx
-                #{overflow=wrap}
                 code = code + cnt
-                #{overflow=wrap}
                 idx = idx + cnt
             }
         }
@@ -676,12 +694,14 @@ jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset 
 ; n i64: number of bits to read (1-24)
 ; returns val i64, new-pos i64, new-buf i64, new-cnt i64
 jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
+
     ; Fill buffer until we have enough bits
-    {
+    (cnt < n) {
         cnt < n -> {
             {
                 pos < data.len() -> {
                     b = data[pos] & 255
+
                     ; Skip 0xFF stuffing (FF 00 → FF)
                     b == 255 -> {
                         #{overflow=wrap}
@@ -690,6 +710,7 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                 #{overflow=wrap}
                                 next = data[pos + 1] & 255
                                 next == 0 -> {
+
                                     ; FF00 → stuffed FF
                                     buf = (buf << 8) | 255
                                     #{overflow=wrap}
@@ -699,6 +720,7 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                 }
 
                                 -> {
+
                                     ; RST marker or EOI — stop reading
                                     buf = (buf << 8)
                                     #{overflow=wrap}
@@ -728,6 +750,7 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                 }
 
                 -> {
+
                     ; Ran out of data
                     buf = (buf << 8)
                     #{overflow=wrap}
@@ -735,10 +758,11 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                 }
             }
         }
-    } (cnt < n)
+    }
 
     ; Extract n bits
     val = (buf >> (cnt - n)) & ((1 << n) - 1)
+
     #{overflow=wrap}
     cnt = cnt - n
     new-pos = pos
@@ -755,28 +779,19 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
 jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
     {
         cnt == 0 -> {
-            {
-                pos < data.len() -> {
-                    b = data[pos] & 255
-                    b == 255 -> {
-                        #{overflow=wrap}
-                        {
-                            pos + 1 < data.len() -> {
+            pos < data.len() -> {
+                b = data[pos] & 255
+                b == 255 -> {
+                    #{overflow=wrap}
+                    {
+                        pos + 1 < data.len() -> {
+                            #{overflow=wrap}
+                            next = data[pos + 1] & 255
+                            next == 0 -> {
+                                buf = 255
+                                cnt = 8
                                 #{overflow=wrap}
-                                next = data[pos + 1] & 255
-                                next == 0 -> {
-                                    buf = 255
-                                    cnt = 8
-                                    #{overflow=wrap}
-                                    pos = pos + 2
-                                }
-
-                                -> {
-                                    buf = 0
-                                    cnt = 8
-                                    #{overflow=wrap}
-                                    pos = pos + 1
-                                }
+                                pos = pos + 2
                             }
 
                             -> {
@@ -786,24 +801,32 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                                 pos = pos + 1
                             }
                         }
-                    }
 
-                    -> {
-                        buf = b
-                        cnt = 8
-                        #{overflow=wrap}
-                        pos = pos + 1
+                        -> {
+                            buf = 0
+                            cnt = 8
+                            #{overflow=wrap}
+                            pos = pos + 1
+                        }
                     }
                 }
 
                 -> {
-                    buf = 0
-                    cnt = 1
+                    buf = b
+                    cnt = 8
+                    #{overflow=wrap}
+                    pos = pos + 1
                 }
+            }
+
+            -> {
+                buf = 0
+                cnt = 1
             }
         }
     }
     val = (buf >> (cnt - 1)) & 1
+
     #{overflow=wrap}
     cnt = cnt - 1
     new-pos = pos
@@ -827,10 +850,11 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
     code = 0
     l = 0
     found = false
-    {
-        found == false -> {
+    (! found && l < 16) {
+        ! found -> {
             bit, pos, buf, cnt = jpeg-read-1-bit(data, pos, buf, cnt)
             code = (code << 1) | bit
+
             #{overflow=wrap}
             l = l + 1
             #{overflow=wrap}
@@ -841,12 +865,14 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
                 }
             }
         }
-    } (found == false && l < 16)
+    }
 
     {
-        found == true -> {
+        found -> {
+
             #{overflow=wrap}
             vp = valptr[tid * 16 + l - 1]
+
             ; symbol = vals[vp + (code - first_code_of_length)]
             ; first_code_of_length = maxcode[tid*16+l-1] - counts_in_this_len + 1
             ; But we stored valptr as index into vals, so:
@@ -903,8 +929,10 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
 ; dc-valptr []byte: DC value pointers
 ; returns dc-val i64, new-pos i64, new-buf i64, new-cnt i64
 jpeg-decode-dc = (data []byte, pos i64, buf i64, cnt i64, tid i64, dc-lens []byte, dc-tables []byte, dc-counts []byte, dc-maxcode []i64, dc-valptr []i64) (dc-val i64, new-pos i64, new-buf i64, new-cnt i64) {
+
     ; Decode Huffman symbol to get magnitude category
     s, pos, buf, cnt = jpeg-decode-huff(data, pos, buf, cnt, tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
+
     ; s = number of additional bits to read
     {
         s == 0 -> {
@@ -951,10 +979,12 @@ jpeg-extend-val = (val i64, size i64) (extended i64) {
         }
 
         -> {
+
             ; If the most significant bit is 0, the value is negative
             half = 1 << (size - 1)
             {
                 val < half -> {
+
                     #{overflow=wrap}
                     extended = val - (1 << size) + 1
                 }
@@ -971,6 +1001,7 @@ jpeg-extend-val = (val i64, size i64) (extended i64) {
 ; block [64]f64: input DCT coefficients (dequantized)
 ; out [64]f64: output pixel values
 jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
+
     ; IDCT using the formula:
     ;   f(x,y) = (1/4) * sum_{u,v} C(u)*C(v) * F(u,v) * cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
     ; where C(0) = 1/sqrt(2), C(u) = 1 for u>0
@@ -989,10 +1020,12 @@ jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
                     u == 0 -> cu = inv-sqrt2
                     cv = 1.0
                     v == 0 -> cv = inv-sqrt2
+
                     #{overflow=wrap}
                     sum = sum + cu * cv * block[v * 8 + u] * math.cos(pi / 16.0 * (2 * x + 1) * u) * math.cos(pi / 16.0 * (2 * y + 1) * v)
                 }
             }
+
             #{overflow=wrap}
             out[y * 8 + x] = sum * 0.25
         }
@@ -1068,17 +1101,17 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     quality > 100 -> quality = 100
 
     ; Build quantization tables scaled by quality
-    qt-luma-base [64]i64 = [
+    qt-luma-base = [
         16, 11, 10, 16, 24, 40, 51, 61,
         12, 12, 14, 19, 26, 58, 60, 55,
         14, 13, 16, 24, 40, 57, 69, 56,
         14, 17, 22, 29, 51, 87, 80, 62,
-        18, 22, 37, 56, 68,109,103, 77,
-        24, 35, 55, 64, 81,104,113, 92,
-        49, 64, 78, 87,103,121,120,101,
-        72, 92, 95, 98,112,100,103, 99,
+        18, 22, 37, 56, 68, 109, 103, 77,
+        24, 35, 55, 64, 81, 104, 113, 92,
+        49, 64, 78, 87, 103, 121, 120, 101,
+        72, 92, 95, 98, 112, 100, 103, 99,
     ]
-    qt-chroma-base [64]i64 = [
+    qt-chroma-base = [
         17, 18, 24, 47, 99, 99, 99, 99,
         18, 21, 35, 64, 92, 99, 99, 99,
         24, 35, 55, 64, 92, 99, 99, 99,
@@ -1132,7 +1165,7 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
         buf.push(qt-luma[zi])
     }
 
-    is-gray == false -> {
+    ! is-gray -> {
         buf.push(255)
         buf.push(219)
         buf.push(0)
@@ -1162,12 +1195,13 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     }
 
     -> {
+
         ; Color JPEG: 3 components (Y, Cb, Cr)
         ; 4:2:0: Y sampling = 0x22 (h=2,v=2), Cb/Cr = 0x11 (h=1,v=1)
         ; 4:4:4: all components = 0x11 (h=1,v=1)
-        y-sampling = 34  ; 0x22 = 4:2:0
+        y-sampling = 34; 0x22 = 4:2:0
         {
-            subsampling == 1 -> y-sampling = 17  ; 0x11 = 4:4:4
+            subsampling == 1 -> y-sampling = 17; 0x11 = 4:4:4
         }
         buf.push(255)
         buf.push(192)
@@ -1191,9 +1225,18 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     }
 
     ; --- DHT (Huffman Tables) ---
-    dc-luma-len [16]i64 = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
-    dc-luma-val [12]i64 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    ac-luma-len [16]i64 = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125]
+    dc-luma-len = [
+        0, 1, 5, 1, 1, 1, 1, 1,
+        1, 0, 0, 0, 0, 0, 0, 0,
+    ]
+    dc-luma-val = [
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9, 10, 11,
+    ]
+    ac-luma-len = [
+        0, 2, 1, 3, 3, 2, 4, 3,
+        5, 5, 4, 4, 0, 0, 1, 125,
+    ]
     ac-luma-val [162]i64 = [
         0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
         0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
@@ -1220,10 +1263,19 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     jpeg-write-dht(buf, 0, 0, dc-luma-len, dc-luma-val, 12)
     jpeg-write-dht(buf, 1, 0, ac-luma-len, ac-luma-val, 162)
 
-    is-gray == false -> {
-        dc-chroma-len [16]i64 = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-        dc-chroma-val [12]i64 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        ac-chroma-len [16]i64 = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119]
+    ! is-gray -> {
+        dc-chroma-len [16]i64 = [
+            0, 3, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 0, 0, 0, 0, 0,
+        ]
+        dc-chroma-val [12]i64 = [
+            0, 1, 2, 3, 4, 5, 6, 7,
+            8, 9, 10, 11,
+        ]
+        ac-chroma-len [16]i64 = [
+            0, 2, 1, 2, 4, 4, 3, 4,
+            7, 5, 4, 4, 0, 1, 2, 119,
+        ]
         ac-chroma-val [162]i64 = [
             0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
             0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
@@ -1306,7 +1358,7 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
 ; returns qt []byte: scaled quantization table
 jpeg-build-qt = (base [64]i64, quality i64) (qt []byte) {
     qt []byte = with-len(64)
-    q f64 = 1.0
+    q = 1.0
     {
         quality < 50 -> {
             q = 50.0 / quality
@@ -1335,6 +1387,7 @@ jpeg-build-qt = (base [64]i64, quality i64) (qt []byte) {
 ; vals []i64: symbol values
 ; n-vals i64: number of values
 jpeg-write-dht = (buf []byte, table-class i64, table-id i64, lens [16]i64, vals []i64, n-vals i64) {
+
     #{overflow=wrap}
     seg-len = 2 + 1 + 16 + n-vals
     buf.push(255)
@@ -1358,12 +1411,14 @@ jpeg-write-dht = (buf []byte, table-class i64, table-id i64, lens [16]i64, vals 
 ; n i64: number of bits (1-24)
 jpeg-bit-write = (buf []byte, acc i64, cnt i64, bits i64, n i64) {
     acc = (acc << n) | (bits & ((1 << n) - 1))
+
     #{overflow=wrap}
     cnt = cnt + n
     {
         cnt >= 8 -> {
             byte = (acc >> (cnt - 8)) & 255
             buf.push(byte)
+
             #{overflow=wrap}
             cnt = cnt - 8
             {
@@ -1385,20 +1440,22 @@ jpeg-bit-write = (buf []byte, acc i64, cnt i64, bits i64, n i64) {
 ; qt-luma []byte: luma quantization table
 ; qt-chroma []byte: chroma quantization table
 jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampling i64, qt-luma []byte, qt-chroma []byte) {
+
     ; Bit writer state (local, not global)
-    bit-acc i64 = 0
-    bit-cnt i64 = 0
+    bit-acc = 0
+    bit-cnt = 0
 
     ; Pad dimensions to MCU boundary
     pad-w = w
     pad-h = h
     mcu-w = 8
     mcu-h = 8
-    is-gray == false -> {
+    ! is-gray -> {
         mcu-w = 16
         mcu-h = 16
         {
             subsampling == 1 -> {
+
                 ; 4:4:4: MCU is 8x8
                 mcu-w = 8
                 mcu-h = 8
@@ -1410,6 +1467,7 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampli
 
     #{overflow=wrap}
     n-mcu-x = pad-w / mcu-w
+
     #{overflow=wrap}
     n-mcu-y = pad-h / mcu-h
 
@@ -1421,6 +1479,7 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampli
     my <- [0..n-mcu-y): {
         mx <- [0..n-mcu-x): {
             is-gray -> {
+
                 ; Grayscale: one 8x8 block
                 #{overflow=wrap}
                 block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 0)
@@ -1432,6 +1491,7 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampli
             -> {
                 {
                     subsampling == 1 -> {
+
                         ; YCbCr 4:4:4: 1 Y + 1 Cb + 1 Cr per MCU (8x8)
                         ; Y block
                         #{overflow=wrap}
@@ -1456,6 +1516,7 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampli
                     }
 
                     -> {
+
                         ; YCbCr 4:2:0: 4 Y blocks + 1 Cb + 1 Cr
                         ; Process 4 Y blocks (2x2)
                         by <- [0..2): {
@@ -1525,19 +1586,24 @@ jpeg-read-block = (img image, ox i64, oy i64, band i64, w i64, h i64, mode i64) 
     ]
     y <- [0..8): {
         x <- [0..8): {
+
             #{overflow=wrap}
             sx = ox + x
+
             #{overflow=wrap}
             sy = oy + y
+
             ; Clamp to image bounds
             #{overflow=wrap}
             sx >= w -> sx = w - 1
+
             #{overflow=wrap}
             sy >= h -> sy = h - 1
             sx < 0 -> sx = 0
             sy < 0 -> sy = 0
 
             mode == 0 -> {
+
                 ; Grayscale: read directly
                 #{overflow=wrap}
                 v = img.data[sy * w + sx]
@@ -1546,6 +1612,7 @@ jpeg-read-block = (img image, ox i64, oy i64, band i64, w i64, h i64, mode i64) 
             }
 
             -> {
+
                 ; RGB: extract Y component
                 #{overflow=wrap}
                 idx = (sy * w + sx) * img.bands
@@ -1584,38 +1651,49 @@ jpeg-read-block-420 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
     ]
     y <- [0..8): {
         x <- [0..8): {
+
             ; Average 2x2 pixels from 16x16 region
             sum = 0.0
             dy <- [0..2): {
                 dx <- [0..2): {
+
                     #{overflow=wrap}
                     sx = ox + x * 2 + dx
+
                     #{overflow=wrap}
                     sy = oy + y * 2 + dy
+
                     #{overflow=wrap}
                     sx >= w -> sx = w - 1
+
                     #{overflow=wrap}
                     sy >= h -> sy = h - 1
                     sx < 0 -> sx = 0
                     sy < 0 -> sy = 0
+
                     #{overflow=wrap}
                     idx = (sy * w + sx) * img.bands
                     r = img.data[idx]
+
                     #{overflow=wrap}
                     g = img.data[idx + 1]
+
                     #{overflow=wrap}
                     b = img.data[idx + 2]
                     cbcr == 1 -> {
+
                         ; Cb = -0.168736*R - 0.331264*G + 0.5*B
                         sum = sum + (-0.168736 * r - 0.331264 * g + 0.5 * b)
                     }
 
                     -> {
+
                         ; Cr = 0.5*R - 0.418688*G - 0.081312*B
                         sum = sum + (0.5 * r - 0.418688 * g - 0.081312 * b)
                     }
                 }
             }
+
             #{overflow=wrap}
             block[y * 8 + x] = sum / 4.0
         }
@@ -1643,30 +1721,39 @@ jpeg-read-block-444 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
     ]
     y <- [0..8): {
         x <- [0..8): {
+
             #{overflow=wrap}
             sx = ox + x
+
             #{overflow=wrap}
             sy = oy + y
+
             #{overflow=wrap}
             sx >= w -> sx = w - 1
+
             #{overflow=wrap}
             sy >= h -> sy = h - 1
             sx < 0 -> sx = 0
             sy < 0 -> sy = 0
+
             #{overflow=wrap}
             idx = (sy * w + sx) * img.bands
             r = img.data[idx]
+
             #{overflow=wrap}
             g = img.data[idx + 1]
+
             #{overflow=wrap}
             b = img.data[idx + 2]
             cbcr == 1 -> {
+
                 ; Cb = -0.168736*R - 0.331264*G + 0.5*B
                 #{overflow=wrap}
                 block[y * 8 + x] = -0.168736 * r - 0.331264 * g + 0.5 * b
             }
 
             -> {
+
                 ; Cr = 0.5*R - 0.418688*G - 0.081312*B
                 #{overflow=wrap}
                 block[y * 8 + x] = 0.5 * r - 0.418688 * g - 0.081312 * b
@@ -1689,6 +1776,7 @@ jpeg-dct-8x8 = (block [64]f64) (out [64]f64) {
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     ]
+
     ; DCT constants
     ; Using the formula: F(u,v) = C(u)*C(v)/4 * sum_{x,y} f(x,y)*cos((2x+1)*u*pi/16)*cos((2y+1)*v*pi/16)
     u <- [0..8): {
@@ -1700,10 +1788,12 @@ jpeg-dct-8x8 = (block [64]f64) (out [64]f64) {
             sum = 0.0
             x <- [0..8): {
                 y <- [0..8): {
+
                     #{overflow=wrap}
                     sum = sum + block[y * 8 + x] * math.cos(3.14159265 / 16.0 * (2 * x + 1) * u) * math.cos(3.14159265 / 16.0 * (2 * y + 1) * v)
                 }
             }
+
             #{overflow=wrap}
             out[v * 8 + u] = 0.25 * cu * cv * sum
         }
@@ -1729,6 +1819,7 @@ jpeg-quantize = (dct [64]f64, qt []byte) (q [64]f64) {
         qv = qt[i]
         qv == 0 -> qv = 1
         val = dct[i] / qv
+
         ; Round to nearest integer
         val >= 0 -> {
             q[i] = math.floor(val + 0.5)
@@ -1749,8 +1840,9 @@ jpeg-quantize = (dct [64]f64, qt []byte) (q [64]f64) {
 ; bit-cnt i64: bit count
 ; returns new-prev-dc i64 (acc and cnt are modified in-place via reference parameters)
 jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, cnt i64) (new-prev-dc i64) {
+
     ; Zigzag scan
-    zigzag-vals [64]f64 = [
+    zigzag-vals = [
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -1772,6 +1864,7 @@ jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, 
             dc-val = -number.f64-to-i64(math.floor(-zigzag-vals[0] + 0.5))
         }
     }
+
     #{overflow=wrap}
     dc-diff = dc-val - prev-dc
     new-prev-dc = dc-val
@@ -1791,6 +1884,7 @@ jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, 
 ; bit-cnt i64: bit count
 ; returns acc i64, cnt i64
 jpeg-encode-dc = (buf []byte, dc-diff i64, table-id i64, acc i64, cnt i64) {
+
     ; Determine magnitude category
     mag = 0
     v = dc-diff
@@ -1799,31 +1893,29 @@ jpeg-encode-dc = (buf []byte, dc-diff i64, table-id i64, acc i64, cnt i64) {
     }
     {
         v > 0 -> {
-            {
-                v >= 2048 -> mag = 12
+            v >= 2048 -> mag = 12
 
-                v >= 1024 -> mag = 11
+            v >= 1024 -> mag = 11
 
-                v >= 512 -> mag = 10
+            v >= 512 -> mag = 10
 
-                v >= 256 -> mag = 9
+            v >= 256 -> mag = 9
 
-                v >= 128 -> mag = 8
+            v >= 128 -> mag = 8
 
-                v >= 64 -> mag = 7
+            v >= 64 -> mag = 7
 
-                v >= 32 -> mag = 6
+            v >= 32 -> mag = 6
 
-                v >= 16 -> mag = 5
+            v >= 16 -> mag = 5
 
-                v >= 8 -> mag = 4
+            v >= 8 -> mag = 4
 
-                v >= 4 -> mag = 3
+            v >= 4 -> mag = 3
 
-                v >= 2 -> mag = 2
+            v >= 2 -> mag = 2
 
-                -> mag = 1
-            }
+            -> mag = 1
         }
     }
 
@@ -1837,6 +1929,7 @@ jpeg-encode-dc = (buf []byte, dc-diff i64, table-id i64, acc i64, cnt i64) {
     mag > 0 -> {
         bits = dc-diff
         dc-diff < 0 -> {
+
             #{overflow=wrap}
             bits = dc-diff + (1 << mag) - 1
         }
@@ -1852,6 +1945,7 @@ jpeg-encode-dc = (buf []byte, dc-diff i64, table-id i64, acc i64, cnt i64) {
 ; bit-cnt i64: bit count
 ; returns acc i64, cnt i64
 jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
+
     ; Run-length encoding
     zrun = 0
     k <- [1..64): {
@@ -1863,13 +1957,16 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
             }
         }
         val == 0 -> {
+
             #{overflow=wrap}
             zrun = zrun + 1
         }
 
         -> {
+
             ; Flush zrun of zeros (16 zeros at a time)
-            for zrun >= 16 {
+            (zrun >= 16) {
+
                 ; ZRL code (0xF0)
                 code, code-len = jpeg-huffman-lookup-ac(240, table-id)
                 jpeg-bit-write(buf, acc, cnt, code, code-len)
@@ -1935,11 +2032,24 @@ jpeg-huffman-lookup-dc = (mag i64, table-id i64) (code i64, code-len i64) {
 
     ; Standard DC Huffman tables
     ; Luma: lengths and values
-    luma-len [16] = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
-    luma-val [12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    luma-len [16] = [
+        0, 1, 5, 1, 1, 1, 1, 1,
+        1, 0, 0, 0, 0, 0, 0, 0,
+    ]
+    luma-val [12] = [
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9, 10, 11,
+    ]
+
     ; Chroma: lengths and values
-    chroma-len [16] = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-    chroma-val [12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    chroma-len [16] = [
+        0, 3, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 0, 0, 0, 0, 0,
+    ]
+    chroma-val [12] = [
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9, 10, 11,
+    ]
 
     ; Generate Huffman codes using the standard algorithm
     huff-code = 0
@@ -1950,8 +2060,11 @@ jpeg-huffman-lookup-dc = (mag i64, table-id i64) (code i64, code-len i64) {
         huff-len = l
         cnt = 0
         {
-            #{overflow=wrap}
-            table-id == 0 -> cnt = luma-len[l - 1]
+            table-id == 0 -> {
+
+                #{overflow=wrap}
+                cnt = luma-len[l - 1]
+            }
 
             #{overflow=wrap}
             -> cnt = chroma-len[l - 1]
@@ -1968,8 +2081,10 @@ jpeg-huffman-lookup-dc = (mag i64, table-id i64) (code i64, code-len i64) {
                 code-len = huff-len
                 found = true
             }
+
             #{overflow=wrap}
             huff-code = huff-code + 1
+
             #{overflow=wrap}
             idx = idx + 1
         }
@@ -1987,7 +2102,10 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
 
     ; Build Huffman lookup from standard tables
     ; Luma AC table
-    luma-len [16] = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125]
+    luma-len [16] = [
+        0, 2, 1, 3, 3, 2, 4, 3,
+        5, 5, 4, 4, 0, 0, 1, 125,
+    ]
     luma-val [162] = [
         0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
         0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
@@ -2013,7 +2131,10 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
     ]
 
     ; Chroma AC table
-    chroma-len [16] = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119]
+    chroma-len [16] = [
+        0, 2, 1, 2, 4, 4, 3, 4,
+        7, 5, 4, 4, 0, 1, 2, 119,
+    ]
     chroma-val [162] = [
         0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
         0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
@@ -2045,6 +2166,7 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
         cnt = 0
         {
             table-id == 0 -> {
+
                 #{overflow=wrap}
                 cnt = luma-len[l - 1]
             }
@@ -2069,8 +2191,10 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
                 code = huff-code
                 code-len = l
             }
+
             #{overflow=wrap}
             huff-code = huff-code + 1
+
             #{overflow=wrap}
             idx = idx + 1
         }

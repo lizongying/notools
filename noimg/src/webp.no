@@ -16,12 +16,13 @@
 ; webp-br-read: read n bits (1-24) from the bitstream
 ; returns val i64, new-pos i64, new-buf i64, new-cnt i64
 webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
-    {
+    (cnt < n) {
         cnt < n -> {
             {
                 pos < data.len() -> {
                     b = data[pos] & 255
                     buf = buf | (b << cnt)
+
                     #{overflow=wrap}
                     cnt = cnt + 8
                     #{overflow=wrap}
@@ -34,9 +35,10 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
                 }
             }
         }
-    } (cnt < n)
+    }
     val = buf & ((1 << n) - 1)
     buf = buf >> n
+
     #{overflow=wrap}
     cnt = cnt - n
     new-pos = pos
@@ -49,23 +51,23 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
 webp-br-read-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64, new-buf i64, new-cnt i64) {
     {
         cnt == 0 -> {
-            {
-                pos < data.len() -> {
-                    buf = data[pos] & 255
-                    cnt = 8
-                    #{overflow=wrap}
-                    pos = pos + 1
-                }
+            pos < data.len() -> {
+                buf = data[pos] & 255
+                cnt = 8
 
-                -> {
-                    buf = 0
-                    cnt = 1
-                }
+                #{overflow=wrap}
+                pos = pos + 1
+            }
+
+            -> {
+                buf = 0
+                cnt = 1
             }
         }
     }
     val = buf & 1
     buf = buf >> 1
+
     #{overflow=wrap}
     cnt = cnt - 1
     new-pos = pos
@@ -86,6 +88,7 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         cl = code-lens[i]
         {
             cl > 0 -> {
+
                 #{overflow=wrap}
                 out-count[cl] = out-count[cl] + 1
             }
@@ -105,6 +108,7 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         {
             cl > 0 -> {
                 out-codes[si] = next-code[cl]
+
                 #{overflow=wrap}
                 next-code[cl] = next-code[cl] + 1
             }
@@ -119,8 +123,8 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
     found = false
     sym = 0
     L = 1
-    {
-        found == false && L <= 15 -> {
+    (! found && L <= 15) {
+        ! found && L <= 15 -> {
             bit, pos, buf, cnt = webp-br-read-bit(data, pos, buf, cnt)
             code = (code << 1) | bit
             #{overflow=wrap}
@@ -131,7 +135,7 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
                     c = 0
                     si <- [0..n-symbols): {
                         {
-                            found == false && code-lens[si] == L -> {
+                            ! found && code-lens[si] == L -> {
                                 {
                                     c == offset -> {
                                         sym = si
@@ -148,7 +152,7 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
             #{overflow=wrap}
             L = L + 1
         }
-    } (found == false && L <= 15)
+    }
     new-pos = pos
     new-buf = buf
     new-cnt = cnt
@@ -186,6 +190,7 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (co
         }
 
         -> {
+
             ; Non-simple: 18 meta symbols with 3-bit code lengths
             meta-lens []byte = with-len(18)
             mi <- [0..18): {
@@ -198,12 +203,13 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (co
             webp-build-huff-codes(meta-lens, 18, meta-codes, meta-first, meta-count)
 
             sym-idx = 0
-            {
+            (sym-idx < n-syms) {
                 sym-idx < n-syms -> {
                     msym, pos, buf, cnt = webp-huff-decode(meta-lens, 18, meta-codes, meta-first, meta-count, data, pos, buf, cnt)
                     {
                         msym <= 15 -> {
                             code-lens[sym-idx] = msym
+
                             #{overflow=wrap}
                             sym-idx = sym-idx + 1
                         }
@@ -253,7 +259,7 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (co
                         }
                     }
                 }
-            } (sym-idx < n-syms)
+            }
         }
     }
 
@@ -275,8 +281,10 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (co
 ; img-h i64: sub-image height
 ; returns out []byte: ARGB pixel data (4 bytes per pixel), new-pos, new-buf, new-cnt
 webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img-h i64) (out []byte, new-pos i64, new-buf i64, new-cnt i64) {
+
     #{overflow=wrap}
     sub-n = img-w * img-h
+
     #{overflow=wrap}
     sub-argb []byte = with-len(sub-n * 4)
 
@@ -338,13 +346,15 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
 
     ; Decode all pixels
     sub-px = 0
-    {
+    (sub-px < sub-n) {
         sub-px < sub-n -> {
+
             ; Decode green channel (table 0)
             sgreen, pos, buf, cnt = webp-huff-decode(sub-lens-0, sub-n-syms, sub-codes-0, sub-first-0, sub-count-0, data, pos, buf, cnt)
 
             {
                 sgreen < 256 -> {
+
                     ; Normal pixel: decode R, B, A using table selected by (green >> 3) % 5
                     s-tbl = (sgreen >> 3) % 5
                     s-red = 0
@@ -394,6 +404,7 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                 }
 
                 -> {
+
                     ; Color cache or LZ77 reference
                     #{overflow=wrap}
                     s-cc-idx = sgreen - 256
@@ -410,6 +421,7 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         }
 
                         -> {
+
                             ; LZ77 back-reference
                             #{overflow=wrap}
                             s-len = sgreen - 256 - sub-cc-size
@@ -481,7 +493,7 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
             #{overflow=wrap}
             sub-px = sub-px + 1
         }
-    } (sub-px < sub-n)
+    }
 
     out = sub-argb
     new-pos = pos
@@ -499,10 +511,11 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
 ; has-alpha bool: whether alpha channel is present
 ; returns pixels []byte: decoded pixel data (RGB or RGBA)
 webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pixels []byte) {
+
     #{overflow=wrap}
     n-pixels = w * h
     bands = 3
-    has-alpha == true -> bands = 4
+    has-alpha -> bands = 4
 
     ; ARGB buffer (4 bytes per pixel internally)
     #{overflow=wrap}
@@ -511,8 +524,8 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     ; Bit reader: start after 0x2F signature byte
     #{overflow=wrap}
     pos = vp8l-pos + 1
-    buf i64 = 0
-    cnt i64 = 0
+    buf = 0
+    cnt = 0
 
     ; Skip header: width(14), height(14), alpha(1), version(3) = 32 bits
     hdr-w, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
@@ -523,15 +536,18 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     ; Read transforms (up to 4)
     ; Store transform parameters
     transform-types []byte = with-len(4)
+
     ; Predictor mode bits (ttype 0)
     transform-bits []byte = with-len(4)
+
     ; Color indexing palette (ttype 3)
     #{overflow=wrap}
-    ci-palette []byte = with-len(256 * 4)  ; ARGB per entry
+    ci-palette []byte = with-len(256 * 4); ARGB per entry
     ci-palette-size = 0
     ci-bits = 8
     ci-sub-w = 0
     ci-img []byte = with-len(0)
+
     ; Transform image buffers — declared outside branch scope
     ; so inverse transforms can access them
     pred-img []byte = with-len(0)
@@ -541,7 +557,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     ct-w = 0
     ct-h = 0
     n-transforms = 0
-    {
+    (n-transforms < 4) {
         n-transforms < 4 -> {
             used, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
             {
@@ -552,21 +568,26 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                 -> {
                     ttype, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 2)
                     transform-types[n-transforms] = ttype
+
                     #{overflow=wrap}
                     n-transforms = n-transforms + 1
                     {
                         ttype == 0 -> {
+
                             ; Predictor: 4 bits per pixel for the transform-bits field
                             pbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 4)
                             transform-bits[0] = pbits
+
                             ; The predictor image is an ARGB sub-image of size
                             ; ((w+3)/4) * ((h+3)/4), decoded with full 5-table Huffman.
                             #{overflow=wrap}
                             pred-w = (w + 3) / 4
                             #{overflow=wrap}
                             pred-h = (h + 3) / 4
+
                             ; Decode the predictor sub-image as ARGB
                             pred-argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, pred-w, pred-h)
+
                             ; Extract the green channel (byte offset +2) as the predictor mode
                             #{overflow=wrap}
                             pred-n = pred-w * pred-h
@@ -578,9 +599,11 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                         }
 
                         ttype == 1 -> {
+
                             ; Color transform: 3 bits for transform-bits
                             cbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
                             transform-bits[1] = cbits
+
                             ; Color transform image is an ARGB sub-image
                             ; of size ((w+3)/4) x ((h+3)/4), decoded with full 5-table Huffman.
                             ; Channel layout per spec:
@@ -593,6 +616,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ct-h = (h + 3) / 4
                             #{overflow=wrap}
                             ct-n = ct-w * ct-h
+
                             ; Decode the color transform sub-image as ARGB
                             ct-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h)
                         }
@@ -602,15 +626,18 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                         }
 
                         ttype == 3 -> {
+
                             ; Color indexing: 8 bits palette size code
                             psize-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
                             #{overflow=wrap}
                             ci-palette-size = psize-code + 1
+
                             ; Read palette entries (ARGB, 4 bytes each)
                             pi3 <- [0..ci-palette-size * 4): {
                                 pv, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
                                 ci-palette[pi3] = pv
                             }
+
                             ; Determine bits per pixel for color indexing
                             ; VP8L spec: the palette code determines how many
                             ; pixel indices are packed into each ARGB sub-image pixel.
@@ -628,6 +655,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             {
                                 ci-palette-size > 4 && ci-palette-size <= 16 -> ci-bits = 4
                             }
+
                             ; Decode the color index sub-image with modified width
                             ; The sub-image width = ceil(w / ci-bits), height = h
                             #{overflow=wrap}
@@ -639,7 +667,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                 }
             }
         }
-    } (n-transforms < 4)
+    }
 
     ; Read color cache size
     cc-used, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
@@ -702,13 +730,15 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
     ; Decode all pixels
     px-idx = 0
-    {
+    (px-idx < n-pixels) {
         px-idx < n-pixels -> {
+
             ; Decode green channel (table 0)
             green, pos, buf, cnt = webp-huff-decode(huff-lens-0, n-huff-syms, codes-0, first-0, count-0, data, pos, buf, cnt)
 
             {
                 green < 256 -> {
+
                     ; Normal pixel: decode R, B, A using table selected by (green >> 3) % 5
                     tbl-id = (green >> 3) % 5
                     red = 0
@@ -720,7 +750,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             red, pos, buf, cnt = webp-huff-decode(huff-lens-0, n-huff-syms, codes-0, first-0, count-0, data, pos, buf, cnt)
                             blue, pos, buf, cnt = webp-huff-decode(huff-lens-0, n-huff-syms, codes-0, first-0, count-0, data, pos, buf, cnt)
                             {
-                                has-alpha == true -> {
+                                has-alpha -> {
                                     alpha, pos, buf, cnt = webp-huff-decode(huff-lens-0, n-huff-syms, codes-0, first-0, count-0, data, pos, buf, cnt)
                                 }
                             }
@@ -730,7 +760,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             red, pos, buf, cnt = webp-huff-decode(huff-lens-1, n-huff-syms, codes-1, first-1, count-1, data, pos, buf, cnt)
                             blue, pos, buf, cnt = webp-huff-decode(huff-lens-1, n-huff-syms, codes-1, first-1, count-1, data, pos, buf, cnt)
                             {
-                                has-alpha == true -> {
+                                has-alpha -> {
                                     alpha, pos, buf, cnt = webp-huff-decode(huff-lens-1, n-huff-syms, codes-1, first-1, count-1, data, pos, buf, cnt)
                                 }
                             }
@@ -740,7 +770,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             red, pos, buf, cnt = webp-huff-decode(huff-lens-2, n-huff-syms, codes-2, first-2, count-2, data, pos, buf, cnt)
                             blue, pos, buf, cnt = webp-huff-decode(huff-lens-2, n-huff-syms, codes-2, first-2, count-2, data, pos, buf, cnt)
                             {
-                                has-alpha == true -> {
+                                has-alpha -> {
                                     alpha, pos, buf, cnt = webp-huff-decode(huff-lens-2, n-huff-syms, codes-2, first-2, count-2, data, pos, buf, cnt)
                                 }
                             }
@@ -750,7 +780,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             red, pos, buf, cnt = webp-huff-decode(huff-lens-3, n-huff-syms, codes-3, first-3, count-3, data, pos, buf, cnt)
                             blue, pos, buf, cnt = webp-huff-decode(huff-lens-3, n-huff-syms, codes-3, first-3, count-3, data, pos, buf, cnt)
                             {
-                                has-alpha == true -> {
+                                has-alpha -> {
                                     alpha, pos, buf, cnt = webp-huff-decode(huff-lens-3, n-huff-syms, codes-3, first-3, count-3, data, pos, buf, cnt)
                                 }
                             }
@@ -760,7 +790,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             red, pos, buf, cnt = webp-huff-decode(huff-lens-4, n-huff-syms, codes-4, first-4, count-4, data, pos, buf, cnt)
                             blue, pos, buf, cnt = webp-huff-decode(huff-lens-4, n-huff-syms, codes-4, first-4, count-4, data, pos, buf, cnt)
                             {
-                                has-alpha == true -> {
+                                has-alpha -> {
                                     alpha, pos, buf, cnt = webp-huff-decode(huff-lens-4, n-huff-syms, codes-4, first-4, count-4, data, pos, buf, cnt)
                                 }
                             }
@@ -779,11 +809,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                 }
 
                 -> {
+
                     ; Color cache or LZ77 reference
                     #{overflow=wrap}
                     cc-idx = green - 256
                     {
                         cc-idx < cc-size -> {
+
                             ; Color cache hit
                             #{overflow=wrap}
                             argb[px-idx * 4] = cc-cache[cc-idx * 4]
@@ -796,6 +828,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                         }
 
                         -> {
+
                             ; LZ77 back-reference
                             ; Copy length: green - 256 - cc-size + 1
                             #{overflow=wrap}
@@ -827,6 +860,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                                 }
 
                                 -> {
+
                                     ; VP8L distance: extra_bits = (code - 2) >> 1
                                     ; dist = ((2 + (code & 1)) << extra_bits) + 1 + extra_val
                                     dist-extra = (dist-code - 2) >> 1
@@ -837,6 +871,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                                     lz77-dist = dist-offset + 1 + extra-val
                                 }
                             }
+
                             ; Copy lz77-len pixels from distance lz77-dist back
                             li <- [0..lz77-len): {
                                 #{overflow=wrap}
@@ -856,7 +891,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                                 }
                             }
                             #{overflow=wrap}
-                            px-idx = px-idx + lz77-len - 1  ; -1 because loop will add 1
+                            px-idx = px-idx + lz77-len - 1; -1 because loop will add 1
                         }
                     }
                 }
@@ -888,28 +923,35 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
             #{overflow=wrap}
             px-idx = px-idx + 1
         }
-    } (px-idx < n-pixels)
+    }
 
     ; Apply inverse transforms in reverse order
     ti <- [0..n-transforms): {
+
         #{overflow=wrap}
         ttype = transform-types[n-transforms - 1 - ti]
         {
             ttype == 0 -> {
+
                 ; Inverse predictor: reconstruct pixels from residuals
                 ; The predictor image (pred-img) defines the prediction mode
                 ; per 4x4 block. pred-img has dimensions pred-w x pred-h
                 ; where each entry covers a 4x4 block of pixels.
                 pi <- [0..n-pixels): {
+
                     #{overflow=wrap}
                     py = pi / w
+
                     #{overflow=wrap}
                     px = pi - py * w
+
                     ; Get the predictor mode for this pixel's 4x4 block
                     #{overflow=wrap}
                     blk-x = px / 4
+
                     #{overflow=wrap}
                     blk-y = py / 4
+
                     #{overflow=wrap}
                     blk-idx = blk-y * pred-w + blk-x
                     mode = 0
@@ -950,6 +992,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     left-b = 0
                     {
                         px > 0 -> {
+
                             #{overflow=wrap}
                             left-a = argb[(pi - 1) * 4]
                             #{overflow=wrap}
@@ -966,6 +1009,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     top-b = 0
                     {
                         py > 0 -> {
+
                             #{overflow=wrap}
                             top-a = argb[(pi - w) * 4]
                             #{overflow=wrap}
@@ -982,6 +1026,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     tl-b = 0
                     {
                         px > 0 && py > 0 -> {
+
                             #{overflow=wrap}
                             tl-a = argb[(pi - w - 1) * 4]
                             #{overflow=wrap}
@@ -1018,6 +1063,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
                     {
                         mode == 0 -> {
+
                             ; 0xFF000000: solid black with full alpha
                             pred-a = 255
                             pred-r = 0
@@ -1027,6 +1073,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 1 -> {
+
                             ; Left (L)
                             pred-a = left-a
                             pred-r = left-r
@@ -1036,6 +1083,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 2 -> {
+
                             ; Top (T)
                             pred-a = top-a
                             pred-r = top-r
@@ -1045,6 +1093,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 3 -> {
+
                             ; Top-Right (TR) — falls back to T when last in row
                             pred-a = tr-a
                             pred-r = tr-r
@@ -1054,6 +1103,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 4 -> {
+
                             ; Top-Left (TL)
                             pred-a = tl-a
                             pred-r = tl-r
@@ -1063,6 +1113,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 5 -> {
+
                             ; Average2(Average2(L, TR), T)
                             #{overflow=wrap}
                             avg-ltr-a = (left-a + tr-a) / 2
@@ -1084,6 +1135,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 6 -> {
+
                             ; Average2(L, TL)
                             #{overflow=wrap}
                             pred-a = (left-a + tl-a) / 2
@@ -1097,6 +1149,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 7 -> {
+
                             ; Average2(L, T)
                             #{overflow=wrap}
                             pred-a = (left-a + top-a) / 2
@@ -1110,6 +1163,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 8 -> {
+
                             ; Average2(TL, T)
                             #{overflow=wrap}
                             pred-a = (tl-a + top-a) / 2
@@ -1123,6 +1177,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 9 -> {
+
                             ; Average2(T, TR)
                             #{overflow=wrap}
                             pred-a = (top-a + tr-a) / 2
@@ -1136,6 +1191,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 10 -> {
+
                             ; Average2(Average2(L, TL), Average2(T, TR))
                             #{overflow=wrap}
                             avg-ltl-a = (left-a + tl-a) / 2
@@ -1165,6 +1221,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 11 -> {
+
                             ; Select(L, T, TL): Manhattan distance on all 4 channels
                             ; pL = |L.A-TL.A| + |L.R-TL.R| + |L.G-TL.G| + |L.B-TL.B|
                             ; pT = |T.A-TL.A| + |T.R-TL.R| + |T.G-TL.G| + |T.B-TL.B|
@@ -1220,6 +1277,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                                     pred-g = left-g
                                     pred-b = left-b
                                 }
+
                                 -> {
                                     pred-a = top-a
                                     pred-r = top-r
@@ -1231,6 +1289,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode == 12 -> {
+
                             ; ClampAddSubtractFull(L, T, TL) = Clamp(L + T - TL)
                             ; Per channel: val = L + T - TL, clamp to [0, 255]
                             #{overflow=wrap}
@@ -1243,18 +1302,22 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             val-b = left-b + top-b - tl-b
                             {
                                 val-a < 0 -> val-a = 0
+
                                 val-a > 255 -> val-a = 255
                             }
                             {
                                 val-r < 0 -> val-r = 0
+
                                 val-r > 255 -> val-r = 255
                             }
                             {
                                 val-g < 0 -> val-g = 0
+
                                 val-g > 255 -> val-g = 255
                             }
                             {
                                 val-b < 0 -> val-b = 0
+
                                 val-b > 255 -> val-b = 255
                             }
                             pred-a = val-a
@@ -1265,6 +1328,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
                     {
                         mode >= 13 -> {
+
                             ; Mode 13: ClampAddSubtractHalf(Average2(L,T), TL)
                             ; Per channel: avg = Average2(L,T), val = avg + (avg - TL) / 2
                             ; clamp to [0, 255]
@@ -1286,18 +1350,22 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             val-b = avg-lt-b + (avg-lt-b - tl-b) / 2
                             {
                                 val-a < 0 -> val-a = 0
+
                                 val-a > 255 -> val-a = 255
                             }
                             {
                                 val-r < 0 -> val-r = 0
+
                                 val-r > 255 -> val-r = 255
                             }
                             {
                                 val-g < 0 -> val-g = 0
+
                                 val-g > 255 -> val-g = 255
                             }
                             {
                                 val-b < 0 -> val-b = 0
+
                                 val-b > 255 -> val-b = 255
                             }
                             pred-a = val-a
@@ -1310,10 +1378,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     ; Add residual to prediction
                     #{overflow=wrap}
                     argb[pi * 4] = (argb[pi * 4] + pred-a) & 255
+
                     #{overflow=wrap}
                     argb[pi * 4 + 1] = (argb[pi * 4 + 1] + pred-r) & 255
+
                     #{overflow=wrap}
                     argb[pi * 4 + 2] = (argb[pi * 4 + 2] + pred-g) & 255
+
                     #{overflow=wrap}
                     argb[pi * 4 + 3] = (argb[pi * 4 + 3] + pred-b) & 255
                 }
@@ -1322,6 +1393,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
         {
             ttype == 1 -> {
+
                 ; Inverse color transform (per VP8L spec §4.2)
                 ; The color transform image (ct-img) is an ARGB sub-image
                 ; of size (ct-w x ct-h). For each 4x4 block of the main image,
@@ -1337,20 +1409,26 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                 ;                     + ((red_to_blue  * (new_red & 0xff)) >> 5)
                 ; Note: two independent >>5 shifts, not a combined one.
                 pi <- [0..n-pixels): {
+
                     #{overflow=wrap}
                     py = pi / w
+
                     #{overflow=wrap}
                     px = pi - py * w
+
                     #{overflow=wrap}
                     blk-x = px / 4
+
                     #{overflow=wrap}
                     blk-y = py / 4
+
                     #{overflow=wrap}
                     blk-idx = blk-y * ct-w + blk-x
+
                     ; Read coefficients from ct-img ARGB
-                    rtb = 0  ; red_to_blue   (from R channel, signed)
-                    gtb = 0  ; green_to_blue (from G channel, signed)
-                    gtr = 0  ; green_to_red  (from B channel, signed)
+                    rtb = 0; red_to_blue   (from R channel, signed)
+                    gtb = 0; green_to_blue (from G channel, signed)
+                    gtr = 0; green_to_red  (from B channel, signed)
                     #{overflow=wrap}
                     {
                         blk-idx * 4 + 3 < ct-img.len() -> {
@@ -1360,6 +1438,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             raw-g = ct-img[blk-idx * 4 + 2]
                             #{overflow=wrap}
                             raw-b = ct-img[blk-idx * 4 + 3]
+
                             ; Convert to signed: values 128..255 → -128..-1
                             rtb = raw-r
                             #{overflow=wrap}
@@ -1372,29 +1451,42 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             gtr > 127 -> gtr = gtr - 256
                         }
                     }
+
                     #{overflow=wrap}
                     g = argb[pi * 4 + 2]
+
                     #{overflow=wrap}
                     r = argb[pi * 4 + 1]
+
                     #{overflow=wrap}
                     b = argb[pi * 4 + 3]
+
                     ; Apply inverse color transform (two independent >>5)
                     #{overflow=wrap}
                     new-red = r + ((gtr * g) >> 5)
                     new-red = new-red & 255
                     {
-                        #{overflow=wrap}
-                        new-red < 0 -> new-red = new-red + 256
+                        new-red < 0 -> {
+
+                            #{overflow=wrap}
+                            new-red = new-red + 256
+                        }
                     }
+
                     #{overflow=wrap}
                     argb[pi * 4 + 1] = new-red
+
                     #{overflow=wrap}
                     new-blue = b + ((gtb * g) >> 5) + ((rtb * (new-red & 255)) >> 5)
                     new-blue = new-blue & 255
                     {
-                        #{overflow=wrap}
-                        new-blue < 0 -> new-blue = new-blue + 256
+                        new-blue < 0 -> {
+
+                            #{overflow=wrap}
+                            new-blue = new-blue + 256
+                        }
                     }
+
                     #{overflow=wrap}
                     argb[pi * 4 + 3] = new-blue
                 }
@@ -1403,12 +1495,16 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
         {
             ttype == 2 -> {
+
                 ; Inverse subtract-green: add green to red and blue
                 pi <- [0..n-pixels): {
+
                     #{overflow=wrap}
                     g = argb[pi * 4 + 2]
+
                     #{overflow=wrap}
                     argb[pi * 4 + 1] = (argb[pi * 4 + 1] + g) & 255
+
                     #{overflow=wrap}
                     argb[pi * 4 + 3] = (argb[pi * 4 + 3] + g) & 255
                 }
@@ -1417,6 +1513,7 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
         {
             ttype == 3 -> {
+
                 ; Inverse color indexing: unpack palette indices from sub-image
                 ; The sub-image (ci-img) has width ci-sub-w and height h.
                 ; Each ARGB pixel in ci-img packs ci-bits palette indices.
@@ -1427,18 +1524,24 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                 ; The 32-bit value is treated as: alpha(8) | red(8) | green(8) | blue(8)
                 ; Bits are packed sequentially across all 4 channels (32 bits total)
                 pi <- [0..n-pixels): {
+
                     #{overflow=wrap}
                     py = pi / w
+
                     #{overflow=wrap}
                     px = pi - py * w
+
                     ; Which sub-image pixel contains this pixel's index?
                     #{overflow=wrap}
                     sub-px = px / ci-bits
+
                     #{overflow=wrap}
                     sub-idx = py * ci-sub-w + sub-px
+
                     ; Which bit position within the sub-image pixel?
                     #{overflow=wrap}
                     bit-pos = (px - sub-px * ci-bits) * ci-bits
+
                     ; Extract the index from the 32-bit ARGB value
                     ; The ARGB value is stored as [A, R, G, B] in ci-img
                     ; Reconstruct the 32-bit value: A<<24 | R<<16 | G<<8 | B
@@ -1482,12 +1585,16 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     {
         bands == 4 -> {
             i <- [0..n-pixels): {
+
                 #{overflow=wrap}
                 pixels[i * 4] = argb[i * 4 + 1]
+
                 #{overflow=wrap}
                 pixels[i * 4 + 1] = argb[i * 4 + 2]
+
                 #{overflow=wrap}
                 pixels[i * 4 + 2] = argb[i * 4 + 3]
+
                 #{overflow=wrap}
                 pixels[i * 4 + 3] = argb[i * 4]
             }
@@ -1515,11 +1622,12 @@ webp-read-u32-le = (data []byte, pos i64) (val i64) {
 webp-parse-vp8 = (data []byte, pos i64, size i64) (w i64, h i64) {
     w = 0
     h = 0
+
     #{overflow=wrap}
     pos + 10 > data.len() -> return
     tag0 = data[pos] & 255
     key-frame = (tag0 & 1) != 0
-    key-frame == false -> return
+    ! key-frame -> return
     {
         (data[pos + 3] & 255) == 157 && (data[pos + 4] & 255) == 1 && (data[pos + 5] & 255) == 42 -> {
             w = (data[pos + 6] & 255) | ((data[pos + 7] & 255) << 8)
@@ -1534,20 +1642,28 @@ webp-parse-vp8 = (data []byte, pos i64, size i64) (w i64, h i64) {
 webp-parse-vp8l = (data []byte, pos i64, size i64) (w i64, h i64) {
     w = 0
     h = 0
+
     #{overflow=wrap}
     pos + 5 > data.len() -> return
     (data[pos] & 255) == 47 -> {}
+
     -> return
+
     #{overflow=wrap}
     b1 = data[pos + 1] & 255
+
     #{overflow=wrap}
     b2 = data[pos + 2] & 255
+
     #{overflow=wrap}
     b3 = data[pos + 3] & 255
+
     #{overflow=wrap}
     b4 = data[pos + 4] & 255
+
     #{overflow=wrap}
     w = (b1 | ((b2 & 63) << 8)) + 1
+
     #{overflow=wrap}
     h = ((b2 >> 6) | (b3 << 2) | ((b4 & 15) << 10)) + 1
 }
@@ -1555,8 +1671,10 @@ webp-parse-vp8l = (data []byte, pos i64, size i64) (w i64, h i64) {
 ; webp-vp8l-alpha-flag: check if VP8L has alpha
 webp-vp8l-alpha-flag = (data []byte, pos i64) (has-alpha bool) {
     has-alpha = false
+
     #{overflow=wrap}
     pos + 5 > data.len() -> return
+
     #{overflow=wrap}
     b4 = data[pos + 4] & 255
     has-alpha = (b4 & 16) != 0
@@ -1601,30 +1719,25 @@ load = (path str) (img ?image) {
 
     ; Parse RIFF chunks
     #{overflow=wrap}
-    {
+    (pos + 8 <= data.len()) {
+
         #{overflow=wrap}
         pos + 8 <= data.len() -> {
-            #{overflow=wrap}
             fourcc = data.slice(pos, pos + 4).to-bytes-str()
-            #{overflow=wrap}
             chunk-size = webp-read-u32-le(data, pos + 4)
-            #{overflow=wrap}
             chunk-data-pos = pos + 8
             {
                 fourcc == 'VP8X' -> {
-                    #{overflow=wrap}
                     {
                         chunk-data-pos + 10 <= data.len() -> {
                             has-alpha = (data[chunk-data-pos] & 16) != 0
                             cw = (data[chunk-data-pos + 4] & 255) | ((data[chunk-data-pos + 5] & 255) << 8) | ((data[chunk-data-pos + 6] & 255) << 16)
                             ch = (data[chunk-data-pos + 7] & 255) | ((data[chunk-data-pos + 8] & 255) << 8) | ((data[chunk-data-pos + 9] & 255) << 16)
-                            #{overflow=wrap}
                             w = cw + 1
-                            #{overflow=wrap}
                             h = ch + 1
                         }
                     }
-                    has-alpha == true -> bands = 4
+                    has-alpha -> bands = 4
                 }
 
                 fourcc == 'VP8L' -> {
@@ -1632,31 +1745,30 @@ load = (path str) (img ?image) {
                     vp8l-size = chunk-size
                     w, h = webp-parse-vp8l(data, chunk-data-pos, chunk-size)
                     alpha-flag = webp-vp8l-alpha-flag(data, chunk-data-pos)
-                    alpha-flag == true -> {
+                    alpha-flag -> {
                         has-alpha = true
                         bands = 4
                     }
                 }
 
                 fourcc == 'VP8 ' -> {
+
                     ; Lossy VP8 — not supported
                     img = nil
                     return
                 }
             }
-            #{overflow=wrap}
             pos = chunk-data-pos + chunk-size
             {
-                #{overflow=wrap}
                 chunk-size & 1 != 0 -> pos = pos + 1
             }
         }
-    } (pos + 8 <= data.len())
+    }
 
     ; Check if VP8L was found
     {
-vp8l-pos < 0 || w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
-img = nil
+        vp8l-pos < 0 || w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
+            img = nil
             return
         }
     }
@@ -1685,6 +1797,7 @@ save = (path str, img image) (ok bool) {
     w = img.width
     h = img.height
     has-alpha = img.bands == 4
+
     #{overflow=wrap}
     npix = w * h
 
@@ -1694,8 +1807,9 @@ save = (path str, img image) (ok bool) {
     ; This produces a valid VP8L file that decodes to the actual image.
 
     ; VP8L bitstream writer
-    bit-buf i64 = 0
-    bit-count i64 = 0
+    bit-buf = 0
+    bit-count = 0
+
     #{overflow=wrap}
     vp8l-data []byte = with-cap(npix * 5 + 256)
 
@@ -1704,46 +1818,52 @@ save = (path str, img image) (ok bool) {
 
     ; VP8L signature (0x2F)
     bit-buf = bit-buf | (47 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 8
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; Width-1 (14 bits)
     #{overflow=wrap}
     w1 = w - 1
     bit-buf = bit-buf | (w1 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 14
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; Height-1 (14 bits)
     #{overflow=wrap}
     h1 = h - 1
     bit-buf = bit-buf | (h1 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 14
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; Alpha hint (1 bit), version (3 bits = 0)
     alpha-bit = 0
@@ -1751,45 +1871,52 @@ save = (path str, img image) (ok bool) {
         has-alpha -> alpha-bit = 1
     }
     bit-buf = bit-buf | (alpha-bit << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 1
     bit-buf = bit-buf | (0 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 3
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; No transforms: write 0 for "use transform" bit
     bit-buf = bit-buf | (0 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 1
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; Color cache: not used (1 bit = 0)
     bit-buf = bit-buf | (0 << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + 1
-    {
+    (bit-count >= 8) {
         bit-count >= 8 -> {
             vp8l-data.push(bit-buf & 255)
             bit-buf = bit-buf >> 8
+
             #{overflow=wrap}
             bit-count = bit-count - 8
         }
-    } (bit-count >= 8)
+    }
 
     ; Meta-Huffman for all 5 trees.
     ; We use a non-simple Huffman with 256 symbols, each with code length 9.
@@ -1829,6 +1956,7 @@ save = (path str, img image) (ok bool) {
 
     ; Build the meta-Huffman for each of 5 trees (all identical)
     tree-idx <- [0..5): {
+
         ; Write 3-bit code lengths for 18 meta-symbols
         ; sym 0-8: code length 0
         ; sym 9: code length 1
@@ -1844,206 +1972,224 @@ save = (path str, img image) (ok bool) {
                 mi == 16 -> ml = 2
             }
             bit-buf = bit-buf | (ml << bit-count)
+
             #{overflow=wrap}
             bit-count = bit-count + 3
-            {
+            (bit-count >= 8) {
                 bit-count >= 8 -> {
                     vp8l-data.push(bit-buf & 255)
                     bit-buf = bit-buf >> 8
+
                     #{overflow=wrap}
                     bit-count = bit-count - 8
                 }
-            } (bit-count >= 8)
-        )
-
-        ; Now write 256 symbol code lengths using meta-Huffman
-        ; First symbol: code length 9 (meta symbol 9)
-        ; Code for meta-sym 9 = 0 (1 bit)
-        bit-buf = bit-buf | (0 << bit-count)
-        #{overflow=wrap}
-        bit-count = bit-count + 1
-        {
-            bit-count >= 8 -> {
-                vp8l-data.push(bit-buf & 255)
-                bit-buf = bit-buf >> 8
-                #{overflow=wrap}
-                bit-count = bit-count - 8
             }
-        } (bit-count >= 8)
 
-        ; Remaining 255 symbols: use meta-symbol 16 (repeat) with ext bits
-        ; Repeat = 3 + ext (2 bits), so max repeat = 6 per use
-        ; 255 / 6 = 42.5, so 42 repeats of 6 (=252) + 1 repeat of 3
-        ; Code for meta-sym 16 = 10 (2 bits), then 2 extra bits
-        rep-count = 255
-        {
-            rep-count >= 6 -> {
-                ; Write repeat-6 (ext=3, 2 bits)
-                bit-buf = bit-buf | (2 << bit-count)
-                #{overflow=wrap}
-                bit-count = bit-count + 2
-                bit-buf = bit-buf | (3 << bit-count)
-                #{overflow=wrap}
-                bit-count = bit-count + 2
-                {
-                    bit-count >= 8 -> {
-                        vp8l-data.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-                        #{overflow=wrap}
-                        bit-count = bit-count - 8
+            ; Now write 256 symbol code lengths using meta-Huffman
+            ; First symbol: code length 9 (meta symbol 9)
+            ; Code for meta-sym 9 = 0 (1 bit)
+            bit-buf = bit-buf | (0 << bit-count)
+
+            #{overflow=wrap}
+            bit-count = bit-count + 1
+            (bit-count >= 8) {
+                bit-count >= 8 -> {
+                    vp8l-data.push(bit-buf & 255)
+                    bit-buf = bit-buf >> 8
+
+                    #{overflow=wrap}
+                    bit-count = bit-count - 8
+                }
+            }
+
+            ; Remaining 255 symbols: use meta-symbol 16 (repeat) with ext bits
+            ; Repeat = 3 + ext (2 bits), so max repeat = 6 per use
+            ; 255 / 6 = 42.5, so 42 repeats of 6 (=252) + 1 repeat of 3
+            ; Code for meta-sym 16 = 10 (2 bits), then 2 extra bits
+            rep-count = 255
+            (rep-count >= 6) {
+                rep-count >= 6 -> {
+
+                    ; Write repeat-6 (ext=3, 2 bits)
+                    bit-buf = bit-buf | (2 << bit-count)
+
+                    #{overflow=wrap}
+                    bit-count = bit-count + 2
+                    bit-buf = bit-buf | (3 << bit-count)
+                    #{overflow=wrap}
+                    bit-count = bit-count + 2
+                    (bit-count >= 8) {
+                        bit-count >= 8 -> {
+                            vp8l-data.push(bit-buf & 255)
+                            bit-buf = bit-buf >> 8
+                            #{overflow=wrap}
+                            bit-count = bit-count - 8
+                        }
                     }
-                } (bit-count >= 8)
-                #{overflow=wrap}
-                rep-count = rep-count - 6
+                    #{overflow=wrap}
+                    rep-count = rep-count - 6
+                }
             }
-        } (rep-count >= 6)
-        {
-            rep-count > 0 -> {
-                ; Write remaining repeats (ext = rep-count - 3)
-                bit-buf = bit-buf | (2 << bit-count)
-                #{overflow=wrap}
-                bit-count = bit-count + 2
-                #{overflow=wrap}
-                ext-val = rep-count - 3
-                bit-buf = bit-buf | (ext-val << bit-count)
-                #{overflow=wrap}
-                bit-count = bit-count + 2
-                {
-                    bit-count >= 8 -> {
-                        vp8l-data.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-                        #{overflow=wrap}
-                        bit-count = bit-count - 8
+            {
+                rep-count > 0 -> {
+
+                    ; Write remaining repeats (ext = rep-count - 3)
+                    bit-buf = bit-buf | (2 << bit-count)
+
+                    #{overflow=wrap}
+                    bit-count = bit-count + 2
+                    #{overflow=wrap}
+                    ext-val = rep-count - 3
+                    bit-buf = bit-buf | (ext-val << bit-count)
+                    #{overflow=wrap}
+                    bit-count = bit-count + 2
+                    (bit-count >= 8) {
+                        bit-count >= 8 -> {
+                            vp8l-data.push(bit-buf & 255)
+                            bit-buf = bit-buf >> 8
+                            #{overflow=wrap}
+                            bit-count = bit-count - 8
+                        }
                     }
-                } (bit-count >= 8)
-                rep-count = 0
+                    rep-count = 0
+                }
             }
-        }
-    )
 
-    ; Now write pixel data.
-    ; Each pixel is encoded as: green(9 bits), red(9 bits), blue(9 bits), alpha(9 bits if has-alpha)
-    ; The Huffman code for value v with code length 9 is: v itself (canonical code with 256 symbols all cl=9)
-    ; Canonical codes: first[9] = 0, all 256 symbols have cl=9
-    ; code for symbol v = v (9 bits)
-    ; Since green < 256 always, no LZ77 or color cache references.
-    i <- [0..npix): {
-        px = i % w
-        #{overflow=wrap}
-        py = i / w
-        g = image.get-pixel(img, px, py, 1)
-        r = image.get-pixel(img, px, py, 0)
-        b = image.get-pixel(img, px, py, 2)
-        a = 255
-        {
-            has-alpha -> {
-                a = image.get-pixel(img, px, py, 3)
-            }
-        }
+            ; Now write pixel data.
+            ; Each pixel is encoded as: green(9 bits), red(9 bits), blue(9 bits), alpha(9 bits if has-alpha)
+            ; The Huffman code for value v with code length 9 is: v itself (canonical code with 256 symbols all cl=9)
+            ; Canonical codes: first[9] = 0, all 256 symbols have cl=9
+            ; code for symbol v = v (9 bits)
+            ; Since green < 256 always, no LZ77 or color cache references.
+            i <- [0..npix): {
+                px = i % w
 
-        ; Write green (9 bits)
-        bit-buf = bit-buf | (g << bit-count)
-        #{overflow=wrap}
-        bit-count = bit-count + 9
-        {
-            bit-count >= 8 -> {
-                vp8l-data.push(bit-buf & 255)
-                bit-buf = bit-buf >> 8
                 #{overflow=wrap}
-                bit-count = bit-count - 8
-            }
-        } (bit-count >= 8)
+                py = i / w
+                g = image.get-pixel(img, px, py, 1)
+                r = image.get-pixel(img, px, py, 0)
+                b = image.get-pixel(img, px, py, 2)
+                a = 255
+                {
+                    has-alpha -> {
+                        a = image.get-pixel(img, px, py, 3)
+                    }
+                }
 
-        ; Write red (9 bits)
-        bit-buf = bit-buf | (r << bit-count)
-        #{overflow=wrap}
-        bit-count = bit-count + 9
-        {
-            bit-count >= 8 -> {
-                vp8l-data.push(bit-buf & 255)
-                bit-buf = bit-buf >> 8
-                #{overflow=wrap}
-                bit-count = bit-count - 8
-            }
-        } (bit-count >= 8)
+                ; Write green (9 bits)
+                bit-buf = bit-buf | (g << bit-count)
 
-        ; Write blue (9 bits)
-        bit-buf = bit-buf | (b << bit-count)
-        #{overflow=wrap}
-        bit-count = bit-count + 9
-        {
-            bit-count >= 8 -> {
-                vp8l-data.push(bit-buf & 255)
-                bit-buf = bit-buf >> 8
-                #{overflow=wrap}
-                bit-count = bit-count - 8
-            }
-        } (bit-count >= 8)
-
-        ; Write alpha (9 bits) if has-alpha
-        {
-            has-alpha -> {
-                bit-buf = bit-buf | (a << bit-count)
                 #{overflow=wrap}
                 bit-count = bit-count + 9
-                {
+                (bit-count >= 8) {
                     bit-count >= 8 -> {
                         vp8l-data.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
+
                         #{overflow=wrap}
                         bit-count = bit-count - 8
                     }
-                } (bit-count >= 8)
+                }
+
+                ; Write red (9 bits)
+                bit-buf = bit-buf | (r << bit-count)
+
+                #{overflow=wrap}
+                bit-count = bit-count + 9
+                (bit-count >= 8) {
+                    bit-count >= 8 -> {
+                        vp8l-data.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+
+                        #{overflow=wrap}
+                        bit-count = bit-count - 8
+                    }
+                }
+
+                ; Write blue (9 bits)
+                bit-buf = bit-buf | (b << bit-count)
+
+                #{overflow=wrap}
+                bit-count = bit-count + 9
+                (bit-count >= 8) {
+                    bit-count >= 8 -> {
+                        vp8l-data.push(bit-buf & 255)
+                        bit-buf = bit-buf >> 8
+
+                        #{overflow=wrap}
+                        bit-count = bit-count - 8
+                    }
+                }
+
+                ; Write alpha (9 bits) if has-alpha
+                {
+                    has-alpha -> {
+                        bit-buf = bit-buf | (a << bit-count)
+
+                        #{overflow=wrap}
+                        bit-count = bit-count + 9
+                        (bit-count >= 8) {
+                            bit-count >= 8 -> {
+                                vp8l-data.push(bit-buf & 255)
+                                bit-buf = bit-buf >> 8
+                                #{overflow=wrap}
+                                bit-count = bit-count - 8
+                            }
+                        }
+                    }
+                }
+
+                ; Flush remaining bits
+                {
+                    bit-count > 0 -> {
+                        vp8l-data.push(bit-buf & 255)
+                    }
+                }
+
+                ; Build RIFF container with VP8L chunk
+                #{overflow=wrap}
+                file-size = 4 + 8 + vp8l-data.len()
+
+                #{overflow=wrap}
+                buf []byte = with-cap(12 + 8 + vp8l-data.len())
+                buf.push(82); R
+                buf.push(73); I
+                buf.push(70); F
+                buf.push(70); F
+                buf.push((file-size - 8) & 255)
+                buf.push(((file-size - 8) >> 8) & 255)
+                buf.push(((file-size - 8) >> 16) & 255)
+                buf.push(((file-size - 8) >> 24) & 255)
+                buf.push(87); W
+                buf.push(69); E
+                buf.push(66); B
+                buf.push(80); P
+
+                ; VP8L chunk
+                buf.push(86); V
+                buf.push(80); P
+                buf.push(56); 8
+                buf.push(76); L
+                buf.push(vp8l-data.len() & 255)
+                buf.push((vp8l-data.len >> 8) & 255)
+                buf.push((vp8l-data.len >> 16) & 255)
+                buf.push((vp8l-data.len >> 24) & 255)
+                i <- [0..vp8l-data.len()): {
+                    buf.push(vp8l-data[i])
+                }
+
+                ; Write file
+                wfd = fs.open-write(path)
+                {
+                    wfd < 0 -> {
+                        ok = false
+                        return
+                    }
+                }
+                fs.write(wfd, buf, buf.len())
+                fs.close(wfd)
+                ok = true
             }
         }
-    )
-
-    ; Flush remaining bits
-    {
-        bit-count > 0 -> {
-            vp8l-data.push(bit-buf & 255)
-        }
     }
-
-    ; Build RIFF container with VP8L chunk
-    #{overflow=wrap}
-    file-size = 4 + 8 + vp8l-data.len()
-    #{overflow=wrap}
-    buf []byte = with-cap(12 + 8 + vp8l-data.len())
-    buf.push(82); R
-    buf.push(73); I
-    buf.push(70); F
-    buf.push(70); F
-    buf.push((file-size - 8) & 255)
-    buf.push(((file-size - 8) >> 8) & 255)
-    buf.push(((file-size - 8) >> 16) & 255)
-    buf.push(((file-size - 8) >> 24) & 255)
-    buf.push(87); W
-    buf.push(69); E
-    buf.push(66); B
-    buf.push(80); P
-    ; VP8L chunk
-    buf.push(86); V
-    buf.push(80); P
-    buf.push(56); 8
-    buf.push(76); L
-    buf.push(vp8l-data.len() & 255)
-    buf.push((vp8l-data.len >> 8) & 255)
-    buf.push((vp8l-data.len >> 16) & 255)
-    buf.push((vp8l-data.len >> 24) & 255)
-    i <- [0..vp8l-data.len()): {
-        buf.push(vp8l-data[i])
-    }
-
-    ; Write file
-    wfd = fs.open-write(path)
-    {
-        wfd < 0 -> {
-            ok = false
-            return
-        }
-    }
-    fs.write(wfd, buf, buf.len())
-    fs.close(wfd)
-    ok = true
 }
