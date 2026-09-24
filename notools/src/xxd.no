@@ -12,6 +12,7 @@ atoi = (s str) (v i64) {
     v = 0
     i <- [0..s.len-bytes()): {
         c = s[i]
+
         #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
@@ -30,13 +31,13 @@ xxd-run = () {
     i <- [2..argc): {
         handled = false
         {
-            skip-next == true -> {
+            skip-next -> {
                 skip-next = false
                 handled = true
             }
         }
         {
-            handled == false -> {
+            ! handled -> {
                 a = arg(i)
                 {
                     a == '-p' -> {
@@ -50,9 +51,9 @@ xxd-run = () {
                     }
 
                     a == '-c' -> {
+
                         #{overflow=wrap}
                         i + 1 < argc -> {
-                            #{overflow=wrap}
                             cols = atoi(arg(i + 1))
                             cols-set = true
                             skip-next = true
@@ -89,7 +90,7 @@ xxd-run = () {
                 }
 
                 {
-                    handled == false -> {
+                    ! handled -> {
                         ! a.starts-with('-') -> files.push(a)
                     }
                 }
@@ -103,10 +104,10 @@ xxd-run = () {
     }
 
     {
-        pure == true && cols-set == false -> cols = 30
+        pure && ! cols-set -> cols = 30
     }
     {
-        pure == true && group-set == false -> group = 1
+        pure && ! group-set -> group = 1
     }
 
     data []byte
@@ -116,8 +117,10 @@ xxd-run = () {
             r = fs.read-stdin()
             r: {
                 ok -> inp = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -126,9 +129,10 @@ xxd-run = () {
 
         -> {
             fi <- [0..files.len()): {
+
                 #{index-out=0}
                 f = files[fi]
-                fs.is-file(f) == false -> {
+                ! fs.is-file(f) -> {
                     #{overflow=wrap}
                     io.errln('xxd: ' - f - ': No such file or directory')
                     os.exit(1)
@@ -137,8 +141,10 @@ xxd-run = () {
                 r = fs.read-bytes(f)
                 r: {
                     ok -> inp = it
+
                     nil -> {
                     }
+
                     err -> {
                     }
                 }
@@ -151,9 +157,9 @@ xxd-run = () {
     }
 
     {
-        rev == true -> reverse(data, pure)
+        rev -> reverse(data, pure)
 
-        pure == true -> dump-pure(data, cols)
+        pure -> dump-pure(data, cols)
 
         -> canonical(data, cols, group)
     }
@@ -165,8 +171,9 @@ dump-pure = (data []byte, cols i64) {
     space = ' '
     offset = 0
     n = data.len()
-    {
+    (offset < n) {
         offset < n -> {
+
             #{overflow=wrap}
             line-n = n - offset
             line-n > cols -> line-n = cols
@@ -184,21 +191,26 @@ dump-pure = (data []byte, cols i64) {
             #{overflow=wrap}
             offset = offset + cols
         }
-    } (offset < n)
+    }
 }
 
 ; canonical: 默认带地址与 ASCII 的十六进制转储
 canonical = (data []byte, cols i64, group i64) {
     hex-digits = '0123456789abcdef'
     space = ' '
+
     #{overflow=wrap}
     ngroups = cols / group
+
     #{overflow=wrap}
     rem = cols - (ngroups * group)
     hex-width = 0
     {
-        #{overflow=wrap}
-        rem > 0 -> hex-width = ngroups * (group * 2 + 1) + rem * 2
+        rem > 0 -> {
+
+            #{overflow=wrap}
+            hex-width = ngroups * (group * 2 + 1) + rem * 2
+        }
 
         #{overflow=wrap}
         rem == 0 -> hex-width = ngroups * (group * 2 + 1) - 1
@@ -206,14 +218,16 @@ canonical = (data []byte, cols i64, group i64) {
 
     offset = 0
     n = data.len()
-    {
+    (offset < n) {
         offset < n -> {
+
             #{overflow=wrap}
             line-n = n - offset
             line-n > cols -> line-n = cols
             #{overflow=wrap}
             line-len = 8 + 2 + hex-width + 2 + line-n
             line = space.repeat(line-len)
+
             ; 8 位地址（小写十六进制，零填充）
             a = offset
             k <- [0..8): {
@@ -223,6 +237,7 @@ canonical = (data []byte, cols i64, group i64) {
             }
             line[8] = ':'
             line[9] = ' '
+
             ; 十六进制区段
             hi = 10
             j <- [0..line-n): {
@@ -242,10 +257,12 @@ canonical = (data []byte, cols i64, group i64) {
                 #{overflow=wrap}
                 hi = hi + 1
             }
+
             ; 剩余位置已是空格（来自 repeat 预填充）
             ; 跳过 2 个分隔空格（已预填充）
             #{overflow=wrap}
             ascii-start = 10 + hex-width + 2
+
             ; ASCII 区段
             j <- [0..line-n): {
                 #{overflow=wrap}
@@ -262,7 +279,7 @@ canonical = (data []byte, cols i64, group i64) {
             #{overflow=wrap}
             offset = offset + cols
         }
-    } (offset < n)
+    }
 }
 
 ; reverse: 从十六进制还原为二进制
@@ -270,7 +287,7 @@ reverse = (data []byte, pure-mode bool) {
     out []byte
     n = data.len()
     {
-        pure-mode == true -> {
+        pure-mode -> {
 
             ; 纯十六进制：扫描所有十六进制字符，按对组合
             cnt = 0
@@ -279,8 +296,11 @@ reverse = (data []byte, pure-mode bool) {
                 c = data[i] & 255
                 v = -1
                 {
-                    #{overflow=wrap}
-                    c >= 48 && c <= 57 -> v = c - 48
+                    c >= 48 && c <= 57 -> {
+
+                        #{overflow=wrap}
+                        v = c - 48
+                    }
 
                     #{overflow=wrap}
                     c >= 65 && c <= 70 -> v = c - 55
@@ -339,16 +359,18 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
     {
         colon < 0 -> return
     }
+
     #{overflow=wrap}
     pos = colon + 1
     cnt = 0
     hi-c = 0
     spaces = 0
-    {
+    (pos < end) {
         pos < end -> {
             c = data[pos] & 255
             {
                 c == 32 -> {
+
                     #{overflow=wrap}
                     spaces = spaces + 1
                     spaces >= 2 -> pos = end
@@ -389,5 +411,5 @@ parse-format-line = (data []byte, start i64, end i64, out []byte) {
             #{overflow=wrap}
             pos = pos + 1
         }
-    } (pos < end)
+    }
 }

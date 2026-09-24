@@ -9,20 +9,21 @@ uncompress-cmd = () {
     has-file = false
 
     i = 2
-    {
+    (i < argc) {
         a = arg(i)
         {
             a == '-c' -> to-stdout = true
 
             a == '-f' -> *
 
-            a.starts-with('-') == false -> {
+            ! a.starts-with('-') -> {
                 has-file = true
                 f = a
 
-                fs.is-file(f) == false -> {
+                ! fs.is-file(f) -> {
                     #{overflow=wrap}
                     eprint('uncompress: ' - f - ': No such file')
+
                     #{overflow=wrap}
                     i = i + 1
                     continue
@@ -31,8 +32,10 @@ uncompress-cmd = () {
                 r = fs.read-bytes(f)
                 r: {
                     ok -> content = it
+
                     nil -> {
                     }
+
                     err -> {
                     }
                 }
@@ -66,16 +69,18 @@ uncompress-cmd = () {
 
         #{overflow=wrap}
         i = i + 1
-    } (i < argc)
+    }
 
     {
-        has-file == false -> {
+        ! has-file -> {
             content []byte
             r = fs.read-stdin()
             r: {
                 ok -> content = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -118,6 +123,7 @@ lzw-decompress = (data []byte) (out []byte) {
     ; Calculate max-codes = 2^max-bits
     max-codes = 1
     j <- [0..max-bits): {
+
         #{overflow=wrap}
         max-codes = max-codes * 2
     }
@@ -150,23 +156,27 @@ lzw-decompress = (data []byte) (out []byte) {
     first = true
     old-code = -1
 
-    {
+    (pos < data-len || bit-count >= cur-bits) {
 
         ; Fill bit buffer
-        {
+        (bit-count < cur-bits && pos < data-len) {
             bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+
             #{overflow=wrap}
             bit-count = bit-count + 8
+
             #{overflow=wrap}
             pos = pos + 1
-        } (bit-count < cur-bits && pos < data-len)
+        }
         bit-count < cur-bits -> break
 
         ; Extract code
         code = bit-buf & ((1 << cur-bits) - 1)
         bit-buf = bit-buf >> cur-bits
+
         #{overflow=wrap}
         bit-count = bit-count - cur-bits
+
         #{overflow=wrap}
         codes-read = codes-read + 1
 
@@ -180,19 +190,20 @@ lzw-decompress = (data []byte) (out []byte) {
                 pad < 8 -> {
                     #{overflow=wrap}
                     skip-bits = pad * cur-bits
-                    {
+                    (bit-count < skip-bits && pos < data-len) {
                         bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
                         #{overflow=wrap}
                         bit-count = bit-count + 8
                         #{overflow=wrap}
                         pos = pos + 1
-                    } (bit-count < skip-bits && pos < data-len)
+                    }
                     consume = skip-bits
                     consume > bit-count -> consume = bit-count
                     bit-buf = bit-buf >> consume
                     #{overflow=wrap}
                     bit-count = bit-count - consume
                 }
+
                 ; Reset dictionary
                 next-code = first-code
                 cur-bits = 9
@@ -205,6 +216,7 @@ lzw-decompress = (data []byte) (out []byte) {
         ; Reconstruct string for code
         stack = []
         c = code
+
         ; Special case: code == next-code (KwKwK)
         {
             c >= next-code -> {
@@ -213,20 +225,24 @@ lzw-decompress = (data []byte) (out []byte) {
 
                     ; Follow prefix chain from old-code to get first byte
                     tc = old-code
-                    {
+                    (prefix[tc] != -1) {
+
                         #{index-out=0}
                         tc = prefix[tc]
-                    } (prefix[tc] != -1)
+                    }
+
                     #{index-out=0}
                     fb = suffix[tc]
+
                     ; Build string: old_string + first_byte
                     tc = old-code
                     stack.push(fb)
-                    {
+                    (prefix[tc] != -1) {
                         stack.push(suffix[tc])
+
                         #{index-out=0}
                         tc = prefix[tc]
-                    } (prefix[tc] != -1)
+                    }
                     stack.push(suffix[tc])
                 }
             }
@@ -234,31 +250,33 @@ lzw-decompress = (data []byte) (out []byte) {
             -> {
 
                 ; Normal case: code is in dictionary
-                {
+                (prefix[c] != -1) {
                     stack.push(suffix[c])
+
                     #{index-out=0}
                     c = prefix[c]
-                } (prefix[c] != -1)
+                }
                 stack.push(suffix[c])
             }
         }
 
         ; Output string (stack is in reverse order)
         fi <- [0..stack.len()): {
+
             #{overflow=wrap}
             out.push(stack[stack.len() - 1 - fi])
         }
 
         ; Get first byte of output
-        #{overflow=wrap}
-        #{index-out=0}
+        #{index-out=0, overflow=wrap}
         first-byte = stack[stack.len() - 1]
 
         ; Add to dictionary
         {
-            first == false -> {
+            ! first -> {
                 prefix[next-code] = old-code
                 suffix[next-code] = first-byte
+
                 #{overflow=wrap}
                 next-code = next-code + 1
 
@@ -272,13 +290,13 @@ lzw-decompress = (data []byte) (out []byte) {
                         pad < 8 -> {
                             #{overflow=wrap}
                             skip-bits = pad * cur-bits
-                            {
+                            (bit-count < skip-bits && pos < data-len) {
                                 bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
                                 #{overflow=wrap}
                                 bit-count = bit-count + 8
                                 #{overflow=wrap}
                                 pos = pos + 1
-                            } (bit-count < skip-bits && pos < data-len)
+                            }
                             consume = skip-bits
                             consume > bit-count -> consume = bit-count
                             bit-buf = bit-buf >> consume
@@ -301,5 +319,5 @@ lzw-decompress = (data []byte) (out []byte) {
 
         old-code = code
         first = false
-    } (pos < data-len || bit-count >= cur-bits)
+    }
 }

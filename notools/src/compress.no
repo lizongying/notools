@@ -12,7 +12,7 @@ compress-cmd = () {
     has-file = false
 
     i = 2
-    {
+    (i < argc) {
         a = arg(i)
         {
             a == '-c' -> to-stdout = true
@@ -23,6 +23,7 @@ compress-cmd = () {
                 bs = a.slice(2, a.len-bytes())
                 max-bits = 0
                 j <- [0..bs.len()): {
+
                     #{overflow=wrap}
                     bs[j] >= 48 && bs[j] <= 57 -> max-bits = max-bits * 10 + (bs[j] - 48)
                 }
@@ -30,11 +31,11 @@ compress-cmd = () {
                 max-bits > 16 -> max-bits = 16
             }
 
-            a.starts-with('-') == false -> {
+            ! a.starts-with('-') -> {
                 has-file = true
                 f = a
 
-                fs.is-file(f) == false -> {
+                ! fs.is-file(f) -> {
                     #{overflow=wrap}
                     eprint('compress: ' - f - ': No such file')
                     #{overflow=wrap}
@@ -45,8 +46,10 @@ compress-cmd = () {
                 r = fs.read-bytes(f)
                 r: {
                     ok -> content = it
+
                     nil -> {
                     }
+
                     err -> {
                     }
                 }
@@ -71,16 +74,18 @@ compress-cmd = () {
 
         #{overflow=wrap}
         i = i + 1
-    } (i < argc)
+    }
 
     {
-        has-file == false -> {
+        ! has-file -> {
             content []byte
             r = fs.read-stdin()
             r: {
                 ok -> content = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -109,6 +114,7 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
     ; Calculate max-codes = 2^max-bits
     max-codes = 1
     j <- [0..max-bits): {
+
         #{overflow=wrap}
         max-codes = max-codes * 2
     }
@@ -128,6 +134,7 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
     j <- [0..ht-size): {
         ht[j] = -1
     }
+
     #{overflow=wrap}
     ht-mask = ht-size - 1
 
@@ -146,13 +153,14 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
     cur-prefix = (data[0] & 255)
 
     pos = 1
-    {
+    (pos < data-len) {
         b = (data[pos] & 255)
 
         ; Hash lookup for (cur-prefix, b)
         hkey = ((cur-prefix * 256) + b) & ht-mask
         found = -1
-        {
+        (ht[hkey] != -1) {
+
             #{index-out=0}
             c = ht[hkey]
             {
@@ -162,7 +170,7 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                 }
             }
             hkey = (hkey + 1) & ht-mask
-        } (ht[hkey] != -1)
+        }
 
         {
             found >= 0 -> {
@@ -173,16 +181,17 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
 
                 ; Output cur-prefix code (bit packing, LSB first)
                 bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
+
                 #{overflow=wrap}
                 bit-count = bit-count + cur-bits
                 #{overflow=wrap}
                 codes-at-width = codes-at-width + 1
-                {
+                (bit-count >= 8) {
                     out.push(bit-buf & 255)
                     bit-buf = bit-buf >> 8
                     #{overflow=wrap}
                     bit-count = bit-count - 8
-                } (bit-count >= 8)
+                }
 
                 ; Add (cur-prefix, b) to dictionary
                 prefix[next-code] = cur-prefix
@@ -201,12 +210,12 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                         pad < 8 -> {
                             #{overflow=wrap}
                             bit-count = bit-count + pad * cur-bits
-                            {
+                            (bit-count >= 8) {
                                 out.push(bit-buf & 255)
                                 bit-buf = bit-buf >> 8
                                 #{overflow=wrap}
                                 bit-count = bit-count - 8
-                            } (bit-count >= 8)
+                            }
                         }
                         #{overflow=wrap}
                         cur-bits = cur-bits + 1
@@ -223,12 +232,12 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                     bit-count = bit-count + cur-bits
                     #{overflow=wrap}
                     codes-at-width = codes-at-width + 1
-                    {
+                    (bit-count >= 8) {
                         out.push(bit-buf & 255)
                         bit-buf = bit-buf >> 8
                         #{overflow=wrap}
                         bit-count = bit-count - 8
-                    } (bit-count >= 8)
+                    }
 
                     ; Alignment padding after CLEAR
                     #{overflow=wrap}
@@ -236,12 +245,12 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
                     pad < 8 -> {
                         #{overflow=wrap}
                         bit-count = bit-count + pad * cur-bits
-                        {
+                        (bit-count >= 8) {
                             out.push(bit-buf & 255)
                             bit-buf = bit-buf >> 8
                             #{overflow=wrap}
                             bit-count = bit-count - 8
-                        } (bit-count >= 8)
+                        }
                     }
 
                     ; Reset dictionary
@@ -259,18 +268,20 @@ lzw-compress = (data []byte, max-bits i64) (out []byte) {
 
         #{overflow=wrap}
         pos = pos + 1
-    } (pos < data-len)
+    }
 
     ; Output last code
     bit-buf = bit-buf | ((cur-prefix & ((1 << cur-bits) - 1)) << bit-count)
+
     #{overflow=wrap}
     bit-count = bit-count + cur-bits
-    {
+    (bit-count >= 8) {
         out.push(bit-buf & 255)
         bit-buf = bit-buf >> 8
+
         #{overflow=wrap}
         bit-count = bit-count - 8
-    } (bit-count >= 8)
+    }
 
     ; Flush remaining bits
     bit-count > 0 -> out.push(bit-buf & 255)

@@ -26,11 +26,11 @@ is-word-char = (b byte) (yes bool) {
 split-words = (line str) (words []str) {
     n = line.len-bytes()
     i = 0
-    {
+    (i < n) {
 
         ; skip non-word chars
         done-skip = false
-        {
+        (! done-skip) {
             {
                 i >= n -> {
                     done-skip = true
@@ -40,19 +40,21 @@ split-words = (line str) (words []str) {
             wc = false
             wc = is-word-char(line.byte(i))
             {
-                wc == true -> {
+                wc -> {
                     done-skip = true
                     break
                 }
             }
+
             #{overflow=wrap}
             i = i + 1
-        } (done-skip == false)
+        }
         i >= n -> break
+
         ; collect word
         start = i
         done-word = false
-        {
+        (! done-word) {
             {
                 i >= n -> {
                     done-word = true
@@ -62,16 +64,17 @@ split-words = (line str) (words []str) {
             wc3 = false
             wc3 = is-word-char(line.byte(i))
             {
-                wc3 == false -> {
+                ! wc3 -> {
                     done-word = true
                     break
                 }
             }
+
             #{overflow=wrap}
             i = i + 1
-        } (done-word == false)
+        }
         words.push(line.slice(start, i))
-    } (i < n)
+    }
 }
 
 ptx-run = () {
@@ -84,17 +87,16 @@ ptx-run = () {
     ; parse options (manual loop to skip option arguments)
     file-start = 2
     i = 2
-    {
+    (i < argc) {
         a = arg(i)
         {
             a == '-A' -> {
+
                 #{overflow=wrap}
                 i + 1 < argc -> {
-                    #{overflow=wrap}
                     ns = arg(i + 1)
                     after-ctx = 0
                     j <- [0..ns.len-bytes()): {
-                        #{overflow=wrap}
                         ns[j] >= 48 && ns[j] <= 57 -> after-ctx = after-ctx * 10 + (ns[j] - 48)
                     }
                 }
@@ -140,16 +142,16 @@ ptx-run = () {
         ; non-flag arg: first file
         file-start = i
         break
-    } (i < argc)
+    }
 
     ; collect all text
     all-text = ''
     has-file = false
     i <- [file-start..argc): {
         a = arg(i)
-        a.starts-with('-') == false -> {
+        ! a.starts-with('-') -> {
             has-file = true
-            fs.is-file(a) == false -> {
+            ! fs.is-file(a) -> {
                 #{overflow=wrap}
                 eprint('ptx: ' - a - ': No such file')
                 os.exit(1)
@@ -158,8 +160,10 @@ ptx-run = () {
             r = fs.read-str(a)
             r: {
                 ok -> content = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -168,13 +172,15 @@ ptx-run = () {
     }
 
     {
-        has-file == false -> {
+        ! has-file -> {
             all-text = ''
             r = fs.read-stdin-str()
             r: {
                 ok -> all-text = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -187,6 +193,7 @@ ptx-run = () {
     j <- [0..all-text.len-bytes()): {
         all-text[j] == 10 -> {
             lines.push(all-text.slice(start, j))
+
             #{overflow=wrap}
             start = j + 1
         }
@@ -199,14 +206,17 @@ ptx-run = () {
     sort-keys []str
 
     j <- [0..lines.len()): {
+
         #{index-out=0}
         line = lines[j]
         words = split-words(line)
         nw = words.len()
         k <- [0..nw): {
             w = words[k]
+
             ; build before context
             before-part = ''
+
             #{overflow=wrap}
             bstart = k - before-ctx
             bstart < 0 -> bstart = 0
@@ -214,8 +224,10 @@ ptx-run = () {
                 before-part.len-bytes() > 0 -> before-part = before-part - ' '
                 before-part = before-part - words[b]
             }
+
             ; build after context
             after-part = ''
+
             #{overflow=wrap}
             aend = k + after-ctx + 1
             aend > nw -> aend = nw
@@ -223,10 +235,12 @@ ptx-run = () {
                 after-part.len-bytes() > 0 -> after-part = after-part - ' '
                 after-part = after-part - words[b]
             }
+
             ; format output line
             #{overflow=wrap}
             out-line = w - '|' - before-part - '|' - after-part
             entries.push(out-line)
+
             ; sort key: word (lowercased if -r)
             sk = w
             ignore-case -> sk = w.to-lower()
@@ -243,12 +257,15 @@ ptx-run = () {
                 ; swap entries
                 #{index-out=0}
                 tmp-entry = entries[si]
+
                 #{index-out=0}
                 entries[si] = entries[sj]
                 entries[sj] = tmp-entry
+
                 ; swap sort keys
                 #{index-out=0}
                 tmp-key = sort-keys[si]
+
                 #{index-out=0}
                 sort-keys[si] = sort-keys[sj]
                 sort-keys[sj] = tmp-key
@@ -258,8 +275,10 @@ ptx-run = () {
 
     ; output: format as "before  word  after"
     j <- [0..ne): {
+
         #{index-out=0}
         ent = entries[j]
+
         ; find first pipe (separates word from before)
         t1 = ent.index('|')
         t1 < 0 -> {
@@ -267,21 +286,26 @@ ptx-run = () {
             *
         }
         word = ent.slice(0, t1)
+
         #{overflow=wrap}
         rest = ent.slice(t1 + 1, ent.len())
+
         ; find second pipe (separates before from after)
         t2 = rest.index('|')
         before-part = rest
         after-part = ''
         t2 >= 0 -> {
             before-part = rest.slice(0, t2)
+
             #{overflow=wrap}
             after-part = rest.slice(t2 + 1, rest.len())
         }
+
         ; format output
         out = before-part
         #{overflow=wrap}
         out.len-bytes() > 0 -> out = out - ' '
+
         #{overflow=wrap}
         out = out - word
         #{overflow=wrap}

@@ -14,21 +14,28 @@ tar-write-octal = (data []byte, off i64, width i64, val i64) {
 
     ; fill with spaces
     i <- [0..width): {
+
         #{overflow=wrap}
         data[off + i] = 32
     }
+
     ; fill digits from right to left
     v = val
+
     #{overflow=wrap}
     pos = width - 1
-    {
+    (v > 0) {
+
         #{overflow=wrap}
         data[off + pos] = 48 + (v % 8)
+
         #{overflow=wrap}
         v = v / 8
+
         #{overflow=wrap}
         pos = pos - 1
-    } (v > 0)
+    }
+
     #{overflow=wrap}
     data[off + width] = 0
 }
@@ -36,64 +43,86 @@ tar-write-octal = (data []byte, off i64, width i64, val i64) {
 ; tar-write-header: write a 512-byte tar header into data
 tar-write-header = (data []byte, name str, typ i64, sz i64) {
     start = data.len()
+
     ; push 512 zeros for the header
     i <- [0..TAR-BLOCK): {
         data.push(0)
     }
+
     ; name (offset 0, up to 100 bytes)
     nl = name.len-bytes()
     nl > 100 -> nl = 100
     i <- [0..nl): {
+
         #{overflow=wrap}
         data[start + i] = name[i]
     }
+
     ; mode (offset 100, "0000644\0")
     #{overflow=wrap}
     tar-write-octal(data, start + 100, 7, 420)
+
     ; uid (offset 108)
     #{overflow=wrap}
     tar-write-octal(data, start + 108, 7, 0)
+
     ; gid (offset 116)
     #{overflow=wrap}
     tar-write-octal(data, start + 116, 7, 0)
+
     ; size (offset 124, 11 octal digits)
     #{overflow=wrap}
     tar-write-octal(data, start + 124, 11, sz)
+
     ; mtime (offset 136)
     #{overflow=wrap}
     tar-write-octal(data, start + 136, 11, 0)
+
     ; type (offset 156)
     #{overflow=wrap}
     data[start + 156] = typ
+
     ; ustar magic (offset 257)
     #{overflow=wrap}
     data[start + 257] = 117
+
     #{overflow=wrap}
     data[start + 258] = 115
+
     #{overflow=wrap}
     data[start + 259] = 116
+
     #{overflow=wrap}
     data[start + 260] = 97
+
     #{overflow=wrap}
     data[start + 261] = 114
+
     #{overflow=wrap}
     data[start + 262] = 0
+
     ; checksum: fill with spaces first
     i <- [0..8): {
+
         #{overflow=wrap}
         data[start + 148 + i] = 32
     }
+
     ; compute checksum
     checksum = 0
     i <- [0..TAR-BLOCK): {
+
         #{overflow=wrap}
         checksum = checksum + (data[start + i] & 255)
     }
+
     ; write checksum (6 octal digits + null + space)
     #{overflow=wrap}
     tar-write-octal(data, start + 148, 6, checksum)
+
     #{overflow=wrap}
     data[start + 154] = 0
+
     #{overflow=wrap}
     data[start + 155] = 32
 }
@@ -102,14 +131,17 @@ tar-write-header = (data []byte, name str, typ i64, sz i64) {
 tar-add-file = (data []byte, name str, content str) {
     sz = content.len-bytes()
     tar-write-header(data, name, 48, sz)
+
     ; write content
     i <- [0..sz): {
         data.push(content[i])
     }
+
     ; pad to 512 boundary
     rem = sz % TAR-BLOCK
     {
         rem > 0 -> {
+
             #{overflow=wrap}
             pad = TAR-BLOCK - rem
             j <- [0..pad): {
@@ -131,6 +163,7 @@ tar-add-dir = (data []byte, name str) {
 collect = (path str, out []str) {
     entries = fs.list-dir(path)
     i <- [0..entries.len()): {
+
         #{index-out=0}
         name = entries[i]
         name == '.' -> continue
@@ -150,6 +183,7 @@ do-create = (filename str, files []str, use-gzip bool) {
     ; collect all files and dirs
     all []str
     i <- [0..files.len()): {
+
         #{index-out=0}
         path = files[i]
         fs.is-dir(path) -> {
@@ -162,6 +196,7 @@ do-create = (filename str, files []str, use-gzip bool) {
     ; build tar archive as local []byte
     data []byte
     i <- [0..all.len()): {
+
         #{index-out=0}
         path = all[i]
         fs.is-file(path) -> {
@@ -169,8 +204,10 @@ do-create = (filename str, files []str, use-gzip bool) {
             r = fs.read-str(path)
             r: {
                 ok -> content = it
+
                 nil -> {
                 }
+
                 err -> {
                 }
             }
@@ -216,7 +253,7 @@ tar-make-parent-dirs = (name str) {
         name[i] == '/' -> {
             dir = name.slice(0, i)
             dir.len() > 0 -> {
-                fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+                ! fs.is-dir(dir) -> os.mkdir(dir, 511)
             }
         }
     }
@@ -234,8 +271,10 @@ do-extract = (filename str, use-gzip bool) {
     r = fs.read-bytes(filename)
     r: {
         ok -> raw = it
+
         nil -> {
         }
+
         err -> {
         }
     }
@@ -255,11 +294,13 @@ do-extract = (filename str, use-gzip bool) {
         typ == 'dir' -> os.mkdir(name, 493)
         typ == 'file' -> {
             tar-make-parent-dirs(name)
+
             ; read content directly from data (avoid archive.read which returns []byte)
             sz = archive.size(i)
             off = archive.offset(i)
             content []byte = with-len(sz)
             j <- [0..sz): {
+
                 #{overflow=wrap}
                 content[j] = data[off + TAR-BLOCK + j]
             }
@@ -280,8 +321,10 @@ do-list = (filename str, use-gzip bool) {
     r = fs.read-bytes(filename)
     r: {
         ok -> raw = it
+
         nil -> {
         }
+
         err -> {
         }
     }
@@ -328,6 +371,7 @@ tar-run = () {
                 c == 't' -> list = true
                 c == 'z' -> use-gzip = true
                 c == 'f' -> {
+
                     #{overflow=wrap}
                     i + 1 < argc -> filename = arg(i + 1)
                     skip-next = true

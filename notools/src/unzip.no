@@ -13,10 +13,13 @@ unzip-arch {
 
 ; read-u32le: 读取 .data[off..off+4] 的小端序 u32
 unzip-arch.read-u32le = (off i64) (v i64) {
+
     #{overflow=wrap}
     off1 = off + 1
+
     #{overflow=wrap}
     off2 = off + 2
+
     #{overflow=wrap}
     off3 = off + 3
     b0 = .data[off] & 255
@@ -28,6 +31,7 @@ unzip-arch.read-u32le = (off i64) (v i64) {
 
 ; read-u16le: 读取 .data[off..off+2] 的小端序 u16
 unzip-arch.read-u16le = (off i64) (v i64) {
+
     #{overflow=wrap}
     off1 = off + 1
     b0 = .data[off] & 255
@@ -40,14 +44,18 @@ unzip-arch.find-eocd = () (off i64) {
     off = -1
     n = len(.data)
     n < 22 -> return
+
     #{overflow=wrap}
     i = n - 22
-    {
+    (i >= 0) {
         b0 = .data[i] & 255
+
         #{overflow=wrap}
         b1 = .data[i + 1] & 255
+
         #{overflow=wrap}
         b2 = .data[i + 2] & 255
+
         #{overflow=wrap}
         b3 = .data[i + 3] & 255
         sig = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
@@ -57,9 +65,10 @@ unzip-arch.find-eocd = () (off i64) {
                 return
             }
         }
+
         #{overflow=wrap}
         i = i - 1
-    } (i >= 0)
+    }
 }
 
 ; entry-offset: 计算第 idx 个 CD 条目的偏移
@@ -67,15 +76,20 @@ unzip-arch.entry-offset = (idx i64) (off i64) {
     off = 0
     eocd = .find-eocd()
     eocd < 0 -> return
+
     #{overflow=wrap}
     off = .read-u32le(eocd + 16)
     j <- [0..idx): {
+
         #{overflow=wrap}
         name-len = .read-u16le(off + 28)
+
         #{overflow=wrap}
         extra-len = .read-u16le(off + 30)
+
         #{overflow=wrap}
         comment-len = .read-u16le(off + 32)
+
         #{overflow=wrap}
         off = off + 46 + name-len + extra-len + comment-len
     }
@@ -84,10 +98,12 @@ unzip-arch.entry-offset = (idx i64) (off i64) {
 ; read-name: 读取第 idx 个条目的档名
 unzip-arch.read-name = (idx i64) (name str) {
     off = .entry-offset(idx)
+
     #{overflow=wrap}
     name-len = .read-u16le(off + 28)
     name = ''
     j <- [0..name-len): {
+
         #{overflow=wrap}
         name = name - number.char-to-str(.data[off + 46 + j] & 255)
     }
@@ -96,6 +112,7 @@ unzip-arch.read-name = (idx i64) (name str) {
 ; read-size: 读取第 idx 个条目的原始大小
 unzip-arch.read-size = (idx i64) (sz i64) {
     off = .entry-offset(idx)
+
     #{overflow=wrap}
     sz = .read-u32le(off + 24)
 }
@@ -103,6 +120,7 @@ unzip-arch.read-size = (idx i64) (sz i64) {
 ; read-method: 读取第 idx 个条目的压缩方式
 unzip-arch.read-method = (idx i64) (method i64) {
     off = .entry-offset(idx)
+
     #{overflow=wrap}
     method = .read-u16le(off + 10)
 }
@@ -112,6 +130,7 @@ unzip-arch.total = () (total i64) {
     total = 0
     eocd = .find-eocd()
     eocd < 0 -> return
+
     #{overflow=wrap}
     total = .read-u16le(eocd + 8)
 }
@@ -119,19 +138,25 @@ unzip-arch.total = () (total i64) {
 ; extract-stored: 提取 method 0 (stored) 条目，直接写文件
 unzip-arch.extract-stored = (idx i64, out-name str) {
     off = .entry-offset(idx)
+
     #{overflow=wrap}
     sz = .read-u32le(off + 24)
+
     #{overflow=wrap}
     local-off = .read-u32le(off + 42)
+
     #{overflow=wrap}
     name-len2 = .read-u16le(local-off + 26)
+
     #{overflow=wrap}
     extra-len2 = .read-u16le(local-off + 28)
+
     #{overflow=wrap}
     data-off = local-off + 30 + name-len2 + extra-len2
 
     out []byte = with-len(sz)
     i <- [0..sz): {
+
         #{overflow=wrap}
         out[i] = .data[data-off + i]
     }
@@ -141,21 +166,28 @@ unzip-arch.extract-stored = (idx i64, out-name str) {
 ; extract-deflate: 提取 method 8 (deflate) 条目，解压后写文件
 unzip-arch.extract-deflate = (idx i64, out-name str) {
     off = .entry-offset(idx)
+
     #{overflow=wrap}
     sz = .read-u32le(off + 24)
+
     #{overflow=wrap}
     csz = .read-u32le(off + 20)
+
     #{overflow=wrap}
     local-off = .read-u32le(off + 42)
+
     #{overflow=wrap}
     name-len2 = .read-u16le(local-off + 26)
+
     #{overflow=wrap}
     extra-len2 = .read-u16le(local-off + 28)
+
     #{overflow=wrap}
     data-off = local-off + 30 + name-len2 + extra-len2
 
     compressed []byte = with-len(csz)
     i <- [0..csz): {
+
         #{overflow=wrap}
         compressed[i] = .data[data-off + i]
     }
@@ -170,7 +202,7 @@ make-parent-dirs = (name str) {
         name[i] == '/' -> {
             dir = name.slice(0, i)
             dir.len() > 0 -> {
-                fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+                ! fs.is-dir(dir) -> os.mkdir(dir, 511)
             }
         }
     }
@@ -207,8 +239,10 @@ unzip-run = () {
     r = fs.read-bytes(filename)
     r: {
         ok -> raw = it
+
         nil -> {
         }
+
         err -> {
         }
     }
@@ -231,6 +265,7 @@ unzip-run = () {
                 name = archive.read-name(i)
                 sz = archive.read-size(i)
                 method = archive.read-method(i)
+
                 #{overflow=wrap}
                 io.outln(name - '  ' - sz.to-str() - '  ' - method.to-str())
             }

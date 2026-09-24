@@ -17,17 +17,18 @@ hmac-run = () {
     skip-next = false
     has-msg = false
     total = 0
+
     ; 单遍：解析 -a / -k，同时统计消息总长度、标记是否存在 message 参数
     i <- [2..argc): {
         handled = false
         {
-            skip-next == true -> {
+            skip-next -> {
                 skip-next = false
                 handled = true
             }
         }
         {
-            handled == false -> {
+            ! handled -> {
                 a = arg(i)
                 isopt = false
                 {
@@ -37,22 +38,24 @@ hmac-run = () {
                     a == '-k' -> isopt = true
                 }
                 {
-                    #{overflow=wrap}
-                    isopt == true -> {
-                        i + 1 < argc -> {
-                            #{overflow=wrap}
-                            val = arg(i + 1)
-                            {
-                                a == '-a' -> algo = val
+                    isopt -> {
+                        #{overflow=wrap}
+                        {
+                            i + 1 < argc -> {
+                                #{overflow=wrap}
+                                val = arg(i + 1)
+                                {
+                                    a == '-a' -> algo = val
+                                }
+                                {
+                                    a == '-k' -> key = val
+                                }
+                                skip-next = true
                             }
-                            {
-                                a == '-k' -> key = val
-                            }
-                            skip-next = true
                         }
                     }
 
-                    isopt == false -> {
+                    ! isopt -> {
                         has-msg = true
                         #{overflow=wrap}
                         total = total + a.len-bytes()
@@ -65,7 +68,8 @@ hmac-run = () {
     }
     mb []byte
     {
-        has-msg == false -> {
+        ! has-msg -> {
+
             ; Read the ENTIRE stdin as an OWNED []byte. fs.read-stdin() returns a
             ; heap buffer that stays valid for the whole program, which avoids
             ; the get-line borrowed-buffer lifetime bug that corrupted the
@@ -74,10 +78,13 @@ hmac-run = () {
         }
     }
     {
-        has-msg == true -> {
+        has-msg -> {
             {
-                #{overflow=wrap}
-                total > 0 -> total = total - 1
+                total > 0 -> {
+
+                    #{overflow=wrap}
+                    total = total - 1
+                }
             }
             mbuf []byte = with-len(total)
             p = 0
@@ -85,13 +92,13 @@ hmac-run = () {
             i <- [2..argc): {
                 handled = false
                 {
-                    skip2 == true -> {
+                    skip2 -> {
                         skip2 = false
                         handled = true
                     }
                 }
                 {
-                    handled == false -> {
+                    ! handled -> {
                         a = arg(i)
                         isopt = false
                         {
@@ -102,11 +109,11 @@ hmac-run = () {
                         }
                         {
                             #{overflow=wrap}
-                            isopt == true -> {
+                            isopt -> {
                                 i + 1 < argc -> skip2 = true
                             }
 
-                            isopt == false -> {
+                            ! isopt -> {
                                 b = a
                                 k <- [0..b.len-bytes()): {
                                     mbuf[p] = b[k]
@@ -133,6 +140,7 @@ hmac-run = () {
     {
         algo == 'md5' -> {
             matched = true
+
             ; 手工 HMAC-MD5：md5x 返回 hex str，block-size=64，hash-len=16
             bsize = 64
             hlen = 16
@@ -144,21 +152,31 @@ hmac-run = () {
                 kb.len-bytes() > bsize -> {
                     kh = md5x(kb)
                     i <- [0..hlen): {
+
                         #{overflow=wrap}
                         hi-c = kh[i * 2]
+
                         #{overflow=wrap}
                         lo-c = kh[i * 2 + 1]
+
                         #{overflow=wrap}
                         hi-v = hi-c - 48
                         {
-                            #{overflow=wrap}
-                            hi-c >= 97 -> hi-v = hi-c - 87
+                            hi-c >= 97 -> {
+
+                                #{overflow=wrap}
+                                hi-v = hi-c - 87
+                            }
                         }
+
                         #{overflow=wrap}
                         lo-v = lo-c - 48
                         {
-                            #{overflow=wrap}
-                            lo-c >= 97 -> lo-v = lo-c - 87
+                            lo-c >= 97 -> {
+
+                                #{overflow=wrap}
+                                lo-v = lo-c - 87
+                            }
                         }
                         k0[i] = (hi-v << 4) | lo-v
                     }
@@ -176,8 +194,8 @@ hmac-run = () {
                 inner[i] = k0[i] ^ 54
             }
             i <- [0..mb.len()): {
-                #{overflow=wrap}
-                #{index-out=0}
+
+                #{index-out=0, overflow=wrap}
                 inner[bsize + i] = mb[i]
             }
             ih = md5x(inner)
@@ -212,6 +230,7 @@ hmac-run = () {
 
         algo == 'sha1' -> {
             matched = true
+
             ; 手工 HMAC-SHA1：sha1.sha1-hex 返回 hex str，block-size=64，hash-len=20
             bsize = 64
             hlen = 20
@@ -255,8 +274,8 @@ hmac-run = () {
                 inner[i] = k0[i] ^ 54
             }
             i <- [0..mb.len()): {
-                #{overflow=wrap}
-                #{index-out=0}
+
+                #{index-out=0, overflow=wrap}
                 inner[bsize + i] = mb[i]
             }
             ih = sha1.sha1-hex(inner)
@@ -291,6 +310,7 @@ hmac-run = () {
 
         algo == 'sha256' -> {
             matched = true
+
             ; 手工 HMAC-SHA256：sha256.sha256-hex 返回 hex str，block-size=64，hash-len=32
             bsize = 64
             hlen = 32
@@ -334,8 +354,8 @@ hmac-run = () {
                 inner[i] = k0[i] ^ 54
             }
             i <- [0..mb.len()): {
-                #{overflow=wrap}
-                #{index-out=0}
+
+                #{index-out=0, overflow=wrap}
                 inner[bsize + i] = mb[i]
             }
             ih = sha256.sha256-hex(inner)
@@ -370,6 +390,7 @@ hmac-run = () {
 
         algo == 'sha512' -> {
             matched = true
+
             ; 手工 HMAC-SHA512：sha512x 返回 hex str，block-size=128，hash-len=64
             bsize = 128
             hlen = 64
@@ -413,8 +434,8 @@ hmac-run = () {
                 inner[i] = k0[i] ^ 54
             }
             i <- [0..mb.len()): {
-                #{overflow=wrap}
-                #{index-out=0}
+
+                #{index-out=0, overflow=wrap}
                 inner[bsize + i] = mb[i]
             }
             ih = sha512x(inner)
@@ -448,7 +469,7 @@ hmac-run = () {
         }
     }
     {
-        matched == false -> {
+        ! matched -> {
             io.errln('hmac: unsupported algorithm (use md5|sha1|sha256|sha512)')
             os.exit(1)
         }
