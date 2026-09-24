@@ -24,7 +24,7 @@
 ; git-dir str, name str (e.g. "refs/heads/main")
 ; returns content str, ok bool
 read-loose-ref = (git-dir str, name str) (content str, ok bool) {
-    sl str = '/'
+    sl = '/'
     p = git-dir - sl - name
     content, ok = util.read-file-str(p)
 }
@@ -45,7 +45,7 @@ read-ref = (git-dir str, name str) (o oid, ok bool) {
     loose-ok bool
     content, loose-ok = read-loose-ref(git-dir, name)
     {
-        loose-ok == true -> {
+        loose-ok -> {
             content = util.trim-newline(content)
 
             ; check if symbolic: "ref: <target>"
@@ -77,7 +77,7 @@ read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
     content str
     loose-ok bool
     content, loose-ok = read-loose-ref(git-dir, name)
-    loose-ok == false -> return
+    ! loose-ok -> return
     content = util.trim-newline(content)
     {
         content.starts-with('ref: ') -> {
@@ -92,7 +92,7 @@ read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
 ; git-dir str, name str (e.g. "refs/heads/main"), o oid
 write-ref = (git-dir str, name str, o oid) (ok bool) {
     ok = false
-    sl str = '/'
+    sl = '/'
     p = git-dir - sl - name
 
     ; ensure parent dir exists (recursive, like mkdir -p)
@@ -110,6 +110,7 @@ write-ref = (git-dir str, name str, o oid) (ok bool) {
         }
     }
     hx = oid.oid-hex-str(o)
+
     #{overflow=wrap}
     content = hx - '\n'
     util.write-file-simple(p, content)
@@ -120,8 +121,9 @@ write-ref = (git-dir str, name str, o oid) (ok bool) {
 ; git-dir str, name str (e.g. "HEAD"), target str (e.g. "refs/heads/main")
 write-symbolic-ref = (git-dir str, name str, target str) (ok bool) {
     ok = false
-    sl str = '/'
+    sl = '/'
     p = git-dir - sl - name
+
     #{overflow=wrap}
     content = 'ref: ' - target - '\n'
     util.write-file-simple(p, content)
@@ -139,6 +141,7 @@ update-head = (git-dir str, branch str) (ok bool) {
 set-head-detached = (git-dir str, o oid) (ok bool) {
     p = git-dir - '/HEAD'
     hx = oid.oid-hex-str(o)
+
     #{overflow=wrap}
     content = hx - '\n'
     util.write-file-simple(p, content)
@@ -156,7 +159,7 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
     sym-ok bool
     target, sym-ok = read-symbolic-ref(git-dir, 'HEAD')
     {
-        sym-ok == true -> {
+        sym-ok -> {
             target.starts-with('refs/heads/') -> {
                 branch = util.str-range(target, 11, target.len())
                 detached = false
@@ -171,7 +174,7 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
     ref-ok bool
     o, ref-ok = read-ref(git-dir, 'HEAD')
     {
-        ref-ok == true -> {
+        ref-ok -> {
             branch = ''
             detached = true
             ok = true
@@ -188,14 +191,15 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
 ; returns ok bool (false if already exists)
 create-branch = (git-dir str, name str, o oid) (ok bool) {
     ref-name = 'refs/heads/' - name
-    sl str = '/'
+    sl = '/'
+
     #{overflow=wrap}
     p = git-dir - sl - ref-name
 
     ; check if already exists
     exists = fs.is-file(p)
     {
-        exists == true -> return
+        exists -> return
     }
     ok = write-ref(git-dir, ref-name, o)
 }
@@ -205,7 +209,8 @@ create-branch = (git-dir str, name str, o oid) (ok bool) {
 ; returns ok bool
 delete-branch = (git-dir str, name str) (ok bool) {
     ref-name = 'refs/heads/' - name
-    sl str = '/'
+    sl = '/'
+
     #{overflow=wrap}
     p = git-dir - sl - ref-name
     ok = fs.remove(p)
@@ -220,34 +225,36 @@ list-branches = (git-dir str) (names str, count i64) {
     heads-dir = git-dir - '/refs/heads'
     isd = fs.is-dir(heads-dir)
     {
-        isd == false -> return
+        ! isd -> return
     }
     dirp = fs.open-dir(heads-dir)
     {
         dirp == 0 -> return
     }
     br-entry str
-    br-ok bool = true
-    {
-        br-ok == false -> break
+    br-ok = true
+    !! {
+        ! br-ok -> break
         br-entry, br-ok = fs.read-dir(dirp)
         {
-            br-ok == true -> {
+            br-ok -> {
 
                 ; skip . and .. entries
                 is-dot = util.str-eq(br-entry, '.')
                 is-dotdot = util.str-eq(br-entry, '..')
-                is-dot == false && is-dotdot == false -> {
+                ! is-dot && ! is-dotdot -> {
                     br-entry.len() > 0 -> {
+
                         #{overflow=wrap}
                         names = names - br-entry - '\n'
+
                         #{overflow=wrap}
                         count = count + 1
                     }
                 }
             }
         }
-    } (true)
+    }
     fs.close-dir(dirp)
 }
 
@@ -260,12 +267,13 @@ list-branches = (git-dir str) (names str, count i64) {
 ; returns ok bool (false if already exists)
 create-tag = (git-dir str, name str, o oid) (ok bool) {
     ref-name = 'refs/tags/' - name
-    sl str = '/'
+    sl = '/'
+
     #{overflow=wrap}
     p = git-dir - sl - ref-name
     exists = fs.is-file(p)
     {
-        exists == true -> return
+        exists -> return
     }
     ok = write-ref(git-dir, ref-name, o)
 }
@@ -275,7 +283,8 @@ create-tag = (git-dir str, name str, o oid) (ok bool) {
 ; returns ok bool
 delete-tag = (git-dir str, name str) (ok bool) {
     ref-name = 'refs/tags/' - name
-    sl str = '/'
+    sl = '/'
+
     #{overflow=wrap}
     p = git-dir - sl - ref-name
     ok = fs.remove(p)
@@ -290,34 +299,36 @@ list-tags = (git-dir str) (names str, count i64) {
     tags-dir = git-dir - '/refs/tags'
     isd = fs.is-dir(tags-dir)
     {
-        isd == false -> return
+        ! isd -> return
     }
     dirp = fs.open-dir(tags-dir)
     {
         dirp == 0 -> return
     }
     tg-entry str
-    tg-ok bool = true
-    {
-        tg-ok == false -> break
+    tg-ok = true
+    !! {
+        ! tg-ok -> break
         tg-entry, tg-ok = fs.read-dir(dirp)
         {
-            tg-ok == true -> {
+            tg-ok -> {
 
                 ; skip . and .. entries
                 is-dot = util.str-eq(tg-entry, '.')
                 is-dotdot = util.str-eq(tg-entry, '..')
-                is-dot == false && is-dotdot == false -> {
+                ! is-dot && ! is-dotdot -> {
                     tg-entry.len() > 0 -> {
+
                         #{overflow=wrap}
                         names = names - tg-entry - '\n'
+
                         #{overflow=wrap}
                         count = count + 1
                     }
                 }
             }
         }
-    } (true)
+    }
     fs.close-dir(dirp)
 }
 
@@ -341,11 +352,11 @@ read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
     content str
     packed-ok bool
     content, packed-ok = read-packed-refs-file(git-dir)
-    packed-ok == false -> return
+    ! packed-ok -> return
 
     ; scan lines: "<40-hex> <refname>"
     pos = 0
-    {
+    !! {
         pos >= content.len() -> break
         nl = util.find-byte-str(content, 10, pos)
         end = content.len()
@@ -368,16 +379,17 @@ read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
                         sp = util.find-byte-str(line, 32, 0)
                         sp >= 0 -> {
                             hx = util.str-range(line, 0, sp)
+
                             #{overflow=wrap}
                             refname = util.str-range(line, sp + 1, line.len())
                             refname = util.trim-newline(refname)
 
                             ; compare refname with name
                             same = util.str-eq(refname, name)
-                            same == true -> {
+                            same -> {
                                 hx.len() >= 40 -> {
                                     o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
-                                    ok == true -> break
+                                    ok -> break
                                 }
                             }
                         }
@@ -389,7 +401,7 @@ read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
         #{overflow=wrap}
         pos = nl + 1
         nl < 0 -> break
-    } (true)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -424,8 +436,9 @@ write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, em
     old-hex = oid.oid-hex-str(old-oid)
     new-hex = oid.oid-hex-str(new-oid)
     ts = util.i64-to-str(time)
-    tab str = '\t'
-    nl str = '\n'
+    tab = '\t'
+    nl = '\n'
+
     #{overflow=wrap}
     log-entry = old-hex - ' ' - new-hex - ' ' - name - ' <' - email - '> ' - ts - ' ' - tz - tab - message - nl
 

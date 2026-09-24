@@ -56,16 +56,18 @@ type-to-name = (t i64) (name str) {
 read-varint-le = (data str, pos i64) (value i64, new-pos i64) {
     value = 0
     shift = 0
-    {
+    !! {
         pos >= data.len-bytes() -> break
         b = data[pos] & 0xff
         value = value | ((b & 0x7f) << shift)
+
         #{overflow=wrap}
         pos = pos + 1
+
         #{overflow=wrap}
         shift = shift + 7
         (b & 0x80) == 0 -> break
-    } (true)
+    }
     new-pos = pos
 }
 
@@ -79,6 +81,7 @@ apply-delta = (base str, delta str) (result str, ok bool) {
 
     ; read source size (varint)
     src-size, pos = read-varint-le(delta, 0)
+
     ; read target size (varint)
     tgt-size, pos = read-varint-le(delta, pos)
 
@@ -86,49 +89,58 @@ apply-delta = (base str, delta str) (result str, ok bool) {
     src-size != base.len-bytes() -> return
 
     ; process delta instructions
-    {
+    !! {
         pos >= delta.len-bytes() -> break
         op = delta[pos] & 0xff
+
         #{overflow=wrap}
         pos = pos + 1
 
         ; high bit set = copy from base
         (op & 0x80) != 0 -> {
+
             ; copy instruction: read variable offset and size
             copy-off i64 = 0
             copy-sz i64 = 0
             (op & 0x01) != 0 -> {
                 copy-off = copy-off | ((delta[pos] & 0xff))
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x02) != 0 -> {
                 copy-off = copy-off | ((delta[pos] & 0xff) << 8)
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x04) != 0 -> {
                 copy-off = copy-off | ((delta[pos] & 0xff) << 16)
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x08) != 0 -> {
                 copy-off = copy-off | ((delta[pos] & 0xff) << 24)
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x10) != 0 -> {
                 copy-sz = copy-sz | ((delta[pos] & 0xff))
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x20) != 0 -> {
                 copy-sz = copy-sz | ((delta[pos] & 0xff) << 8)
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
             (op & 0x40) != 0 -> {
                 copy-sz = copy-sz | ((delta[pos] & 0xff) << 16)
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
@@ -138,17 +150,20 @@ apply-delta = (base str, delta str) (result str, ok bool) {
 
             ; copy bytes from base
             i <- [0..copy-sz): {
+
                 #{overflow=wrap}
                 copy-off + i >= base.len-bytes() -> break
                 cs str = with-len(1)
+
                 #{overflow=wrap}
                 cs[0] = base[copy-off + i]
                 result = result - cs
             }
         }
 
-        ; high bit clear = insert literal data (1-127 bytes)
         -> {
+
+            ; high bit clear = insert literal data (1-127 bytes)
             ins-len = op & 0x7f
             ins-len == 0 -> return
             i <- [0..ins-len): {
@@ -156,11 +171,12 @@ apply-delta = (base str, delta str) (result str, ok bool) {
                 cs str = with-len(1)
                 cs[0] = delta[pos]
                 result = result - cs
+
                 #{overflow=wrap}
                 pos = pos + 1
             }
         }
-    } (true)
+    }
     ok = true
 }
 
@@ -210,18 +226,21 @@ read-pack-object-header = (data str, pos i64) (type i64, size i64, new-pos i64, 
     type = (b >> 4) & 7
     size = b & 15
     shift = 4
+
     #{overflow=wrap}
     pos = pos + 1
-    {
+    !! {
         (b & 0x80) == 0 -> break
         pos >= data.len-bytes() -> return
         b = data[pos] & 0xff
         size = size | ((b & 0x7f) << shift)
+
         #{overflow=wrap}
         shift = shift + 7
+
         #{overflow=wrap}
         pos = pos + 1
-    } (true)
+    }
     new-pos = pos
     ok = true
 }
@@ -234,16 +253,18 @@ read-ofs-delta-base = (data str, pos i64) (offset i64, new-pos i64, ok bool) {
     pos >= data.len-bytes() -> return
     b = data[pos] & 0xff
     offset = b & 0x7f
+
     #{overflow=wrap}
     pos = pos + 1
-    {
+    !! {
         (b & 0x80) == 0 -> break
         pos >= data.len-bytes() -> return
         b = data[pos] & 0xff
         offset = ((offset + 1) << 7) | (b & 0x7f)
+
         #{overflow=wrap}
         pos = pos + 1
-    } (true)
+    }
     new-pos = pos
     ok = true
 }
@@ -262,16 +283,16 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
     ok = false
     pack-dir = git-dir - '/objects/pack'
     isd = fs.is-dir(pack-dir)
-    isd == false -> return
+    ! isd -> return
 
     ; list .pack files
     dirp = fs.open-dir(pack-dir)
     dirp == 0 -> return
     pk-ok = true
-    {
-        pk-ok == false -> break
+    !! {
+        ! pk-ok -> break
         fname, pk-ok = fs.read-dir(dirp)
-        pk-ok == true -> {
+        pk-ok -> {
             fname.len() > 5 -> {
 
                 ; check if ends with ".pack"
@@ -279,15 +300,20 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                 ext-start = fname.len() - 5
                 is-pack = true
                 fname[ext-start] != 46 -> is-pack = false; .
+
                 #{overflow=wrap}
                 fname[ext-start + 1] != 112 -> is-pack = false; p
+
                 #{overflow=wrap}
                 fname[ext-start + 2] != 97 -> is-pack = false; a
+
                 #{overflow=wrap}
                 fname[ext-start + 3] != 99 -> is-pack = false; c
+
                 #{overflow=wrap}
                 fname[ext-start + 4] != 107 -> is-pack = false; k
-                is-pack == true -> {
+                is-pack -> {
+
                     #{overflow=wrap}
                     pp = pack-dir - '/' - fname
 
@@ -295,9 +321,9 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                     #{overflow=wrap}
                     idx-path = util.str-range(pp, 0, pp.len-bytes() - 5) - '.idx'
                     idx-ok = fs.is-file(idx-path)
-                    idx-ok == true -> {
+                    idx-ok -> {
                         offset, found = find-in-idx(idx-path, o)
-                        found == true -> {
+                        found -> {
                             pack-path = pp
                             ok = true
                             break
@@ -305,9 +331,9 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                     }
 
                     ; fallback: scan pack directly
-                    idx-ok == false -> {
+                    ! idx-ok -> {
                         offset, found = scan-pack-for-oid(pp, o)
-                        found == true -> {
+                        found -> {
                             pack-path = pp
                             ok = true
                             break
@@ -316,7 +342,7 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                 }
             }
         }
-    } (true)
+    }
     fs.close-dir(dirp)
 }
 
@@ -329,7 +355,7 @@ find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
     idx str
     read-ok bool
     idx, read-ok = util.read-file-str(idx-path)
-    read-ok == false -> return
+    ! read-ok -> return
     idx.len() < 8 -> return
 
     ; verify magic: \xff t O c
@@ -339,13 +365,13 @@ find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
     idx[3] != 0x63 -> return
 
     ; version (must be 2)
-    ver i64 = read-u32-be-local-idx(idx, 4)
+    ver = read-u32-be-local-idx(idx, 4)
     ver != 2 -> return
 
     ; fanout table at offset 8, 256 entries of 4 bytes each
     ; fanout[255] = total object count
     #{overflow=wrap}
-    obj-count i64 = read-u32-be-local-idx(idx, 8 + 255 * 4)
+    obj-count = read-u32-be-local-idx(idx, 8 + 255 * 4)
     obj-count == 0 -> return
 
     ; oid table starts at offset 8 + 256*4 = 1032
@@ -358,19 +384,23 @@ find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
         target-bytes[k] = target.id[k]
     }
 
-    lo i64 = 0
+    lo = 0
+
     #{overflow=wrap}
-    hi i64 = obj-count - 1
-    found-idx i64 = -1
-    {
+    hi = obj-count - 1
+    found-idx = -1
+    !! {
         lo > hi -> break
+
         #{overflow=wrap}
         mid i64 = (lo + hi) / 2
+
         ; compare target with oid at mid
         #{overflow=wrap}
         oid-start = oid-table-start + mid * 20
         cmp i64 = 0
         j <- [0..20): {
+
             #{overflow=wrap}
             a = idx[oid-start + j] & 0xff
             b = target.id[j] & 0xff
@@ -387,11 +417,13 @@ find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
             found-idx = mid
             break
         }
+
         #{overflow=wrap}
         cmp < 0 -> lo = mid + 1
+
         #{overflow=wrap}
         cmp > 0 -> hi = mid - 1
-    } (true)
+    }
 
     found-idx < 0 -> return
 
@@ -399,18 +431,22 @@ find-in-idx = (idx-path str, target oid) (offset i64, ok bool) {
     ; layout: oid-table (obj-count * 20) + crc-table (obj-count * 4) + offset-table (obj-count * 4)
     #{overflow=wrap}
     offset-table-start = oid-table-start + obj-count * 20 + obj-count * 4
+
     #{overflow=wrap}
-    off-raw i64 = read-u32-be-local-idx(idx, offset-table-start + found-idx * 4)
+    off-raw = read-u32-be-local-idx(idx, offset-table-start + found-idx * 4)
 
     ; if high bit is set, it's an index into the large-offset table
     (off-raw & 0x80000000) != 0 -> {
         large-idx = off-raw & 0x7fffffff
+
         #{overflow=wrap}
         large-table-start = offset-table-start + obj-count * 4
+
         ; large offsets are 8 bytes each
         #{overflow=wrap}
         offset = read-u64-be-local-idx(idx, large-table-start + large-idx * 8)
     }
+
     -> {
         offset = off-raw
     }
@@ -447,34 +483,34 @@ read-u64-be-local-idx = (s str, pos i64) (v i64) {
 scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
     ok = false
     data, read-ok = util.read-file-str(pack-path)
-    read-ok == false -> return
+    ! read-ok -> return
     ver, count, hdr-ok = read-pack-header(data)
-    hdr-ok == false -> return
+    ! hdr-ok -> return
 
     ; Bug 18 warmup for zlib
-warmup-data str = with-len(11)
-warmup-data[0] = 0x78
-warmup-data[1] = 0x9c
-warmup-data[2] = 0x01
-warmup-data[3] = 0x00
-warmup-data[4] = 0x00
-warmup-data[5] = 0xff
-warmup-data[6] = 0xff
-warmup-data[7] = 0x00
-warmup-data[8] = 0x01
-warmup-data[9] = 0x00
-warmup-data[10] = 0x01
+    warmup-data str = with-len(11)
+    warmup-data[0] = 0x78
+    warmup-data[1] = 0x9c
+    warmup-data[2] = 0x01
+    warmup-data[3] = 0x00
+    warmup-data[4] = 0x00
+    warmup-data[5] = 0xff
+    warmup-data[6] = 0xff
+    warmup-data[7] = 0x00
+    warmup-data[8] = 0x01
+    warmup-data[9] = 0x00
+    warmup-data[10] = 0x01
     _w-out str
     _w-ok bool
     _w-out, _w-ok = zlib.zlib-decompress(warmup-data)
 
     ; walk all objects
-    pos i64 = 12
+    pos = 12
     i <- [0..count): {
         pos >= data.len() -> break
         obj-start = pos
         type, size, new-pos, ohdr-ok = read-pack-object-header(data, pos)
-        ohdr-ok == false -> break
+        ! ohdr-ok -> break
         pos = new-pos
 
         ; handle delta types — read base reference
@@ -482,20 +518,25 @@ warmup-data[10] = 0x01
         delta-base-offset i64 = -1
         {
             type == 6 -> {
+
                 ; OBJ_OFS_DELTA
                 ofs, np, dok = read-ofs-delta-base(data, pos)
-                dok == false -> break
+                ! dok -> break
                 pos = np
+
                 #{overflow=wrap}
                 delta-base-offset = obj-start - ofs
             }
 
             type == 7 -> {
+
                 ; OBJ_REF_DELTA — 20 bytes base oid
                 k <- [0..20): {
+
                     #{overflow=wrap}
                     delta-base-oid.id[k] = data[pos + k]
                 }
+
                 #{overflow=wrap}
                 pos = pos + 20
             }
@@ -506,8 +547,9 @@ warmup-data[10] = 0x01
         decompressed, decomp-ok = zlib.zlib-decompress(util.str-range(data, comp-start, data.len()))
 
         ; for direct objects (non-delta), hash and compare
-        decomp-ok == true -> {
+        decomp-ok -> {
             type < 5 -> {
+
                 ; direct object — hash and compare
                 type-name = ''
                 type == 1 -> type-name = 'commit'
@@ -527,27 +569,33 @@ warmup-data[10] = 0x01
                     s != 0 -> {
                         digs = ''
                         x = s
-                        {
+                        !! {
                             r = x % 10
                             cs str = with-len(1)
+
                             #{overflow=wrap}
                             cs[0] = 48 + r
+
                             #{overflow=wrap}
                             digs = cs - digs
+
                             #{overflow=wrap}
                             x = x / 10
                             x == 0 -> break
-                        } (true)
+                        }
                         sz-str = digs
                     }
+
                     #{overflow=wrap}
                     hdr = hdr - sz-str - '\0'
+
                     #{overflow=wrap}
                     full str = with-len(hdr.len-bytes() + decompressed.len())
                     j <- [0..hdr.len-bytes()): {
                         full[j] = hdr[j]
                     }
                     j <- [0..decompressed.len()): {
+
                         #{overflow=wrap}
                         full[hdr.len-bytes() + j] = decompressed[j]
                     }
@@ -562,7 +610,7 @@ warmup-data[10] = 0x01
                             break
                         }
                     }
-                    same == true -> {
+                    same -> {
                         offset = obj-start
                         ok = true
                         break
@@ -579,14 +627,17 @@ warmup-data[10] = 0x01
         consumed i64 = 0
         consumed = zlib.zlib-consumed-binary-search(data, comp-start)
         consumed == 0 -> {
+
             ; fallback: try stored-block scan
             sub str = util.str-range(data, comp-start, data.len())
             consumed = zlib.zlib-consumed-stored(sub)
         }
         consumed == 0 -> {
+
             ; could not determine compressed size — stop scanning
             break
         }
+
         #{overflow=wrap}
         pos = comp-start + consumed
     }
@@ -606,25 +657,25 @@ warmup-data[10] = 0x01
 read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
     ok = false
     pack-path, offset, found-ok = find-pack-object(git-dir, o)
-    found-ok == false -> return
+    ! found-ok -> return
 
     ; read pack data
     pack-data, read-ok = util.read-file-str(pack-path)
-    read-ok == false -> return
+    ! read-ok -> return
 
     ; Bug 18 warmup for zlib
-warmup-data str = with-len(11)
-warmup-data[0] = 0x78
-warmup-data[1] = 0x9c
-warmup-data[2] = 0x01
-warmup-data[3] = 0x00
-warmup-data[4] = 0x00
-warmup-data[5] = 0xff
-warmup-data[6] = 0xff
-warmup-data[7] = 0x00
-warmup-data[8] = 0x01
-warmup-data[9] = 0x00
-warmup-data[10] = 0x01
+    warmup-data str = with-len(11)
+    warmup-data[0] = 0x78
+    warmup-data[1] = 0x9c
+    warmup-data[2] = 0x01
+    warmup-data[3] = 0x00
+    warmup-data[4] = 0x00
+    warmup-data[5] = 0xff
+    warmup-data[6] = 0xff
+    warmup-data[7] = 0x00
+    warmup-data[8] = 0x01
+    warmup-data[9] = 0x00
+    warmup-data[10] = 0x01
     _w-out str
     _w-ok bool
     _w-out, _w-ok = zlib.zlib-decompress(warmup-data)
@@ -641,29 +692,31 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
 
     ; read object header at offset
     type, size, new-pos, hdr-ok = read-pack-object-header(pack-data, offset)
-    hdr-ok == false -> return
+    ! hdr-ok -> return
     pos = new-pos
 
     ; handle delta types
     {
         type == 6 -> {
+
             ; OBJ_OFS_DELTA — read negative offset to base
             ofs, np, dok = read-ofs-delta-base(pack-data, pos)
-            dok == false -> return
+            ! dok -> return
+
             #{overflow=wrap}
             base-offset = offset - ofs
 
             ; decompress delta data
             delta-data, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, np, pack-data.len-bytes()))
-            decomp-ok == false -> return
+            ! decomp-ok -> return
 
             ; recursively read base object
             base-kind, base-data, base-ok = read-packed-at-offset(git-dir, pack-data, base-offset)
-            base-ok == false -> return
+            ! base-ok -> return
 
             ; apply delta
             result, apply-ok = apply-delta(base-data, delta-data)
-            apply-ok == false -> return
+            ! apply-ok -> return
 
             kind = base-kind
             data = result
@@ -672,29 +725,32 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
         }
 
         type == 7 -> {
+
             ; OBJ_REF_DELTA — 20 bytes base oid
             base-oid oid
             k <- [0..20): {
+
                 #{overflow=wrap}
                 base-oid.id[k] = pack-data[pos + k]
             }
+
             #{overflow=wrap}
             pos = pos + 20
 
             ; decompress delta data
             delta-data, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
-            decomp-ok == false -> return
+            ! decomp-ok -> return
 
             ; read base object (try loose first, then pack)
             base-kind, base-data, base-ok = object.read-loose(git-dir, base-oid)
-            base-ok == false -> {
+            ! base-ok -> {
                 base-kind, base-data, base-ok = read-packed-object(git-dir, base-oid)
             }
-            base-ok == false -> return
+            ! base-ok -> return
 
             ; apply delta
             result, apply-ok = apply-delta(base-data, delta-data)
-            apply-ok == false -> return
+            ! apply-ok -> return
 
             kind = base-kind
             data = result
@@ -706,7 +762,7 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
     ; direct object — decompress
     decompressed, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
     {
-        decomp-ok == false -> return
+        ! decomp-ok -> return
 
         ; map type to kind
         type == 1 -> kind = 'commit'

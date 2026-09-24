@@ -22,7 +22,7 @@ byte-to-str = (b byte) (s str) {
 ; data str: input bytes (each codepoint 0-255)
 ; returns sum i64: checksum (masked to 32 bits)
 adler32 = (data str) (sum i64) {
-    mod i64 = 65521
+    mod = 65521
     a = 1
     b = 0
     i <- [0..data.len-bytes()): {
@@ -43,14 +43,16 @@ adler32 = (data str) (sum i64) {
 ;   - One or more stored blocks (BFINAL + BTYPE + LEN + NLEN + data)
 ;   - 4-byte big-endian Adler-32 checksum
 zlib-compress = (data str) (out str) {
+
     ; zlib header: CMF=0x78 (CM=8, CINFO=7), FLG=0x9c (FCHECK, no dict)
     out = '\x78\x9c'
 
     ; data is split into stored blocks of max 65535 bytes each
-    pos i64 = 0
+    pos = 0
     rem i64 = data.len-bytes()
-    {
+    !! {
         rem <= 0 -> {
+
             ; empty data — single empty stored block (BFINAL=1)
             out = out - '\x01\x00\x00\xff\xff'
             break
@@ -63,7 +65,7 @@ zlib-compress = (data str) (out str) {
         ; block header byte: BFINAL = (rem <= 65535 ? 1 : 0), BTYPE = 00
         bfinal byte = 0
         rem <= 65535 -> bfinal = 1
-        hdr byte = bfinal | 0  ; BTYPE=00 (stored)
+        hdr byte = bfinal | 0; BTYPE=00 (stored)
         hs str = with-len(1)
         hs[0] = hdr
         out = out - hs
@@ -87,6 +89,7 @@ zlib-compress = (data str) (out str) {
         ; write data bytes
         i <- [0..blen): {
             bs str = with-len(1)
+
             #{overflow=wrap}
             bs[0] = data.byte(pos + i)
             out = out - bs
@@ -94,13 +97,14 @@ zlib-compress = (data str) (out str) {
 
         #{overflow=wrap}
         pos = pos + blen
+
         #{overflow=wrap}
         rem = rem - blen
         rem <= 0 -> break
-    } (true)
+    }
 
     ; Adler-32 checksum (big-endian 4 bytes)
-    adler i64 = adler32(data)
+    adler = adler32(data)
     a0 byte = (adler >> 24) & 0xff
     a1 byte = (adler >> 16) & 0xff
     a2 byte = (adler >> 8) & 0xff
@@ -127,7 +131,7 @@ zlib-decompress = (data str) (out str, ok bool) {
 
     ; Try manual stored-block decompression first (handles our own output)
     out, ok = zlib-decompress-stored(data)
-    ok == true -> return
+    ok -> return
 
     ; Check if this is a zlib stream (starts with 0x78)
     ; gzip.gzip-decompress expects gzip format (0x1f 0x8b), not zlib (0x78 0x9c).
@@ -135,23 +139,27 @@ zlib-decompress = (data str) (out str, ok bool) {
     ; on the raw DEFLATE data. We estimate the output size as 100x the input
     ; (generous upper bound for typical git objects).
     data.byte(0) == 0x78 -> {
+
         ; zlib format — skip 2-byte header, decompress raw DEFLATE
         #{overflow=wrap}
         deflate-data []byte = with-len(data.len-bytes() - 2)
         i <- [0..data.len-bytes() - 2): {
+
             #{overflow=wrap}
             deflate-data[i] = data.byte(i + 2)
         }
+
         ; Estimate output size: 100x input (capped to avoid OOM)
         #{overflow=wrap}
         est-out i64 = data.len-bytes() * 100
-        est-out > 1048576 -> est-out = 1048576 ; cap at 1MB
-        est-out < 64 -> est-out = 64 ; minimum
+        est-out > 1048576 -> est-out = 1048576; cap at 1MB
+        est-out < 64 -> est-out = 64; minimum
         decomp-bytes []byte = gzip.inflate-decompress(deflate-data, est-out)
         decomp-bytes.len() == 0 -> {
             ok = true
             return
         }
+
         ; Manual []byte to str conversion to ensure correct byte values
         out str = with-len(decomp-bytes.len())
         i <- [0..decomp-bytes.len()): {
@@ -165,6 +173,7 @@ zlib-decompress = (data str) (out str, ok bool) {
     data-bytes []byte = data.to-bytes()
     decomp-bytes []byte = gzip.gzip-decompress(data-bytes)
     decomp-bytes.len() == 0 -> {
+
         ; decompression returned empty — could be legitimate empty data
         ; or a failure. Check if the input looks like a valid zlib stream.
         ; A valid zlib stream starts with 0x78 (CMF byte).
@@ -173,6 +182,7 @@ zlib-decompress = (data str) (out str, ok bool) {
         }
         return
     }
+
     ; Manual []byte to str conversion to ensure correct byte values
     out str = with-len(decomp-bytes.len())
     i <- [0..decomp-bytes.len()): {
@@ -192,7 +202,7 @@ zlib-decompress-stored = (data str) (out str, ok bool) {
 
     ; single pass: extract payload bytes from each stored block
     p = 2
-    {
+    !! {
         p >= data.len-bytes() -> break
         bfinal = data.byte(p) & 1
         btype = (data.byte(p) >> 1) & 3
@@ -200,21 +210,25 @@ zlib-decompress-stored = (data str) (out str, ok bool) {
             out = ''
             return
         }
+
         #{overflow=wrap}
         p = p + 1
         len = data.byte(p) | (data.byte(p + 1) << 8)
+
         #{overflow=wrap}
         p = p + 4
 
         ; extract payload byte by byte via byte-to-str
         i <- [0..len): {
+
             #{overflow=wrap}
             out = out - byte-to-str(data.byte(p + i))
         }
+
         #{overflow=wrap}
         p = p + len
         bfinal == 1 -> break
-    } (true)
+    }
     ok = true
 }
 
@@ -228,18 +242,21 @@ zlib-consumed-stored = (data str) (consumed i64) {
 
     ; skip 2-byte zlib header
     p = 2
-    {
+    !! {
         p >= data.len-bytes() -> return
         bfinal = data.byte(p) & 1
         btype = (data.byte(p) >> 1) & 3
         btype != 0 -> return
+
         #{overflow=wrap}
         p = p + 1
         blk-len = (data.byte(p) & 0xff) | ((data.byte(p + 1) & 0xff) << 8)
+
         #{overflow=wrap}
         p = p + 4 + blk-len
         bfinal == 1 -> break
-    } (true)
+    }
+
     ; p now points to the Adler-32 (4 bytes)
     #{overflow=wrap}
     consumed = p + 4
@@ -255,6 +272,7 @@ zlib-consumed-stored = (data str) (consumed i64) {
 ; returns consumed i64: total bytes consumed (0 on error)
 zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     consumed = 0
+
     #{overflow=wrap}
     avail = data.len-bytes() - start
     avail < 6 -> return
@@ -264,7 +282,7 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     decomp str
     ok bool
     decomp, ok = zlib-decompress(sub)
-    ok == false -> return
+    ! ok -> return
 
     ; Binary search for the minimum input length that produces a valid
     ; decompression. We search for the boundary where shorter input fails.
@@ -272,7 +290,7 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     ; scan as the primary method (safe for any input) and only fall
     ; back to binary search if stored scan fails.
     sub-full str = util.str-range(data, start, data.len-bytes())
-    stored-len i64 = 0
+    stored-len = 0
     stored-len = zlib-consumed-stored(sub-full)
     stored-len > 0 -> {
         consumed = stored-len
@@ -283,28 +301,32 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     ; as a safe probe. We try decreasing lengths until decompression fails.
     ; Start from full available data (which we know works) and find the
     ; minimum working length.
-    lo i64 = 6
+    lo = 6
     hi i64 = avail
 
-    {
+    !! {
         lo >= hi -> break
+
         #{overflow=wrap}
         mid i64 = (lo + hi) / 2
+
         ; Check if mid bytes is enough by trying stored-block scan first
         #{overflow=wrap}
         sub2 str = util.str-range(data, start, start + mid)
         s2 i64 = 0
         s2 = zlib-consumed-stored(sub2)
         s2 > 0 -> {
+
             ; stored block — we know the exact consumed length
             consumed = s2
             return
         }
+
         ; For compressed blocks, we can't safely try decompression on
         ; truncated data (gzip module may crash). So we use the full
         ; decompression result and try to find the boundary by checking
         ; if the data at start+mid looks like a valid next object header.
-        ; 
+        ;
         ; Heuristic: the byte after the zlib stream should be a valid
         ; pack object header byte (type 1-7 in upper nibble, with
         ; continuation bit possibly set). We scan for the first byte
@@ -320,7 +342,7 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
         ; the approach: try stored-block scan, and if that fails, fall
         ; back to a linear scan for valid object headers.
         hi = mid
-    } (true)
+    }
 
     consumed = hi
 }
