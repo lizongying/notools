@@ -36,7 +36,7 @@ install = (cfg config, dir str) (ok bool) {
 
     ; resolve all dependencies
     graph, resolve-ok = resolver.resolve-project(cfg, dir)
-    resolve-ok == false -> {
+    ! resolve-ok -> {
         print('error: failed to resolve dependencies')
         return
     }
@@ -56,22 +56,22 @@ install = (cfg config, dir str) (ok bool) {
     virtual-store = nm-dir - '/.nonpm'
 
     ; ensure directories exist
-    p = path{
-        p: store-dir,
+    p = path {
+        p: store-dir
     }
     p.make-dir()
-    vp = path{
-        p: virtual-store,
+    vp = path {
+        p: virtual-store
     }
     vp.make-dir()
-    nmp = path{
-        p: nm-dir,
+    nmp = path {
+        p: nm-dir
     }
     nmp.make-dir()
 
     ; check if lockfile exists and is valid
     lock-ok = lockfile.check-valid(cfg, dir, graph)
-    lock-ok == true -> {
+    lock-ok -> {
         print('noNpm: lockfile is up to date')
     }
 
@@ -81,12 +81,13 @@ install = (cfg config, dir str) (ok bool) {
         node = graph.nodes[i]
         #{overflow=wrap}
         print('  ' - node.name - '@' - node.version)
+
         ; download and extract to virtual store
         pkg-store-path = linker.package-dir(virtual-store, node.name, node.version)
         pkg-exists = fs.is-dir(pkg-store-path)
-        pkg-exists == false -> {
+        ! pkg-exists -> {
             dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path)
-            dl-ok == false -> {
+            ! dl-ok -> {
                 #{overflow=wrap}
                 print('error: failed to download ' - node.name)
                 ok = false
@@ -98,6 +99,7 @@ install = (cfg config, dir str) (ok bool) {
     ; create symlinks
     i <- [0..n): {
         node = graph.nodes[i]
+
         ; link to top-level node_modules
         linker.link-package(virtual-store, node.name, node.version, nm-dir)
 
@@ -115,8 +117,12 @@ install = (cfg config, dir str) (ok bool) {
                     linker.link-deps(virtual-store, node.name, node.version, deps)
                 }
             }
-            nil -> {}
-            err -> {}
+
+            nil -> {
+            }
+
+            err -> {
+            }
         }
     }
 
@@ -143,7 +149,7 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
 
     ; resolve version
     ver, resolve-ok = resolver.resolve-pkg(cfg, name, range-str)
-    resolve-ok == false -> {
+    ! resolve-ok -> {
         #{overflow=wrap}
         print('error: could not resolve ' - name - '@' - range-str)
         return
@@ -154,7 +160,7 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
     vmeta: {
         ok -> {
             url, integrity, dist-ok = registry.get-dist-info(it)
-            dist-ok == false -> {
+            ! dist-ok -> {
                 print('error: could not get dist info for ' - name)
                 return
             }
@@ -163,23 +169,23 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
             nm-dir = dir - '/node_modules'
             #{overflow=wrap}
             virtual-store = nm-dir - '/.nonpm'
-            p = path{
-                p: nm-dir,
+            p = path {
+                p: nm-dir
             }
             p.make-dir()
-            vp = path{
-                p: virtual-store,
+            vp = path {
+                p: virtual-store
             }
             vp.make-dir()
 
             ; download and extract
             pkg-store-path = linker.package-dir(virtual-store, name, ver)
             pkg-exists = fs.is-dir(pkg-store-path)
-            pkg-exists == false -> {
+            ! pkg-exists -> {
                 #{overflow=wrap}
                 print('noNpm: downloading ' - name - '@' - ver - '...')
                 dl-ok = tarball.download-and-extract(url, pkg-store-path)
-                dl-ok == false -> {
+                ! dl-ok -> {
                     print('error: failed to download ' - name)
                     return
                 }
@@ -203,10 +209,12 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
             print('noNpm: installed ' - name - '@' - ver)
             ok = true
         }
+
         nil -> {
             #{overflow=wrap}
             print('error: package ' - name - '@' - ver - ' not found')
         }
+
         err -> {
             #{overflow=wrap}
             print('error: ' - it)
@@ -226,9 +234,10 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
 
 add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
     ok = false
+
     ; resolve version
     ver, resolve-ok = resolver.resolve-pkg(cfg, name, range-str)
-    resolve-ok == false -> {
+    ! resolve-ok -> {
         #{overflow=wrap}
         print('error: could not resolve ' - name - '@' - range-str)
         return
@@ -236,52 +245,65 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
 
     ; install the package
     install-ok = install-pkg(cfg, name, range-str, dir)
-    install-ok == false -> return
+    ! install-ok -> return
 
     ; update package.json
     pkg-path = dir - '/package.json'
-    p = path{
-        p: pkg-path,
+    p = path {
+        p: pkg-path
     }
     p.exists() -> {
         result = fs.read-str(pkg-path)
         result: {
             ok -> content = it
+
             nil -> content = ''
+
             err -> content = ''
         }
         v = json.parse(content)
         v: {
             ok -> {
+
                 ; determine save version
                 save-ver = range-str
                 range-str == '' -> {
+
                     #{overflow=wrap}
                     save-ver = cfg.save-prefix - ver
-                    cfg.save-exact == true -> save-ver = ver
+                    cfg.save-exact -> save-ver = ver
                 }
+
                 ; set dependency in package.json
                 dep-key = 'dependencies'
-                dev == true -> dep-key = 'devDependencies'
+                dev -> dep-key = 'devDependencies'
                 dep-obj ?json = it.get(dep-key)
                 dep-obj: {
                     ok -> {
                         it.set-str(name, save-ver)
                         v.set-key(dep-key, it)
                     }
+
                     nil -> {
                         new-deps = pj.create-obj()
                         new-deps.set-str(name, save-ver)
                         v.set-key(dep-key, new-deps)
                     }
-                    err -> {}
+
+                    err -> {
+                    }
                 }
+
                 ; write back
                 out = v.stringify()
                 utils.write-file(pkg-path, out)
             }
-            nil -> {}
-            err -> {}
+
+            nil -> {
+            }
+
+            err -> {
+            }
         }
     }
 
@@ -306,13 +328,15 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
 
 remove-dep = (cfg config, name str, dir str) (ok bool) {
     ok = false
+
     ; remove from package.json using sed
     ; this avoids json pool copy issues with json.get/delete-key
     pkg-path = dir - '/package.json'
-    p = path{
-        p: pkg-path,
+    p = path {
+        p: pkg-path
     }
     p.exists() -> {
+
         ; use sed to remove the dependency key from JSON
         ; handles: "name":"value" with optional comma/whitespace
         #{overflow=wrap}
@@ -342,13 +366,14 @@ remove-dep = (cfg config, name str, dir str) (ok bool) {
 prune = (cfg config, dir str) (ok bool) {
     ok = true
     virtual-store = dir - '/node_modules/.nonpm'
-    p = path{
-        p: virtual-store,
+    p = path {
+        p: virtual-store
     }
     p.exists() -> {
+
         ; read lockfile to know which packages should exist
         graph, resolve-ok = resolver.resolve-project(cfg, dir)
-        resolve-ok == true -> {
+        resolve-ok -> {
             ; TODO: scan virtual store and remove packages not in graph
         }
     }

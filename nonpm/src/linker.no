@@ -32,6 +32,7 @@
 ; ═══════════════════════════════════════════════
 
 store-path = (store-dir str, name str, ver str) (path str) {
+
     ; replace / in name (scoped packages like @scope/pkg)
     safe-name = name
     safe-name = utils.replace(safe-name, '/', '+')
@@ -64,8 +65,10 @@ package-dir = (store-dir str, name str, ver str) (path str) {
 link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
     ok = false
     pkg-path = package-dir(store-dir, name, ver)
+
     ; create node_modules if needed
     dest = dest-dir - '/' - name
+
     ; for scoped packages, create @scope/ directory
     name.starts-with('@') -> {
         slash-pos = name.index('/')
@@ -73,23 +76,26 @@ link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
             #{overflow=wrap}
             scope-dir = dest-dir - '/' - name.slice(0, slash-pos)
             fs.is-dir(scope-dir) -> {
-                mk = path{
-                    p: scope-dir,
+                mk = path {
+                    p: scope-dir
                 }
                 mk.make-dir()
             }
+
             #{overflow=wrap}
             pkg-name = name.slice(slash-pos + 1, name.len-bytes())
             #{overflow=wrap}
             dest = scope-dir - '/' - pkg-name
         }
     }
+
     ; remove existing symlink or file
     fs.is-file(dest) -> fs.remove(dest)
     fs.is-dir(dest) -> {
         #{overflow=wrap}
         process.process-system('rm -rf ' - dest)
     }
+
     ; create symlink
     #{overflow=wrap}
     cmd = 'ln -s ' - pkg-path - ' ' - dest
@@ -107,20 +113,22 @@ link-package = (store-dir str, name str, ver str, dest-dir str) (ok bool) {
 ; ═══════════════════════════════════════════════
 
 link-to-node-modules = (store-dir str, name str, ver str, nm-dir str) (ok bool) {
+
     ; ensure node_modules exists
     nm-exists = fs.is-dir(nm-dir)
-    nm-exists == false -> {
-        p = path{
-            p: nm-dir,
+    ! nm-exists -> {
+        p = path {
+            p: nm-dir
         }
         p.make-dir()
     }
+
     ; create .nonpm subdirectory for internal store
     virtual = nm-dir - '/.nonpm'
     v-exists = fs.is-dir(virtual)
-    v-exists == false -> {
-        p = path{
-            p: virtual,
+    ! v-exists -> {
+        p = path {
+            p: virtual
         }
         p.make-dir()
     }
@@ -153,26 +161,35 @@ link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
                         dep-ver.starts-with('^') -> dep-ver = dep-ver.slice(1, dep-ver.len())
                         dep-ver.starts-with('~') -> dep-ver = dep-ver.slice(1, dep-ver.len())
                         dep-ver.starts-with('=') -> dep-ver = dep-ver.slice(1, dep-ver.len())
+
                         ; link into package's node_modules
                         #{overflow=wrap}
                         pkg-nm = package-dir(store-dir, name, ver) - '/node_modules'
                         nm-exists = fs.is-dir(pkg-nm)
-                        nm-exists == false -> {
-                            p = path{
-                                p: pkg-nm,
+                        ! nm-exists -> {
+                            p = path {
+                                p: pkg-nm
                             }
                             p.make-dir()
                         }
                         link-ok = link-package(store-dir, dep-name, dep-ver, pkg-nm)
-                        link-ok == false -> ok = false
+                        ! link-ok -> ok = false
                     }
-                    nil -> {}
-                    err -> {}
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
                 }
             }
         }
-        nil -> {}
-        err -> {}
+
+        nil -> {
+        }
+
+        err -> {
+        }
     }
 }
 
@@ -188,16 +205,19 @@ link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
 create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
     ok = true
     pkg-path = package-dir(store-dir, name, ver)
+
     ; read package.json for bin field
     pkg-json-path = pkg-path - '/package.json'
-    p = path{
-        p: pkg-json-path,
+    p = path {
+        p: pkg-json-path
     }
     p.exists() -> {
         result = fs.read-str(pkg-json-path)
         result: {
             ok -> content = it
+
             nil -> content = ''
+
             err -> content = ''
         }
         v = json.parse(content)
@@ -211,6 +231,7 @@ create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
                             bin-name, str-ok = it.str()
                             link-bin(pkg-path, bin-name, bin-dir, name)
                         }
+
                         it.is-obj() -> {
                             keys = it.obj-keys-str()
                             n = keys.len()
@@ -220,12 +241,20 @@ create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
                             }
                         }
                     }
-                    nil -> {}
-                    err -> {}
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
                 }
             }
-            nil -> {}
-            err -> {}
+
+            nil -> {
+            }
+
+            err -> {
+            }
         }
     }
 }
@@ -239,16 +268,18 @@ create-bin-links = (store-dir str, name str, ver str, bin-dir str) (ok bool) {
 ; ═══════════════════════════════════════════════
 
 link-bin = (pkg-path str, bin-name str, bin-dir str, pkg-name str) {
+
     ; ensure .bin dir exists
     bin-exists = fs.is-dir(bin-dir)
-    bin-exists == false -> {
-        p = path{
-            p: bin-dir,
+    ! bin-exists -> {
+        p = path {
+            p: bin-dir
         }
         p.make-dir()
     }
     target = pkg-path - '/' - bin-name
     link = bin-dir - '/' - bin-name
+
     ; remove existing
     fs.is-file(link) -> fs.remove(link)
     #{overflow=wrap}
@@ -287,13 +318,15 @@ create-node-links = (store-dir str, names str, versions str, nm-dir str) (ok boo
     ver-lines = versions.split('\n')
     n = name-lines.len()
     i <- [0..n): {
+
         #{index-out=0}
         name = name-lines[i]
+
         #{index-out=0}
         ver = ver-lines[i]
         name.len() > 0 && ver.len() > 0 -> {
             link-ok = link-to-node-modules(store-dir, name, ver, nm-dir)
-            link-ok == false -> ok = false
+            ! link-ok -> ok = false
         }
     }
 }
