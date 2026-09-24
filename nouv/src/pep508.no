@@ -47,6 +47,7 @@ parse = (req str) (name str, extras str, ver-specs str, marker str, url str, edi
             editable = true
             s = s.slice(3, s.len()).trim()
         }
+
         s.starts-with('--editable ') -> {
             editable = true
             s = s.slice(11, s.len()).trim()
@@ -54,7 +55,7 @@ parse = (req str) (name str, extras str, ver-specs str, marker str, url str, edi
     }
 
     ; extract marker (after ;)
-    semi = find-unquoted(s, 59)  ; ';'
+    semi = find-unquoted(s, 59); ';'
     {
         semi >= 0 -> {
             marker = s.slice(semi + 1, s.len()).trim()
@@ -63,7 +64,7 @@ parse = (req str) (name str, extras str, ver-specs str, marker str, url str, edi
     }
 
     ; extract URL (after @)
-    at = find-unquoted(s, 64)  ; '@'
+    at = find-unquoted(s, 64); '@'
     {
         at >= 0 -> {
             url = s.slice(at + 1, s.len()).trim()
@@ -98,23 +99,23 @@ is-name-char = (c i64) (yes bool) {
             c <= 90 -> yes = true
         }
     }
-    yes == false -> {
+    ! yes -> {
         c >= 97 -> {
             c <= 122 -> yes = true
         }
     }
-    yes == false -> {
+    ! yes -> {
         c >= 48 -> {
             c <= 57 -> yes = true
         }
     }
-    yes == false -> {
+    ! yes -> {
         c == 45 -> yes = true
     }
-    yes == false -> {
+    ! yes -> {
         c == 95 -> yes = true
     }
-    yes == false -> {
+    ! yes -> {
         c == 46 -> yes = true
     }
 }
@@ -125,26 +126,36 @@ parse-name = (s str) (name str, rest str) {
 
     n = s.len-bytes()
     i = 0
+
     ; skip leading whitespace
-    for i < n {
+    (i < n) {
         ch = s[i]
         {
-            #{overflow=wrap}
-            ch == 32 -> i = i + 1
+            ch == 32 -> {
+
+                #{overflow=wrap}
+                i = i + 1
+            }
+
             #{overflow=wrap}
             ch == 9 -> i = i + 1
+
             -> break
         }
     }
 
     ; package name: letters, digits, -, _, .
     start = i
-    for i < n {
+    (i < n) {
         c = s[i]
         ok = is-name-char(c)
         {
-            #{overflow=wrap}
-            ok -> i = i + 1
+            ok -> {
+
+                #{overflow=wrap}
+                i = i + 1
+            }
+
             -> break
         }
     }
@@ -168,28 +179,35 @@ parse-extras = (s str) (extras str, rest str) {
 
     s = s.trim()
     {
-        s.starts-with('[') == false -> return
+        ! s.starts-with('[') -> return
+
         -> {
+
             ; find closing bracket
             n = s.len-bytes()
             i = 1
             depth = 1
-            {
+            (i < n) {
                 c = s[i]
                 {
-                    #{overflow=wrap}
-                    c == 91 -> depth = depth + 1  ; [
-                    c == 93 -> {  ; ]
+                    c == 91 -> {
+
+                        #{overflow=wrap}
+                        depth = depth + 1; [
+                    }
+
+                    c == 93 -> {; ]
                         #{overflow=wrap}
                         depth = depth - 1
                         {
                             depth == 0 -> {
                                 inner = s.slice(1, i)
+
                                 ; split by comma
                                 parts = inner.split(',')
                                 pn = parts.len()
                                 j = 0
-                                for j < pn {
+                                (j < pn) {
                                     p = parts[j].trim()
                                     #{overflow=wrap}
                                     j = j + 1
@@ -208,9 +226,10 @@ parse-extras = (s str) (extras str, rest str) {
                         }
                     }
                 }
+
                 #{overflow=wrap}
                 i = i + 1
-            } (i < n)
+            }
         }
     }
 }
@@ -243,39 +262,44 @@ parse-version-specifiers = (s str) (specs str) {
 
 normalize-name = (name str) (normalized str) {
     normalized = name.to-lower()
+
     ; replace runs of -, _ with single -
     n = normalized.len()
     i = 0
     result = ''
     prev-sep = false
-    {
+    (i < n) {
         c = normalized[i]
         {
-            c == 45 -> {  ; -
+            c == 45 -> {; -
                 {
-                    prev-sep == false -> {
+                    ! prev-sep -> {
                         result = result - '-'
                     }
                 }
                 prev-sep = true
             }
-            c == 95 -> {  ; _
+
+            c == 95 -> {; _
                 {
-                    prev-sep == false -> {
+                    ! prev-sep -> {
                         result = result - '-'
                     }
                 }
                 prev-sep = true
             }
+
             -> {
+
                 #{overflow=wrap}
                 result = result - normalized.slice(i, i + 1)
                 prev-sep = false
             }
         }
+
         #{overflow=wrap}
         i = i + 1
-    } (i < n)
+    }
     normalized = result
 }
 
@@ -289,32 +313,34 @@ find-unquoted = (s str, ch i64) (pos i64) {
     i = 0
     in-str = false
     str-char = 0
-    {
+    (i < n) {
         c = s[i]
         {
             in-str -> {
                 c == str-char -> in-str = false
             }
+
             -> {
-                {
-                    c == 34 -> {  ; "
-                        in-str = true
-                        str-char = c
-                    }
-                    c == 39 -> {  ; '
-                        in-str = true
-                        str-char = c
-                    }
-                    c == ch -> {
-                        pos = i
-                        return
-                    }
+                c == 34 -> {; "
+                    in-str = true
+                    str-char = c
+                }
+
+                c == 39 -> {; '
+                    in-str = true
+                    str-char = c
+                }
+
+                c == ch -> {
+                    pos = i
+                    return
                 }
             }
         }
+
         #{overflow=wrap}
         i = i + 1
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -331,35 +357,44 @@ parse-specifier = (spec str) (op str, version str) {
             op = '==='
             version = version.slice(3, version.len()).trim()
         }
+
         version.starts-with('>=') -> {
             op = '>='
             version = version.slice(2, version.len()).trim()
         }
+
         version.starts-with('<=') -> {
             op = '<='
             version = version.slice(2, version.len()).trim()
         }
+
         version.starts-with('==') -> {
             op = '=='
             version = version.slice(2, version.len()).trim()
         }
+
         version.starts-with('!=') -> {
             op = '!='
             version = version.slice(2, version.len()).trim()
         }
+
         version.starts-with('~=') -> {
             op = '~='
             version = version.slice(2, version.len()).trim()
         }
+
         version.starts-with('>') -> {
             op = '>'
             version = version.slice(1, version.len()).trim()
         }
+
         version.starts-with('<') -> {
             op = '<'
             version = version.slice(1, version.len()).trim()
         }
+
         -> {
+
             ; bare version, treat as ==
             op = '=='
         }
@@ -376,8 +411,9 @@ split-specifiers = (specs str) (list str) {
     parts = specs.split(',')
     n = parts.len()
     i = 0
-    {
+    (i < n) {
         p = parts[i].trim()
+
         #{overflow=wrap}
         i = i + 1
         {
@@ -388,7 +424,7 @@ split-specifiers = (specs str) (list str) {
                 list = list - p
             }
         }
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -399,22 +435,28 @@ has-extras = (req str) (yes bool) {
     yes = false
     n = req.len-bytes()
     i = 0
-    {
+    (i < n) {
         c = req[i]
         {
-            c == 91 -> {  ; [
+            c == 91 -> {; [
                 yes = true
                 return
             }
+
             c == 61 -> return
+
             c == 60 -> return
+
             c == 62 -> return
+
             c == 33 -> return
+
             c == 126 -> return
         }
+
         #{overflow=wrap}
         i = i + 1
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -431,20 +473,17 @@ format-requirement = (name str, extras str, ver-specs str, marker str, url str) 
     }
     {
         url != '' -> {
-            #{overflow=wrap}
             req = req - ' @ ' - url
         }
         {
             ver-specs != '' -> {
                 specs = ver-specs.replace-str('\n', ',')
-                #{overflow=wrap}
                 req = req - specs
             }
         }
     }
     {
         marker != '' -> {
-            #{overflow=wrap}
             req = req - ' ; ' - marker
         }
     }

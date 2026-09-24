@@ -4,6 +4,7 @@
 ; Supports the Simple API (PEP 503), JSON API, authentication, and retries.
 
 # /nouv/src/utils
+
 ;
 ; Authentication methods:
 ;   - Basic auth (username:password)
@@ -145,6 +146,7 @@ get-simple-index = (name str) (index str, ok bool) {
     index = ''
 
     base = get-index-url()
+
     ; normalize package name (PEP 503)
     norm-name = utils.to-lower-str(name)
     norm-name = utils.replace-char-str(norm-name, "-", "_")
@@ -154,10 +156,12 @@ get-simple-index = (name str) (index str, ok bool) {
     resp = http.get(url)
     resp: {
         nil -> return
+
         ok -> {
             index = it.body
             ok = true
         }
+
         err -> return
     }
 }
@@ -190,10 +194,12 @@ search-packages = (query str) (results str) {
     resp = http.get(base)
     resp: {
         nil -> return
+
         ok -> {
             body = it.body
             results = extract-project-names(body)
         }
+
         err -> return
     }
 }
@@ -206,11 +212,13 @@ extract-project-names = (html str) (names str) {
     names = ''
     pos = 0
     n = html.len-bytes()
-    {
+    (pos < n) {
         idx = utils.index-from-str(html, '/project/', pos)
         {
             idx < 0 -> break
+
             -> {
+
                 #{overflow=wrap}
                 start = idx + 9
                 end = utils.index-from-str(html, '"', start)
@@ -222,11 +230,12 @@ extract-project-names = (html str) (names str) {
                         name.len() > 0 -> names = names - name - '\n'
                         pos = end
                     }
+
                     -> pos = start
                 }
             }
         }
-    } (pos < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -283,6 +292,7 @@ get-auth-headers = () (headers str) {
     {
         user != '' -> {
             pass != '' -> {
+
                 #{overflow=wrap}
                 cred = user - ':' - pass
                 encoded = base64.encode-std(cred)
@@ -299,6 +309,7 @@ get-auth-headers = () (headers str) {
     {
         pip-user != '' -> {
             pip-pass != '' -> {
+
                 #{overflow=wrap}
                 cred = pip-user - ':' - pip-pass
                 encoded = base64.encode-std(cred)
@@ -313,6 +324,7 @@ get-auth-headers = () (headers str) {
     netrc-user, netrc-pass, netrc-ok = read-netrc('pypi.org')
     {
         netrc-ok -> {
+
             #{overflow=wrap}
             cred = netrc-user - ':' - netrc-pass
             encoded = base64.encode-std(cred)
@@ -338,26 +350,31 @@ read-netrc = (host str) (user str, pass str, ok bool) {
 
     #{overflow=wrap}
     netrc-path = home - '/.netrc'
-    p = path{
-        p: netrc-path,
+    p = path {
+        p: netrc-path
     }
     exists = p.exists()
     {
-        exists == false -> return
+        ! exists -> return
+
         -> {
+
             ; parse netrc: machine <host> login <user> password <pass>
             read-result = fs.read-str(netrc-path)
             read-result: {
                 ok -> raw = it
+
                 nil -> raw = ''
+
                 err -> raw = ''
             }
             lines = utils.split-str(raw, '\n')
             nl = lines.len()
             i = 0
             found-machine = false
-            {
+            (i < nl) {
                 line = lines[i]
+
                 #{overflow=wrap}
                 i = i + 1
                 line = utils.trim-str(line)
@@ -366,25 +383,28 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                         machine-host = utils.trim-str(utils.slice-str(line, 8, line.len()))
                         {
                             machine-host == host -> found-machine = true
+
                             -> found-machine = false
                         }
                     }
+
                     -> {
                         found-machine -> {
                             {
-                            utils.starts-with-str(line, 'login ') -> {
-                                user = utils.trim-str(utils.slice-str(line, 6, line.len()))
+                                utils.starts-with-str(line, 'login ') -> {
+                                    user = utils.trim-str(utils.slice-str(line, 6, line.len()))
                                 }
                             }
                             {
-                            utils.starts-with-str(line, 'password ') -> {
-                                pass = utils.trim-str(utils.slice-str(line, 9, line.len()))
+                                utils.starts-with-str(line, 'password ') -> {
+                                    pass = utils.trim-str(utils.slice-str(line, 9, line.len()))
                                 }
                             }
                             {
                                 utils.starts-with-str(line, 'machine ') -> {
                                     found-machine = false
                                 }
+
                                 line == 'default' -> {
                                     found-machine = false
                                 }
@@ -392,13 +412,13 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                         }
                     }
                 }
-            } (i < nl)
+            }
 
             ; also handle single-line format
             {
                 user == '' -> {
                     i = 0
-                    {
+                    (i < nl) {
                         line = lines[i]
                         #{overflow=wrap}
                         i = i + 1
@@ -413,6 +433,7 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                                         space = utils.index-str(rest, ' ')
                                         {
                                             space > 0 -> user = utils.slice-str(rest, 0, space)
+
                                             -> user = rest
                                         }
                                     }
@@ -426,13 +447,14 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                                         space2 = utils.index-str(rest2, ' ')
                                         {
                                             space2 > 0 -> pass = utils.slice-str(rest2, 0, space2)
+
                                             -> pass = rest2
                                         }
                                     }
                                 }
                             }
                         }
-                    } (i < nl)
+                    }
                 }
             }
 
@@ -462,7 +484,8 @@ download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool)
     attempt = 0
     delay-ms = 1000
 
-    {
+    (attempt < max-retries) {
+
         #{overflow=wrap}
         attempt = attempt + 1
 
@@ -472,18 +495,18 @@ download-with-backoff = (name str, ver str, dest str, max-retries i64) (ok bool)
                 ok = true
                 return
             }
+
             -> {
-                {
-                    attempt < max-retries -> {
-                        print('  retry {attempt}/{max-retries} in {delay-ms}ms...')
-                        os.sleep-ms(delay-ms)
-                        #{overflow=wrap}
-                        delay-ms = delay-ms * 2
-                    }
+                attempt < max-retries -> {
+                    print('  retry {attempt}/{max-retries} in {delay-ms}ms...')
+                    os.sleep-ms(delay-ms)
+
+                    #{overflow=wrap}
+                    delay-ms = delay-ms * 2
                 }
             }
         }
-    } (attempt < max-retries)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -498,27 +521,34 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
         upload-url == '' -> upload-url = 'https://upload.pypi.org/legacy/'
     }
 
-    p3 = path{
-        p: file-path,
+    p3 = path {
+        p: file-path
     }
     file-exists = p3.exists()
     {
-        file-exists == false -> {
+        ! file-exists -> {
             print('error: could not read file {file-path}')
             return
         }
+
         -> {
             filename = file-path
             slash = utils.rindex-str(filename, '/')
             {
-                #{overflow=wrap}
-                slash >= 0 -> filename = utils.slice-str(filename, slash + 1, filename.len-bytes())
+                slash >= 0 -> {
+
+                    #{overflow=wrap}
+                    filename = utils.slice-str(filename, slash + 1, filename.len-bytes())
+                }
             }
+
             ; TODO: add auth header support
             read-result = fs.read-str(file-path)
             read-result: {
                 ok -> raw = it
+
                 nil -> raw = ''
+
                 err -> raw = ''
             }
             resp = http.post(upload-url, raw)
@@ -526,6 +556,7 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
                 nil -> {
                     print('error: no response from upload')
                 }
+
                 ok -> {
                     status = it.status-code
                     body = it.body
@@ -536,11 +567,13 @@ upload-package = (file-path str, name str, ver str, token str) (ok bool) {
                                 ok = true
                             }
                         }
+
                         -> {
                             print('error: upload failed with status {status}: {body}')
                         }
                     }
                 }
+
                 err -> {
                     print('error: upload request failed')
                 }
@@ -562,9 +595,11 @@ get-index-url-for-config = (cfg str) (url str) {
     lines = utils.split-str(cfg, '\n')
     n = lines.len()
     i = 0
-    {
+    (i < n) {
+
         #{index-out=0}
         line = lines[i]
+
         #{overflow=wrap}
         i = i + 1
         {
@@ -572,12 +607,13 @@ get-index-url-for-config = (cfg str) (url str) {
                 url = utils.trim-str(utils.slice-str(line, 10, line.len()))
                 return
             }
+
             utils.starts-with-str(line, 'index-url=') -> {
                 url = utils.trim-str(utils.slice-str(line, 10, line.len()))
                 return
             }
         }
-    } (i < n)
+    }
 
     ; fall back to environment / default
     url = get-index-url()
@@ -592,9 +628,11 @@ get-extra-index-urls = (cfg str) (urls str) {
     lines = utils.split-str(cfg, '\n')
     n = lines.len()
     i = 0
-    {
+    (i < n) {
+
         #{index-out=0}
         line = lines[i]
+
         #{overflow=wrap}
         i = i + 1
         {
@@ -603,13 +641,14 @@ get-extra-index-urls = (cfg str) (urls str) {
                 #{overflow=wrap}
                 urls = urls - url - '\n'
             }
+
             utils.starts-with-str(line, 'extra-index-url=') -> {
                 url = utils.trim-str(utils.slice-str(line, 16, line.len()))
                 #{overflow=wrap}
                 urls = urls - url - '\n'
             }
         }
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -618,24 +657,28 @@ get-extra-index-urls = (cfg str) (urls str) {
 
 verify-hash = (file-path str, expected-hash str) (ok bool) {
     ok = false
-    p = path{
-        p: file-path,
+    p = path {
+        p: file-path
     }
     file-exists = p.exists()
     {
-        file-exists == false -> {
+        ! file-exists -> {
             print('error: could not read file {file-path}')
             return
         }
+
         -> {
             file-data = fs.read-bytes(file-path)
             file-data: {
                 ok -> actual-hash = sha256.sha256-hex(it)
+
                 nil -> actual-hash = ''
+
                 err -> actual-hash = ''
             }
             {
                 actual-hash == expected-hash -> ok = true
+
                 -> {
                     print('error: hash mismatch for {file-path}')
                     print('  expected: {expected-hash}')
@@ -655,19 +698,19 @@ download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool)
 
     dl-ok = download-package(name, ver, dest)
     {
-        dl-ok == false -> return
+        ! dl-ok -> return
+
         -> {
-            {
-                expected-hash == '' -> {
-                    ok = true
-                }
-                -> {
-                    hash-ok = verify-hash(dest, expected-hash)
-                    ok = hash-ok
-                    {
-                        hash-ok == false -> {
-                            fs.remove(dest)
-                        }
+            expected-hash == '' -> {
+                ok = true
+            }
+
+            -> {
+                hash-ok = verify-hash(dest, expected-hash)
+                ok = hash-ok
+                {
+                    ! hash-ok -> {
+                        fs.remove(dest)
                     }
                 }
             }

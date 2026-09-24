@@ -34,8 +34,9 @@ format-output = (deps str, opts str) (output str) {
             lines = deps.split('\n')
             n = lines.len()
             i = 0
-            {
+            (i < n) {
                 line = lines[i]
+
                 #{overflow=wrap}
                 i = i + 1
                 line = line.trim()
@@ -43,7 +44,7 @@ format-output = (deps str, opts str) (output str) {
                     #{overflow=wrap}
                     line.len() > 0 -> output = output - line - '\n'
                 }
-            } (i < n)
+            }
         }
     }
 }
@@ -69,17 +70,20 @@ parse = (path str) (deps str, ok bool) {
     ok = false
     deps = ''
 
-    p = path{
-        p: path,
+    p = path {
+        p: path
     }
     exists = p.exists()
     {
-        exists == false -> return
+        ! exists -> return
+
         -> {
             read-result = fs.read-str(path)
             read-result: {
                 ok -> raw = it
+
                 nil -> raw = ''
+
                 err -> raw = ''
             }
             deps = parse-content(raw)
@@ -110,9 +114,11 @@ parse-content = (content str) (deps str) {
     lines = content.split('\n')
     n = lines.len()
     i = 0
-    {
+    (i < n) {
+
         #{index-out=0}
         line = lines[i]
+
         #{overflow=wrap}
         i = i + 1
         line = line.trim()
@@ -120,6 +126,7 @@ parse-content = (content str) (deps str) {
         ; skip empty lines and comments
         {
             line == '' -> continue
+
             line.starts-with('#') -> continue
         }
 
@@ -133,6 +140,7 @@ parse-content = (content str) (deps str) {
                 }
                 continue
             }
+
             line.starts-with('--requirement ') -> {
                 inc-path = line.slice(14, line.len()).trim()
                 inc-deps, inc-ok = parse(inc-path)
@@ -146,6 +154,7 @@ parse-content = (content str) (deps str) {
         ; handle pip options (--index-url, etc.) — skip for deps
         {
             line.starts-with('--') -> {
+
                 ; options like --index-url, --extra-index-url, --find-links
                 ; these are handled separately
                 continue
@@ -157,6 +166,7 @@ parse-content = (content str) (deps str) {
             line.starts-with('-c ') -> {
                 continue
             }
+
             line.starts-with('--constraint ') -> {
                 continue
             }
@@ -174,7 +184,7 @@ parse-content = (content str) (deps str) {
             #{overflow=wrap}
             line.len() > 0 -> deps = deps - line - '\n'
         }
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -192,6 +202,7 @@ write = (path str, deps str, opts str) (ok bool) {
     fd = fs.open-write(path)
     {
         fd <= 0 -> return
+
         -> {
             fs.write(fd, output, output.len-bytes())
             fs.close(fd)
@@ -213,9 +224,11 @@ parse-options = (line str) (options str) {
     tokens = line.split(' ')
     n = tokens.len()
     i = 0
-    {
+    (i < n) {
+
         #{index-out=0}
         tok = tokens[i]
+
         #{overflow=wrap}
         i = i + 1
         {
@@ -226,6 +239,7 @@ parse-options = (line str) (options str) {
                     val != '' -> options = options - 'index-url=' - val - '\n'
                 }
             }
+
             tok.starts-with('--extra-index-url') -> {
                 val = extract-option-value(tokens, i)
                 {
@@ -233,6 +247,7 @@ parse-options = (line str) (options str) {
                     val != '' -> options = options - 'extra-index-url=' - val - '\n'
                 }
             }
+
             tok.starts-with('--find-links') -> {
                 val = extract-option-value(tokens, i)
                 {
@@ -240,6 +255,7 @@ parse-options = (line str) (options str) {
                     val != '' -> options = options - 'find-links=' - val - '\n'
                 }
             }
+
             tok.starts-with('-f') -> {
                 val = extract-option-value(tokens, i)
                 {
@@ -247,20 +263,22 @@ parse-options = (line str) (options str) {
                     val != '' -> options = options - 'find-links=' - val - '\n'
                 }
             }
+
             tok.starts-with('--no-index') -> {
                 options = options - 'no-index=true\n'
             }
+
             tok.starts-with('--hash') -> {
+
                 ; hash option
                 {
                     tok == '--hash' -> {
-                        {
-                            i < n -> {
-                                #{overflow=wrap}
-                                options = options - 'hash=' - tokens[i] - '\n'
-                            }
+                        i < n -> {
+                            #{overflow=wrap}
+                            options = options - 'hash=' - tokens[i] - '\n'
                         }
                     }
+
                     tok.starts-with('--hash=') -> {
                         val = tok.slice(7, tok.len())
                         #{overflow=wrap}
@@ -269,7 +287,7 @@ parse-options = (line str) (options str) {
                 }
             }
         }
-    } (i < n)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -283,16 +301,19 @@ compile = (src-path str, out-path str, constraints str) (ok bool) {
     ; load source
     cfg, cfg-ok = config.load-config(src-path)
     {
-        cfg-ok == false -> {
+        ! cfg-ok -> {
+
             ; try as requirements.txt
             deps, deps-ok = parse(src-path)
             {
-                deps-ok == false -> return
+                ! deps-ok -> return
+
                 -> {
                     output = format-output(deps, '')
                     fd = fs.open-write(out-path)
                     {
                         fd <= 0 -> return
+
                         -> {
                             fs.write(fd, output, output.len-bytes())
                             fs.close(fd)
@@ -303,20 +324,25 @@ compile = (src-path str, out-path str, constraints str) (ok bool) {
             }
             return
         }
+
         -> {
             deps = config.get-dependencies(cfg)
             dev-deps = config.get-dev-dependencies(cfg)
 
             all-deps = deps
             {
-                #{overflow=wrap}
-                dev-deps != '' -> all-deps = all-deps - '\n' - dev-deps
+                dev-deps != '' -> {
+
+                    #{overflow=wrap}
+                    all-deps = all-deps - '\n' - dev-deps
+                }
             }
 
             output = format-output(all-deps, '')
             fd = fs.open-write(out-path)
             {
                 fd <= 0 -> return
+
                 -> {
                     fs.write(fd, output, output.len-bytes())
                     fs.close(fd)
@@ -340,9 +366,11 @@ diff = (old str, new str) (added str, removed str) {
     new-lines = new.split('\n')
     nn = new-lines.len()
     i = 0
-    {
+    (i < nn) {
+
         #{index-out=0}
         n = new-lines[i]
+
         #{overflow=wrap}
         i = i + 1
         n = n.trim()
@@ -353,7 +381,7 @@ diff = (old str, new str) (added str, removed str) {
                     parse-ok -> {
                         name = pep508.normalize-name(name)
                         {
-                            old.contains(name) == false -> {
+                            ! old.contains(name) -> {
                                 {
                                     added.len-bytes() > 0 -> added = added - '\n'
                                 }
@@ -364,15 +392,17 @@ diff = (old str, new str) (added str, removed str) {
                 }
             }
         }
-    } (i < nn)
+    }
 
     ; find packages in old but not in new
     old-lines = old.split('\n')
     on = old-lines.len()
     i = 0
-    {
+    (i < on) {
+
         #{index-out=0}
         o = old-lines[i]
+
         #{overflow=wrap}
         i = i + 1
         o = o.trim()
@@ -383,7 +413,7 @@ diff = (old str, new str) (added str, removed str) {
                     parse-ok -> {
                         name = pep508.normalize-name(name)
                         {
-                            new.contains(name) == false -> {
+                            ! new.contains(name) -> {
                                 {
                                     removed.len-bytes() > 0 -> removed = removed - '\n'
                                 }
@@ -394,7 +424,7 @@ diff = (old str, new str) (added str, removed str) {
                 }
             }
         }
-    } (i < on)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -410,8 +440,9 @@ freeze = (venv-path str) (output str) {
             lines = installed.split('\n')
             n = lines.len()
             i = 0
-            {
+            (i < n) {
                 line = lines[i]
+
                 #{overflow=wrap}
                 i = i + 1
                 line = line.trim()
@@ -419,7 +450,7 @@ freeze = (venv-path str) (output str) {
                     #{overflow=wrap}
                     line.len() > 0 -> output = output - line - '\n'
                 }
-            } (i < n)
+            }
         }
     }
 }
@@ -437,9 +468,11 @@ check = (venv-path str, reqs str) (satisfied bool, missing str) {
     lines = reqs.split('\n')
     n = lines.len()
     i = 0
-    {
+    (i < n) {
+
         #{index-out=0}
         req = lines[i]
+
         #{overflow=wrap}
         i = i + 1
         req = req.trim()
@@ -449,13 +482,15 @@ check = (venv-path str, reqs str) (satisfied bool, missing str) {
                 {
                     parse-ok -> {
                         name = pep508.normalize-name(name)
+
                         ; check if installed
                         found = false
                         inst-lines = installed.split('\n')
                         inst-count = inst-lines.len()
                         j = 0
-                        for j < inst-count {
+                        (j < inst-count) {
                             inst = inst-lines[j]
+
                             #{overflow=wrap}
                             j = j + 1
                             #{overflow=wrap}
@@ -467,7 +502,7 @@ check = (venv-path str, reqs str) (satisfied bool, missing str) {
                             }
                         }
                         {
-                            found == false -> {
+                            ! found -> {
                                 satisfied = false
                                 {
                                     missing.len-bytes() > 0 -> missing = missing - '\n'
@@ -479,5 +514,5 @@ check = (venv-path str, reqs str) (satisfied bool, missing str) {
                 }
             }
         }
-    } (i < n)
+    }
 }

@@ -20,17 +20,20 @@ get-build-system = (src-dir str) (requires str, backend str, ok bool) {
     backend = ''
 
     pyproject = src-dir - '/pyproject.toml'
-    p = path{
-        p: pyproject,
+    p = path {
+        p: pyproject
     }
     exists = p.exists()
     {
-        exists == false -> return
+        ! exists -> return
+
         -> {
             read-result = fs.read-str(pyproject)
             read-result: {
                 ok -> raw = it
+
                 nil -> raw = ''
+
                 err -> raw = ''
             }
             cfg = toml.parse(raw)
@@ -72,10 +75,12 @@ prepare-build-env = (venv-path str, requires str) (ok bool) {
             ok = true
             return
         }
+
         -> {
             py-bin, py-ok = get-python(venv-path)
             {
-                py-ok == false -> return
+                ! py-ok -> return
+
                 -> {
                     #{overflow=wrap}
                     inst-ok = utils.run-cmd('"' - py-bin - '" -m pip install ' - requires)
@@ -96,15 +101,15 @@ build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path str, 
 
     py-bin, py-ok = get-python(venv-path)
     {
-        py-ok == false -> {
+        ! py-ok -> {
             print('error: no Python in build venv')
             return
         }
     }
 
     out-dir = src-dir - '/dist'
-    p = path{
-        p: out-dir,
+    p = path {
+        p: out-dir
     }
     mk = p.make-dir()
 
@@ -119,21 +124,25 @@ build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path str, 
             print('error: build failed')
             return
         }
+
         -> {
+
             ; read build output from temp file to get wheel filename
             #{overflow=wrap}
             out = run-cmd-output('ls ' - out-dir - '/*.whl')
             wheel-name = utils.trim-str(out)
             {
                 wheel-name != '' -> {
+
                     #{overflow=wrap}
                     wheel-path = out-dir - '/' - wheel-name
-                    p3 = path{
-                        p: wheel-path,
+                    p3 = path {
+                        p: wheel-path
                     }
                     exists = p3.exists()
                     {
                         exists -> ok = true
+
                         -> print('error: wheel file not found after build')
                     }
                 }
@@ -152,7 +161,7 @@ build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
 
     requires, backend, bs-ok = get-build-system(src-dir)
     {
-        bs-ok == false -> {
+        ! bs-ok -> {
             print('error: no build-system defined in pyproject.toml')
             return
         }
@@ -160,7 +169,7 @@ build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
 
     env-ok = prepare-build-env(venv-path, requires)
     {
-        env-ok == false -> {
+        ! env-ok -> {
             print('error: failed to prepare build environment')
             return
         }
@@ -176,39 +185,48 @@ build-from-source = (src-dir str, venv-path str) (wheel-path str, ok bool) {
 extract-sdist = (archive-path str, dest str) (ok bool) {
     ok = false
 
-    p = path{
-        p: dest,
+    p = path {
+        p: dest
     }
     mk = p.make-dir()
 
     {
         utils.ends-with-str(archive-path, '.tar.gz') -> {
+
             ; extract tar.gz using system tar
             #{overflow=wrap}
             code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
             {
                 code == 0 -> ok = true
+
                 -> print('error: failed to extract tar.gz')
             }
         }
+
         utils.ends-with-str(archive-path, '.tgz') -> {
+
             ; extract tgz using system tar
             #{overflow=wrap}
             code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
             {
                 code == 0 -> ok = true
+
                 -> print('error: failed to extract tgz')
             }
         }
+
         utils.ends-with-str(archive-path, '.zip') -> {
+
             ; extract zip using system unzip
             #{overflow=wrap}
             code = run-cmd('unzip -o ' - archive-path - ' -d ' - dest)
             {
                 code == 0 -> ok = true
+
                 -> print('error: failed to extract zip')
             }
         }
+
         -> {
             print('error: unsupported archive format: {archive-path}')
         }
@@ -230,7 +248,7 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
     ; extract sdist
     extract-ok = extract-sdist(archive-path, tmp-dir)
     {
-        extract-ok == false -> {
+        ! extract-ok -> {
             print('error: failed to extract sdist')
             return
         }
@@ -245,8 +263,11 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
         lines.len() == 1 -> {
             subdir = utils.trim-str(lines[0])
             {
-                #{overflow=wrap}
-                subdir != '' -> src-dir = tmp-dir - '/' - subdir
+                subdir != '' -> {
+
+                    #{overflow=wrap}
+                    src-dir = tmp-dir - '/' - subdir
+                }
             }
         }
     }
@@ -254,12 +275,12 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
     ; check for pyproject.toml
     #{overflow=wrap}
     pyproject = src-dir - '/pyproject.toml'
-    p2 = path{
-        p: pyproject,
+    p2 = path {
+        p: pyproject
     }
     has-pyproject = p2.exists()
     {
-        has-pyproject == false -> {
+        ! has-pyproject -> {
             print('error: no pyproject.toml in extracted sdist')
             return
         }
@@ -270,26 +291,31 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
     build-venv = tmp-dir - '-build'
     py-path, py-ok = find-python('')
     {
-        py-ok == false -> {
+        ! py-ok -> {
             print('error: no Python installation found')
             return
         }
+
         -> {
             venv-ok = create-venv(build-venv, py-path)
             {
-                venv-ok == false -> {
+                ! venv-ok -> {
                     print('error: failed to create build venv')
                     return
                 }
+
                 -> {
+
                     ; build wheel from source
                     wheel-path, build-ok = build-from-source(src-dir, build-venv)
                     {
-                        build-ok == false -> {
+                        ! build-ok -> {
                             print('error: failed to build from source')
                             return
                         }
+
                         -> {
+
                             ; install the built wheel
                             inst-ok = wheel.install(venv-path, wheel-path, false)
                             ok = inst-ok
@@ -322,6 +348,7 @@ build-editable = (src-dir str, venv-path str, pkg-name str) (ok bool) {
     wfd = fs.open-write(pth-path)
     {
         wfd <= 0 -> return
+
         -> {
             src-pkg = src-dir - '/src'
             fs.write(wfd, src-pkg, src-pkg.len-bytes())
@@ -333,10 +360,11 @@ build-editable = (src-dir str, venv-path str, pkg-name str) (ok bool) {
     ; also create a dist-info directory
     {
         ok -> {
+
             #{overflow=wrap}
             dist-info-dir = sp-dir - '/' - norm-name - '-0.0.0.dist-info'
-            p = path{
-                p: dist-info-dir,
+            p = path {
+                p: dist-info-dir
             }
             mk = p.make-dir()
 
