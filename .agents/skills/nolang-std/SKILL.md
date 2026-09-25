@@ -27,6 +27,7 @@ Usage: `# std/xxx` (core modules do not need to be imported).
   - [str — String Operations](#str--string-operations)
   - [number — Numeric Operations](#number--numeric-operations)
   - [byte — Byte Operations](#byte--byte-operations)
+  - [txt — Fixed-length Text Type](#txt--fixed-length-text-type)
   - [vec — Slice Operations](#vec--slice-operations)
   - [arr — Array Operations](#arr--array-operations)
   - [sort — Sort Constants](#sort--sort-constants)
@@ -95,45 +96,43 @@ Usage: `# std/xxx` (core modules do not need to be imported).
   - [archive/zlib — zlib Compression/Decompression (RFC 1950, Pure Nolang)](#archivezlib--zlib-compressiondecompression-rfc-1950-pure-nolang)
   - [archive/zstd — Zstandard Decompression (Pure Nolang)](#archivezstd--zstandard-decompression-pure-nolang)
 - [Cryptography & Hash](#cryptography--hash)
-  - [hash/aes — AES-128 Encryption/Decryption (ECB mode)](#hashaes--aes-128-encryptiondecryption-ecb-mode)
-  - [hash/des — DES Encryption/Decryption (ECB mode)](#hashdes--des-encryptiondecryption-ecb-mode)
-  - [hash/rsa — RSA Modular Exponentiation](#hashrsa--rsa-modular-exponentiation)
-  - [hash/md5 — MD5 (128-bit)](#hashmd5--md5-128-bit)
-  - [hash/sha1 — SHA-1 (160-bit)](#hashsha1--sha-1-160-bit)
-  - [hash/sha256 — SHA-256 (256-bit)](#hashsha256--sha-256-256-bit)
-  - [hash/sha512 — SHA-512 (512-bit)](#hashsha512--sha-512-512-bit)
-  - [hash/crc-32 — CRC32 Checksum](#hashcrc-32--crc32-checksum)
-  - [hash/fnv-1a-32 — FNV-1a Non-cryptographic Hash](#hashfnv-1a-32--fnv-1a-non-cryptographic-hash)
-  - [hash/rand — Random Number Generator (xorshift32)](#hashrand--random-number-generator-xorshift32)
-  - [hash/x509 — X.509 Certificate DER Parsing](#hashx509--x509-certificate-der-parsing)
-  - [hash/aes-256 — AES-256 Encryption/Decryption (ECB mode)](#hashaes-256--aes-256-encryptiondecryption-ecb-mode)
-  - [hash/aes-cbc — AES-CBC Mode (with PKCS7 Padding)](#hashaes-cbc--aes-cbc-mode-with-pkcs7-padding)
-  - [hash/aes-256-cbc — AES-256-CBC Encryption/Decryption](#hashaes-256-cbc--aes-256-cbc-encryptiondecryption)
-  - [hash/aes-ctr — AES-CTR Counter Mode](#hashaes-ctr--aes-ctr-counter-mode)
-  - [hash/aes-gcm — AES-GCM AEAD](#hashaes-gcm--aes-gcm-aead)
-  - [hash/aes-256-gcm — AES-256-GCM AEAD (NIST SP 800-38D)](#hashaes-256-gcm--aes-256-gcm-aead-nist-sp-800-38d)
-  - [hash/hmac — HMAC Message Authentication Code](#hashhmac--hmac-message-authentication-code)
-  - [hash/hkdf — HKDF Key Derivation (RFC 5869)](#hashhkdf--hkdf-key-derivation-rfc-5869)
-  - [hash/pbkdf2 — PBKDF2 Key Derivation (RFC 2898)](#hashpbkdf2--pbkdf2-key-derivation-rfc-2898)
-  - [hash/argon2 — Argon2 Memory-hard Key Derivation](#hashargon2--argon2-memory-hard-key-derivation)
-  - [hash/scrypt — scrypt Key Derivation](#hashscrypt--scrypt-key-derivation)
-  - [hash/sha224 — SHA-224 (224-bit)](#hashsha224--sha-224-224-bit)
-  - [hash/sha384 — SHA-384 (384-bit)](#hashsha384--sha-384-384-bit)
-  - [hash/sha3 — SHA-3 (Keccak)](#hashsha3--sha-3-keccak)
-  - [hash/blake2 — BLAKE2 Hash](#hashblake2--blake2-hash)
-  - [hash/crc-16 — CRC16 Checksum](#hashcrc-16--crc16-checksum)
-  - [hash/crc-64 — CRC64 Checksum](#hashcrc-64--crc64-checksum)
-  - [hash/fnv — FNV-1 Hash](#hashfnv--fnv-1-hash)
-  - [hash/base32 — Base32 Encoding/Decoding (RFC 4648)](#hashbase32--base32-encodingdecoding-rfc-4648)
-  - [hash/chacha20-poly1305 — ChaCha20-Poly1305 AEAD](#hashchacha20-poly1305--chacha20-poly1305-aead)
-  - [hash/rc4 — RC4 Stream Cipher](#hashrc4--rc4-stream-cipher)
-  - [hash/tdes — Triple DES (3DES)](#hashtdes--triple-des-3des)
-  - [hash/ecdsa — ECDSA Digital Signature](#hashecdsa--ecdsa-digital-signature)
-  - [hash/ed25519 — Ed25519 Digital Signature](#hashed25519--ed25519-digital-signature)
-  - [hash/x25519 — X25519 Key Exchange](#hashx25519--x25519-key-exchange)
-  - [hash/rand-str — Random String Generation](#hashrand-str--random-string-generation)
+  - [crypto/aes — AES Block Cipher Core (AES-128 / AES-256)](#cryptoaes--aes-block-cipher-core-aes-128--aes-256)
+  - [crypto/aes-cbc — AES-CBC Mode (with PKCS7 Padding, AES-128 / AES-256)](#cryptoaes-cbc--aes-cbc-mode-with-pkcs7-padding-aes-128--aes-256)
+  - [crypto/aes-ctr — AES-CTR Counter Mode (AES-128 / AES-256)](#cryptoaes-ctr--aes-ctr-counter-mode-aes-128--aes-256)
+  - [crypto/aes-gcm — AES-GCM AEAD (NIST SP 800-38D, AES-128 / AES-256)](#cryptoaes-gcm--aes-gcm-aead-nist-sp-800-38d-aes-128--aes-256)
+  - [crypto/des — DES Encryption/Decryption (ECB mode)](#cryptodes--des-encryptiondecryption-ecb-mode)
+  - [crypto/rsa — RSA Modular Exponentiation](#cryptorsa--rsa-modular-exponentiation)
+  - [crypto/md5 — MD5 (128-bit)](#cryptomd5--md5-128-bit)
+  - [crypto/sha1 — SHA-1 (160-bit)](#cryptosha1--sha-1-160-bit)
+  - [crypto/sha256 — SHA-256 (256-bit)](#cryptosha256--sha-256-256-bit)
+  - [crypto/sha512 — SHA-512 (512-bit)](#cryptosha512--sha-512-512-bit)
+  - [crypto/crc-32 — CRC32 Checksum](#cryptocrc-32--crc32-checksum)
+  - [crypto/fnv-1a-32 — FNV-1a Non-cryptographic Hash](#cryptofnv-1a-32--fnv-1a-non-cryptographic-hash)
+  - [crypto/rand — Random Number Generator (xorshift32)](#cryptorand--random-number-generator-xorshift32)
+  - [crypto/x509 — X.509 Certificate DER Parsing](#cryptox509--x509-certificate-der-parsing)
+  - [crypto/hmac — HMAC Message Authentication Code](#cryptohmac--hmac-message-authentication-code)
+  - [crypto/hkdf — HKDF Key Derivation (RFC 5869)](#cryptohkdf--hkdf-key-derivation-rfc-5869)
+  - [crypto/pbkdf2 — PBKDF2 Key Derivation (RFC 2898)](#cryptopbkdf2--pbkdf2-key-derivation-rfc-2898)
+  - [crypto/argon2 — Argon2 Memory-hard Key Derivation](#cryptoargon2--argon2-memory-hard-key-derivation)
+  - [crypto/scrypt — scrypt Key Derivation](#cryptoscrypt--scrypt-key-derivation)
+  - [crypto/sha224 — SHA-224 (224-bit)](#cryptosha224--sha-224-224-bit)
+  - [crypto/sha384 — SHA-384 (384-bit)](#cryptosha384--sha-384-384-bit)
+  - [crypto/sha3 — SHA-3 (Keccak)](#cryptosha3--sha-3-keccak)
+  - [crypto/blake2 — BLAKE2 Hash](#cryptoblake2--blake2-hash)
+  - [crypto/crc-16 — CRC16 Checksum](#cryptocrc-16--crc16-checksum)
+  - [crypto/crc-64 — CRC64 Checksum](#cryptocrc-64--crc64-checksum)
+  - [crypto/fnv — FNV-1 Hash](#cryptofnv--fnv-1-hash)
+  - [crypto/base32 — Base32 Encoding/Decoding (RFC 4648)](#cryptobase32--base32-encodingdecoding-rfc-4648)
+  - [crypto/chacha20-poly1305 — ChaCha20-Poly1305 AEAD](#cryptochacha20-poly1305--chacha20-poly1305-aead)
+  - [crypto/rc4 — RC4 Stream Cipher](#cryptorc4--rc4-stream-cipher)
+  - [crypto/tdes — Triple DES (3DES)](#cryptotdes--triple-des-3des)
+  - [crypto/ecdsa — ECDSA Digital Signature](#cryptoecdsa--ecdsa-digital-signature)
+  - [crypto/ed25519 — Ed25519 Digital Signature](#cryptoed25519--ed25519-digital-signature)
+  - [crypto/x25519 — X25519 Key Exchange](#cryptox25519--x25519-key-exchange)
 - [Data Exchange](#data-exchange)
   - [json — JSON Parsing and Generation](#json--json-parsing-and-generation)
+  - [toml — TOML Parsing and Generation](#toml--toml-parsing-and-generation)
+  - [yaml — YAML 1.2 Parsing and Generation](#yaml--yaml-12-parsing-and-generation)
 - [Others](#others)
   - [unicode — Unicode Support](#unicode--unicode-support)
   - [uuid — UUID v4 Generation and Parsing](#uuid--uuid-v4-generation-and-parsing)
@@ -169,7 +168,7 @@ Nolang type to LLVM mapping:
 
 - **Variable-length array `[]t`**: underlying `{ t*, i64 }` (data, len)
 - **Fixed-length array `[n]t`**: LLVM fixed-size array
-- **String `str`**: union type (short ≤127 bytes stored on stack / long stored on heap), supports `s[i]`, `s[i..j]`, `s + t`
+- **String `str`**: union type (short ≤127 bytes stored on stack / long stored on heap). `s[i]` returns `char` (a Unicode code point, NOT a byte); `s[a..b]` returns a `str` view with **code-point** bounds; a `char` implicitly converts to `str`; concat via `s - t` (or `s + t`)
 - **Enum/Union**: `option` tagged enum (`ok t` / `nil` / `err str`)
 - **Struct**: must be multi-line definition, fields without commas
 - **Map**: underlying linked-hash-map
@@ -231,7 +230,7 @@ io.err('err-no-newline')       // Low-level command, no newline (stderr)
 
 #### char — Character Operations
 
-char is essentially i32 (Unicode code point), all operations are provided as methods:
+char is a single **Unicode scalar value** (valid range `0 ..= 0x10FFFF`), stored as **`i32`** — deliberately not i64 (a code point needs only 21 bits). All operations are provided as methods:
 
 ```no
 c char = 'A'
@@ -248,13 +247,24 @@ c.to-bytes()       // Unicode → UTF-8 bytes (method)
 c.to-str()         // Unicode → string (UTF-8, method)
 ```
 
+> **`char` ↔ `str`:** `str[i]` returns `char`, and a `char` **implicitly converts to `str`** (UTF-8 encoded) — `a str = s[0]`, `'x' - s[0]`, and `s[0] == 'h'` all work without an explicit `char.to-str()`.
+>
+> **Storage & range:** `char` is stored as **i32** and must hold a valid code point (`0 ..= 0x10FFFF`); an out-of-range literal (`c char = 0x110000`) is a **compile-time error**. **char arithmetic is allowed and normal** (`z = a + 25`, `u = ch - 32`), evaluated at i32 width on the code point; unlike the integer family it does **not** default to `option<int>`, so it never triggers the unhandled-overflow error. For offsets/counters or wide/bignum math, convert to `i32`/`i64` first.
+>
+> **`str_from_cp(cp char) -> ?str`:** the source signature takes a `char`. Only when calling the external runtime is that i32 argument **zero-extended to i64** to match `@str_from_cp`'s IR parameter — a call-boundary conversion that does not make `char` itself an i64.
+
 #### str — String Operations
 
 ```no
 ok = a.eq(b, n)               // Equality comparison (method)
+ok = a.eq-full(b)             // Full string equality (method)
 dst = s.copy()                // String copy (method)
 s.fill(val byte)              // Fill with byte value (method)
 pos = s.index(sub)            // Substring position
+pos = s.index-from(sub, from) // Substring position from index
+pos = s.last-index(sub)       // Last index of substring
+pos = s.rindex(sub)           // Reverse index of substring
+pos = s.rindex-from(sub, from) // Reverse index from position
 ok = s.contains(sub)          // Contains
 ok = s.starts-with(sub)       // Prefix check
 ok = s.ends-with(sub)         // Suffix check
@@ -265,6 +275,8 @@ out = s.repeat(n)             // Repeat
 out = s.slice(start, end)     // Slice
 b = s.to-bytes()              // Convert to []byte
 s = b.to-str()                // []byte to str (method)
+hex = s.to-hex()              // Convert to hex string
+out = s.from-hex()            // Parse hex string to []byte (returns ?[]byte)
 v = s.to-i64()                // String to i64 (returns ?i64)
 v = s.to-i8()                 // String to i8 (returns ?i8)
 v = s.to-i16()                // String to i16 (returns ?i16)
@@ -275,21 +287,31 @@ v = s.to-u32()                // String to u32 (returns ?u32)
 v = s.to-u64()                // String to u64 (returns ?u64)
 v = s.to-byte()               // String to byte (returns ?byte)
 v = s.to-f64()                // String to f64 (returns ?f64)
+v = s.to-f32()                // String to f32 (returns ?f32)
 v = s.to-bool()               // String "true"/"false" to bool (returns ?bool)
 s = v.to-str()                // i64 to string (method)
 out = s.reverse()             // Reverse
 c = s.compare(b)              // Lexicographic comparison
 n = s.count()                 // Total code point count
+cp = s.decode-cp()            // Decode first Unicode code point (method)
 val = s.replace-char(old, new) // Replace character (returns result string)
+val = s.replace-str(old, new) // Replace substring (returns result string)
+val = s.replace-n(old, new, n) // Replace up to n occurrences
 out = s.trim-char(c)          // Trim specified character
 ok = s.empty()                // Is empty
 s.clear()                     // Clear (len=0, in-place)
 out = s.with-cap(cap)         // Create new string with specified capacity (len=0)
 out = s.with-len(len)         // Create new string with specified length (len=cap)
-out = s.with-cap-len(cap, len) // Create new string with specified capacity and length
+out = s.with-len-cap(len, cap) // Create new string with specified length and capacity
 parts = s.split(sep)          // Split by separator (returns []str, method)
-out = ss.join(sep)            // Join []str with separator (method)
+parts = s.split-n(sep, n)     // Split with max n parts (method)
+lines = s.lines()             // Split into lines (method)
+fields = s.fields()           // Split into whitespace-delimited fields (method)
+parts = ss.join(sep)          // Join []str with separator (method)
+cp = s.at(idx)                // Get character at index (method)
 ```
+
+> **Indexing cost:** `s[i]` is **O(i)** — it scans forward over UTF-8 to the i-th code point (O(1) only when the compiler can prove the string is pure ASCII). For byte-wise access use the escape hatch `s.byte(i)`, which is always **O(1)**. `for c <- s` walks code points in a single **O(n)** pass — prefer it over `s[i]` inside a loop, which degrades to **O(n²)** (and triggers a `no vet` / LSP warning).
 
 #### number — Numeric Operations
 
@@ -307,11 +329,25 @@ r = number.pow(a, n)                 // Integer power
 number.i64-to-f64(v)                 // Numeric conversion
 number.f64-to-i64(v)
 s = int.to-str()              // i64 to string (method)
+s = i8.to-str()                      // i8 to string (method)
+s = i16.to-str()                     // i16 to string (method)
+s = i32.to-str()                     // i32 to string (method)
+s = u8.to-str()                      // u8 to string (method)
+s = u16.to-str()                     // u16 to string (method)
+s = u32.to-str()                     // u32 to string (method)
+s = u64.to-str()                     // u64 to string (method)
+s = byte.to-str()                    // byte to string (method)
+s = char-to-str(c)                   // char to string
+s = f64.to-str()                     // f64 to string (method)
+s = f32.to-str()                     // f32 to string (method)
 q = number.div(a, b)                 // Integer division quotient
 r = number.mod(a, b)                 // Modulo
 number.swap(a, b)                    // Swap
 yes = float.is-nan()          // NaN check (method)
 yes = float.is-inf()          // Inf check (method)
+
+// Constants
+LN10                            // ln(10) ≈ 2.302585
 
 // Range constants
 i8.MIN / MAX                  // -128 / 127
@@ -335,6 +371,49 @@ s = []byte.to-str()             // []byte to str (method)
 s = []byte.to-hex()             // []byte → uppercase hex string
 s = []byte.to-hex-lower()       // []byte → lowercase hex string
 s = byte.to-str()               // byte to str (method)
+
+// Constants
+HEX-UPPER = '0123456789ABCDEF'
+HEX-LOWER = '0123456789abcdef'
+```
+
+#### txt — Fixed-length Text Type
+
+`txt` is a fixed 256-byte string type:
+- Layout: `{ [255]byte data, byte len }` — 255 bytes data + 1 byte length = 256 bytes total (the `len` **field** stores the BYTE count, 0-255)
+- No heap allocation (all on stack)
+- Must use type annotation: `t txt = 'abc'`
+- Max content length: 255 bytes
+
+> **Length semantics (aligned with `str`):** `t.len()` returns the **code-point count** (equal to `t.count()`); `t.len-bytes()` returns the **byte count**. Index/slice/append/compare are all byte-based, so loop bounds over `.byte(i)` / `t[i]` **must use `t.len-bytes()`**, not `t.len()`. For pure ASCII they are equal; with multi-byte UTF-8 content, `t.len() < t.len-bytes()`.
+
+```no
+t txt = 'hello'              // Must use type annotation
+n = t.len()                  // Code-point count (i64), == t.count()
+b = t.len-bytes()            // Byte count (i64) — use this for byte loop bounds
+c = t[0]                     // Index access (byte)
+ok = t.eq(b txt)             // Equality comparison
+dst = t.copy()               // Copy
+t.fill(val byte)             // Fill with byte value
+t.clear()                    // Clear (len=0)
+ok = t.empty()               // Is empty
+s = t.to-str()               // Convert to str
+out = t.to-bytes()           // Convert to []byte
+hex = t.to-hex()             // Convert to hex string
+out = txt.from-str(s str)   // Create txt from str (truncate to 255)
+out = txt.from-bytes(b []byte) // Create txt from []byte (truncate to 255)
+pos = t.index(sub txt)       // Find substring position
+ok = t.contains(sub txt)     // Contains
+ok = t.starts-with(sub txt)  // Prefix check
+ok = t.ends-with(sub txt)    // Suffix check
+t.append(b byte)            // Append single byte
+t.append-str(s str)          // Append str
+t.append-txt(t2 txt)         // Append txt
+t.truncate(n i64)            // Truncate to n bytes
+out = t.reverse()            // Reverse content
+out = t.slice(start, end)   // Slice [start, end)
+r = t.compare(b txt)        // Lexicographic comparison (-1/0/1)
+b = t.at(idx i64)           // Safe index access
 ```
 
 #### vec — Slice Operations
@@ -409,9 +488,46 @@ pid = os.get-pid()
 // System information
 name = os.host-name()
 arch = os.get-arch()
-msg = os.strerror(errnum)
+msg = os.strerror(errnum)              // Convert errno to human-readable message
+errno = os.get-errno()                 // Get last errno value
 
-// Time
+// User and group
+uid = os.getuid()                      // Current user ID
+gid = os.getgid()                      // Current group ID
+euid = os.geteuid()                    // Effective user ID
+egid = os.getegid()                    // Effective group ID
+gids = os.getgroups()                  // Supplementary group IDs
+login = os.get-login()                 // Login user name
+hostid = os.get-host-id()              // Host ID (32-bit)
+
+// File permissions and info
+ok = os.ch-mod(path, mode)             // Change file permissions
+ok = os.chown(path, uid, gid)          // Change file owner/group
+mode = os.stat-mode(path)              // Get file mode bits
+uid = os.stat-uid(path)                // Get file owner uid
+gid = os.stat-gid(path)                // Get file group gid
+mtime = os.stat-mtime(path)            // Get file modification time
+
+// System configuration
+val = os.sysconf(name)                 // Query system config limit
+n = os.num-cpu()                       // Number of online CPUs
+u = os.uname()                         // Kernel and architecture info (utsname)
+
+// Process control
+ok = os.set-priority(which, who, prio) // Set process priority
+prio = os.get-priority(which, who)     // Get process priority
+pid = os.set-sid()                     // Create new session, return pgid
+ok = os.signal(sig, handler)           // Set signal handler (0=DFL, 1=IGN)
+ok = os.flock(fd, op)                  // File advisory lock (1=SH,2=EX,4=UN,8=NB)
+
+// Misc system
+val = os.sysctl(name)                  // Query sysctl parameter (returns str, ok)
+name = os.get-domain-name()            // NIS domain name
+os.syslog(priority, msg)               // Write to system log
+ok = os.chroot(path)                   // Change root directory (needs root)
+name = os.ttyname(fd)                  // Get terminal name (returns str)
+
+// Time (builtins, map to nolang.now_s/ms/us/ns and nolang.sleep_s/us/ns)
 sec = os.now()
 ms = os.now-ms()
 us = os.now-us()
@@ -423,11 +539,23 @@ os.sleep-ns(ns)
 // Command-line arguments
 count = os.args()
 val = os.arg(idx)
+
+// utsname struct (returned by os.uname())
+utsname {
+    sysname str
+    nodename str
+    release str
+    version str
+    machine str
+}
+
+// Windows-specific
+ok = os.win-wsa-startup()              // Initialize Winsock 2.2 (Windows only)
 ```
 
 #### fs — File System Tools
 
-Wraps open files with the `file` struct and paths with the `path` struct. Defines the `fd` newtype (`fd = i64`) to prevent file descriptors from being confused with arbitrary `i64` values.
+Wraps open files with the `file` struct and paths with the `path` struct. Defines the `fd` newtype (`fd = i64`) to prevent file descriptors from being confused with arbitrary `i64` values. Also provides an `embed` struct for compile-time embedded filesystems (via `#{embed='dir/path'}`).
 
 ```no
 // fd newtype (underlying i64, type-distinct from i64)
@@ -475,44 +603,121 @@ file-opts {
     truncate bool
     append bool
 }
-f = fs.open(path, opts)             // Open file, returns nil on failure
+f = fs.open(path, opts)             // Open file, returns ?file on success, err on failure
 
 // file methods
-read-n = f.read(buf, n)          // Read up to n bytes
-line = f.read-line()              // Read one line (?str, nil=EOF)
-content, n = f.read-all()        // Read entire file
-written = f.write(data, n)       // Write n bytes
-ok = f.write-all(data, n)        // Write all (overwrite)
-ok = f.append(data, n)           // Append data
-ok = f.copy-to(dst-path)         // Copy to target path
-ok = f.close()                   // Close (standard files are not auto-closed)
-yes = f.is-open()                // Is open
-sz = f.size()                    // File size
+read-n = f.read(buf, n)              // Read up to n bytes into buf
+line = f.read-line()                  // Read one line (?str, nil=EOF or error)
+content = f.read-bytes()             // Read entire file as ?[]byte (nil=empty, err=failure)
+content = f.read-str()               // Read entire file as ?str (nil=empty, err=failure)
+written = f.write(data, n)           // Write n bytes from data
+ok = f.write-str(data)               // Write string to file (overwrite), returns ?bool
+ok = f.write-bytes(data)             // Write []byte to file (overwrite), returns ?bool
+ok = f.append(data, n)               // Append data to file
+ok = f.copy-to(dst-path)             // Copy file to target path
+ok = f.close()                       // Close (standard files stdin/stdout/stderr are not closed)
+yes = f.is-open()                    // Check if file is open (fd >= 0)
+sz = f.size()                        // File size via fstat(fd), eliminates TOCTOU
 
-// Built-in functions
-fd = fs.open-read(path)             // Open read-only
-fd = fs.open-write(path)            // Open for writing (O_CREAT|O_TRUNC, 0644)
-fd = fs.open-file(path, flags, mode) // Open with custom flags
-n = fs.read(fd, buf, n)             // Low-level read
-written = fs.write(fd, data, n)     // Low-level write
+// Built-in functions (registered in src/builtin/os.go, documented as comments in fs.no)
+// These are ForwardFunc/CLibCall builtins — no .no implementation needed.
+
+// File read/write (deprecated, prefer read-bytes/write-bytes for error handling)
+// [deprecated] read-file: 改用 read-bytes（支援錯誤處理、TOCTOU 安全、循環 read）
+//   空切片表示失敗，無法區分空檔案與錯誤
+// [deprecated] write-file: 改用 write-bytes（支援錯誤處理、循環 write）
+//   無法區分部分寫入與完全失敗
+data = fs.read-file(path)           // [deprecated] Read entire file as []byte (empty on error, cannot distinguish empty from failure)
+ok = fs.write-file(path, data)      // [deprecated] Write []byte to file (overwrite). Returns true on success
+fd = fs.open-read(path)             // Open read-only (O_RDONLY)
+fd = fs.open-write(path)            // Open for writing (O_WRONLY|O_CREAT|O_TRUNC, 0644)
+fd = fs.open-file(path, flags, mode) // Open with custom flags and permissions
+n = fs.read(fd, buf, n)             // Low-level read from fd into buf
+written = fs.write(fd, data, n)     // Low-level write to fd
 ok = fs.close(fd)                   // Low-level close
-ok = fs.remove(path)                // Delete file
-ok = fs.rename(old, new)            // Rename
-ok = fs.is-file(path)               // Check if it is a file
-ok = fs.is-dir(path)                // Check if it is a directory
-sz = fs.stat-size(path)             // Get file size
-sz = fs.file-size(path)             // Same as stat-size
-line = fs.get-line()                // Read one line from standard input (?str, nil=EOF)
-ok = fs.copy-file(src, dst)         // Copy file
 
-// macOS open() flag constants
+// File management
+ok = fs.remove(path)                // Delete file (unlink)
+ok = fs.rename(old, new)            // Rename file
+ok = fs.symlink(target, linkpath)   // Create symbolic link
+ok = fs.link(oldpath, newpath)      // Create hard link
+ok = fs.copy-file(src, dst)         // Copy file content
+
+// File information
+ok = fs.exists(path)                // Check if path exists (follows symlinks)
+ok = fs.is-file(path)               // Check if regular file
+ok = fs.is-dir(path)                // Check if directory
+sz = fs.stat-size(path)             // Get file size (returns ?i64)
+sz = fs.file-size(path)             // Same as stat-size (returns ?i64)
+sz = fs.fstat-size(fd)              // Get file size via fstat(fd), eliminates TOCTOU (returns ?i64)
+ok = fs.lstat(path)                 // Get symlink info (does not follow link target)
+
+// note: file mode/owner/mtime getters live in the `os` package
+// (os.stat-mode / os.stat-uid / os.stat-gid / os.stat-mtime)
+
+// Directory operations
+dirp = fs.open-dir(path)             // Open directory (returns handle, 0 on failure)
+name = fs.read-dir(dirp)             // Read next dir entry (returns str, ok bool)
+ok = fs.close-dir(dirp)              // Close directory handle
+names = fs.list-dir(path)            // List all entry names (includes . and ..)
+names = fs.dir-entries(path)          // List entries (excludes . and ..)
+paths = fs.walk(root)                // Recursively walk directory tree
+
+// Path resolution
+abs = fs.realpath(path)              // Resolve to absolute canonical path
+target = fs.readlink(path)           // Read symbolic link target (returns str, ok bool)
+
+// Temp file/directory
+name, fd = fs.mkstemp(tmpl)          // Create temp file (template ending XXXXXX)
+name = fs.mkdtemp(tmpl)             // Create temp directory (template ending XXXXXX)
+
+// Special files
+ok = fs.mkfifo(path, mode)          // Create named pipe (FIFO)
+ok = fs.mknod(path, mode, dev)      // Create special file (device node)
+ok = fs.truncate(path, length)      // Truncate/extend file to length
+fs.sync()                           // Flush filesystem buffers to disk
+ok = fs.touch-file(path)            // Update file timestamps to current time
+ok = fs.utime(path, atime, mtime)   // Set file access and modification times
+ok = fs.rmdir(path)                 // Remove empty directory
+
+// Standard input
+line = fs.get-line()                // Read one line from stdin (?str, nil=EOF)
+
+// Convenience wrappers (Nolang-implemented in fs.no, call builtins internally)
+content = fs.read-str(path)          // Read entire file as ?str (nil=empty, err=failure)
+content = fs.read-bytes(path)        // Read entire file as ?[]byte (nil=empty, err=failure)
+ok = fs.write-str(path, data)        // Write string to file (overwrite), returns ?bool
+ok = fs.write-bytes(path, data)      // Write []byte to file (overwrite), returns ?bool
+
+// embed: compile-time embedded filesystem (initialized by #{embed='dir/path'})
+//   #{embed='../frontend/dist'}
+//   DIST fs.embed
+//   data = DIST.read('index.html')   // Read embedded file, returns ([]byte, bool)
+//   ok = DIST.exists('css/style.css') // Check if embedded file exists
+embed {
+    count i64
+    paths str                        // All paths concatenated (\0 separated)
+    pathStarts []i64                 // Start offset of each path in paths
+    pathLens []i64                   // Length of each path
+    blob []byte                      // All file contents concatenated
+    dataStarts []i64                 // Start offset of each file in blob
+    dataLens []i64                   // Length of each file
+}
+
+// Windows-specific (only available on win-amd64/win-arm64)
+// (these directory-scan helpers are registered in the `os` package)
+bufptr = os.win-find-first-file(path) // FindFirstFileA, returns handle (0=failure)
+name = os.win-find-next-file(bufptr)  // FindNextFileA, returns (name, ok)
+ok = os.win-find-close(bufptr)        // FindClose
+
+// open() flag constants (platform-specific, shown for macOS)
 O-RDONLY = 0
 O-WRONLY = 1
 O-RDWR = 2
-O-CREAT = 512
-O-TRUNC = 1024
-O-APPEND = 8
-O-EXCL = 2048
+O-CREAT = 512       // macOS=512, Linux=64, Windows=256
+O-TRUNC = 1024      // macOS=1024, Linux=512, Windows=512
+O-APPEND = 8        // macOS=8, Linux=1024, Windows=8
+O-EXCL = 2048       // macOS=2048, Linux=128, Windows=1024
 ```
 
 #### env — Environment Variables (simplified wrapper)
@@ -645,6 +850,13 @@ re = regexp{
 }
 matched = re.matches(text)        // Check whether it matches
 result = re.find(text)           // Find first matching substring
+pos = re.match-at(text, start)    // Match at specific position
+ok = re.compile()               // Compile pattern (method)
+
+// Top-level convenience functions
+re = regexp-compile(pattern)      // Compile regex pattern
+result = regexp-find(pattern, text) // Find first match
+yes = regexp-match(pattern, text)   // Check if pattern matches text
 ```
 
 #### process — Process Operations
@@ -704,8 +916,17 @@ pid = process.parent-pid()          // Parent process ID
 p.close()                          // Close all pipes and wait
 
 // Convenience functions
-status = process.process-run(cmd)           // Execute shell command
-content, code = process.new().output(program, arg) // Execute and capture output
+code = process.shell(cmd)                   // Execute via shell, return exit code
+pid = process.spawn(cmd)                    // Spawn child process, return pid
+status = process.wait(pid)                  // Wait for specific PID
+content, code = process.new().output(program, arg) // Execute and capture stdout
+out, stderr, code, err = process.cmd(program, args, dir, input, env, timeout, merge-err) // Run command
+res = process.exec(program, args, opts)     // opts cmdopts, returns exec-result
+
+// Process listing
+pids = process.list-all()                     // List all processes
+pids = process.find-by-name(name)             // Find by process name
+pids = process.find-match(pattern)             // Find matching pattern
 ```
 
 #### net — Network Operations
@@ -716,9 +937,12 @@ Provides TCP networking capabilities, including server listening, client connect
 // Network constants
 AF-INET = 2
 SOCK-STREAM = 1
+SOCK-DGRAM = 2
 SOL-SOCKET = 65535
 SO-REUSEADDR = 4
+SO-RCVTIMEO = 18
 BACKLOG = 128
+NET-BUF-SIZE = 4096
 
 // listener struct
 listener {
@@ -729,8 +953,10 @@ listener {
 l = listener{}
 ok = l.listen(host, port)            // Establish TCP listener (socket+setsockopt+bind+listen)
 c = l.accept()                       // Accept connection (?conn, nil=no connection)
-l.close()                           // Close listening socket
+c = l.accept-with-timeout(ms)        // Accept with timeout (?conn)
 fd = l.fd-of()                       // Get fd
+l.set-timeout(ms)                   // Set accept timeout
+l.close()                           // Close listening socket
 
 // conn struct
 conn {
@@ -744,12 +970,52 @@ written = c.send(data)               // Send string
 read-n = c.recv(buf, n)              // Receive data into buf
 line = c.recv-line()                 // Receive one line (?str, nil=EOF, max 4096 bytes)
 content, total = c.recv-all()        // Receive all until connection closed
+read-n = c.recv-with-timeout(buf, n, ms) // Receive with timeout
+written = c.send-with-timeout(data, ms) // Send with timeout
+c.set-recv-timeout(ms)             // Set receive timeout
+c.set-timeout(ms)                 // Set send/receive timeout
 c.close()                           // Close connection
 fd = c.fd-of()                       // Get fd
 
 // Convenience functions
-l = net.net-listen-on(host, port)        // Create listener and start listening (?listener)
-c = net.net-dial-to(host, port)          // Create connection and dial (?conn)
+l = net.listen-on(host, port)        // Create listener and start listening (?listener)
+c = net.dial-to(host, port)          // Create connection and dial (?conn)
+c = net.dial-timeout(host, port, ms) // Dial with timeout (?conn)
+
+// UDP operations
+uc = udp-conn{}
+ok = uc.open(host, port)             // Open UDP connection
+uc.send(data)                      // Send string
+uc.send-bytes(data)                // Send []byte
+data, n = uc.recv(buf, n)           // Receive
+uc.recv-bytes(buf, n)              // Receive []byte
+uc.set-timeout(ms)                 // Set timeout
+uc.close()
+
+// ICMP/ping operations
+ic = icmp-conn{}
+ok = ic.open()                      // Open ICMP socket
+ok = ic.ping-host(host, count)       // Ping host
+ok = ic.ping-once(host)              // Single ping
+rtt = ping(host)                     // Ping and get RTT
+rtts = ping-count(host, count)      // Ping multiple times
+
+// System info (macOS)
+arps = arp-list()                    // ARP table entries
+routes = route-list()               // Route table entries
+ifs = ifconfig-list()               // Network interfaces
+
+// Encrypted connection support
+ec = enc-conn{}
+ok = ec.init(key)                    // Initialize encryption
+ec.send-encrypted(data)             // Send encrypted
+ec.recv-encrypted(buf)              // Receive encrypted
+ec.gen-iv()                        // Generate IV
+c = enc-dial(host, port, key)        // Dial encrypted
+ec = enc-accept(fd, key)            // Accept encrypted
+
+// WebSocket helper
+parts = split-ws(url)                // Split WebSocket URL into host/port/path
 ```
 
 #### net/ip — IP Address Operations
@@ -851,7 +1117,7 @@ Provides an HTTP/1.1 protocol client, supporting GET, POST, PUT, DELETE, PATCH a
 
 ```no
 // Structs
-http-request {
+http.request {
     method str
     url str
     body str
@@ -869,18 +1135,27 @@ http.response {
 }
 
 // Convenience functions
-resp = http.http-get(url)                        // GET request (?http.response)
-resp = http.http-post(url, body)                  // POST request (?http.response)
-resp = http.http-do(method, url, body)            // Custom method (?http.response)
+resp = http.get(url)                              // GET request (?http.response)
+resp = http.post(url, body)                       // POST request (?http.response)
+resp = http.put(url, body)                        // PUT request (?http.response)
+resp = http.delete(url)                           // DELETE request (?http.response)
+resp = http.patch(url, body)                      // PATCH request (?http.response)
+resp = http.do(method, url, body)                 // Custom method (?http.response)
+resp = http.get-auth(url, user, password)         // GET with basic auth (?http.response)
+resp = http.post-auth(url, body, user, password)  // POST with basic auth (?http.response)
 
 // Using request object
-req = http-request{}
+req = http.request{}
 req.init('POST', url, body)
 req.add-header('Content-Type', 'application/json')
-resp = http.http-do-req(req)                      // Send request (?http.response)
+ok = http.set-basic-auth(req, user, password)     // Set Basic auth header (bool)
+ok = http.set-bearer-auth(req, token)             // Set Bearer token header (bool)
+ok = http.set-api-key(req, header-name, api-key)  // Set API-key header (bool)
+resp = http.do-req(req)                           // Send request (?http.response)
 
-// Parse response headers
+// Parse & read response headers
 resp.parse-headers()
+val = resp.get-header(name)                       // Look up a header value (?str)
 ```
 
 #### net/http2 — HTTP/2.0 Client (RFC 7540)
@@ -908,15 +1183,26 @@ http2-conn {
 }
 
 // Connection and request
-c = http2.http2-connect(host, port)                // Establish connection (?http2-conn)
-resp = http2.http2-do(method, url, body)           // Send request (?http.response)
+c = http2.connect(host, port)                // Establish h2c connection (?http2-conn)
+c = http2.connect-tls(host, port)            // Establish TLS connection (?http2-conn)
+resp = http2.do(method, url, body)           // Send request (?http.response)
+resp = http2.get(url)                        // GET request
+resp = http2.post(url, body)                 // POST request
+resp = http2.put(url, body)                   // PUT request
+resp = http2.delete(url)                     // DELETE request
+resp = http2.patch(url, body)                // PATCH request
+
+// Connection methods
+ok = c.send-data(data, stream-id)           // Send data on stream
+ok = c.send-headers(headers, count, stream-id, end-stream) // Send headers
+ok = c.send-settings()                      // Send SETTINGS frame
+frame = c.recv-frame()                       // Receive frame
+c.close()
 
 // Frame operations
 frame = http2-frame{}
 pos = frame.parse(data, pos)                 // Parse frame (?i64)
 pos = frame.serialize(buf, pos)              // Serialize frame
-ok = c.send-frame(frame)                     // Send frame
-frame = c.recv-frame()                       // Receive frame (?http2-frame)
 ```
 
 #### net/http3 — HTTP/3.0 Client (RFC 9114)
@@ -934,15 +1220,26 @@ HTTP3-METHOD-HEAD = 'HEAD'
 HTTP3-METHOD-OPTIONS = 'OPTIONS'
 
 // Convenience functions
-c = http3.http3-connect(host, port)                // Establish QUIC connection (?http3-conn)
-resp = http3.http3-send-request(c, method, path, headers, body) // Send request (?http.response)
-resp = http3.http3-get(url)                        // GET request (?http.response)
-resp = http3.http3-post(url, body)                 // POST request (?http.response)
+c = http3.connect(host, port)                // Establish QUIC connection (?http3-conn)
+resp = http3.http3-do(method, url, body)     // Send request (?http.response)
+resp = http3.get(url)                        // GET request
+resp = http3.post(url, body)                 // POST request
 
-// QPACK header encoding/decoding
-buf, n = http3.qpack-encode-header(name, value)
-buf, n = http3.qpack-encode-headers(names, values, count)
-name, value, pos = http3.qpack-decode-header(buf, pos)
+// Frame operations
+frame, pos = http3.parse-frame(data, pos)    // Parse HTTP/3 frame
+pos = http3.encode-frame(buf, pos, type, flags, payload) // Encode frame
+pos = http3.encode-data-frame(buf, pos, data) // Encode DATA frame
+pos = http3.encode-headers-frame(buf, pos, headers) // Encode HEADERS frame
+pos = http3.encode-settings-frame(buf, pos, settings) // Encode SETTINGS frame
+
+// Header operations
+pos = http3.encode-header(buf, pos, name, value) // Encode single header
+pos = http3.encode-headers(buf, pos, names, values, count) // Encode multiple headers
+name, value, pos = http3.decode-header(buf, pos) // Decode single header
+
+// URL and response
+parts = http3.parse-url(url)                // Parse URL
+val = resp.get-header(name)                  // Get response header
 ```
 
 #### net/ws — WebSocket Client and Server (RFC 6455)
@@ -963,6 +1260,9 @@ c = s.accept()                               // Accept connection (?ws-server-co
 msg = c.recv()                               // Receive message (?ws-message)
 ok = c.send-text(text)                       // Send text
 ok = c.send-binary(data)                     // Send binary
+ok = c.send-ping()                           // Send ping
+ok = c.send-pong()                           // Send pong
+ok = c.send-close()                          // Send close
 c.close()
 
 // Client
@@ -970,7 +1270,17 @@ c = ws.connect(url)                             // Connect to server (?ws-client
 msg = c.recv()                               // Receive message (?ws-message)
 ok = c.send-text(text)                       // Send text
 ok = c.send-binary(data)                     // Send binary
+ok = c.send-ping()                           // Send ping
+ok = c.send-pong()                           // Send pong
+ok = c.send-close()                          // Send close
+yes = c.is-connected()                       // Connection state
 c.close()
+
+// WebSocket utilities
+frame = build-frame(op, data)                // Build WebSocket frame
+accept = compute-accept(key)                // Compute Sec-WebSocket-Accept
+client-key = gen-client-key()                // Generate client key
+mask-key = gen-mask-key()                    // Generate mask key
 ```
 
 #### net/tls — TLS 1.2/1.3 Client (Pure Nolang Implementation)
@@ -979,10 +1289,16 @@ Provides TLS encrypted connections, supporting TLS 1.2 and 1.3:
 
 ```no
 // Connection
-c = tls.tls-dial(host, port)                     // Establish TLS connection (?tls.conn)
+c = tls.dial(host, port)                        // Establish TLS connection (?tls.conn)
+c = tls.dial-12(host, port)                     // TLS 1.2 connection (?tls.conn)
 n = c.send(data)                             // Send encrypted data (?i64)
 n = c.recv(buf, n)                           // Receive decrypted data (?i64)
 c.close()
+
+// Server support
+ok = tls.server-listen(host, port, cert, key)    // Start TLS server
+ok = tls.server-accept(fd)                       // Accept TLS connection
+ok = tls.https-serve-once(fd, cert, key)        // Handle one HTTPS request
 ```
 
 #### net/client — High-level TCP Client
@@ -990,12 +1306,13 @@ c.close()
 Wraps the `conn` struct, providing auto-reconnect and other features:
 
 ```no
-c = client.net-client(host, port)                   // Create client (?client)
+c = client.client-create(host, port)               // Create client (?client)
 ok = c.connect(host, port)                   // Connect
 ok = c.reconnect()                           // Reconnect
 written = c.send(data)                       // Send
 read-n = c.recv(buf, n)                      // Receive
 line = c.recv-line()                         // Receive one line (?str)
+written = c.send-line(line)                  // Send one line (i64)
 response = c.request(data)                   // Request-response mode (?str)
 yes = c.is-connected()                       // Connection state
 c.close()
@@ -1006,7 +1323,7 @@ c.close()
 Provides QUIC transport protocol implementation, serving as the underlying transport layer for HTTP/3:
 
 ```no
-c = quic.quic-dial(host, port)                    // Establish QUIC connection (?quic.conn)
+c = quic.dial(host, port)                    // Establish QUIC connection (?quic.conn)
 n = c.send(data, n)                          // Send data
 n = c.recv(buf, n)                           // Receive data
 c.close()
@@ -1015,16 +1332,50 @@ c.close()
 #### net/server — HTTP Server
 
 ```no
+// HTTP server
 s = server{}
 ok = s.listen(host, port)                    // Start listening
-ok = s.serve()                               // Handle requests
+c = s.accept()                               // Accept connection (?server-conn)
+c = s.accept-nb()                            // Non-blocking accept
+fd = s.fd-of()                               // Get server fd
 s.close()
+
+// server-conn methods
+ok = c.parse()                              // Parse HTTP request
+val = c.get-header(name)                    // Get request header
+val = c.get-cookie(name)                    // Get request cookie
+val = c.get-signed-cookie(name, key)        // Get signed cookie
+c.set-signed-cookie(name, val, key)         // Set signed cookie
+ok = c.verify-basic-auth(user, pass)         // Verify basic auth
+c.recv-more()                               // Receive more data
+c.reset()                                   // Reset connection state
+ok = c.write-status(code)                   // Write status line
+ok = c.write-header(name, value)            // Write header
+ok = c.write-headers-done()                // End headers
+ok = c.write-body(data)                     // Write body
+ok = c.write-text(text)                     // Write text response
+ok = c.write-html(html)                     // Write HTML response
+ok = c.write-json(json-str)                 // Write JSON response
+ok = c.write-error(code, msg)               // Write error response
+ok = c.write-redirect(url)                  // Write redirect response
+c.close()
+
+// HTTPS server
+hs = https-server{}
+ok = hs.listen(host, port, cert, key)       // Start HTTPS listening
+c = hs.accept()                             // Accept HTTPS connection (?https-server-conn)
+hs.close()
+
+// Utility
+yes = secure-compare(a, b)                   // Constant-time string comparison
 ```
 
 #### net/dns — DNS Resolution
 
 ```no
-ip = dns.dns-resolve(host)                       // Resolve hostname (?str)
+ip = dns.resolve(host)                       // Resolve hostname (?str)
+ips = dns.resolve-all(host)                  // Resolve all IPs ([]str)
+ip = dns.resolve-from(server, host)          // Resolve from specific DNS server
 ```
 
 #### net/url — URL Parsing
@@ -1032,6 +1383,19 @@ ip = dns.dns-resolve(host)                       // Resolve hostname (?str)
 ```no
 u = url.url-parse(url)                           // Parse URL
 s = u.to-str()                               // Convert to string
+
+// URL operations
+encoded = url.url-encode(s)                     // URL encode
+encoded = url.url-encode-component(s)           // URL encode component
+decoded = url.url-decode(s)                     // URL decode
+query = url.url-build-query(params, values, count) // Build query string
+joined = url.url-join(base, ref)                // Join URLs
+user, pass = url.url-parse-basic-auth(url)      // Parse basic auth from URL
+auth = url.url-basic-auth(user, pass)           // Build basic auth header
+
+// url-info methods
+q = u.get-query()                        // Get query parameters
+u.set-query(q)                          // Set query parameters
 ```
 
 #### net/cookie — HTTP Cookie
@@ -1040,44 +1404,140 @@ s = u.to-str()                               // Convert to string
 c = cookie{}
 c.parse(set-cookie-header)
 s = c.to-str()
+
+// Cookie parsing and building
+parsed = cookie.parse-header(header)           // Parse Cookie header
+parsed = cookie.parse-set(set-cookie)          // Parse Set-Cookie header
+header = cookie.build-header(c)                // Build Cookie header
+set = cookie.build-set(c)                     // Build Set-Cookie header
+
+// Signed cookies
+ok = cookie.sign(c, key)                      // Sign cookie
+ok = cookie.verify(c, key)                    // Verify signed cookie
+
+// Cookie jar
+jar = cookie.jar{}
+jar.parse-response(set-cookie-headers)          // Parse response cookies
+val = jar.get(name)                           // Get cookie value
+val = jar.get-verified(name, key)             // Get and verify signed cookie
+jar.set(name, val)                            // Set cookie
+jar.set-signed(name, val, key)                // Set signed cookie
+jar.delete(name)                             // Delete cookie
+jar.clear()                                 // Clear all
+n = jar.count-of()                           // Cookie count
+header = jar.build-header()                  // Build Cookie header
 ```
 
 #### net/multipart — Multipart Form Data
 
 ```no
-out = multipart.multipart-encode(fields, boundary)
-fields = multipart.multipart-parse(data, boundary)
+// Reader
+r = multipart-reader{}
+r.init(data, boundary)
+ok = r.next()                                // Move to next part
+name = r.field-name()                        // Current field name
+filename = r.field-filename()                 // Current filename
+data = r.field-data()                         // Current field data
+ct = r.field-content-type()                  // Current content-type
+yes = r.is-file()                            // Whether current part is a file
+yes = r.has-current-part()                  // Whether has current part
+
+// Writer
+w = multipart-writer{}
+w.init()
+w.init-boundary(boundary)
+boundary = w.boundary-of()                   // Get boundary
+ct = w.content-type()                        // Get content-type header
+w.write-field(name, value)                   // Write text field
+w.write-file(name, filename, data)           // Write file field
+w.write-encrypted-field(name, value, key)    // Write encrypted field
+w.write-encrypted-file(name, filename, data, key) // Write encrypted file
+w.close-form()                               // Close form
+
+// Top-level functions
+boundary = multipart-create-boundary()        // Create random boundary
+boundary = multipart-gen-boundary()           // Generate boundary
+boundary = multipart-extract-boundary(content-type) // Extract boundary from content-type
+data = multipart-create(fields, count, boundary) // Create multipart data
+fields = multipart-parse(data, boundary)       // Parse multipart data
+data = multipart-decrypt-field(encrypted, key) // Decrypt field
 ```
 
 #### net/hpack — HPACK Header Compression (HTTP/2)
 
 ```no
-buf, n = hpack.hpack-encode(headers)
-headers = hpack.hpack-decode(buf, n)
+// Table operations
+t = hpack.tables{}
+t.init()                                      // Initialize static+dynamic table
+out = t.encode-header(name, value)            // Encode one header (str)
+names, values, count, ok = t.decode-headers(data) // Decode headers ([]str)
+t.dyn-add(name, value)                        // Add to dynamic table
+idx = t.find(name, value)                     // Find full name/value pair
+idx = t.find-name(name)                       // Find by name only
+name, value, ok = t.lookup(idx)               // Lookup by index
+
+// Primitive integer/string codecs
+out = hpack.encode-int(val, prefix-bits, prefix-byte)   // Encode integer (str)
+val, next-pos = hpack.decode-int(data, pos, prefix-bits) // Decode integer
+out = hpack.encode-str(s)                     // Encode string literal (str)
+out, next-pos = hpack.decode-str(data, pos)   // Decode string literal
 ```
 
 #### net/proxy — Proxy Support
 
 ```no
-c = proxy.proxy-dial(proxy-url, target-host, target-port)
+c = proxy.dial(proxy-url, target-host, target-port)    // Dial via proxy
+c = proxy.connect(proxy-url, host, port)               // Connect via proxy
+c = proxy.dial-auth(proxy-url, host, port, user, pass)  // Dial with auth
+c = proxy.socks5-dial(host, port, target-host, target-port) // SOCKS5 dial
+c = proxy.socks5-connect(host, port, target)           // SOCKS5 connect
+
+// Config-based
+cfg = proxy.config{}
+c = cfg.connect(host, port)                  // Connect via config
+c = cfg.tls-connect(host, port)              // TLS connect via config
+c = proxy.proxy-tls-dial(host, port, target)    // TLS proxy dial
 ```
 
 #### net/pool — Connection Pool
 
 ```no
-p = pool{}
+p = pool.create(capacity)                     // Create pool
+p = pool.with-size(n)                         // Create with size
 p.init(capacity)
 c = p.get()                                  // Get connection from pool
 p.put(c)                                     // Return connection
-p.close()
+p.close-conn(c)                              // Close single connection
+p.close-all()                                // Close all connections
+n = p.total-count()                          // Total connections
+n = p.active-count()                         // Active connections
+n = p.idle-count()                           // Idle connections
 ```
 
 #### net/unix — Unix Domain Socket
 
 ```no
-fd = unix.unix-listen(path)                       // Listen
-fd = unix.unix-dial(path)                         // Connect
-fd = unix.unix-accept(listen-fd)                  // Accept connection
+l = unix.unix-listen-on(path)                  // Listen on Unix socket
+l = unix-listener{}
+ok = l.listen(path)                           // Listen
+c = l.accept()                                // Accept (?unix-conn)
+c = l.accept-with-timeout(ms)                  // Accept with timeout
+fd = l.fd-of()                                // Get fd
+p = l.path-of()                               // Get socket path
+l.set-timeout(ms)                             // Set timeout
+l.close()
+
+c = unix.unix-dial-to(path)                   // Dial Unix socket
+c = unix-dial-timeout(path, ms)               // Dial with timeout
+c = unix-conn{}
+ok = c.dial(path)                             // Connect
+n = c.send(data)                              // Send
+n = c.recv(buf, n)                            // Receive
+n = c.recv-all(buf, n)                        // Receive all
+n = c.recv-with-timeout(buf, n, ms)           // Receive with timeout
+c.set-recv-timeout(ms)                        // Set recv timeout
+c.set-timeout(ms)                             // Set timeout
+c.close()
 ```
 
 ---
@@ -1090,11 +1550,36 @@ fd = unix.unix-accept(listen-fd)                  // Accept connection
 sec = time.now-s()                   // Current Unix timestamp (seconds)
 ms = time.now-ms()                   // Current timestamp (milliseconds)
 us = time.now-us()                   // Current timestamp (microseconds)
-out = time.format-time(t, fmt)        // Format time
+ns = time.now-ns()                   // Current timestamp (nanoseconds)
+sec = time.since-s(start)             // Elapsed since start (seconds)
+ms = time.since-ms(start)             // Elapsed since start (milliseconds)
+us = time.since-us(start)             // Elapsed since start (microseconds)
+time.sleep-s(sec)                    // Sleep (seconds)
 time.sleep-ms(ms)                    // Sleep (milliseconds)
 time.sleep-us(us)                    // Sleep (microseconds)
+time.sleep-ns(ns)                    // Sleep (nanoseconds)
 d = time.duration-between(start, end) // Elapsed (seconds)
 d = time.duration-ms-between(s, e)    // Elapsed (milliseconds)
+d = time.duration-us-between(s, e)    // Elapsed (microseconds)
+
+// Date operations
+yes = time.is-leap(year)               // Check if year is a leap year
+days = time.days-in-month-fn(year, month) // Get days in month
+d = time.unix-to-date(ts)             // Convert Unix timestamp to date struct
+ts = time.date-to-unix(d)              // Date struct to Unix timestamp
+d = time.now-date()                   // Get current date struct
+s = time.format-date(d)               // Format date struct to string
+s = time.format-time-str(ts)          // Format Unix timestamp to time string
+ts = time.parse-date(s)                // Parse date string (?i64)
+s = time.format-duration(sec)         // Format duration to human-readable string
+
+// Timer struct
+t = timer{}
+t.start()                             // Start timer
+t.stop()                              // Stop timer
+us = t.elapsed-us()                   // Elapsed microseconds
+ms = t.elapsed-ms()                   // Elapsed milliseconds
+s = t.elapsed-s()                     // Elapsed seconds
 ```
 
 ---
@@ -1110,12 +1595,12 @@ LEVEL-WARN  = 2
 LEVEL-ERROR = 3
 LEVEL-FATAL = 4
 
-log.set-level(lvl)
+log.set-level(lvl)                     // Set minimum log level
 log.debug(msg)
 log.info(msg)
 log.warn(msg)
 log.error(msg)
-log.fatal(msg)
+log.fatal(msg, code)                   // Log and exit with status code
 ```
 
 ---
@@ -1553,11 +2038,17 @@ name = e.name()
 sz = e.size()
 typ = e.type()
 out = e.read()
+yes = e.is-dir()
+yes = e.is-file()
+mode = e.mode()
+ts = e.mtime()
 
 // Write tar
 builder = tar-builder{}
 builder.add-file(name, content)
 builder.add-dir(name)
+builder.add-bytes(name, content, typ)
+builder.pre-alloc(size)
 archive = builder.finish()
 ```
 
@@ -1581,6 +2072,12 @@ sz = e.size()
 csz = e.compressed-size()
 method = e.method()
 out = e.extract()
+
+// Write zip
+writer = zip-writer{}
+writer.add-file(name, content)
+writer.add-dir(name)
+out = writer.finalize()
 ```
 
 #### archive/gzip — GZIP Compression and Raw DEFLATE
@@ -1597,6 +2094,7 @@ Pure Nolang implementation of BZIP2 decompression (BWT inverse, MTF inverse, Huf
 
 ```no
 out = bzip2.bzip2-decompress(data)                   // Decompress .bz2 data
+out = bzip2.bzip2-compress(data)                   // Compress to .bz2 data
 ```
 
 #### archive/xz — XZ/LZMA Decompression (Pure Nolang)
@@ -1606,6 +2104,7 @@ Pure Nolang implementation of LZMA2 decompression, supporting both .xz container
 ```no
 out = xz.xz-decompress(data)                        // Decompress .xz format
 out = xz.lzma-decompress(data)                      // Decompress legacy .lzma format
+out = xz.xz-compress(data)                          // Compress to .xz format
 ```
 
 #### archive/zlib — zlib Compression/Decompression (RFC 1950, Pure Nolang)
@@ -1615,6 +2114,8 @@ zlib stream format: 2-byte header + raw DEFLATE + 4-byte Adler-32 checksum:
 ```no
 out = zlib.zlib-compress(data)                       // Compress to zlib format (stored blocks)
 out = zlib.zlib-decompress(data)                     // Decompress zlib format
+out = zlib.zlib-decompress-stored(data)               // Decompress stored blocks
+consumed = zlib.zlib-consumed-stored(data)            // Consumed bytes in stored blocks
 sum = zlib.adler-32(data, n)                        // Compute Adler-32 checksum
 ```
 
@@ -1624,45 +2125,56 @@ Pure Nolang implementation of Zstandard (zstd) decompression (FSE decode, Huffma
 
 ```no
 out = zstd.zstd-decompress(data)                     // Decompress .zst format
+out = zstd.zstd-compress(data)                       // Compress to .zst format
 ```
 
 ---
 
 ### Cryptography & Hash
 
-#### hash/aes — AES-128 Encryption/Decryption (ECB mode)
+#### crypto/aes — AES Block Cipher Core (AES-128 / AES-256)
 
 ```no
-aes.aes-128-enc(plain, 16, key, out)   // Encrypt 16-byte block
-aes.aes-128-dec(cipher, 16, key, out)  // Decrypt 16-byte block
+out = aes.enc-128(in [16]byte, key [16]byte)   // AES-128 encrypt one block
+out = aes.dec-128(in [16]byte, key [16]byte)   // AES-128 decrypt one block
+out = aes.enc-256(in [16]byte, key [32]byte)   // AES-256 encrypt one block
+out = aes.dec-256(in [16]byte, key [32]byte)   // AES-256 decrypt one block
+
+ek []byte = aes.key-expand(key [16]byte)       // 176-byte round keys
+ek []byte = aes.key-expand-256(key [32]byte)   // 240-byte round keys
+out = aes.enc-block(in [16]byte, ek)
+out = aes.dec-block(in [16]byte, ek)
 ```
 
-Also includes standalone modules `hash/aes-128-enc` and `hash/aes-128-dec`.
-
-#### hash/des — DES Encryption/Decryption (ECB mode)
+Round count is derived from the round-key length (`nr = ek.len() / 16 - 1`), so AES-128
+and AES-256 share one round loop. Modes live in `crypto/aes-cbc`, `crypto/aes-ctr`
+and `crypto/aes-gcm`.
+#### crypto/des — DES Encryption/Decryption (ECB mode)
 
 ```no
 des.des-enc(plain, 8, key, out)        // Encrypt 8-byte block
 des.des-dec(cipher, 8, key, out)       // Decrypt 8-byte block
 ```
 
-Also includes standalone modules `hash/des-enc` and `hash/des-dec`.
-
-#### hash/rsa — RSA Modular Exponentiation
+#### crypto/rsa — RSA Modular Exponentiation
 
 ```no
 rsa.rsa-modpow(base, bn, exp, en, mod, mn, result, rn)
+
+// Additional functions
+out = rsa.rsa-encrypt(plain, n, pub-e, pub-n, mod, mn)    // RSA encrypt
+out = rsa.rsa-decrypt(cipher, n, priv-d, dn, mod, mn)    // RSA decrypt
 ```
 
 Does not include key generation, supports 1024~4096-bit.
 
-#### hash/md5 — MD5 (128-bit)
+#### crypto/md5 — MD5 (128-bit)
 
 ```no
 out [16]byte = md5.md5(data)
 ```
 
-#### hash/sha1 — SHA-1 (160-bit)
+#### crypto/sha1 — SHA-1 (160-bit)
 
 ```no
 hash = sha1.sha1(data []byte) (hash [20]byte)
@@ -1674,7 +2186,7 @@ sha1.sha1-block(s []u32, h0 u32, h1 u32, h2 u32, h3 u32, h4 u32)
 `sha1-hex` same as above but returns a 40-character lowercase hex string.
 `sha1-block` is a low-level API that processes a single 512-bit block.
 
-#### hash/sha256 — SHA-256 (256-bit)
+#### crypto/sha256 — SHA-256 (256-bit)
 
 ```no
 sha256.sha256(data []byte) (hash [32]byte)
@@ -1686,7 +2198,7 @@ sha256.sha256-block(s []u32, h0 u32, h1 u32, h2 u32, h3 u32, h4 u32, h5 u32, h6 
 `sha256-hex` same as above but returns a 64-character lowercase hex string.
 `sha256-block` is a low-level API that processes a single 512-bit block.
 
-#### hash/sha512 — SHA-512 (512-bit)
+#### crypto/sha512 — SHA-512 (512-bit)
 
 ```no
 sha512.sha512(data []byte) (hash [64]byte)
@@ -1698,211 +2210,234 @@ sha512.sha512-block(s []u64, h0 u64, h1 u64, h2 u64, h3 u64, h4 u64, h5 u64, h6 
 `sha512-hex` same as above but returns a 128-character lowercase hex string.
 `sha512-block` is a low-level API that processes a single 1024-bit block.
 
-#### hash/crc-32 — CRC32 Checksum
+#### crypto/crc-32 — CRC32 Checksum
 
 ```no
-crc-32.crc-32(s []byte, n, crc)
+crc-32.new(s []byte, n, crc)
 ```
 
-#### hash/fnv-1a-32 — FNV-1a Non-cryptographic Hash
+#### crypto/fnv-1a-32 — FNV-1a Non-cryptographic Hash
 
 ```no
 fnv-1a-32.fnv-1a-32(s []byte, n, h)
 ```
 
-#### hash/rand — Random Number Generator (xorshift32)
+#### crypto/rand — Random Number Generator (xorshift32)
 
 ```no
 r = rand.rand(state)                     // 32-bit pseudo-random number
 rand.rand-str(state, n, s)              // Random alphanumeric string
 ```
 
-#### hash/x509 — X.509 Certificate DER Parsing
+#### crypto/x509 — X.509 Certificate DER Parsing
 
 ```no
 tag = x509.der-tag(data, pos)
 len, adv = x509.der-len(data, pos)
 x509.x509-fingerprint(cert, n, h0..h7)  // SHA-256 certificate fingerprint
 x509.x509-rsa-e(cert, n, e)             // RSA public key exponent extraction
+
+// Certificate building
+cert = x509.x509-build-self-signed-cert(rsa-n, rsa-e, priv-d, subject-cn, serial, not-before, not-after)
+tbs = x509.x509-build-tbs(rsa-n, rsa-e, subject-cn, serial, not-before, not-after)
+spki = x509.x509-build-spki(rsa-n, rsa-e)
+validity = x509.x509-build-validity(not-before, not-after)
+n = x509.x509-serial(cert, cert-n)                       // Extract serial number
+ts, te = x509.x509-tbs-range(cert, cert-n)               // Extract TBS validity range
+ok = x509.rsa-pkcs1-sign-sha256(priv-d, dn, msg, mn, sig, sn) // RSA PKCS#1 sign
+ok = x509.sha256-compress(h, w, k)                       // SHA-256 compression
+
+// DER encoding helpers
+pos = x509.der-enc-tlv(buf, pos, tag, data, data-n)
+pos = x509.der-enc-sequence(buf, pos, data, data-n)
+pos = x509.der-enc-set(buf, pos, data, data-n)
+pos = x509.der-enc-integer-i64(buf, pos, val)
+pos = x509.der-enc-integer-bytes(buf, pos, data, n)
+pos = x509.der-enc-null(buf, pos)
+pos = x509.der-enc-octetstring(buf, pos, data, n)
+pos = x509.der-enc-printablestring(buf, pos, s)
+pos = x509.der-enc-utctime(buf, pos, s)
+pos = x509.der-enc-bitstring(buf, pos, data, n)
+pos = x509.der-enc-explicit(buf, pos, tag, data, n)
+pos = x509.der-enc-oid-raw(buf, pos, oid, n)
+len, adv = x509.der-skip(data, pos)                     // Skip TLV
 ```
 
-#### hash/aes-256 — AES-256 Encryption/Decryption (ECB mode)
+#### crypto/aes-cbc — AES-CBC Mode (with PKCS7 Padding, AES-128 / AES-256)
 
 ```no
-aes-256.aes-256-enc(in [16]byte, key [32]byte) (out [16]byte)   // Encrypt
-aes-256.aes-256-dec(in [16]byte, key [32]byte) (out [16]byte)   // Decrypt
-```
-
-#### hash/aes-cbc — AES-CBC Mode (with PKCS7 Padding)
-
-```no
-out = aes-cbc.aes-128-cbc-enc(in []byte, key [16]byte, iv [16]byte)
-out = aes-cbc.aes-128-cbc-dec(in []byte, key [16]byte, iv [16]byte)
+out = aes-cbc.enc-128(in []byte, key [16]byte, iv [16]byte)
+out = aes-cbc.dec-128(in []byte, key [16]byte, iv [16]byte)
+out = aes-cbc.enc-256(in []byte, key [32]byte, iv [16]byte)
+out = aes-cbc.dec-256(in []byte, key [32]byte, iv [16]byte)
 out = aes-cbc.pkcs7-pad(in []byte)
 n = aes-cbc.pkcs7-unpad(in []byte)
 ```
 
-#### hash/aes-256-cbc — AES-256-CBC Encryption/Decryption
+#### crypto/aes-ctr — AES-CTR Counter Mode (AES-128 / AES-256)
 
 ```no
-out = aes-256-cbc.aes-256-cbc-enc(in []byte, key [32]byte, iv [16]byte)
-out = aes-256-cbc.aes-256-cbc-dec(in []byte, key [32]byte, iv [16]byte)
+out = aes-ctr.crypt-128(in []byte, key [16]byte, iv [16]byte)
+out = aes-ctr.crypt-256(in []byte, key [32]byte, iv [16]byte)
 ```
 
-#### hash/aes-ctr — AES-CTR Counter Mode
+#### crypto/aes-gcm — AES-GCM AEAD (NIST SP 800-38D, AES-128 / AES-256)
 
 ```no
-out = aes-ctr.aes-128-ctr(in []byte, key [16]byte, iv [16]byte)
-out = aes-ctr.aes-256-ctr(in []byte, key [32]byte, iv [16]byte)
+sealed = aes-gcm.seal-128(key [16]byte, iv [12]byte, aad []byte, plain []byte)
+plain = aes-gcm.open-128(key [16]byte, iv [12]byte, aad []byte, sealed []byte)
+sealed = aes-gcm.seal-256(key [32]byte, iv [12]byte, aad []byte, plain []byte)
+plain = aes-gcm.open-256(key [32]byte, iv [12]byte, aad []byte, sealed []byte)
 ```
-
-#### hash/aes-gcm — AES-GCM AEAD
+#### crypto/hmac — HMAC Message Authentication Code
 
 ```no
-// AES-128-GCM
-sealed = aes-gcm.aes-128-gcm-seal(key [16]byte, iv [12]byte, aad []byte, plain []byte)
-plain = aes-gcm.aes-128-gcm-open(key [16]byte, iv [12]byte, aad []byte, sealed []byte)
-```
+out = hmac.hmac-sha256(key []byte, msg []byte) (out [32]byte)
+out = hmac.hmac-sha512(key []byte, msg []byte) (out [64]byte)
+out = hmac.hmac-sha384(key []byte, msg []byte) (out [48]byte)
+out = hmac.hmac-sha1(key []byte, msg []byte) (out [20]byte)
+out = hmac.hmac-md5(key []byte, msg []byte) (out [16]byte)
+vec = hmac.hmac-sha256-vec(key []byte, msg []byte) (out []byte)```
 
-#### hash/aes-256-gcm — AES-256-GCM AEAD (NIST SP 800-38D)
-
-```no
-sealed = aes-256-gcm.aes-256-gcm-seal(key [32]byte, iv [12]byte, aad []byte, plain []byte)
-plain = aes-256-gcm.aes-256-gcm-open(key [32]byte, iv [12]byte, aad []byte, sealed []byte)
-```
-
-#### hash/hmac — HMAC Message Authentication Code
-
-```no
-out = hmac.hmac(key []byte, key-n i64, msg []byte, msg-n i64, block-size i64) (out [32]byte)
-```
-
-#### hash/hkdf — HKDF Key Derivation (RFC 5869)
+#### crypto/hkdf — HKDF Key Derivation (RFC 5869)
 
 ```no
 ok = hkdf.hkdf-extract(salt []byte, salt-n i64, ikm []byte, ikm-n i64, prk []byte)
 ok = hkdf.hkdf-expand(prk []byte, prk-n i64, info []byte, info-n i64, out []byte, out-n i64)
+ok = hkdf.hkdf-expand-hmac(prk, prk-n, info, info-n, out, out-n) // Expand with HMAC
+ok = hkdf.hkdf-expand-label(secret, secret-n, label, label-n, context, ctx-n, out, out-n) // TLS 1.3 label
+ok = hkdf.hkdf-expand-label-vec(secret, secret-n, label, label-n, context, ctx-n) // Returns []byte
+ok = hkdf.hkdf-derive-secret(prk, prk-n, label, label-n, out, out-n) // Derive secret
 ```
 
-#### hash/pbkdf2 — PBKDF2 Key Derivation (RFC 2898)
+#### crypto/pbkdf2 — PBKDF2 Key Derivation (RFC 2898)
 
 ```no
-pbkdf2.pbkdf2(password []byte, pw-n i64, salt []byte, salt-n i64, iter i64, out []byte, out-n i64)
-```
+out = pbkdf2.pbkdf2-hmac-sha256(password []byte, salt []byte, iterations i64, key-len i64) (out []byte)
+out = pbkdf2.pbkdf2-hmac-sha512(password []byte, salt []byte, iterations i64, key-len i64) (out []byte)
+out = pbkdf2.pbkdf2-hmac-sha1(password []byte, salt []byte, iterations i64, key-len i64) (out []byte)```
 
-#### hash/argon2 — Argon2 Memory-hard Key Derivation
+#### crypto/argon2 — Argon2 Memory-hard Key Derivation
 
 ```no
-argon2.argon2id(password []byte, pw-n i64, salt []byte, salt-n i64, time i64, memory i64, parallel i64, out []byte, out-n i64)
+argon2.id(password []byte, pw-n i64, salt []byte, salt-n i64, time i64, memory i64, parallel i64, out []byte, out-n i64)
 ```
 
-#### hash/scrypt — scrypt Key Derivation
+#### crypto/scrypt — scrypt Key Derivation
 
 ```no
 scrypt.scrypt(password []byte, pw-n i64, salt []byte, salt-n i64, n i64, r i64, p i64, out []byte, out-n i64)
 ```
 
-#### hash/sha224 — SHA-224 (224-bit)
+#### crypto/sha224 — SHA-224 (224-bit)
 
 ```no
 hash = sha224.sha224(data []byte) (hash [28]byte)
 hex = sha224.sha224-hex(data []byte) (hex str)
 ```
 
-#### hash/sha384 — SHA-384 (384-bit)
+#### crypto/sha384 — SHA-384 (384-bit)
 
 ```no
 hash = sha384.sha384(data []byte) (hash [48]byte)
 hex = sha384.sha384-hex(data []byte) (hex str)
 ```
 
-#### hash/sha3 — SHA-3 (Keccak)
+#### crypto/sha3 — SHA-3 (Keccak)
 
 ```no
 hash = sha3.sha3-256(data []byte) (hash [32]byte)
 hash = sha3.sha3-512(data []byte) (hash [64]byte)
+hash = sha3.sha3-224(data []byte) (hash [28]byte)
+hash = sha3.sha3-384(data []byte) (hash [48]byte)
+
+// Hex variants
+hex = sha3.sha3-224-hex(data)               // SHA3-224 hex string
+hex = sha3.sha3-256-hex(data)               // SHA3-256 hex string
+hex = sha3.sha3-384-hex(data)               // SHA3-384 hex string
+hex = sha3.sha3-512-hex(data)               // SHA3-512 hex string
 ```
 
-#### hash/blake2 — BLAKE2 Hash
+#### crypto/blake2 — BLAKE2 Hash
 
 ```no
-hash = blake2.blake2b-256(data []byte) (hash [32]byte)
-hash = blake2.blake2b-512(data []byte) (hash [64]byte)
-```
+hash = blake2.b(data []byte) (hash [64]byte)
+hash = blake2.b-256(data []byte) (hash [32]byte)
+hex = blake2.b-hex(data []byte) (hex str)
+hash = blake2.s(data []byte) (hash [32]byte)
+hex = blake2.s-hex(data []byte) (hex str)```
 
-#### hash/crc-16 — CRC16 Checksum
-
-```no
-crc = crc-16.crc-16(data []byte, n i64) (crc i64)
-```
-
-#### hash/crc-64 — CRC64 Checksum
+#### crypto/crc-16 — CRC16 Checksum
 
 ```no
-crc = crc-64.crc-64(data []byte, n i64) (crc i64)
+crc = crc-16.new(data []byte, n i64) (crc i64)
+hex = crc-16.hex(data []byte, n i64) (hex str)    // CRC16 hex string
 ```
 
-#### hash/fnv — FNV-1 Hash
+#### crypto/crc-64 — CRC64 Checksum
 
 ```no
-h = fnv.fnv-1-32(data []byte, n i64) (h i64)
-h = fnv.fnv-1a-64(data []byte, n i64) (h i64)
+crc = crc-64.new(data []byte, n i64) (crc i64)
+hex = crc-64.hex(data []byte, n i64) (hex str)    // CRC64 hex string
 ```
 
-#### hash/base32 — Base32 Encoding/Decoding (RFC 4648)
+#### crypto/fnv — FNV-1 Hash
 
 ```no
-out = base32.base32-encode(data []byte, n i64) (out str)
-out = base32.base32-decode(s str, n i64) (out []byte)
+h = fnv.fnv-1a-32(data []byte) (hash i64)
+h = fnv.fnv-1a-64(data []byte) (hash u64)```
+
+#### crypto/base32 — Base32 Encoding/Decoding (RFC 4648)
+
+```no
+out = base32.encode(data []byte) (out str)
+out = base32.decode(in str) (out []byte)
 ```
 
-#### hash/chacha20-poly1305 — ChaCha20-Poly1305 AEAD
+#### crypto/chacha20-poly1305 — ChaCha20-Poly1305 AEAD
 
 ```no
 sealed = chacha20-poly1305.chacha20-poly1305-seal(key [32]byte, nonce [12]byte, aad []byte, plain []byte)
 plain = chacha20-poly1305.chacha20-poly1305-open(key [32]byte, nonce [12]byte, aad []byte, sealed []byte)
 ```
 
-#### hash/rc4 — RC4 Stream Cipher
+#### crypto/rc4 — RC4 Stream Cipher
 
 ```no
 out = rc4.rc4(key []byte, key-n i64, data []byte, data-n i64) (out []byte)
 ```
 
-#### hash/tdes — Triple DES (3DES)
+#### crypto/tdes — Triple DES (3DES)
 
 ```no
 tdes.tdes-enc(plain, 8, key [24]byte, out)
 tdes.tdes-dec(cipher, 8, key [24]byte, out)
+out = tdes.tdes-cbc-enc(in []byte, key [24]byte, iv [8]byte)  // 3DES-CBC encrypt
+out = tdes.tdes-cbc-dec(in []byte, key [24]byte, iv [8]byte)  // 3DES-CBC decrypt
 ```
 
-#### hash/ecdsa — ECDSA Digital Signature
+#### crypto/ecdsa — ECDSA Digital Signature
 
 ```no
 ok = ecdsa.ecdsa-sign(priv-key []byte, msg []byte, msg-n i64, r []byte, s []byte)
 ok = ecdsa.ecdsa-verify(pub-key []byte, msg []byte, msg-n i64, r []byte, s []byte) (ok bool)
+pub = ecdsa.ecdsa-publickey(priv-key []byte) (pub []byte)    // Derive public key from private
 ```
 
-#### hash/ed25519 — Ed25519 Digital Signature
+#### crypto/ed25519 — Ed25519 Digital Signature
 
 ```no
-pub = ed25519.ed25519-derive-public(priv [32]byte) (pub [32]byte)
-sig = ed25519.ed25519-sign(priv [32]byte, msg []byte, msg-n i64) (sig [64]byte)
-ok = ed25519.ed25519-verify(pub [32]byte, msg []byte, msg-n i64, sig [64]byte) (ok bool)
-```
+pub = ed25519.ed25519-publickey(seed [32]byte) (pub [32]byte)
+sig = ed25519.ed25519-sign(seed [32]byte, msg []byte) (sig [64]byte)
+ok = ed25519.ed25519-verify(pub [32]byte, msg []byte, sig [64]byte) (ok i64)```
 
-#### hash/x25519 — X25519 Key Exchange
-
-```no
-pub = x25519.x25519-derive-public(priv [32]byte) (pub [32]byte)
-shared = x25519.x25519-derive-shared(priv [32]byte, peer-pub [32]byte) (shared [32]byte)
-```
-
-#### hash/rand-str — Random String Generation
+#### crypto/x25519 — X25519 Key Exchange
 
 ```no
-rand-str.rand-str(state i64, n i64, s str)   // Generate random alphanumeric string of length n
-```
+priv, pub = x25519.x25519-gen-keypair(seed i64) (priv [32]byte, pub [32]byte)
+pub = x25519.x25519-scalarmult-base-bytes(scalar []byte) (out []byte)
+shared = x25519.x25519-scalarmult-bytes(scalar []byte, point []byte) (out []byte)
+out = x25519.x25519-scalarmult(scalar [32]byte, point [32]byte) (out [32]byte)```
 
 ---
 
@@ -1932,7 +2467,163 @@ n = json.stringify(v, out)    // Serialize
 // Access
 val = json.get-key(v, key)    // Get object property
 json.set-key(v json-value, key, val)    // Set object property
+val = json.get(v, key)                  // Get by key (generic)
+result = json.get-bool(v, key)         // Get bool value
+result = json.get-num(v, key)           // Get numeric value
+result = json.get-str(v, key)           // Get string value
+result = json.get-i64(v, key)           // Get i64 value
+
+// Type checks
+yes = json.is-null(v)                  // Is null?
+yes = json.is-bool(v)                  // Is bool?
+yes = json.is-num(v)                   // Is number?
+yes = json.is-str(v)                   // Is string?
+yes = json.is-arr(v)                   // Is array?
+yes = json.is-obj(v)                   // Is object?
+
+// Setters
+json.set(v, key, val)                  // Set by key (generic)
+json.set-bool(v, key, val)             // Set bool
+json.set-num(v, key, val)              // Set number
+json.set-str(v, key, val)              // Set string
+json.set-i64(v, key, val)              // Set i64
+json.set-null(v, key)                  // Set null
+
+// Array operations
+val = json.arr-get(v, idx)             // Get array element by index
+n = json.arr-len(v)                    // Get array length
+json.arr-push(v, val)                  // Push to array
+json.arr-push-bool(v, val)             // Push bool
+json.arr-push-num(v, val)              // Push number
+json.arr-push-str(v, val)              // Push string
+
+// Direct value access
+b = json.bool(v)                       // Get bool value
+n = json.num(v)                        // Get numeric value
+s = json.str(v)                        // Get string value
+n = json.i64(v)                        // Get i64 value
+
+// Pool-based JSON (for memory efficiency)
+pool = json.new-pool()                 // Create json-pool
+ok = pool.parse(s, n)                  // Parse into pool
+s = pool.stringify()                   // Serialize from pool
+val = pool.get-key(key)                // Get by key
 ```
+
+#### toml — TOML Parsing and Generation
+
+The `toml` module supports the TOML 1.0 value grammar: comments, bare/quoted/dotted keys, tables, array-of-tables, basic/literal/multiline strings, decimal/hex/octal/binary integers, floats, booleans, date-time literals, arrays, and inline tables. Values are stored as bounded raw TOML literals, preserving syntax that does not have a dedicated Nolang runtime type.
+
+```no
+cfg = toml.parse('title = "Nolang"\n[server]\nport = 8080\n[[server.backends]]\nname = "local"')
+
+doc = toml.new()
+doc.put('name', '"nolang"')
+doc.put('server.port', '8080')
+doc.put('enabled', 'true')
+text = toml.stringify(doc)
+```
+
+API:
+
+```no
+doc = toml.new()                         // Create empty toml-doc
+cfg = toml.parse(text)                    // ?toml-doc
+doc.put(key, raw-value)                   // Insert/update a validated TOML value
+raw = toml.get(doc, key)                  // ?str raw literal
+s, ok = toml.get-str(doc, key)             // Basic/literal string
+n, ok = toml.get-i64(doc, key)              // Decimal/hex/octal/binary integer
+f, ok = toml.get-f64(doc, key)              // Float
+b, ok = toml.get-bool(doc, key)             // Boolean
+text = toml.stringify(doc)                 // Serialize TOML
+```
+
+The current bounded document model supports up to 4 keys, 2 ordinary tables, and 2 array-of-tables. Keys are limited to 32 bytes and values to 128 bytes.
+
+#### yaml — YAML 1.2 Parsing and Generation
+
+`yaml` keeps a YAML 1.2 core-schema document tree in a node pool (`yaml-pool`). Supported: block mappings, block sequences, flow collections (`[...]` / `{...}`), single-quoted / double-quoted / plain scalars, block scalars (`|` / `>` with `-` / `+` chomping), comments, document markers (`---` / `...`) and multi-document streams, anchors (`&`) / aliases (`*`), merge keys `<<`, explicit keys (`? k`), core-schema type inference (null / bool / int / float / `.inf` / `.nan`), dotted-path lookup, and JSON / YAML serialization.
+
+```no
+doc ?yaml = yaml.parse('name: Alice\nserver:\n  port: 8080\ntags:\n  - a\n  - b\n')
+doc: {
+    nil -> print('nil')
+
+    err -> print(it)
+
+    -> {
+        name, ok = it.find-str('name')
+        port, ok2 = it.find-i64('server.port')
+        print(name)
+        print(port.to-str())
+        print(it.to-json())
+        print(it.to-yaml())
+    }
+}
+```
+
+API:
+
+```no
+// Entry points
+d = yaml.parse(text)                     // ?yaml — first document
+all = yaml.parse-all(text)               // ?yaml — every document
+yes = yaml.valid-of(text)                // Validate without building a document
+msg = yaml.error-of(text)                // '' when valid, else "line L, column C: ..."
+s = yaml.strip-bom(text)                 // Strip a UTF-8 BOM
+
+// Multi-document
+n = all.doc-count()
+d, ok = all.doc(i)                       // (out yaml, ok bool)
+j = all.to-json-all()
+
+// Node information (methods on a yaml value)
+k = d.kind()                             // YAML-KIND-* constant
+d.is-null()  d.is-bool()  d.is-int()  d.is-float()  d.is-nan()  d.is-num()
+d.is-str()   d.is-seq()   d.is-map()
+n = d.len()                              // Entries (map) or items (seq)
+t = d.text()                             // Raw scalar text
+s = d.tag()                              // Explicit tag, '' when absent
+a = d.anchor()                           // Anchor name, '' when absent
+ln = d.line-of()                         // 1-based source line
+st = d.style()                           // YAML-STYLE-* constant
+
+// Value access — all return (value, ok)
+s, ok = d.str()
+n, ok = d.i64()
+f, ok = d.f64()
+b, ok = d.bool()
+s, ok = d.scalar-text()                  // Fails for seq/map
+
+// Children — all return (out yaml, ok bool), NOT ?yaml
+child, ok = d.at(i)                      // Seq item / i-th map value
+child, ok = d.value(i)                   // Alias of at(i)
+child, ok = d.key-node(i)                // i-th map key node
+s, ok = d.key(i)                         // i-th map key text
+child, ok = d.get(key)                   // Map value by scalar key
+node, ok = d.find(path)                  // Dotted path; seq indices are numeric ('a.0.b')
+
+// Typed shortcuts
+s, ok = d.get-str(key)   n, ok = d.get-i64(key)
+f, ok = d.get-f64(key)   b, ok = d.get-bool(key)
+s, ok = d.find-str(path) n, ok = d.find-i64(path)
+f, ok = d.find-f64(path) b, ok = d.find-bool(path)
+
+// Serialization
+j = d.to-json()
+y = d.to-yaml()                          // Same as stringify()
+y = d.stringify()
+src = d.source-of()
+
+// Constants
+YAML-KIND-NULL = 0  BOOL = 1  INT = 2  FLOAT = 3  STR = 4  SEQ = 5  MAP = 6
+YAML-STYLE-PLAIN = 0  SINGLE = 1  DOUBLE = 2  LITERAL = 3  FOLDED = 4  ALIAS = 5
+YAML-STYLE-BLOCK = 6  FLOW = 7
+```
+
+> **Gotcha 1 — child views are `(out yaml, ok bool)`, never `?yaml`.** The MIR backend cannot safely share the node pool: once a struct containing a slice is boxed into an option and returned to the caller, dropping that option frees the parent document's node buffer, and the parent then reports `len() == 0`. Write `child, ok = d.at(i)` and guard with `ok -> { ... }`; do not write `child ?yaml = d.at(i)`.
+>
+> **Gotcha 2 — `.nan` has no f64 representation.** The backend emits fast-math FP, so a real NaN cannot be produced (`0.0 / 0.0` folds to `0`). Detect it with `d.is-nan()` (based on the node's source text); `d.f64()` returns `0.0` for it, `to-json()` emits `null`, and `to-yaml()` emits `.nan`.
 
 ---
 
@@ -1983,6 +2674,7 @@ out = bigint.copy(a)
 
 // Comparison
 r = bigint.cmp(a, b)
+r = bigint.abs-cmp(a, b)              // Absolute value comparison
 r = bigint.eq(a, b)
 r = bigint.is-zero(a)
 r = bigint.is-neg(a)
@@ -1991,6 +2683,8 @@ r = bigint.is-pos(a)
 // Arithmetic
 c = bigint.add(a, b)
 c = bigint.sub(a, b)
+c = bigint.abs-add(a, b)              // Absolute addition
+c = bigint.abs-sub(a, b)              // Absolute subtraction
 c = bigint.mul(a, b)
 q, r = bigint.div-mod(a, b)
 r = bigint.mod(a, b)
@@ -2044,10 +2738,11 @@ msg str
 // Functions
 e = err.new(code.io, msg)            // Create error
 e = err.err-from-errno(errno)         // Create from C errno
-yes = e.is(code.io)                  // Check error code
-msg = e.msg()                       // Get error message
-c = e.code()                        // Get error code
-s = e.format()              // Format as string
+c = err.errno-to-code(errno)          // Convert C errno to error code
+yes = e.is(code.io)                  // Check error code (method)
+msg = e.msg()                       // Get error message (method)
+c = e.code()                        // Get error code (method)
+s = e.format()              // Format as string (method)
 ```
 
 ### bool — Boolean Type
@@ -2121,6 +2816,11 @@ Simplified file type detection based on extension and magic bytes, no libmagic d
 ```no
 kind = magic.detect-type(path)                  // Detect file type
 // Returns type description string, e.g. 'PNG image', 'ELF executable', 'ASCII text', 'directory', 'unknown', 'data'
+
+// Additional detection methods
+kind = magic.detect-by-extension(path)          // Detect by file extension
+kind = magic.detect-by-magic(data)             // Detect by magic bytes
+ext = magic.get-extension(path)                // Extract file extension
 ```
 
 ---
@@ -2147,6 +2847,8 @@ kind = magic.detect-type(path)                  // Detect file type
 | time                | Time operations  |
 | log                 | Leveled logging  |
 | json                | JSON parse/generate |
+| toml                | TOML parse/generate |
+| yaml                | YAML 1.2 parse/generate |
 | types               | Type definitions |
 | option              | Option type      |
 | sort                | Sort constants   |
@@ -2205,15 +2907,10 @@ kind = magic.detect-type(path)                  // Detect file type
 | hashmap             | Generic dynamic hash map |
 | static-hashmap      | Generic fixed-capacity hash map |
 | sql                 | Database access interface |
-| aes                 | AES-128 enc/dec  |
-| aes-128-enc         | AES-128 encrypt  |
-| aes-128-dec         | AES-128 decrypt  |
-| aes-256             | AES-256 enc/dec  |
-| aes-cbc             | AES-CBC mode     |
-| aes-256-cbc         | AES-256-CBC      |
-| aes-ctr             | AES-CTR mode     |
-| aes-gcm             | AES-GCM AEAD     |
-| aes-256-gcm         | AES-256-GCM      |
+| aes                 | AES block core (128/256) |
+| aes-cbc             | AES-CBC mode (128/256)   |
+| aes-ctr             | AES-CTR mode (128/256)   |
+| aes-gcm             | AES-GCM AEAD (128/256)   |
 | des                 | DES enc/dec      |
 | des-enc             | DES encrypt      |
 | des-dec             | DES decrypt      |

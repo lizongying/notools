@@ -13,7 +13,7 @@ A disciplined test-first workflow for diagnosing and fixing bugs in the Nolang c
 
 > **Nolang 檔名使用中連字符 `-`**（如 `string-helper.no`），**不使用下劃線 `_`**。詳見 [nolang-syntax-reference](./nolang-syntax-reference/SKILL.md)。
 
-> **Deprecation warnings**：舊式流程控制語法（`for { }`、`for cond { }`、`for i=0,i<n,i++ { }`、`for i <- [...] { }`、`for i in [...] { }`、`match x { }`、`if/elif/else { }`）會輸出 deprecation warning 但仍可解析。建議改用新式（`{ } (true)`、`{ } (cond)`、`{ } * n`、`i <- [..]: { }`、`x: { }`、`{ cond -> body }`）。詳見 [nolang-syntax-reference](./nolang-syntax-reference/SKILL.md) 的 Control Flow 段落。
+> **Deprecation warnings**：舊式流程控制語法（`for { }`、`for cond { }`、`for i=0,i<n,i++ { }`、`for i <- [...] { }`、`for i in [...] { }`、`match x { }`、`if/elif/else { }`）會輸出 deprecation warning 但仍可解析。建議改用新式前置式（`no fmt` 預設）：`!! { }`（恆真）、`(cond) { }`（條件）、`! { }`（不執行）、`n * { }`（計數），以及 `i <- [..]: { }`、`x: { }`、`{ cond -> body }`。後綴式 `{ } (cond)` / `{ } (true)` / `{ } * n` 與前置式語意等價，但屬舊式寫法（`no fmt -loop-style=suffix` 可切換）。詳見 [nolang-syntax-reference](./nolang-syntax-reference/SKILL.md) 的 Control Flow 段落。
 
 Always:
 
@@ -141,7 +141,14 @@ cd src && go test ./pkg/
 cd src && go test ./...
 ```
 
-### 5. Validate the standard library with `no vet`
+### 5. Validate the standard library with `no vet` (Mandatory)
+
+> **强制规则**：修改完代码后，必须运行 `no vet src/std` 检查标准库，**不允许出现 ERROR**。详见 [nolang-vet](file://../nolang-vet/SKILL.md)。
+>
+> ⚠️ 本项目有 **1 个既有基线 ERROR**（`src/std/crypto/sha3.no:24`，在 pristine HEAD 上同样存在），
+> 它**不算回归**，不要去"修"它 —— 详见 nolang-vet 的〈已知的既有 ERROR〉。另外
+> `grep -c '\[ERROR\]'` 会把标识符名里含 ERROR 的 `[HINT]` 一起数进来（如 `LEVEL-ERROR`、
+> `DNS-RCODE-FORMAT-ERROR`），所以**要看 `grep '\[ERROR\]'` 的内容，不要只数行数**。
 
 After the Go tests are green, rebuild the compiler and run `no vet` on the standard library to ensure no syntax or semantic errors were introduced:
 
@@ -150,7 +157,7 @@ make no                 # rebuild the compiler
 no vet src/std/         # validate all standard library files
 ```
 
-This step catches issues that Go unit tests might miss. If `no vet` reports errors, fix them before proceeding.
+This step catches issues that Go unit tests might miss. If `no vet` reports errors, fix them before proceeding. 其他项目的标准库目录可能不同，需根据实际项目结构调整 vet 路径。
 
 ### 5b. Validate the standard library with `nolang-lsp vet`
 
@@ -221,7 +228,7 @@ Both targets run `cd src && go build …`. The Go test suite (`go test ./...`) d
 - **File on disk differs from what the IDE shows**: the editor may hold a dirty buffer. Use `od -c file.no | head` or `sed -n 'Np' file.no` from the terminal to read the real bytes — never trust the IDE's view after a save race.
 - **RARROW body corruption (formatter replaces `=` with `;`)**: when a match arm body (`cond -> body`) contains a LetStatement (`x = value`) or MultiAssignStatement (`a, b = func()`), the formatter may incorrectly output `x;` or `a; b = func()` instead of the inline statement. Check `formatStandaloneBody` in `src/fmt/formatter.go` — it must handle `LetStatement` and `MultiAssignStatement` as inline bodies. Also check `parseStatement` / RARROW handling in `src/parser/parser.go` — the `IDENT && (peekToken == ASSIGN || peekToken == COMMA)` check must be present for both consequence and alternative bodies.
 - **Option type not narrowed in match `ok ->` arm**: when `?quic.conn` is matched but `it` in the `ok ->` arm has the wrong type, check `buildMatchDesugar` in `src/parser/parser.go` — dotVal wildcard arms (`ok ->`, `isDotVal=true`) must set `armType = "ok"` so that `buildItBindingForArm` generates the correct narrowed `it` binding. Also verify `varDeclTypes` is updated for option types (`?type`) even when `declaredVars` is already true.
-- **Out param returns unexpected zero value (`found = false`, `result = nil`)**: since the deferred zero-init mechanism was added (see spec `defer-return-zero-init`), the function prologue no longer zero-initializes out parameters. Instead, the compiler tracks explicit assignments via `%__ret_init_bitmap` (parallel to `%__move_bitmap`) and zero-fills any out param whose bit is still 0 at return time. **Symptom**: a function returns `false` / `nil` / `0` on a path that should have returned a real value. **Cause**: the success branch forgot to explicitly assign the out parameter. **Debugging step**: read the function body and confirm that *every* code path that should return a non-zero value explicitly assigns the out parameter — the compiler does **not** infer intent, it only zero-fills unassigned out params. For `?T` out params, a bare `return` on a not-found path is correct (compiler fills `nil`); but a success path that falls through without assigning `result = <value>` will silently return `nil`. Reference: `%__ret_init_bitmap` is allocated in the function prologue (`src/build/llvm/stmt.go`), bits are set by `emitSetRetInitBit` on each assignment, and zero-fill happens in `emitRetInitZeroFill` before `flushOutputBindings` at return.
+- **Out param returns unexpected zero value (`found = false`, `result = nil`)**: since the deferred zero init mechanism was added (see spec `defer-return-zero-init`), the function prologue no longer zero-initializes out parameters. Instead, the compiler tracks explicit assignments and zero-fills any out param that was never assigned before return. **Symptom**: a function returns `false` / `nil` / `0` on a path that should have returned a real value. **Cause**: the success branch forgot to explicitly assign the out parameter. **Debugging step**: read the function body and confirm that *every* code path that should return a non-zero value explicitly assigns the out parameter — the compiler does **not** infer intent, it only zero-fills unassigned out params. For `?T` out params, a bare `return` on a not-found path is correct (compiler fills `nil`); but a success path that falls through without assigning `result = <value>` will silently return `nil`. Reference (legacy LLVM backend — `src/build/llvm/` deleted at c7febdb): the old implementation used `%__ret_init_bitmap` (prologue) + `emitSetRetInitBit` (per assignment) + `emitRetInitZeroFill` (before `flushOutputBindings` at return). In the current MIR backend (`src/mir/`, esp. `src/mir/codegen.go` result-buffer / binding zero-init), out params are still zero-initialized when not explicitly assigned, but under different internal symbols — debug against the live `src/mir/` code, not the legacy names.
 - **Module not found / wrong path resolved**: the workspace flow is: workspace dir → `workspace.jsonc` → package path → package's `package.jsonc`. Import paths (`# /path/to/module`) are resolved relative to the package's `package.jsonc` directory (`RootDir`), **not** the workspace root. If a nested `package.jsonc` exists in a subdirectory, `LoadPackage` (`src/package/pkg.go`) searches upward and uses the nearest one. To debug: print `pkg.RootDir` and `pkg.workspaceRoot` in `LoadPackage` to verify which `package.jsonc` is being used. Check `ResolvePath` in `src/package/pkg.go` and `resolveUse` in `src/build/transpiler.go` for how `# /path` imports are resolved.
 
 ## Writing `.no` Probe Files — Validate the Syntax First
@@ -402,6 +409,7 @@ LSP clients report positions in UTF-16 code units, but Nolang source is ASCII fo
 
 ## See Also — Nolang References
 
+- [nolang-vet](file://../nolang-vet/SKILL.md) — 修改后强制验证规则：`no vet src/std` 不允许 ERROR
 - [nolang-syntax](file://../nolang-syntax/SKILL.md) — Nolang syntax, grammar, types, operators, and language features
 - [nolang-std](file://../nolang-std/SKILL.md) — Standard library API reference (60+ modules)
 - [nolang-build](file://../nolang-build/SKILL.md) — Building the Nolang project with `make`

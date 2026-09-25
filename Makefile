@@ -19,24 +19,29 @@ help:
 # --- Skill Sync (sparse checkout) ---
 # Uses git sparse-checkout to fetch only .agents/skills from the nolang repo.
 # Local-only files (not in the remote repo) are preserved.
+# Note: the checkout happens inside the temp dir via --work-tree; the copy
+# always writes to an absolute project path (never "../", which would resolve
+# relative to the temp dir's parent).
 .PHONY: sync-skills
 sync-skills:
 	@echo "==> Fetching skills from $(NO_LANG_REPO) ($(NO_LANG_BRANCH))..."
 	@tmp=$$(mktemp -d); \
-		cd $$tmp && \
+		dst=$$(pwd)/$(SKILLS_DIR); \
+		mkdir -p $$tmp/repo && \
+		cd $$tmp/repo && \
 		git init -q && \
 		git remote add origin $(NO_LANG_REPO) && \
 		git config core.sparseCheckout true && \
 		echo "$(REMOTE_PATH)/" > .git/info/sparse-checkout && \
 		git fetch -q --depth=1 origin $(NO_LANG_BRANCH) && \
-		git checkout -q FETCH_HEAD && \
+		git --work-tree=. checkout -q FETCH_HEAD -- $(REMOTE_PATH) && \
 		echo "==> Syncing skills to $(SKILLS_DIR)/..." && \
-		mkdir -p ../$(SKILLS_DIR) && \
+		mkdir -p "$$dst" && \
 		find $(REMOTE_PATH) -type f | while read f; do \
-			dest="../$(SKILLS_DIR)/$${f#$(REMOTE_PATH)/}"; \
+			dest="$$dst/$${f#$(REMOTE_PATH)/}"; \
 			mkdir -p "$$(dirname "$$dest")"; \
 			cp "$$f" "$$dest"; \
-		done && \
-		cd .. && rm -rf $$tmp
+		done; \
+		rm -rf $$tmp
 	@echo "==> Done. Skills synced to $(SKILLS_DIR)/"
 	@ls -1 $(SKILLS_DIR)/

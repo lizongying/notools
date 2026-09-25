@@ -9,6 +9,18 @@ Nolang 是**无 GC** 语言，内存安全完全依赖编译器在正确位置�
 
 > **檔名規則**：Nolang 檔名使用中連字符 `-`（如 `deep-free-str.no`），不使用下劃線 `_`。測試案例放在 `tests/mem-safety/` 目錄。
 
+> ⚠️ **本 skill 描述的是 legacy LLVM 后端（`src/build/llvm/`，已于 c7febdb 整體刪除）的記憶體實現。**
+> 核心的單一所有權 / move / clone / 延遲零初始化 / CFG moved-facts 模型在 MIR 后端（`src/mir/`）**仍然成立**，
+> 但文中所有標註 `(legacy)` 的 `src/build/llvm/*.go` 文件引用，以及 `emit*` / `generate*` / `handle*` / `track*` 函數名，
+> 均為**歷史定位，現已不存在**（MIR 改用 MIR-op codegen，函數名完全不同）。活實現在 `src/mir/`：
+> - 堆釋放 / 深拷貝 / 型別判斷 / `varAddr` / FFI extern str → `src/mir/codegen.go`（如 `vecDeepClone` @ codegen.go:1145）
+> - let / 函數定義 / main / async lowering → `src/mir/hir2mir.go`
+> - CFG / 資料流分析 → `src/mir/analysis.go` + `src/mir/cfg.go`
+> - 內建呼叫（原 `call_stdlib.go` / `call.go` 部分）→ `src/mir/builtin_call.go`
+> - 舊 `slice_view.go`（slice view 機制已廢棄，改為始終 clone）→ 對應邏輯在 `src/mir/codegen.go`
+>
+> 除 `(legacy)` 標註外，本文的**記憶體模型描述仍可作為概念參考**；但除錯跳轉程式碼時，請以 `src/mir/` 的實際實作為準，不要去開 `src/build/llvm/`。
+
 ## 1. 核心原则
 
 ### 1.1 单一所有权
@@ -19,7 +31,8 @@ Nolang 是**无 GC** 语言，内存安全完全依赖编译器在正确位置�
 
 | 语义 | 触发条件 | 行为 |
 |------|---------|------|
-| **值拷贝** | 基本型别（i64/f64/bool 等） | 直接拷贝数值，无堆数据 |
+| **值拷贝** | 基本型别（i64/f64/bool 等）且不满足 can_slot_rebind | 直接拷贝数值，无堆数据 |
+| **栈槽重绑定** | 局部变量间 `b = a`，a 为栈类型（i64/u64/i128/u128/txt）且满足 can_slot_rebind | `g.varAlias[b] = a`，b 与 a 共享同一栈槽，0 拷贝（优于值拷贝）；否则降级为值拷贝 |
 | **深層 clone** | 局部变量间 `b = a`，a 为堆拥有型别（vec/arr/str/可克隆结构体） | malloc 新 data + memcpy + 递回 clone 元素；a 和 b 各自独立拥有 data，函数结束各自 free |
 | **move** | 输出参数 `out = x` | 浅拷贝结构体 + 标记源为 moved；源跳过 free |
 | **深層 clone** | `vec.push(x)`（x 为堆拥有型别） | malloc 新 data + memcpy + 递回 clone 元素；源仍拥有独立 data，函数结束各自 free |
@@ -36,6 +49,8 @@ Nolang 是**无 GC** 语言，内存安全完全依赖编译器在正确位置�
 - main 入口 ret 前：`emitHeapFree` 释放 top-level 局部堆变量 + `emitGlobalHeapFree` 释放模組級堆變數（globalVars 中的 vec/str/arr/结构体）
 - 重新赋值前：`freeOldHeapValue` 释放旧值
 - 结构体字段：`emitStructFieldsFree` 递归释放
+- **提前批量堆分配**：局部堆变量在 prologue 一次性预分配（vec 局部变量预分配容量 4，见 §10.4），避免运行期频繁分配
+- **作用域离开批 free**：函数结束时由 `emitHeapFree` 统一释放所有未 moved 的局部堆变量（见 §3.2.5），而非逐个手动释放
 
 ## 2. LLVM 类型布局
 
@@ -355,9 +370,9 @@ structPtr = g.varAddr(identName)
 **同時修復**：struct literal 賦值（`t = data { raw: raw, n: 5 }`）後，若結構體含堆擁有欄位（str/vec/arr/用戶結構體），呼叫 `trackLocalHeapVar` 追蹤為堆變數。否則 `emitHeapFree` 不會釋放結構體欄位的堆數據，導致洩漏或 use-after-free（str-range 結果指向已釋放的结构体字段 data）。
 
 **實現位置**：
-- `src/build/llvm/stmt.go` — `generateLet` 中 slice 表達式回退路徑的 clone 邏輯
-- `src/build/llvm/stmt.go` — struct literal 賦值後的 `trackLocalHeapVar` 呼叫
-- `src/build/llvm/clone_slice.go` — `cloneSliceExprResult` 函數實現
+- `（legacy）src/build/llvm/stmt.go` — `generateLet` 中 slice 表達式回退路徑的 clone 邏輯
+- `（legacy）src/build/llvm/stmt.go` — struct literal 賦值後的 `trackLocalHeapVar` 呼叫
+- `（legacy）src/build/llvm/clone_slice.go` — `cloneSliceExprResult` 函數實現
 
 **測試**：`tests/mem-safety/bug19-struct-field-corruption.no`。
 
@@ -374,9 +389,9 @@ structPtr = g.varAddr(identName)
 2. 在 `generateLet` 的 `%str-long` case 中新增 `isVecPtrReg` 檢查：若 `val` 是 `%vec*` 指標（如 `%rf.vec.N`），先 `load %str-long, %vec* val`（`%vec` 和 `%str-long` 的 LLVM 結構體布局相同：`{i64, i64, i64}`），再 store 為 `%str-long`
 
 **實現位置**：
-- `src/build/llvm/stmt.go` — `varLLVMType` 中 `DotExpression` builtin 路徑的 `SliceType` 檢查
-- `src/build/llvm/stmt.go` — `generateLet` 的 `%str-long` case 中 `isVecPtrReg` 分支
-- `src/build/llvm/stmt.go` — `isVecPtrReg` 函數實現
+- `（legacy）src/build/llvm/stmt.go` — `varLLVMType` 中 `DotExpression` builtin 路徑的 `SliceType` 檢查
+- `（legacy）src/build/llvm/stmt.go` — `generateLet` 的 `%str-long` case 中 `isVecPtrReg` 分支
+- `（legacy）src/build/llvm/stmt.go` — `isVecPtrReg` 函數實現
 
 **測試**：`tests/mem-safety/bug12-builtin-slice-to-str.no`。
 
@@ -389,7 +404,7 @@ structPtr = g.varAddr(identName)
 **修復**：在型別強轉邏輯中，當 `llvmType=i1` 且 `existingType=i64` 時，先檢查 `val` 的 SSA 型別（`g.ssaTypes[val]`）。若 `val` 已經是 `i64`（來自 `voidSingleOutput`），跳過 `zext`，直接使用 `existingType` 作為儲存型別。
 
 **實現位置**：
-- `src/build/llvm/stmt.go` — `generateLet` 中型別強轉邏輯的 `i1/i64` 特殊處理
+- `（legacy）src/build/llvm/stmt.go` — `generateLet` 中型別強轉邏輯的 `i1/i64` 特殊處理
 
 **測試**：`tests/mem-safety/bug13-bool-coercion.no`。
 
@@ -416,7 +431,7 @@ if isLocal || isOutput || isGlobal {
 ```
 
 **實現位置**：
-- `src/build/llvm/stmt.go` — `generateLet` 中 DotExpression 深層 clone 路徑
+- `（legacy）src/build/llvm/stmt.go` — `generateLet` 中 DotExpression 深層 clone 路徑
 
 **測試**：`tests/mem-safety/struct-field-uaf-bug.no`（UAF 驗證）、`tests/mem-safety/struct-field-shallow-copy-bug.no`（別名獨立性驗證）。
 
@@ -479,6 +494,31 @@ if srcHeapType != "%vec" && srcHeapType != "%arr" && srcHeapType != "%str-long" 
 ### 6.6 與 move 的區別
 - **深層 clone**：源和目標各自獨立擁有 data，函數結束各自 free
 - **move**：源放棄所有權（標記 moved），目標接管 data，源跳過 free
+
+### 6.7 栈类型 move（栈槽重绑定 / slot-rebind）
+
+`i64`/`u64`/`i128`/`u128`/`txt` 是栈类型（非堆拥有）。`b = a`（RHS 为 `*parser.Identifier`）在满足 `can_slot_rebind`（`slotRebindSafe[stmt]` 为 true）时走**栈槽重绑定**：`g.varAlias[b] = src`（src 沿 `varAlias` 链做传递性解析到最终源栈槽），`b` 与 `a` 共享同一栈槽，0 拷贝。否则降级为值拷贝。
+
+**can_slot_rebind 约束（比 `moveEligible` 更严格）**：
+- `moveEligible`：源后续**未读**即允许 move（堆类型，move 后源跳过 free）。
+- `can_slot_rebind`：源后续**无任何引用（读或写）**才允许重绑定——重绑定后 b 与 a 共享同一栈槽，源后续被写会破坏 b 的值。
+- 计算：`computeMoveEligibility`（用户函数，同时填充 `moveEligible`+`slotRebindSafe`）+ `computeSlotRebindSafety`（主函数，**仅**填充 `slotRebindSafe`，不碰 `moveEligible`）。两者均经 `stmtContainsVarRefAny`/`exprContainsVarRefAny` 做分支/循环感知引用扫描（含 `AssignExpression` 左值、循环回边）。
+- **引用扫描必须穷举所有能引用变量的 AST 节点**（否则未覆盖的写引用 → 不安全重绑定 → 错误输出甚至无限循环）。已覆盖：语句层 `LetStatement`/`ExpressionStatement`/`ForStatement`（`Init`/`Update`/`Condition`/`CountExpr`/`Body` + **`IterRange` 迭代集合**）/`ReturnStatement`/`MultiAssignStatement`/**`UnwrapAssignStatement`（`?=` 解包）**/**`BlockStatement`（裸区块）**；表达式层 `Identifier`/`AssignExpression`/`Infix`/`Prefix`/`Call`/`Dot`/`Index`/`IfExpression`(分支体)/`Slice`/`Conditional`/`Grouped`/**`AwaitExpression`**/**`CastExpression`**/**`RangeExpression`**/**`RunExpression`(协程 spawn，防御性；整函数禁用仍由 `curHasUnsafeConstruct` 负责)**。新增任何变量引用构造都必须同步加入这两个扫描函数，否则会重新引入 BROKEN 行为。
+
+**禁用场景**（必须走普通赋值路径）：
+- stdlib 函数（`curIsStdLib`）：stdlib 含 match/closure/coroutine 等引用分析无法完全建模的构造，重绑定会破坏共享栈槽（如 fmt 内部 `it` 别名到局部 `n`）。检测：`g.stdModules`（`SetStdModules` 由 `transpiler.go` 从 `checker.KnownStdModules()` 注入）+ 回退 `g.funcOwner[fd.Name]`。
+- **用户函数含闭包（`FunctionLiteral`）或协程 spawn（`RunExpression`）**（`curHasUnsafeConstruct`，由 `bodyHasUnsafeConstruct` 递迴扫描函数体设置）：闭包捕获变量在「独立函数上下文」求值，协程跨线程执行，二者变量生命周期超出当前函数 `g.varAlias` 单函数别名作用域，重绑定会破坏共享栈槽。采用「整函数禁用」（保守正确，只损失优化，绝不引入错误）。
+- **match 不禁用**：match 已 desugar 为 `IfExpression`，其分支体内引用由 `stmtContainsVarRefAny`/`exprContainsVarRefAny` 遍历覆盖，故无需禁用（经 `tests/match.no`/`tests/option.no` 验证与基线一致）。
+- 目标 = 输出参数 / 全局变量 / 堆类型变量。
+- 源 = 参数 / 全局变量（参数按引用传递，重绑定破坏调用方栈帧）。
+
+**别名失效**：变量重新赋值时（`b = ...`）先 `delete(g.varAlias, name)`，避免通用赋值路径经 `varAddr(name)` 仍指向旧源栈槽污染旧源；设置新别名前沿 `varAlias` 链传递性解析。
+
+**关键限制**：主函数（`generateMainFunction`）绝不能调用 `computeMoveEligibility`（会启用堆 move 导致 SEGFAULT），只能用 `computeSlotRebindSafety`。
+
+**调试**：设 `NOLANG_DEBUG_OPT=1` 可见 `[debug-opt] slot-rebind <name> -> <src> (type=...)`；含闭包/协程的函数该函数内不应出现此行（证明 `curHasUnsafeConstruct` 已禁用）。
+
+**测试**：`tests/slot-rebind.no`（期望输出 `42 7 1 1 17 5 5 10 100 99 84`）；`tests/slot-rebind-unsafe.no`（协程 capture 栈变量，验证 `curHasUnsafeConstruct` 禁用后输出与基线一致）；`tests/slot-rebind-gaps.no`（覆盖引用扫描边界：`BlockStatement` 写源、`?=`、裸区块——期望 `5 42 9`，且与 `no-baseline` 一致；注意该测试**故意不用 for-range**，因 in-tree 的 on-demand-std transpiler 重构当前对 for-range 体内的 `print` 会漏加载 `fmt` 而 `@fmt-int` 未定义，属 transpiler WIP 非 slot-rebind 范畴）。
 
 ## 7. %arr → %vec 轉换（varAlias）
 
@@ -559,7 +599,7 @@ clib 路徑（`generator.go:1763`）用於內建函數（`get-env`、`get-wd`、
 | `clone-reset-is-moved.no` | clone 後重置 moved 狀態 |
 | `struct-move-is-moved.no` | 結構體 move 後 isMovedVar 正確 |
 | `async-str-result.no` / `async-str-stress.no` / `async-module-awy.no` / `async-shared-race.no` / `async-alloca-escape.no` | async 場景記憶體安全 |
-| `test-minimal-option-str.no` / `test-minimal-str-map.no` / `test-minimal-str-map2.no` / `test-option-str-match.no` | 最小化 option/map str 場景 |
+| `minimal-option-str.no` / `minimal-str-map.no` / `minimal-str-map2.no` / `option-str-match.no` | 最小化 option/map str 場景 |
 | `bug19-struct-field-corruption.no` | 局部結構體 str 字段跨函數傳遞 + str-range clone（§5.9） |
 | `bug12-builtin-slice-to-str.no` | Builtin 返回 []byte 賦值到 str 變數（§5.10） |
 | `bug13-bool-coercion.no` + `bug13-helper.no` | Bool 返回值的型別強轉（§5.11） |
@@ -721,7 +761,7 @@ CFG 數據流分析依賴 `cfgEdge`/`cfgTerm`/`cfgAddEffect` 正確記錄所有�
 
 4. **运行 Go 测试**：
    ```bash
-   cd src && go test ./build/llvm/... ./parser/... ./fmt/...
+   cd src && go test ./mir/... ./parser/... ./fmt/...
    ```
 
 5. **新增 mem-safety 测试**：新场景的测试放在 `tests/mem-safety/`，文件名用中連字符。
@@ -730,45 +770,49 @@ CFG 數據流分析依賴 `cfgEdge`/`cfgTerm`/`cfgAddEffect` 正確記錄所有�
 
 | 功能 | 文件 | 关键函数 |
 |------|------|---------|
-| 堆变量追踪 | `src/build/llvm/stmt.go` | `trackLocalHeapVar`, `emitHeapFree` |
-| **move 追踪（按堆变量下标索引）** | `src/build/llvm/stmt.go` | `handleMoveToOut`, `handleMoveLocal`, `emitBitCheckFree`, `isMovedVar` |
-| **编译期位图操作** | `src/build/llvm/stmt.go` | `markMovedVar`, `unmarkMovedVar`, `isMovedVar` |
-| **运行时位图 IR** | `src/build/llvm/stmt.go` | `emitSetMovedBitIR`, `emitClearMovedBitIR`, `emitBitCheckFree` |
-| **分支 move 预扫描** | `src/build/llvm/stmt.go` | `detectBranchMoveToOut` — 递迴遍历 AST 检测分支内 move |
-| **位图变量按需分配** | `src/build/llvm/stmt.go` | `generateFunctionDefinition` 中 `hasBranchMove` 为 true 时 alloca `%__mb{block}` |
-| **CFG 數據流分析** | `src/build/llvm/dataflow.go` | `FuncCFG`, `solveBitsetForward`, `movedTransfer`, `classifyMoved`, `computeReachableBlocks` |
-| **CFG 安全網** | `src/build/llvm/stmt.go` | `emitHeapFree` 中 `triMustNot && isMovedVar` 檢查（§3.2.5, §10.6） |
-| **back edge 修正** | `src/build/llvm/stmt.go` | `emitDeepContainerFree` 中 `backEdgeFrom = g.cfgBlockLabel()`（§4.4） |
-| **main out 參數傳遞** | `src/build/llvm/stmt.go` | `generateMainFunction` 中為 main out 參數分配棧空間並傳遞指標（§10.5a） |
+| 堆变量追踪 | `（legacy）src/build/llvm/stmt.go` | `trackLocalHeapVar`, `emitHeapFree` |
+| **move 追踪（按堆变量下标索引）** | `（legacy）src/build/llvm/stmt.go` | `handleMoveToOut`, `handleMoveLocal`, `emitBitCheckFree`, `isMovedVar` |
+| **编译期位图操作** | `（legacy）src/build/llvm/stmt.go` | `markMovedVar`, `unmarkMovedVar`, `isMovedVar` |
+| **运行时位图 IR** | `（legacy）src/build/llvm/stmt.go` | `emitSetMovedBitIR`, `emitClearMovedBitIR`, `emitBitCheckFree` |
+| **分支 move 预扫描** | `（legacy）src/build/llvm/stmt.go` | `detectBranchMoveToOut` — 递迴遍历 AST 检测分支内 move |
+| **位图变量按需分配** | `（legacy）src/build/llvm/stmt.go` | `generateFunctionDefinition` 中 `hasBranchMove` 为 true 时 alloca `%__mb{block}` |
+| **CFG 數據流分析** | `（legacy）src/build/llvm/dataflow.go` | `FuncCFG`, `solveBitsetForward`, `movedTransfer`, `classifyMoved`, `computeReachableBlocks` |
+| **CFG 安全網** | `（legacy）src/build/llvm/stmt.go` | `emitHeapFree` 中 `triMustNot && isMovedVar` 檢查（§3.2.5, §10.6） |
+| **back edge 修正** | `（legacy）src/build/llvm/stmt.go` | `emitDeepContainerFree` 中 `backEdgeFrom = g.cfgBlockLabel()`（§4.4） |
+| **main out 參數傳遞** | `（legacy）src/build/llvm/stmt.go` | `generateMainFunction` 中為 main out 參數分配棧空間並傳遞指標（§10.5a） |
 | **hashmap std 模組載入** | `src/build/transpiler.go` | `collectReferencedStdModules` 識別 `MapType`/`MapLiteral`（§10.1） |
-| **模組級堆變數釋放** | `src/build/llvm/stmt.go` | `emitGlobalHeapFree` |
-| 释放路由 | `src/build/llvm/stmt.go` | `emitVarHeapFree` |
-| 深层 free | `src/build/llvm/stmt.go` | `emitDeepContainerFree`, `emitElementFree` |
-| 结构体释放 | `src/build/llvm/stmt.go` | `emitStructFieldsFree`, `emitStructFieldFree` |
-| 重新赋值释放 | `src/build/llvm/stmt.go` | `freeOldHeapValue` |
-| **深層 clone** | `src/build/llvm/stmt.go` | `emitDeepClone`, `emitContainerClone`, `emitDeepElementClone`, `emitStructElementsClone`, `emitStructClone`, `emitStructFieldClone`, `canDeepCloneStruct` |
-| **`b = a` clone 路徑** | `src/build/llvm/stmt.go` | `generateLet` 中的 Identifier + heapVars 深層 clone 路徑 |
-| **slice view Identifier clone** | `src/build/llvm/stmt.go` | `generateLet` 中的 `isSliceViewVar` + needClone 路徑（§5.5，保留但不觸發） |
-| **slice 總是 clone** | `src/build/llvm/slice_view.go` | `generateSliceViewAssignment` needClone 始終 true；`emitSliceClone`、`generateChainedSliceViewClone` 的 `trackLocalHeapVar`（§5.4, §5.6） |
-| **SliceType fall-through** | `src/build/llvm/stmt.go` | SliceType 區塊僅 `stmt.Value == nil` 時預設初始化（§5.7） |
-| **range 迭代全局變數** | `src/build/llvm/stmt.go` | `generateArrayRange` 中 `structPtr = g.varAddr(identName)`（§5.8） |
-| slice 視圖註冊/克隆 | `src/build/llvm/slice_view.go` | `generateSliceViewAssignment`, `emitSliceClone`, `materializeSliceView`（部分為死代碼） |
-| **DotExpression slice clone** | `src/build/llvm/clone_slice.go` | `cloneSliceExprResult`：對 base 是 DotExpression 的 slice 表達式執行 clone（§5.9） |
-| **struct literal 堆追蹤** | `src/build/llvm/stmt.go` | struct literal 賦值後 `trackLocalHeapVar` 追蹤含堆欄位的結構體（§5.9） |
-| **FFI extern str 安全複製** | `src/build/llvm/generator.go` | `emitFFIExternStrClone` |
-| **FFI extern str 路徑入口** | `src/build/llvm/call.go` | `callExtern` 中的 `case "str"` |
-| vec.push 深層 clone | `src/build/llvm/call.go` | vec-push case（`emitDeepClone` for heap-owning elements，扩容时 `emitNullCheckFree` 旧 buffer） |
-| varAlias | `src/build/llvm/generator.go` | `varAddr` |
-| SliceLiteral 初始化 | `src/build/llvm/stmt.go` | SliceLiteral 路径 |
-| 类型判断 | `src/build/llvm/generator.go` | `isHeapOwningType`, `isUserStructType` |
-| **async 參數所有權隔離** | `src/build/llvm/expr.go` | `prepareAsyncCall` 中 Identifier + 堆擁有類型參數深拷貝（§10.5） |
-| **async wrapper 參數容器釋放** | `src/build/llvm/expr.go` | `prepareAsyncCall` wrapper 生成邏輯中 `for i := range argTypes { free }`（§10.5） |
-| **async task 清理** | `src/build/llvm/stmt.go` | `emitLocalTasksFree`, `trackLocalTask`, `untrackLocalTask`（§10.5） |
-| **async task await** | `src/build/llvm/expr.go` | `awaitTaskVar`, `awaitFutureCall`, `awaitFutureVar` |
-| **Builtin []byte → str 賦值** | `src/build/llvm/stmt.go` | `varLLVMType` DotExpression builtin SliceType 檢查 + `isVecPtrReg` + `%str-long` case load 分支（§5.10） |
-| **Bool 型別強轉** | `src/build/llvm/stmt.go` | `generateLet` 中 `i1/i64` 型別強轉的 SSA 型別檢查（§5.11） |
-| **跨模組全局變量所有權** | `src/build/transpiler.go`, `src/build/llvm/generator.go` | `collectReassignedGlobals`, `collectReassignedGlobalNames`, `SetGlobalVarOwners`, `scanGlobalReassigns`（§12） |
-| **跨模組全局變量 codegen** | `src/build/llvm/stmt.go`, `src/build/llvm/expr.go` | `collectVarDeclsFromStmtInner` 模組歸屬判斷, `generateDotExpression` module.VAR 解析（§12） |
+| **模組級堆變數釋放** | `（legacy）src/build/llvm/stmt.go` | `emitGlobalHeapFree` |
+| 释放路由 | `（legacy）src/build/llvm/stmt.go` | `emitVarHeapFree` |
+| 深层 free | `（legacy）src/build/llvm/stmt.go` | `emitDeepContainerFree`, `emitElementFree` |
+| 结构体释放 | `（legacy）src/build/llvm/stmt.go` | `emitStructFieldsFree`, `emitStructFieldFree` |
+| 重新赋值释放 | `（legacy）src/build/llvm/stmt.go` | `freeOldHeapValue` |
+| **深層 clone** | `（legacy）src/build/llvm/stmt.go` | `emitDeepClone`, `emitContainerClone`, `emitDeepElementClone`, `emitStructElementsClone`, `emitStructClone`, `emitStructFieldClone`, `canDeepCloneStruct` |
+| **`b = a` clone 路徑** | `（legacy）src/build/llvm/stmt.go` | `generateLet` 中的 Identifier + heapVars 深層 clone 路徑 |
+| **棧類型 move（棧槽重綁定）** | `（legacy）src/build/llvm/stmt.go` | `generateLet` 中的 `slotRebindSafe` 棧槽重綁定區塊；`computeMoveEligibility`/`computeSlotRebindSafety` 計算 `slotRebindSafe`；`stmtContainsVarRefAny`/`exprContainsVarRefAny` 引用掃描 |
+| **stdlib 排除（curIsStdLib）** | `（legacy）src/build/llvm/generator.go`, `（legacy）src/build/llvm/stmt.go` | `funcState.curIsStdLib`；`Generator.stdModules` + `SetStdModules`；`generateFunctionDefinition`/`generateMainFunction` 中設定 |
+| **用户代码闭包/协程排除（curHasUnsafeConstruct）** | `（legacy）src/build/llvm/generator.go`, `（legacy）src/build/llvm/stmt.go` | `funcState.curHasUnsafeConstruct`；`bodyHasUnsafeConstruct`/`stmtHasUnsafeConstruct`/`exprHasUnsafeConstruct` 递迴扫描函数体，命中 `FunctionLiteral`/`RunExpression` 即禁用栈槽重绑定（整函数降级为拷贝） |
+| **std 模組集合注入** | `src/build/transpiler.go` | `t.llvmGenerator.SetStdModules(stdModSet)`（來自 `checker.KnownStdModules()`） |
+| **slice view Identifier clone** | `（legacy）src/build/llvm/stmt.go` | `generateLet` 中的 `isSliceViewVar` + needClone 路徑（§5.5，保留但不觸發） |
+| **slice 總是 clone** | `（legacy）src/build/llvm/slice_view.go` | `generateSliceViewAssignment` needClone 始終 true；`emitSliceClone`、`generateChainedSliceViewClone` 的 `trackLocalHeapVar`（§5.4, §5.6） |
+| **SliceType fall-through** | `（legacy）src/build/llvm/stmt.go` | SliceType 區塊僅 `stmt.Value == nil` 時預設初始化（§5.7） |
+| **range 迭代全局變數** | `（legacy）src/build/llvm/stmt.go` | `generateArrayRange` 中 `structPtr = g.varAddr(identName)`（§5.8） |
+| slice 視圖註冊/克隆 | `（legacy）src/build/llvm/slice_view.go` | `generateSliceViewAssignment`, `emitSliceClone`, `materializeSliceView`（部分為死代碼） |
+| **DotExpression slice clone** | `（legacy）src/build/llvm/clone_slice.go` | `cloneSliceExprResult`：對 base 是 DotExpression 的 slice 表達式執行 clone（§5.9） |
+| **struct literal 堆追蹤** | `（legacy）src/build/llvm/stmt.go` | struct literal 賦值後 `trackLocalHeapVar` 追蹤含堆欄位的結構體（§5.9） |
+| **FFI extern str 安全複製** | `（legacy）src/build/llvm/generator.go` | `emitFFIExternStrClone` |
+| **FFI extern str 路徑入口** | `（legacy）src/build/llvm/call.go` | `callExtern` 中的 `case "str"` |
+| vec.push 深層 clone | `（legacy）src/build/llvm/call.go` | vec-push case（`emitDeepClone` for heap-owning elements，扩容时 `emitNullCheckFree` 旧 buffer） |
+| varAlias | `（legacy）src/build/llvm/generator.go` | `varAddr` |
+| SliceLiteral 初始化 | `（legacy）src/build/llvm/stmt.go` | SliceLiteral 路径 |
+| 类型判断 | `（legacy）src/build/llvm/generator.go` | `isHeapOwningType`, `isUserStructType` |
+| **async 參數所有權隔離** | `（legacy）src/build/llvm/expr.go` | `prepareAsyncCall` 中 Identifier + 堆擁有類型參數深拷貝（§10.5） |
+| **async wrapper 參數容器釋放** | `（legacy）src/build/llvm/expr.go` | `prepareAsyncCall` wrapper 生成邏輯中 `for i := range argTypes { free }`（§10.5） |
+| **async task 清理** | `（legacy）src/build/llvm/stmt.go` | `emitLocalTasksFree`, `trackLocalTask`, `untrackLocalTask`（§10.5） |
+| **async task await** | `（legacy）src/build/llvm/expr.go` | `awaitTaskVar`, `awaitFutureCall`, `awaitFutureVar` |
+| **Builtin []byte → str 賦值** | `（legacy）src/build/llvm/stmt.go` | `varLLVMType` DotExpression builtin SliceType 檢查 + `isVecPtrReg` + `%str-long` case load 分支（§5.10） |
+| **Bool 型別強轉** | `（legacy）src/build/llvm/stmt.go` | `generateLet` 中 `i1/i64` 型別強轉的 SSA 型別檢查（§5.11） |
+| **跨模組全局變量所有權** | `src/build/transpiler.go`, `（legacy）src/build/llvm/generator.go` | `collectReassignedGlobals`, `collectReassignedGlobalNames`, `SetGlobalVarOwners`, `scanGlobalReassigns`（§12） |
+| **跨模組全局變量 codegen** | `（legacy）src/build/llvm/stmt.go`, `（legacy）src/build/llvm/expr.go` | `collectVarDeclsFromStmtInner` 模組歸屬判斷, `generateDotExpression` module.VAR 解析（§12） |
 
 ## 12. 跨模組全局變量
 
@@ -788,12 +832,12 @@ Nolang 模組（`# /path/to/module`）可以定義全局變量（如 `COUNTER = 
    - 從 `moduleConstants` 中刪除這些可變全局變量，避免被常量傳播替換為初始值
    - **必須在第一次 `ResolveModuleConstants` 之前執行**
 
-2. **codegen 常量摺疊排除**（`src/build/llvm/generator.go`）
+2. **codegen 常量摺疊排除**（`（legacy）src/build/llvm/generator.go`）
    - `collectReassignedGlobalNames` 在 `Generate` 方法早期掃描，收集被重新賦值的變量名
    - 從 `enumVariantIndex` 和 `moduleIntConsts` 中排除這些變量
    - 避免 `generateIdentifier` 將 `COUNTER` 常量摺疊為 `0`
 
-3. **模組歸屬追蹤**（`src/build/transpiler.go` + `src/build/llvm/generator.go`）
+3. **模組歸屬追蹤**（`src/build/transpiler.go` + `（legacy）src/build/llvm/generator.go`）
    - `globalVarOwner`: 全局變量名 → 模組短名
    - `funcOwner`: 函數名 → 模組短名
    - `SetGlobalVarOwners` 在 `Generate` 之前設定
