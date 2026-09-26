@@ -16,7 +16,7 @@ image {
     yres f64
     xoffset i64
     yoffset i64
-    data str
+    data []byte
 }
 
 ; DEPRECATED: use depth instead. 0=U8, 1=U16 (== depth-1)
@@ -44,7 +44,7 @@ new = (w i64, h i64, b i64) (img image) {
 
     #{overflow=wrap}
     n = w * h * b
-    _d str = with-len(n)
+    _d []byte = with-len(n)
     img.data = _d
 }
 
@@ -54,7 +54,7 @@ new = (w i64, h i64, b i64) (img image) {
 ; b i64: bands
 ; data str: pixel data
 ; returns img image: image wrapping data
-new-from-data = (w i64, h i64, b i64, data str) (img image) {
+new-from-data = (w i64, h i64, b i64, data []byte) (img image) {
     img.width = w
     img.height = h
     img.bands = b
@@ -66,7 +66,14 @@ new-from-data = (w i64, h i64, b i64, data str) (img image) {
     img.yres = 1.0
     img.xoffset = 0
     img.yoffset = 0
-    img.data = data
+    ; own the pixel buffer: copy the read-only input vec into a fresh vec so the
+    ; returned image never aliases the caller's buffer (which is freed on return)
+    n = data.len()
+    _d []byte = with-len(n)
+    i <- [0..n): {
+        _d[i] = data[i]
+    }
+    img.data = _d
 }
 
 ; ── Pixel access ──
@@ -123,7 +130,7 @@ set-pixel = (img image, x i64, y i64, band i64, v i64) {
         -> {
             #{overflow=wrap}
             idx = (y * img.width + x) * img.bands + band
-            img.data[idx] = v
+            img.data[idx] = v & 255
         }
     }
 }
@@ -148,7 +155,7 @@ copy = (img image) (out image) {
 
     #{overflow=wrap}
     n = img.width * img.height * img.bands * img.depth
-    _d str = with-len(n)
+    _d []byte = with-len(n)
     out.data = _d
     i <- [0..n): {
         out.data[i] = img.data[i]
@@ -189,7 +196,7 @@ fill = (img image, v i64) {
 
         -> {
             i <- [0..n): {
-                img.data[i] = v
+                img.data[i] = v & 255
             }
         }
     }
@@ -229,7 +236,7 @@ invert = (img image) {
         -> {
             i <- [0..n): {
                 #{overflow=wrap}
-                img.data[i] = 255 - img.data[i]
+                img.data[i] = (255 - img.data[i]) & 255
             }
         }
     }
@@ -275,7 +282,7 @@ add-const = (img image, c i64) {
                 v = img.data[i] + c
                 v > 255 -> v = 255
                 v < 0 -> v = 0
-                img.data[i] = v
+                img.data[i] = v & 255
             }
         }
     }
@@ -433,7 +440,7 @@ sub-const = (img image, c i64) {
                 #{overflow=wrap}
                 v = img.data[i] - c
                 v < 0 -> v = 0
-                img.data[i] = v
+                img.data[i] = v & 255
             }
         }
     }
@@ -479,7 +486,7 @@ mul-const = (img image, factor i64) {
                 v = img.data[i] * factor / 1000
                 v > 255 -> v = 255
                 v < 0 -> v = 0
-                img.data[i] = v
+                img.data[i] = v & 255
             }
         }
     }
@@ -524,7 +531,7 @@ clamp = (img image, mn i64, mx i64) {
                 v i64 = img.data[i]
                 v < mn -> v = mn
                 v > mx -> v = mx
-                img.data[i] = v
+                img.data[i] = v & 255
             }
         }
     }
@@ -573,7 +580,7 @@ add-alpha = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d str = with-len(npix * 4)
+    _d []byte = with-len(npix * 4)
     out = image.new-from-data(img.width, img.height, 4, _d)
     i <- [0..npix): {
         {
@@ -633,7 +640,7 @@ remove-alpha = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d str = with-len(npix * 3)
+    _d []byte = with-len(npix * 3)
     out = image.new-from-data(img.width, img.height, 3, _d)
     i <- [0..npix): {
 
@@ -651,13 +658,13 @@ remove-alpha = (img image) (out image) {
 
         ; Alpha blend onto white: out = src * alpha + 255 * (1 - alpha)
         #{overflow=wrap}
-        out.data[i * 3] = (r * a + 255 * (255 - a)) / 255
+        out.data[i * 3] = ((r * a + 255 * (255 - a)) / 255) & 255
 
         #{overflow=wrap}
-        out.data[i * 3 + 1] = (g * a + 255 * (255 - a)) / 255
+        out.data[i * 3 + 1] = ((g * a + 255 * (255 - a)) / 255) & 255
 
         #{overflow=wrap}
-        out.data[i * 3 + 2] = (b * a + 255 * (255 - a)) / 255
+        out.data[i * 3 + 2] = ((b * a + 255 * (255 - a)) / 255) & 255
     }
 }
 
@@ -736,7 +743,7 @@ new-u16 = (w i64, h i64, b i64) (img image) {
 
     #{overflow=wrap}
     n = w * h * b * 2
-    _d str = with-len(n)
+    _d []byte = with-len(n)
     img.data = _d
 }
 
@@ -814,7 +821,7 @@ u16-to-u8 = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d str = with-len(npix * img.bands)
+    _d []byte = with-len(npix * img.bands)
     out = image.new-from-data(img.width, img.height, img.bands, _d)
     out.depth = 1
     out.format = 0
@@ -828,7 +835,7 @@ u16-to-u8 = (img image) (out image) {
         u16 = lo | (hi << 8)
 
         #{overflow=wrap}
-        out.data[i] = (u16 + 128) / 257
+        out.data[i] = ((u16 + 128) / 257) & 255
     }
 }
 

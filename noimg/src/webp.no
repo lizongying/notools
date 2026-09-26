@@ -1,7 +1,9 @@
 ; webp.no — WebP format reader/writer
 ; Supports:
 ;   - Load: VP8L lossless decoding (Huffman + LZ77 + color cache + transforms)
-;   - Save: VP8L lossless encoding with real pixel data (no transforms)
+;   - Save: VP8L lossless encoding (canonical Huffman entropy coding,
+;     color-index + subtract-green transforms) — interoperable with libwebp
+;     (files written by save() decode identically with dwebp/webpinfo).
 ;
 ; NOTE: VP8 (lossy) decoding is NOT supported — load() returns nil for lossy WebP.
 
@@ -423,10 +425,26 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         -> {
 
                             ; LZ77 back-reference
+                            ; length prefix code = green symbol - 256 - cc-size
                             #{overflow=wrap}
-                            s-len = sgreen - 256 - sub-cc-size
-                            #{overflow=wrap}
-                            s-len = s-len + 1
+                            s-len-prefix = sgreen - 256 - sub-cc-size
+                            {
+                                s-len-prefix < 4 -> {
+                                    ; no extra bits: length = prefix + 1
+                                    #{overflow=wrap}
+                                    s-len = s-len-prefix + 1
+                                }
+
+                                -> {
+                                    ; extra = (prefix - 2) >> 1; offset = (2 + (prefix & 1)) << extra
+                                    s-len-extra = (s-len-prefix - 2) >> 1
+                                    s-len-extra-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, s-len-extra)
+                                    s-len-odd = s-len-prefix & 1
+                                    s-len-offset = (2 + s-len-odd) << s-len-extra
+                                    #{overflow=wrap}
+                                    s-len = s-len-offset + 1 + s-len-extra-val
+                                }
+                            }
                             s-dist-code, pos, buf, cnt = webp-huff-decode(sub-lens-4, sub-n-syms, sub-codes-4, sub-first-4, sub-count-4, data, pos, buf, cnt)
                             {
                                 s-dist-code <= 3 -> {
@@ -657,9 +675,11 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             }
 
                             ; Decode the color index sub-image with modified width
-                            ; The sub-image width = ceil(w / ci-bits), height = h
+                            ; Per spec: indices-per-word = 8 >> ci-bits,
+                            ; so sub-image width = ceil(w / indices-per-word)
+                            ci-ppw = 8 >> ci-bits
                             #{overflow=wrap}
-                            ci-sub-w = (w + ci-bits - 1) / ci-bits
+                            ci-sub-w = (w + ci-ppw - 1) / ci-ppw
                             ci-sub-h = h
                             ci-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ci-sub-w, ci-sub-h)
                         }
@@ -1680,6 +1700,365 @@ webp-vp8l-alpha-flag = (data []byte, pos i64) (has-alpha bool) {
     has-alpha = (b4 & 16) != 0
 }
 
+; ── Encoder helpers (VP8L lossless, libwebp-interoperable) ──
+
+; webp-enc-write-bits: append n bits (1..24) of val, LSB first
+; buf i64 / cnt i64: bit accumulator state (threaded through)
+; out []byte: output byte stream (mutated via push)
+; returns new-buf i64, new-cnt i64
+webp-enc-write-bits = (buf i64, cnt i64, out []byte, val i64, n i64) (new-buf i64, new-cnt i64) {
+    #{overflow=wrap}
+    buf = buf | ((val & ((1 << n) - 1)) << cnt)
+    #{overflow=wrap}
+    cnt = cnt + n
+    (cnt >= 8) {
+        cnt >= 8 -> {
+            out.push(buf & 255)
+            buf = buf >> 8
+            #{overflow=wrap}
+            cnt = cnt - 8
+        }
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; webp-enc-canonical: assign canonical Huffman codes from code lengths
+; (same construction the decoder expects: codes emitted MSB-first)
+; lens []i64: code length per symbol (0 = unused)
+; codes []i64: output canonical code per symbol (mutated)
+webp-enc-canonical = (lens []i64, codes []i64) {
+    n-sym = lens.len()
+    count []i64 = with-len(16)
+    si <- [0..n-sym): {
+        #{overflow=wrap}
+        count[lens[si]] = count[lens[si]] + 1
+    }
+    next-code []i64 = with-len(16)
+    code = 0
+    k <- [1..16): {
+        next-code[k] = code
+        #{overflow=wrap}
+        code = (code + count[k]) << 1
+    }
+    si <- [0..n-sym): {
+        cl = lens[si]
+        cl > 0 -> {
+            codes[si] = next-code[cl]
+            #{overflow=wrap}
+            next-code[cl] = next-code[cl] + 1
+        }
+    }
+}
+
+; webp-enc-huff-lens: build code lengths for a frequency histogram,
+; limited to max-len bits (package-merge / Moeller-Reed method).
+; freq []i64: symbol frequencies (sum must be > 0)
+; max-len i64: hard limit on code length (VP8L allows 15)
+; lens []i64: output code lengths (mutated, same length as freq)
+webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
+    n-sym = freq.len()
+    si <- [0..n-sym): {
+        lens[si] = 0
+    }
+
+    ; nonzero leaves sorted by weight (insertion sort; alphabet <= 4096)
+    syms []i64 = with-cap(0)
+    wts []i64 = with-cap(0)
+    si <- [0..n-sym): {
+        freq[si] > 0 -> {
+            j = syms.len()
+            syms.push(0)
+            wts.push(0)
+            w = freq[si]
+            shifting = true
+            (shifting && j > 0) {
+                shifting && j > 0 -> {
+                    wts[j - 1] > w -> {
+                        syms[j] = syms[j - 1]
+                        wts[j] = wts[j - 1]
+                        #{overflow=wrap}
+                        j = j - 1
+                    }
+                    -> {
+                        shifting = false
+                    }
+                }
+            }
+            syms[j] = si
+            wts[j] = w
+        }
+    }
+    n-leaves = syms.len()
+    n-leaves == 0 -> return
+    n-leaves == 1 -> {
+        lens[syms[0]] = 1
+        return
+    }
+
+    ; package-merge: select 2 * n-leaves - 2 coins at the last level
+    #{overflow=wrap}
+    need = n-leaves * 2 - 2
+
+    ; level-1 list: each leaf coin appears twice, sorted by weight
+    cur-sym []i64 = with-cap(n-leaves * 2)
+    cur-wt []i64 = with-cap(n-leaves * 2)
+    cur-l []i64 = with-cap(n-leaves * 2)
+    cur-r []i64 = with-cap(n-leaves * 2)
+    i <- [0..n-leaves): {
+        cur-sym.push(syms[i])
+        cur-wt.push(wts[i])
+        cur-l.push(-1)
+        cur-r.push(-1)
+        cur-sym.push(syms[i])
+        cur-wt.push(wts[i])
+        cur-l.push(-1)
+        cur-r.push(-1)
+    }
+    use-count []i64 = with-len(n-sym)
+    lv = 1
+    (lv < max-len) {
+        lv < max-len -> {
+
+            ; package step: pair consecutive coins of the previous list
+            pkg-wt []i64 = with-cap(0)
+            pkg-l []i64 = with-cap(0)
+            pkg-r []i64 = with-cap(0)
+            total = cur-sym.len()
+            p <- [0..total / 2): {
+                #{overflow=wrap}
+                q = p * 2
+                #{overflow=wrap}
+                pkg-wt.push(cur-wt[q] + cur-wt[q + 1])
+                pkg-l.push(q)
+                pkg-r.push(q + 1)
+            }
+
+            ; merge packaged coins with the doubled leaf list by weight
+            m-sym []i64 = with-cap(0)
+            m-wt []i64 = with-cap(0)
+            m-l []i64 = with-cap(0)
+            m-r []i64 = with-cap(0)
+            a = 0
+            b = 0
+            (a < pkg-wt.len() && b < cur-sym.len()) {
+                a < pkg-wt.len() && b < cur-sym.len() -> {
+                    pkg-wt[a] <= cur-wt[b] -> {
+                        m-sym.push(-1)
+                        m-wt.push(pkg-wt[a])
+                        m-l.push(pkg-l[a])
+                        m-r.push(pkg-r[a])
+                        #{overflow=wrap}
+                        a = a + 1
+                    }
+                    -> {
+                        m-sym.push(cur-sym[b])
+                        m-wt.push(cur-wt[b])
+                        m-l.push(-1)
+                        m-r.push(-1)
+                        #{overflow=wrap}
+                        b = b + 1
+                    }
+                }
+            }
+            (a < pkg-wt.len()) {
+                a < pkg-wt.len() -> {
+                    m-sym.push(-1)
+                    m-wt.push(pkg-wt[a])
+                    m-l.push(pkg-l[a])
+                    m-r.push(pkg-r[a])
+                    #{overflow=wrap}
+                    a = a + 1
+                }
+            }
+            (b < cur-sym.len()) {
+                b < cur-sym.len() -> {
+                    m-sym.push(cur-sym[b])
+                    m-wt.push(cur-wt[b])
+                    m-l.push(-1)
+                    m-r.push(-1)
+                    #{overflow=wrap}
+                    b = b + 1
+                }
+            }
+
+            ; truncate to `need` coins; become the working list next level
+            keep = need
+            m-sym.len() < keep -> keep = m-sym.len()
+            cur-sym = with-len(keep)
+            cur-wt = with-len(keep)
+            cur-l = with-len(keep)
+            cur-r = with-len(keep)
+            i <- [0..keep): {
+                cur-sym[i] = m-sym[i]
+                cur-wt[i] = m-wt[i]
+                cur-l[i] = m-l[i]
+                cur-r[i] = m-r[i]
+            }
+            #{overflow=wrap}
+            lv = lv + 1
+        }
+    }
+
+    ; count leaf-coin usage in the final list: length = occurrences
+    i <- [0..cur-sym.len()): {
+        cur-l[i] < 0 -> {
+            #{overflow=wrap}
+            use-count[cur-sym[i]] = use-count[cur-sym[i]] + 1
+        }
+    }
+    i <- [0..n-sym): {
+        lens[i] = use-count[i]
+    }
+}
+
+; webp-enc-build-cl-seq: encode one prefix tree's code lengths with the
+; 18-symbol meta-Huffman alphabet (direct / repeat-prev / repeat-zero)
+; lens []i64: code lengths (0..15), e.g. 256 or 4096 entries
+; seq-sym []i64 / seq-extra []i64 / seq-nextra []i64: emitted meta symbols (mutated)
+webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra []i64) {
+    n = lens.len()
+    i = 0
+    (i < n) {
+        i < n -> {
+            v = lens[i]
+
+            ; count a rlen of equal code lengths (max 6) starting at i
+            rlen = 1
+            scanning = true
+            (scanning && rlen < 6) {
+                scanning && rlen < 6 -> {
+                    #{overflow=wrap}
+                    ni = i + rlen
+                    ni < n && lens[ni] == v -> {
+                        #{overflow=wrap}
+                        rlen = rlen + 1
+                    }
+                    -> {
+                        scanning = false
+                    }
+                }
+            }
+            {
+                i > 0 && rlen >= 3 && v == lens[i - 1] -> {
+
+                    ; repeat previous code length: meta symbol 16, 2 extra bits (rlen - 3)
+                    seq-sym.push(16)
+                    seq-extra.push(rlen - 3)
+                    seq-nextra.push(2)
+                }
+
+                v == 0 && rlen >= 3 -> {
+
+                    ; repeat zero: meta symbol 17, 3 extra bits (rlen - 3)
+                    seq-sym.push(17)
+                    seq-extra.push(rlen - 3)
+                    seq-nextra.push(3)
+                }
+
+                -> {
+
+                    ; emit direct code lengths for the rlen
+                    k <- [0..rlen): {
+                        seq-sym.push(v)
+                        seq-extra.push(0)
+                        seq-nextra.push(0)
+                    }
+                }
+            }
+            #{overflow=wrap}
+            i = i + rlen
+        }
+    }
+}
+
+; webp-enc-write-tree: write one prefix code's code lengths as a
+; non-simple meta-Huffman code block (5 trees share this writer)
+; lens []i64: code lengths of the tree (256 + cc-size entries)
+; returns new-buf i64, new-cnt i64
+webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, new-cnt i64) {
+    seq-sym []i64 = with-cap(0)
+    seq-extra []i64 = with-cap(0)
+    seq-nextra []i64 = with-cap(0)
+    webp-enc-build-cl-seq(lens, seq-sym, seq-extra, seq-nextra)
+
+    ; histogram over the 18 meta symbols
+    cl-freq []i64 = with-len(18)
+    i <- [0..seq-sym.len()): {
+        #{overflow=wrap}
+        cl-freq[seq-sym[i]] = cl-freq[seq-sym[i]] + 1
+    }
+    cl-lens []i64 = with-len(18)
+    webp-enc-huff-lens(cl-freq, 7, cl-lens)
+    cl-codes []i64 = with-len(18)
+    webp-enc-canonical(cl-lens, cl-codes)
+
+    ; non-simple flag + 3-bit code lengths for the 18 meta symbols
+    buf, cnt = webp-enc-write-bits(buf, cnt, out, 1, 1)
+    i <- [0..18): {
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, cl-lens[i], 3)
+    }
+    ; the code-length sequence itself
+    i <- [0..seq-sym.len()): {
+        s = seq-sym[i]
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, cl-codes[s], cl-lens[s])
+        {
+            seq-nextra[i] > 0 -> {
+                buf, cnt = webp-enc-write-bits(buf, cnt, out, seq-extra[i], seq-nextra[i])
+            }
+        }
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
+; webp-enc-write-entropy: 5 prefix code blocks + green-prefixed pixel data
+; main-w i64: encoded width (reduced by color-index packing)
+; g/r/b/a []i64: one component per pixel (a unused when has-alpha is false)
+; len-g/len-r/len-b/len-a []i64: 5 x 4096 code-length arrays (tree j at offset j*4096)
+; returns new-buf i64, new-cnt i64
+webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g []i64, r []i64, b []i64, a []i64, len-g []i64, len-r []i64, len-b []i64, len-a []i64, has-alpha bool) (new-buf i64, new-cnt i64) {
+
+    ; canonical codes per tree + write the 5 code-length blocks
+    all-codes []i64 = with-len(5 * 4096)
+    j <- [0..5): {
+        tree-lens []i64 = with-len(4096)
+        #{overflow=wrap}
+        base = j * 4096
+        k <- [0..4096): {
+            tree-lens[k] = len-g[base + k]
+        }
+        tree-codes []i64 = with-len(4096)
+        webp-enc-canonical(tree-lens, tree-codes)
+        k <- [0..4096): {
+            all-codes[base + k] = tree-codes[k]
+        }
+        buf, cnt = webp-enc-write-tree(buf, cnt, out, tree-lens)
+    }
+
+    ; pixel data: green first, then red/blue/alpha through tree (green >> 3) % 5
+    i <- [0..npix): {
+        gv = g[i]
+        #{overflow=wrap}
+        sel = (gv >> 3) % 5
+        #{overflow=wrap}
+        base = sel * 4096
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, all-codes[base + gv], len-g[base + gv])
+        rv = r[i]
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, all-codes[base + 256 + rv], len-r[base + 256 + rv])
+        bv = b[i]
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, all-codes[base + 512 + bv], len-b[base + 512 + bv])
+        {
+            has-alpha -> {
+                av = a[i]
+                buf, cnt = webp-enc-write-bits(buf, cnt, out, all-codes[base + 768 + av], len-a[base + 768 + av])
+            }
+        }
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
 ; ── Load ──
 
 ; webp.load: load a WebP file (VP8L lossless decoding)
@@ -1778,7 +2157,7 @@ load = (path str) (img ?image) {
 
     ; Build image from decoded pixel data
     #{overflow=wrap}
-    _d str = with-len(w * h * bands)
+    _d []byte = with-len(w * h * bands)
     i <- [0..w * h * bands): {
         _d[i] = pixels[i]
     }
@@ -1787,9 +2166,10 @@ load = (path str) (img ?image) {
 
 ; ── Save ──
 
-; webp.save: save image as WebP VP8L lossless
-; Encodes real pixel data using fixed 9-bit Huffman codes (no transforms/compression).
-; The output is a valid VP8L file that decodes to the exact input image.
+; webp.save: save image as WebP VP8L lossless, interoperable with libwebp
+; Stream layout: header + optional color-index transform (unique colors
+; <= 256, with 1/2/4/8-bit index packing) + subtract-green + 5 canonical
+; Huffman prefix codes built from real histograms + entropy-coded pixels.
 ; path str: output path
 ; img image: image to save
 ; returns ok bool
@@ -1797,399 +2177,337 @@ save = (path str, img image) (ok bool) {
     w = img.width
     h = img.height
     has-alpha = img.bands == 4
+    w > 16384 || h > 16384 -> {
+        ok = false
+        return
+    }
 
     #{overflow=wrap}
     npix = w * h
 
-    ; Build VP8L lossless bitstream with real pixel data
-    ; We use no transforms, no color cache, and a fixed 9-bit Huffman
-    ; code for all 256 symbols in each of the 4 channels.
-    ; This produces a valid VP8L file that decodes to the actual image.
-
-    ; VP8L bitstream writer
-    bit-buf = 0
-    bit-count = 0
-
-    #{overflow=wrap}
-    vp8l-data []byte = with-cap(npix * 5 + 256)
-
-    ; Helper: flush bytes from bit buffer
-    ; We inline flush logic after each write
-
-    ; VP8L signature (0x2F)
-    bit-buf = bit-buf | (47 << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 8
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
-            #{overflow=wrap}
-            bit-count = bit-count - 8
+    ; unpack source pixels into ARGB component arrays
+    g0 []i64 = with-len(npix)
+    r0 []i64 = with-len(npix)
+    b0 []i64 = with-len(npix)
+    a0 []i64 = with-len(npix)
+    i <- [0..npix): {
+        #{overflow=wrap}
+        o = i * img.bands
+        g0[i] = img.data[o + 1]
+        r0[i] = img.data[o]
+        b0[i] = img.data[o + 2]
+        {
+            has-alpha -> a0[i] = img.data[o + 3]
+            -> a0[i] = 255
         }
     }
 
-    ; Width-1 (14 bits)
-    #{overflow=wrap}
-    w1 = w - 1
-    bit-buf = bit-buf | (w1 << bit-count)
+    ; color-index detection: collect up to 256 unique ARGB colors.
+    ; if a 257th distinct color appears, abandon color-index mode cleanly.
+    ci-mode = false
+    ci-candidate = true
+    pal-count = 0
+    pal-a []i64 = with-len(256)
+    pal-r []i64 = with-len(256)
+    pal-g []i64 = with-len(256)
+    pal-b []i64 = with-len(256)
+    idx []i64 = with-len(npix)
+    i <- [0..npix): {
+        ci-candidate -> {
+            found = -1
+            p <- [0..pal-count): {
+                found < 0 && pal-r[p] == r0[i] && pal-g[p] == g0[i] && pal-b[p] == b0[i] && pal-a[p] == a0[i] -> found = p
+            }
+            {
+                found >= 0 -> idx[i] = found
+                -> {
+                    pal-count < 256 -> {
+                        pal-r[pal-count] = r0[i]
+                        pal-g[pal-count] = g0[i]
+                        pal-b[pal-count] = b0[i]
+                        pal-a[pal-count] = a0[i]
+                        idx[i] = pal-count
+                        #{overflow=wrap}
+                        pal-count = pal-count + 1
+                    }
+                    -> {
+                        ci-candidate = false
+                    }
+                }
+            }
+        }
+    }
+    ci-candidate && pal-count > 0 && pal-count <= 256 -> ci-mode = true
 
-    #{overflow=wrap}
-    bit-count = bit-count + 14
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
-            #{overflow=wrap}
-            bit-count = bit-count - 8
+    ; bits per color index from palette size (per VP8L spec)
+    ci-bits = 8
+    ci-mode -> {
+        {
+            pal-count <= 2 -> ci-bits = 1
+        }
+        {
+            pal-count > 2 && pal-count <= 4 -> ci-bits = 2
+        }
+        {
+            pal-count > 4 && pal-count <= 16 -> ci-bits = 4
         }
     }
 
-    ; Height-1 (14 bits)
-    #{overflow=wrap}
-    h1 = h - 1
-    bit-buf = bit-buf | (h1 << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 14
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
+    ; subtract-green heuristic: enabled when |R-G| + |B-G| residuals are
+    ; smaller than raw |R| + |B| (and not already inside color-index mode,
+    ; where sg applies to the palette plane instead)
+    sg-enabled = false
+    ! ci-mode -> {
+        sum-raw = 0
+        sum-sg = 0
+        i <- [0..npix): {
+            dr = r0[i] - 128
+            {
+                dr < 0 -> dr = -dr
+            }
+            db = b0[i] - 128
+            {
+                db < 0 -> db = -db
+            }
             #{overflow=wrap}
-            bit-count = bit-count - 8
+            sum-raw = sum-raw + dr + db
+            dg = r0[i] - g0[i]
+            {
+                dg < 0 -> dg = -dg
+            }
+            db2 = b0[i] - g0[i]
+            {
+                db2 < 0 -> db2 = -db2
+            }
+            #{overflow=wrap}
+            sum-sg = sum-sg + dg + db2
         }
+        sum-sg < sum-raw -> sg-enabled = true
     }
+    ; color-index mode stores the full (true-color) palette and a pure index
+    ; image (R=B=A=0), so subtract-green is not combined with it
+    ci-mode -> sg-enabled = false
 
-    ; Alpha hint (1 bit), version (3 bits = 0)
-    alpha-bit = 0
+    ; build the encoded component planes
+    ; color-index mode: green = packed palette indices (one word per
+    ; (8 >> ci-bits) pixels, spread across the 4 channels); red/blue are
+    ; the subtract-green residuals of the palette entries, alpha unused
+    main-w = w
+    #{overflow=wrap}
+    ppw = 8 >> ci-bits
+    #{overflow=wrap}
+    enc-n = npix / ppw
+    enc-g []i64 = with-len(npix)
+    enc-r []i64 = with-len(npix)
+    enc-b []i64 = with-len(npix)
+    enc-a []i64 = with-len(npix)
     {
-        has-alpha -> alpha-bit = 1
-    }
-    bit-buf = bit-buf | (alpha-bit << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 1
-    bit-buf = bit-buf | (0 << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 3
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
+        ci-mode -> {
+            main-w = (w + ppw - 1) / ppw
             #{overflow=wrap}
-            bit-count = bit-count - 8
+            enc-n = main-w * h
+            i <- [0..enc-n): {
+                word = 0
+                k <- [0..ppw): {
+                    #{overflow=wrap}
+                    sx = i % main-w * ppw + k
+                    #{overflow=wrap}
+                    sy = i / main-w
+                    p = 0
+                    sx < w -> p = idx[sy * w + sx]
+                    #{overflow=wrap}
+                    bit-pos = k * ci-bits
+                    chunk = bit-pos / 8
+                    #{overflow=wrap}
+                    shift = (bit-pos - chunk * 8) * 8
+                    #{overflow=wrap}
+                    word = word | ((p & ((1 << ci-bits) - 1)) << shift)
+                }
+                enc-g[i] = word & 255
+                enc-r[i] = (word >> 8) & 255
+                enc-b[i] = (word >> 16) & 255
+                enc-a[i] = (word >> 24) & 255
+            }
         }
-    }
 
-    ; No transforms: write 0 for "use transform" bit
-    bit-buf = bit-buf | (0 << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 1
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
-            #{overflow=wrap}
-            bit-count = bit-count - 8
-        }
-    }
-
-    ; Color cache: not used (1 bit = 0)
-    bit-buf = bit-buf | (0 << bit-count)
-
-    #{overflow=wrap}
-    bit-count = bit-count + 1
-    (bit-count >= 8) {
-        bit-count >= 8 -> {
-            vp8l-data.push(bit-buf & 255)
-            bit-buf = bit-buf >> 8
-
-            #{overflow=wrap}
-            bit-count = bit-count - 8
-        }
-    }
-
-    ; Meta-Huffman for all 5 trees.
-    ; We use a non-simple Huffman with 256 symbols, each with code length 9.
-    ; This allows encoding any 8-bit value.
-    ; The meta-Huffman uses 18 meta-symbols (0-17).
-    ; Symbol 0-15 = code length 0-15
-    ; Symbol 16 = repeat previous (2 extra bits + 3)
-    ; Symbol 17 = zeros (3 extra bits + 3)
-    ;
-    ; For 256 symbols all with code length 9:
-    ; We write: 9 (code length 9 for symbol 0), then 16 (repeat) with ext=3 (repeat 6),
-    ; then 16 with ext=3, ... until we cover 256 symbols.
-    ; 1 + 6*N >= 256 -> N >= 43
-    ; Actually: first symbol gets cl=9, then 42 repeats of 6 = 1 + 42*6 = 253,
-    ; then need 3 more: 16 with ext=0 (repeat 3). Total = 1 + 42*6 + 3 = 256.
-    ; But meta-Huffman itself needs its own code lengths.
-    ;
-    ; Meta-Huffman code lengths for 18 symbols:
-    ; symbol 9 -> code length 1 (for the '9' we use)
-    ; symbol 16 -> code length 2 (for repeat)
-    ; symbol 17 -> code length 2 (for zeros, not used but needs to be valid)
-    ; All others -> 0
-    ; Actually we only use symbols 9 and 16.
-    ; Meta-Huffman: 18 symbols, 3-bit code lengths each.
-    ; symbol 9: code length 1
-    ; symbol 16: code length 2
-    ; All others: 0
-    ; This gives: code 0 -> symbol 9, code 10 -> symbol 16, code 11 -> (unused)
-    ;
-    ; But we need a valid Huffman tree. With cl[9]=1, cl[16]=2:
-    ; count[1]=1, count[2]=1 -> first[1]=0, first[2]=2
-    ; code for sym 9 (cl=1): 0
-    ; code for sym 16 (cl=2): 10
-    ; This is valid.
-    ;
-    ; Meta-Huffman is stored as 3-bit code lengths for each of 18 symbols.
-
-    ; Build the meta-Huffman for each of 5 trees (all identical)
-    tree-idx <- [0..5): {
-
-        ; Write 3-bit code lengths for 18 meta-symbols
-        ; sym 0-8: code length 0
-        ; sym 9: code length 1
-        ; sym 10-15: code length 0
-        ; sym 16: code length 2
-        ; sym 17: code length 0
-        mi <- [0..18): {
-            ml = 0
-            {
-                mi == 9 -> ml = 1
-            }
-            {
-                mi == 16 -> ml = 2
-            }
-            bit-buf = bit-buf | (ml << bit-count)
-
-            #{overflow=wrap}
-            bit-count = bit-count + 3
-            (bit-count >= 8) {
-                bit-count >= 8 -> {
-                    vp8l-data.push(bit-buf & 255)
-                    bit-buf = bit-buf >> 8
-
+        -> {
+            sg-enabled -> {
+                i <- [0..npix): {
                     #{overflow=wrap}
-                    bit-count = bit-count - 8
+                    enc-r[i] = (r0[i] - g0[i]) & 255
+                    #{overflow=wrap}
+                    enc-b[i] = (b0[i] - g0[i]) & 255
                 }
             }
-
-            ; Now write 256 symbol code lengths using meta-Huffman
-            ; First symbol: code length 9 (meta symbol 9)
-            ; Code for meta-sym 9 = 0 (1 bit)
-            bit-buf = bit-buf | (0 << bit-count)
-
-            #{overflow=wrap}
-            bit-count = bit-count + 1
-            (bit-count >= 8) {
-                bit-count >= 8 -> {
-                    vp8l-data.push(bit-buf & 255)
-                    bit-buf = bit-buf >> 8
-
-                    #{overflow=wrap}
-                    bit-count = bit-count - 8
+            -> {
+                i <- [0..npix): {
+                    enc-r[i] = r0[i]
+                    enc-b[i] = b0[i]
                 }
             }
-
-            ; Remaining 255 symbols: use meta-symbol 16 (repeat) with ext bits
-            ; Repeat = 3 + ext (2 bits), so max repeat = 6 per use
-            ; 255 / 6 = 42.5, so 42 repeats of 6 (=252) + 1 repeat of 3
-            ; Code for meta-sym 16 = 10 (2 bits), then 2 extra bits
-            rep-count = 255
-            (rep-count >= 6) {
-                rep-count >= 6 -> {
-
-                    ; Write repeat-6 (ext=3, 2 bits)
-                    bit-buf = bit-buf | (2 << bit-count)
-
-                    #{overflow=wrap}
-                    bit-count = bit-count + 2
-                    bit-buf = bit-buf | (3 << bit-count)
-                    #{overflow=wrap}
-                    bit-count = bit-count + 2
-                    (bit-count >= 8) {
-                        bit-count >= 8 -> {
-                            vp8l-data.push(bit-buf & 255)
-                            bit-buf = bit-buf >> 8
-                            #{overflow=wrap}
-                            bit-count = bit-count - 8
-                        }
-                    }
-                    #{overflow=wrap}
-                    rep-count = rep-count - 6
-                }
-            }
-            {
-                rep-count > 0 -> {
-
-                    ; Write remaining repeats (ext = rep-count - 3)
-                    bit-buf = bit-buf | (2 << bit-count)
-
-                    #{overflow=wrap}
-                    bit-count = bit-count + 2
-                    #{overflow=wrap}
-                    ext-val = rep-count - 3
-                    bit-buf = bit-buf | (ext-val << bit-count)
-                    #{overflow=wrap}
-                    bit-count = bit-count + 2
-                    (bit-count >= 8) {
-                        bit-count >= 8 -> {
-                            vp8l-data.push(bit-buf & 255)
-                            bit-buf = bit-buf >> 8
-                            #{overflow=wrap}
-                            bit-count = bit-count - 8
-                        }
-                    }
-                    rep-count = 0
-                }
-            }
-
-            ; Now write pixel data.
-            ; Each pixel is encoded as: green(9 bits), red(9 bits), blue(9 bits), alpha(9 bits if has-alpha)
-            ; The Huffman code for value v with code length 9 is: v itself (canonical code with 256 symbols all cl=9)
-            ; Canonical codes: first[9] = 0, all 256 symbols have cl=9
-            ; code for symbol v = v (9 bits)
-            ; Since green < 256 always, no LZ77 or color cache references.
             i <- [0..npix): {
-                px = i % w
+                enc-g[i] = g0[i]
+                enc-a[i] = a0[i]
+            }
+            #{overflow=wrap}
+            enc-n = npix
+        }
+    }
 
+    ; histograms: green symbols are split across the 5 trees by (g >> 3) % 5
+    freq-g []i64 = with-len(5 * 4096)
+    freq-r []i64 = with-len(5 * 4096)
+    freq-b []i64 = with-len(5 * 4096)
+    freq-a []i64 = with-len(5 * 4096)
+    i <- [0..enc-n): {
+        gv = enc-g[i]
+        #{overflow=wrap}
+        base = ((gv >> 3) % 5) * 4096
+        #{overflow=wrap}
+        freq-g[base + gv] = freq-g[base + gv] + 1
+        #{overflow=wrap}
+        freq-r[base + 256 + enc-r[i]] = freq-r[base + 256 + enc-r[i]] + 1
+        #{overflow=wrap}
+        freq-b[base + 512 + enc-b[i]] = freq-b[base + 512 + enc-b[i]] + 1
+        {
+            has-alpha -> {
                 #{overflow=wrap}
-                py = i / w
-                g = image.get-pixel(img, px, py, 1)
-                r = image.get-pixel(img, px, py, 0)
-                b = image.get-pixel(img, px, py, 2)
-                a = 255
-                {
-                    has-alpha -> {
-                        a = image.get-pixel(img, px, py, 3)
-                    }
-                }
-
-                ; Write green (9 bits)
-                bit-buf = bit-buf | (g << bit-count)
-
-                #{overflow=wrap}
-                bit-count = bit-count + 9
-                (bit-count >= 8) {
-                    bit-count >= 8 -> {
-                        vp8l-data.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-
-                        #{overflow=wrap}
-                        bit-count = bit-count - 8
-                    }
-                }
-
-                ; Write red (9 bits)
-                bit-buf = bit-buf | (r << bit-count)
-
-                #{overflow=wrap}
-                bit-count = bit-count + 9
-                (bit-count >= 8) {
-                    bit-count >= 8 -> {
-                        vp8l-data.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-
-                        #{overflow=wrap}
-                        bit-count = bit-count - 8
-                    }
-                }
-
-                ; Write blue (9 bits)
-                bit-buf = bit-buf | (b << bit-count)
-
-                #{overflow=wrap}
-                bit-count = bit-count + 9
-                (bit-count >= 8) {
-                    bit-count >= 8 -> {
-                        vp8l-data.push(bit-buf & 255)
-                        bit-buf = bit-buf >> 8
-
-                        #{overflow=wrap}
-                        bit-count = bit-count - 8
-                    }
-                }
-
-                ; Write alpha (9 bits) if has-alpha
-                {
-                    has-alpha -> {
-                        bit-buf = bit-buf | (a << bit-count)
-
-                        #{overflow=wrap}
-                        bit-count = bit-count + 9
-                        (bit-count >= 8) {
-                            bit-count >= 8 -> {
-                                vp8l-data.push(bit-buf & 255)
-                                bit-buf = bit-buf >> 8
-                                #{overflow=wrap}
-                                bit-count = bit-count - 8
-                            }
-                        }
-                    }
-                }
-
-                ; Flush remaining bits
-                {
-                    bit-count > 0 -> {
-                        vp8l-data.push(bit-buf & 255)
-                    }
-                }
-
-                ; Build RIFF container with VP8L chunk
-                #{overflow=wrap}
-                file-size = 4 + 8 + vp8l-data.len()
-
-                #{overflow=wrap}
-                buf []byte = with-cap(12 + 8 + vp8l-data.len())
-                buf.push(82); R
-                buf.push(73); I
-                buf.push(70); F
-                buf.push(70); F
-                buf.push((file-size - 8) & 255)
-                buf.push(((file-size - 8) >> 8) & 255)
-                buf.push(((file-size - 8) >> 16) & 255)
-                buf.push(((file-size - 8) >> 24) & 255)
-                buf.push(87); W
-                buf.push(69); E
-                buf.push(66); B
-                buf.push(80); P
-
-                ; VP8L chunk
-                buf.push(86); V
-                buf.push(80); P
-                buf.push(56); 8
-                buf.push(76); L
-                buf.push(vp8l-data.len() & 255)
-                buf.push((vp8l-data.len >> 8) & 255)
-                buf.push((vp8l-data.len >> 16) & 255)
-                buf.push((vp8l-data.len >> 24) & 255)
-                i <- [0..vp8l-data.len()): {
-                    buf.push(vp8l-data[i])
-                }
-
-                ; Write file
-                wfd = fs.open-write(path)
-                {
-                    wfd < 0 -> {
-                        ok = false
-                        return
-                    }
-                }
-                fs.write(wfd, buf, buf.len())
-                fs.close(wfd)
-                ok = true
+                freq-a[base + 768 + enc-a[i]] = freq-a[base + 768 + enc-a[i]] + 1
             }
         }
     }
+
+    ; code lengths per tree (limit 15 bits per VP8L spec)
+    len-g []i64 = with-len(5 * 4096)
+    len-r []i64 = with-len(5 * 4096)
+    len-b []i64 = with-len(5 * 4096)
+    len-a []i64 = with-len(5 * 4096)
+    flat []i64 = with-len(4096)
+    j <- [0..5): {
+        #{overflow=wrap}
+        base = j * 4096
+        tmp []i64 = with-len(4096)
+        k <- [0..4096): {
+            tmp[k] = freq-g[base + k]
+        }
+        webp-enc-huff-lens(tmp, 15, flat)
+        k <- [0..4096): {
+            len-g[base + k] = flat[k]
+        }
+        k <- [0..4096): {
+            tmp[k] = freq-r[base + k]
+        }
+        webp-enc-huff-lens(tmp, 15, flat)
+        k <- [0..4096): {
+            len-r[base + k] = flat[k]
+        }
+        k <- [0..4096): {
+            tmp[k] = freq-b[base + k]
+        }
+        webp-enc-huff-lens(tmp, 15, flat)
+        k <- [0..4096): {
+            len-b[base + k] = flat[k]
+        }
+        k <- [0..4096): {
+            tmp[k] = freq-a[base + k]
+        }
+        webp-enc-huff-lens(tmp, 15, flat)
+        k <- [0..4096): {
+            len-a[base + k] = flat[k]
+        }
+    }
+
+    ; assemble the VP8L bitstream (bit accumulator threaded as scalars)
+    vp8l-out []byte = with-cap(0)
+    bit-buf = 0
+    bit-cnt = 0
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 47, 8)
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, w - 1, 14)
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, h - 1, 14)
+    ab = 0
+    {
+        has-alpha -> ab = 1
+    }
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, ab, 1)
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 3)
+
+    ; transform chain: color-index then subtract-green
+    {
+        ci-mode -> {
+            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
+            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 3, 2)
+            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-count - 1, 8)
+            p <- [0..pal-count): {
+                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-b[p], 8)
+                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-g[p], 8)
+                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-r[p], 8)
+                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-a[p], 8)
+            }
+        }
+    }
+    {
+        sg-enabled -> {
+            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
+            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 2, 2)
+        }
+    }
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
+
+    ; color cache: not used
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
+
+    ; entropy-coded image data
+    bit-buf, bit-cnt = webp-enc-write-entropy(bit-buf, bit-cnt, vp8l-out, main-w, enc-n, enc-g, enc-r, enc-b, enc-a, len-g, len-r, len-b, len-a, has-alpha)
+
+    ; flush remaining bits
+    {
+        bit-cnt > 0 -> {
+            vp8l-out.push((bit-buf & ((1 << bit-cnt) - 1)) & 255)
+        }
+    }
+
+    ; RIFF/WEBP container with a single VP8L chunk
+    total = 8 + 8 + vp8l-out.len()
+    #{overflow=wrap}
+    padded = total + (total & 1)
+    buf []byte = with-cap(padded)
+    buf.push(82); R
+    buf.push(73); I
+    buf.push(70); F
+    buf.push(70); F
+    sz = total - 8
+    buf.push(sz & 255)
+    buf.push((sz >> 8) & 255)
+    buf.push((sz >> 16) & 255)
+    buf.push((sz >> 24) & 255)
+    buf.push(87); W
+    buf.push(69); E
+    buf.push(66); B
+    buf.push(80); P
+    buf.push(86); V
+    buf.push(80); P
+    buf.push(56); 8
+    buf.push(76); L
+    chunk-len = vp8l-out.len()
+    buf.push(chunk-len & 255)
+    buf.push((chunk-len >> 8) & 255)
+    buf.push((chunk-len >> 16) & 255)
+    buf.push((chunk-len >> 24) & 255)
+    i <- [0..chunk-len): {
+        buf.push(vp8l-out[i])
+    }
+    {
+        total & 1 != 0 -> buf.push(0)
+    }
+
+    wfd = fs.open-write(path)
+    {
+        wfd < 0 -> {
+            ok = false
+            return
+        }
+    }
+    fs.write(wfd, buf, buf.len())
+    fs.close(wfd)
+    ok = true
 }
