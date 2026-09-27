@@ -2115,169 +2115,173 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
         lens[si] = 0
     }
 
-    ; nonzero leaves sorted by weight (insertion sort; alphabet <= 4096)
-    syms []i64 = with-cap(0)
-    wts []i64 = with-cap(0)
+    ; collect leaves (symbol, weight). Fixed arrays sized to the alphabet so
+    ; no vec is reallocated inside a loop (avoids arena/lifetime pitfalls).
+    lsym []i64 = with-len(n-sym)
+    lw []i64 = with-len(n-sym)
+    n-leaves = 0
     si <- [0..n-sym): {
-        freq[si] > 0 -> {
-            j = syms.len()
-            syms.push(0)
-            wts.push(0)
-            #{index-out=0}
-            w = freq[si]
-            shifting = true
-            (shifting && j > 0) {
-                shifting && j > 0 -> {
-                    #{index-out=0}
-                    #{overflow=wrap}
-                    wts[j - 1] > w -> {
-                        #{index-out=0}
-                        syms[j] = syms[j - 1]
-                        #{index-out=0}
-                        wts[j] = wts[j - 1]
-                        #{overflow=wrap}
-                        j = j - 1
-                    }
-                    -> {
-                        shifting = false
-                    }
-                }
+        #{index-out=0}
+        {
+            freq[si] > 0 -> {
+                #{index-out=0}
+                #{overflow=wrap}
+                lsym[n-leaves] = si
+                #{index-out=0}
+                #{overflow=wrap}
+                lw[n-leaves] = freq[si]
+                #{overflow=wrap}
+                n-leaves = n-leaves + 1
             }
-            syms[j] = si
-            wts[j] = w
         }
     }
-    n-leaves = syms.len()
     n-leaves == 0 -> return
     n-leaves == 1 -> {
-        lens[syms[0]] = 1
+        #{index-out=0}
+        #{overflow=wrap}
+        lens[lsym[0]] = 1
         return
     }
 
-    ; package-merge: select 2 * n-leaves - 2 coins at the last level
+    ; plain Huffman: nodes 0..n-leaves-1 are leaves (weight = freq, children -1).
+    ; repeatedly merge the two smallest-weight active roots into a new parent
+    ; until one root remains, then read each leaf's depth as its code length.
     #{overflow=wrap}
-    need = n-leaves * 2 - 2
-
-    ; level-1 list: each leaf coin appears twice, sorted by weight
-    #{overflow=wrap}
-    cur-sym []i64 = with-cap(n-leaves * 2)
-    #{overflow=wrap}
-    cur-wt []i64 = with-cap(n-leaves * 2)
-    #{overflow=wrap}
-    cur-l []i64 = with-cap(n-leaves * 2)
-    #{overflow=wrap}
-    cur-r []i64 = with-cap(n-leaves * 2)
+    max-nodes = n-leaves * 2
+    nw []i64 = with-len(max-nodes)
+    nl []i64 = with-len(max-nodes)
+    nr []i64 = with-len(max-nodes)
     i <- [0..n-leaves): {
         #{index-out=0}
-        cur-sym.push(syms[i])
+        #{overflow=wrap}
+        nw[i] = lw[i]
         #{index-out=0}
-        cur-wt.push(wts[i])
-        cur-l.push(-1)
-        cur-r.push(-1)
+        #{overflow=wrap}
+        nl[i] = -1
         #{index-out=0}
-        cur-sym.push(syms[i])
-        #{index-out=0}
-        cur-wt.push(wts[i])
-        cur-l.push(-1)
-        cur-r.push(-1)
+        #{overflow=wrap}
+        nr[i] = -1
     }
-    use-count []i64 = with-len(n-sym)
-    lv = 1
-    (lv < max-len) {
-        lv < max-len -> {
-
-            ; package step: pair consecutive coins of the previous list
-            pkg-wt []i64 = with-cap(0)
-            pkg-l []i64 = with-cap(0)
-            pkg-r []i64 = with-cap(0)
-            total = cur-sym.len()
-            #{overflow=wrap}
-            p <- [0..total / 2): {
-                #{overflow=wrap}
-                q = p * 2
+    #{overflow=wrap}
+    nn = n-leaves
+    act []i64 = with-len(n-leaves)
+    na = n-leaves
+    i <- [0..n-leaves): {
+        #{index-out=0}
+        #{overflow=wrap}
+        act[i] = i
+    }
+    (na > 1) {
+        na > 1 -> {
+            ; first smallest
+            m1 = 0
+            k <- [1..na): {
                 #{index-out=0}
                 #{overflow=wrap}
-                pkg-wt.push(cur-wt[q] + cur-wt[q + 1])
-                pkg-l.push(q)
-                pkg-r.push(q + 1)
+                { nw[act[k]] < nw[act[m1]] -> m1 = k }
             }
-
-            ; merge packaged coins with the doubled leaf list by weight
-            m-sym []i64 = with-cap(0)
-            m-wt []i64 = with-cap(0)
-            m-l []i64 = with-cap(0)
-            m-r []i64 = with-cap(0)
-            a = 0
-            b = 0
-            (a < pkg-wt.len() && b < cur-sym.len()) {
-                a < pkg-wt.len() && b < cur-sym.len() -> {
-                    pkg-wt[a] <= cur-wt[b] -> {
-                        m-sym.push(-1)
-                        m-wt.push(pkg-wt[a])
-                        m-l.push(pkg-l[a])
-                        m-r.push(pkg-r[a])
-                        #{overflow=wrap}
-                        a = a + 1
-                    }
-                    -> {
-                        m-sym.push(cur-sym[b])
-                        m-wt.push(cur-wt[b])
-                        m-l.push(-1)
-                        m-r.push(-1)
-                        #{overflow=wrap}
-                        b = b + 1
-                    }
-                }
-            }
-            (a < pkg-wt.len()) {
-                a < pkg-wt.len() -> {
-                    m-sym.push(-1)
-                    m-wt.push(pkg-wt[a])
-                    m-l.push(pkg-l[a])
-                    m-r.push(pkg-r[a])
-                    #{overflow=wrap}
-                    a = a + 1
-                }
-            }
-            (b < cur-sym.len()) {
-                b < cur-sym.len() -> {
-                    m-sym.push(cur-sym[b])
-                    m-wt.push(cur-wt[b])
-                    m-l.push(-1)
-                    m-r.push(-1)
-                    #{overflow=wrap}
-                    b = b + 1
-                }
-            }
-
-            ; truncate to `need` coins; become the working list next level
-            keep = need
-            m-sym.len() < keep -> keep = m-sym.len()
-            cur-sym = with-len(keep)
-            cur-wt = with-len(keep)
-            cur-l = with-len(keep)
-            cur-r = with-len(keep)
-            i <- [0..keep): {
-                cur-sym[i] = m-sym[i]
-                cur-wt[i] = m-wt[i]
-                cur-l[i] = m-l[i]
-                cur-r[i] = m-r[i]
+            #{index-out=0}
+            #{overflow=wrap}
+            r1 = act[m1]
+            j <- [m1..na - 1): {
+                #{index-out=0}
+                #{overflow=wrap}
+                act[j] = act[j + 1]
             }
             #{overflow=wrap}
-            lv = lv + 1
+            na = na - 1
+            ; second smallest
+            m2 = 0
+            k <- [1..na): {
+                #{index-out=0}
+                #{overflow=wrap}
+                { nw[act[k]] < nw[act[m2]] -> m2 = k }
+            }
+            #{index-out=0}
+            #{overflow=wrap}
+            r2 = act[m2]
+            j <- [m2..na - 1): {
+                #{index-out=0}
+                #{overflow=wrap}
+                act[j] = act[j + 1]
+            }
+            #{overflow=wrap}
+            na = na - 1
+            ; new parent node
+            #{index-out=0}
+            #{overflow=wrap}
+            nw[nn] = nw[r1] + nw[r2]
+            #{index-out=0}
+            #{overflow=wrap}
+            nl[nn] = r1
+            #{index-out=0}
+            #{overflow=wrap}
+            nr[nn] = r2
+            #{index-out=0}
+            #{overflow=wrap}
+            act[na] = nn
+            #{overflow=wrap}
+            na = na + 1
+            #{overflow=wrap}
+            nn = nn + 1
         }
     }
 
-    ; count leaf-coin usage in the final list: length = occurrences
-    i <- [0..cur-sym.len()): {
-        cur-l[i] < 0 -> {
+    ; depth-first traversal from the root (depth 0) to assign leaf code lengths.
+    #{overflow=wrap}
+    st-n []i64 = with-len(max-nodes + 2)
+    #{overflow=wrap}
+    st-d []i64 = with-len(max-nodes + 2)
+    sp = 0
+    #{index-out=0}
+    #{overflow=wrap}
+    st-n[sp] = act[0]
+    #{overflow=wrap}
+    st-d[sp] = 0
+    #{overflow=wrap}
+    sp = sp + 1
+    (sp > 0) {
+        sp > 0 -> {
             #{overflow=wrap}
-            use-count[cur-sym[i]] = use-count[cur-sym[i]] + 1
+            sp = sp - 1
+            #{index-out=0}
+            #{overflow=wrap}
+            nd = st-n[sp]
+            #{index-out=0}
+            #{overflow=wrap}
+            dp = st-d[sp]
+            #{index-out=0}
+            {
+                nl[nd] < 0 -> {
+                    ; leaf: symbol lsym[nd] gets length dp (min 1)
+                    #{index-out=0}
+                    #{overflow=wrap}
+                    sy = lsym[nd]
+                    len-v = dp
+                    len-v < 1 -> len-v = 1
+                    #{index-out=0}
+                    #{overflow=wrap}
+                    lens[sy] = len-v
+                }
+
+                -> {
+                    #{index-out=0}
+                    #{overflow=wrap}
+                    st-n[sp] = nl[nd]
+                    #{overflow=wrap}
+                    st-d[sp] = dp + 1
+                    #{overflow=wrap}
+                    sp = sp + 1
+                    #{index-out=0}
+                    #{overflow=wrap}
+                    st-n[sp] = nr[nd]
+                    #{overflow=wrap}
+                    st-d[sp] = dp + 1
+                    #{overflow=wrap}
+                    sp = sp + 1
+                }
+            }
         }
-    }
-    i <- [0..n-sym): {
-        #{index-out=0}
-        lens[i] = use-count[i]
     }
 }
 
@@ -2299,6 +2303,7 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
             (scanning && rlen < 6) {
                 scanning && rlen < 6 -> {
                     #{overflow=wrap}
+                    #{index-out=0}
                     ni = i + rlen
                     ni < n && lens[ni] == v -> {
                         #{overflow=wrap}
@@ -2309,26 +2314,29 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
                     }
                 }
             }
+            #{overflow=wrap}
+            im1 = i - 1
             {
-                #{overflow=wrap}
-                im1 = i - 1
+                ; a run of zeros must use symbol 17 (repeat zero); symbol 16
+                ; repeats the last NON-ZERO literal, so it must never carry a
+                ; zero value (decoder keeps prev-code-len unchanged for 17/18).
                 #{index-out=0}
-                i > 0 && rlen >= 3 && v == lens[im1] -> {
-
-                    ; repeat previous code length: meta symbol 16, 2 extra bits (rlen - 3)
-                    seq-sym.push(16)
-                    #{overflow=wrap}
-                    seq-extra.push(rlen - 3)
-                    seq-nextra.push(2)
-                }
-
                 v == 0 && rlen >= 3 -> {
-
-                    ; repeat zero: meta symbol 17, 3 extra bits (rlen - 3)
                     seq-sym.push(17)
                     #{overflow=wrap}
                     seq-extra.push(rlen - 3)
                     seq-nextra.push(3)
+                }
+
+                #{index-out=0}
+                v != 0 && i > 0 && rlen >= 3 && v == lens[im1] -> {
+
+                    ; repeat previous (non-zero) code length: meta symbol 16,
+                    ; 2 extra bits, count = 3 + extra = rlen
+                    seq-sym.push(16)
+                    #{overflow=wrap}
+                    seq-extra.push(rlen - 3)
+                    seq-nextra.push(2)
                 }
 
                 -> {
@@ -2347,40 +2355,166 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
     }
 }
 
+; webp-enc-write-code: emit a canonical Huffman code MSB-first (the decoder
+; reconstructs symbols as code = (code << 1) | bit, so the code's high bit must
+; hit the stream first). n = code length in bits.
+webp-enc-write-code = (buf i64, cnt i64, out []byte, code i64, n i64) (new-buf i64, new-cnt i64) {
+    k <- [0..n): {
+        #{overflow=wrap}
+        shift = n - 1 - k
+        #{index-out=0}
+        #{overflow=wrap}
+        b = (code >> shift) & 1
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, b, 1)
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
 ; webp-enc-write-tree: write one prefix code's code lengths as a
-; non-simple meta-Huffman code block (5 trees share this writer)
-; lens []i64: code lengths of the tree (256 + cc-size entries)
+; spec-correct VP8L Huffman-code block (mirrors webp-decode-meta-huff).
+; Simple code (1 bit flag + <=2 symbols of length 1) when the tree has <=2
+; nonzero lengths that are all 1; otherwise the non-simple code-length-code
+; block (num_codes + permuted 3-bit CL lengths + use-length + CL sequence).
+; lens []i64: code lengths of the tree
 ; returns new-buf i64, new-cnt i64
 webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, new-cnt i64) {
-    seq-sym []i64 = with-cap(0)
-    seq-extra []i64 = with-cap(0)
-    seq-nextra []i64 = with-cap(0)
-    webp-enc-build-cl-seq(lens, seq-sym, seq-extra, seq-nextra)
-
-    ; histogram over the 18 meta symbols
-    cl-freq []i64 = with-len(18)
-    i <- [0..seq-sym.len()): {
-        #{overflow=wrap}
-        cl-freq[seq-sym[i]] = cl-freq[seq-sym[i]] + 1
-    }
-    cl-lens []i64 = with-len(18)
-    webp-enc-huff-lens(cl-freq, 7, cl-lens)
-    cl-codes []i64 = with-len(18)
-    webp-enc-canonical(cl-lens, cl-codes)
-
-    ; non-simple flag + 3-bit code lengths for the 18 meta symbols
-    buf, cnt = webp-enc-write-bits(buf, cnt, out, 1, 1)
-    i <- [0..18): {
-        buf, cnt = webp-enc-write-bits(buf, cnt, out, cl-lens[i], 3)
-    }
-    ; the code-length sequence itself
-    i <- [0..seq-sym.len()): {
+    n = lens.len()
+    nzc = 0
+    s1 = 0
+    s2 = 0
+    all-one = true
+    k <- [0..n): {
         #{index-out=0}
-        s = seq-sym[i]
-        buf, cnt = webp-enc-write-bits(buf, cnt, out, cl-codes[s], cl-lens[s])
+        cl = lens[k]
         {
-            seq-nextra[i] > 0 -> {
-                buf, cnt = webp-enc-write-bits(buf, cnt, out, seq-extra[i], seq-nextra[i])
+            cl > 0 -> {
+                #{overflow=wrap}
+                nzc = nzc + 1
+                {
+                    nzc == 1 -> s1 = k
+                }
+                {
+                    nzc == 2 -> s2 = k
+                }
+                {
+                    cl != 1 -> all-one = false
+                }
+            }
+        }
+    }
+    {
+        nzc <= 2 && all-one -> {
+            ; simple code
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, 1, 1)
+            scf = 0
+            {
+                nzc == 2 -> scf = 1
+            }
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, scf, 1)
+            f1 = 0
+            {
+                s1 >= 2 -> f1 = 1
+            }
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, f1, 1)
+            {
+                f1 == 0 -> buf, cnt = webp-enc-write-bits(buf, cnt, out, s1, 1)
+                -> buf, cnt = webp-enc-write-bits(buf, cnt, out, s1, 8)
+            }
+            {
+                nzc == 2 -> buf, cnt = webp-enc-write-bits(buf, cnt, out, s2, 8)
+            }
+        }
+
+        -> {
+            ; non-simple: code lengths coded with the 19-symbol CL alphabet
+            seq-sym []i64 = with-cap(0)
+            seq-extra []i64 = with-cap(0)
+            seq-nextra []i64 = with-cap(0)
+            webp-enc-build-cl-seq(lens, seq-sym, seq-extra, seq-nextra)
+
+            cl-freq []i64 = with-len(19)
+            i <- [0..seq-sym.len()): {
+                #{index-out=0}
+                #{overflow=wrap}
+                cl-freq[seq-sym[i]] = cl-freq[seq-sym[i]] + 1
+            }
+            ; the CL decoder cannot represent a single-symbol CL table with
+            ; real bits; add a filler symbol so >=2 CL symbols are present
+            ndist = 0
+            last-used = 0
+            k <- [0..19): {
+                #{index-out=0}
+                {
+                    cl-freq[k] > 0 -> {
+                        #{overflow=wrap}
+                        ndist = ndist + 1
+                        last-used = k
+                    }
+                }
+            }
+            {
+                ndist < 2 -> {
+                    fill = 0
+                    {
+                        last-used == 0 -> fill = 1
+                    }
+                    #{index-out=0}
+                    #{overflow=wrap}
+                    cl-freq[fill] = cl-freq[fill] + 1
+                }
+            }
+            cl-lens []i64 = with-len(19)
+            webp-enc-huff-lens(cl-freq, 7, cl-lens)
+            cl-codes []i64 = with-len(19)
+            webp-enc-canonical(cl-lens, cl-codes)
+
+            ; kCodeLengthCodeOrder[19]
+            k-order []i64 = with-len(19)
+            k-order[0] = 17
+            k-order[1] = 18
+            k-order[2] = 0
+            k-order[3] = 1
+            k-order[4] = 2
+            k-order[5] = 3
+            k-order[6] = 4
+            k-order[7] = 5
+            k-order[8] = 16
+            k-order[9] = 6
+            k-order[10] = 7
+            k-order[11] = 8
+            k-order[12] = 9
+            k-order[13] = 10
+            k-order[14] = 11
+            k-order[15] = 12
+            k-order[16] = 13
+            k-order[17] = 14
+            k-order[18] = 15
+
+            ; not-simple flag
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
+            ; num_codes = 19 -> stored as (19 - 4) in 4 bits
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, 15, 4)
+            mi <- [0..19): {
+                #{index-out=0}
+                ko = k-order[mi]
+                #{index-out=0}
+                buf, cnt = webp-enc-write-bits(buf, cnt, out, cl-lens[ko], 3)
+            }
+            ; use-length = 0 (all n symbols follow)
+            buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
+            i <- [0..seq-sym.len()): {
+                #{index-out=0}
+                s = seq-sym[i]
+                #{index-out=0}
+                buf, cnt = webp-enc-write-code(buf, cnt, out, cl-codes[s], cl-lens[s])
+                {
+                    #{index-out=0}
+                    seq-nextra[i] > 0 -> {
+                        #{index-out=0}
+                        buf, cnt = webp-enc-write-bits(buf, cnt, out, seq-extra[i], seq-nextra[i])
+                    }
+                }
             }
         }
     }
@@ -2703,6 +2837,10 @@ save = (path str, img image) (ok bool) {
     ; color-index mode stores the full (true-color) palette and a pure index
     ; image (R=B=A=0), so subtract-green is not combined with it
     ci-mode -> sg-enabled = false
+    ; the encoder emits a plain (untransformed) ARGB image, so force raw
+    ; component planes regardless of the color-index / subtract-green heuristics
+    ci-mode = false
+    sg-enabled = false
 
     ; build the encoded component planes
     ; color-index mode: green = packed palette indices (one word per
@@ -2786,91 +2924,92 @@ save = (path str, img image) (ok bool) {
         }
     }
 
-    ; histograms: green symbols are split across the 5 trees by (g >> 3) % 5
-    #{overflow=wrap}
-    freq-g []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    freq-r []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    freq-b []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    freq-a []i64 = with-len(5 * 4096)
-    i <- [0..enc-n): {
+    ; ── build 5 single-group Huffman trees (VP8L): green(280) red(256)
+    ;    blue(256) alpha(256) dist(40). The ARGB image always codes alpha
+    ;    (opaque input carries alpha=255). No transforms, color cache,
+    ;    meta-Huffman or LZ77. ──
+    ts-g = 280
+    ts-c = 256
+    ts-d = 40
+    freq-g []i64 = with-len(ts-g)
+    freq-r []i64 = with-len(ts-c)
+    freq-b []i64 = with-len(ts-c)
+    freq-a []i64 = with-len(ts-c)
+    freq-d []i64 = with-len(ts-d)
+    i <- [0..npix): {
         #{index-out=0}
-        gv = enc-g[i]
         #{overflow=wrap}
-        base = ((gv >> 3) % 5) * 4096
+        freq-g[enc-g[i]] = freq-g[enc-g[i]] + 1
+        #{index-out=0}
         #{overflow=wrap}
-        freq-g[base + gv] = freq-g[base + gv] + 1
+        freq-r[enc-r[i]] = freq-r[enc-r[i]] + 1
+        #{index-out=0}
         #{overflow=wrap}
-        freq-r[base + 256 + enc-r[i]] = freq-r[base + 256 + enc-r[i]] + 1
+        freq-b[enc-b[i]] = freq-b[enc-b[i]] + 1
+        #{index-out=0}
         #{overflow=wrap}
-        freq-b[base + 512 + enc-b[i]] = freq-b[base + 512 + enc-b[i]] + 1
-        {
-            has-alpha -> {
-                #{overflow=wrap}
-                freq-a[base + 768 + enc-a[i]] = freq-a[base + 768 + enc-a[i]] + 1
-            }
-        }
+        freq-a[enc-a[i]] = freq-a[enc-a[i]] + 1
     }
 
     ; code lengths per tree (limit 15 bits per VP8L spec)
-    #{overflow=wrap}
-    len-g []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    len-r []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    len-b []i64 = with-len(5 * 4096)
-    #{overflow=wrap}
-    len-a []i64 = with-len(5 * 4096)
-    flat []i64 = with-len(4096)
-    j <- [0..5): {
-        #{overflow=wrap}
-        base = j * 4096
-        tmp []i64 = with-len(4096)
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            tmp[k] = freq-g[base + k]
+    len-g []i64 = with-len(ts-g)
+    len-r []i64 = with-len(ts-c)
+    len-b []i64 = with-len(ts-c)
+    len-a []i64 = with-len(ts-c)
+    len-d []i64 = with-len(ts-d)
+    webp-enc-huff-lens(freq-g, 15, len-g)
+    webp-enc-huff-lens(freq-r, 15, len-r)
+    webp-enc-huff-lens(freq-b, 15, len-b)
+    webp-enc-huff-lens(freq-a, 15, len-a)
+    webp-enc-huff-lens(freq-d, 15, len-d)
+    codes-g []i64 = with-len(ts-g)
+    codes-r []i64 = with-len(ts-c)
+    codes-b []i64 = with-len(ts-c)
+    codes-a []i64 = with-len(ts-c)
+    webp-enc-canonical(len-g, codes-g)
+    webp-enc-canonical(len-r, codes-r)
+    webp-enc-canonical(len-b, codes-b)
+    webp-enc-canonical(len-a, codes-a)
+
+    ; distinct symbol counts (<=1 => decoder reads 0 bits for that channel)
+    nz-g = 0
+    i <- [0..ts-g): {
+        #{index-out=0}
+        {
+            len-g[i] > 0 -> {
+                #{overflow=wrap}
+                nz-g = nz-g + 1
+            }
         }
-        webp-enc-huff-lens(tmp, 15, flat)
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            len-g[base + k] = flat[k]
+    }
+    nz-r = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-r[i] > 0 -> {
+                #{overflow=wrap}
+                nz-r = nz-r + 1
+            }
         }
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            tmp[k] = freq-r[base + k]
+    }
+    nz-b = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-b[i] > 0 -> {
+                #{overflow=wrap}
+                nz-b = nz-b + 1
+            }
         }
-        webp-enc-huff-lens(tmp, 15, flat)
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            len-r[base + k] = flat[k]
-        }
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            tmp[k] = freq-b[base + k]
-        }
-        webp-enc-huff-lens(tmp, 15, flat)
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            len-b[base + k] = flat[k]
-        }
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            tmp[k] = freq-a[base + k]
-        }
-        webp-enc-huff-lens(tmp, 15, flat)
-        k <- [0..4096): {
-            #{index-out=0}
-            #{overflow=wrap}
-            len-a[base + k] = flat[k]
+    }
+    nz-a = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-a[i] > 0 -> {
+                #{overflow=wrap}
+                nz-a = nz-a + 1
+            }
         }
     }
 
@@ -2890,34 +3029,61 @@ save = (path str, img image) (ok bool) {
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, ab, 1)
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 3)
 
-    ; transform chain: color-index then subtract-green
-    {
-        ci-mode -> {
-            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
-            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 3, 2)
-            #{overflow=wrap}
-            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-count - 1, 8)
-            p <- [0..pal-count): {
-                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-b[p], 8)
-                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-g[p], 8)
-                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-r[p], 8)
-                bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-a[p], 8)
-            }
-        }
-    }
-    {
-        sg-enabled -> {
-            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
-            bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 2, 2)
-        }
-    }
+    ; transform chain: none
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
 
     ; color cache: not used
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
 
-    ; entropy-coded image data
-    bit-buf, bit-cnt = webp-enc-write-entropy(bit-buf, bit-cnt, vp8l-out, main-w, enc-n, enc-g, enc-r, enc-b, enc-a, len-g, len-r, len-b, len-a, has-alpha)
+    ; meta-Huffman: not used (single group)
+    bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
+
+    ; the 5 code-length blocks
+    bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-g)
+    bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-r)
+    bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-b)
+    bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-a)
+    bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-d)
+
+    ; entropy-coded pixels: green, red, blue, alpha (single group, no LZ77)
+    i <- [0..npix): {
+        {
+            nz-g > 1 -> {
+                #{index-out=0}
+                gv = enc-g[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                bit-buf, bit-cnt = webp-enc-write-code(bit-buf, bit-cnt, vp8l-out, codes-g[gv], len-g[gv])
+            }
+        }
+        {
+            nz-r > 1 -> {
+                #{index-out=0}
+                rv = enc-r[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                bit-buf, bit-cnt = webp-enc-write-code(bit-buf, bit-cnt, vp8l-out, codes-r[rv], len-r[rv])
+            }
+        }
+        {
+            nz-b > 1 -> {
+                #{index-out=0}
+                bv = enc-b[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                bit-buf, bit-cnt = webp-enc-write-code(bit-buf, bit-cnt, vp8l-out, codes-b[bv], len-b[bv])
+            }
+        }
+        {
+            nz-a > 1 -> {
+                #{index-out=0}
+                av = enc-a[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                bit-buf, bit-cnt = webp-enc-write-code(bit-buf, bit-cnt, vp8l-out, codes-a[av], len-a[av])
+            }
+        }
+    }
 
     ; flush remaining bits
     {

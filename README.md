@@ -444,7 +444,7 @@ notools 仓库内含一个**纯 Nolang 实现的图像处理工具库**（`noimg
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（仅未压缩、8 位、单 strip） |
 | GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解码+隔行+透明；动画多帧提取+disposal 合成；写入用 median-cut 量化） |
 | JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 读写（DCT+Huffman 编码/解码+IDCT+YCbCr→RGB），不支持 progressive |
-| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解码（Huffman+LZ77 距离+颜色缓存+predictor 逆变换(14 模式)+颜色变换逆变换(定点乘)+subtract-green+颜色索引）；不支持 lossy VP8；写入为 VP8L 容器（真实像素编码），但 **save 不写 transform 头（无 predictor/subtract-green/color-transform），与标准 WebP 解码器不互通**——仅 noimg save→noimg load 可 round-trip |
+| WebP | `.webp` | ✅ | ✅ | VP8L lossless 与 VP8 lossy 解码均与 libwebp/dwebp 逐像素一致（lossless 含 alpha、predictor 14 模式逆变换、颜色变换定点逆变换、subtract-green、颜色索引、color-cache、LZ77、meta-Huffman 多组；lossy 含分区/段/环路滤波/IDCT+WHT/YUV→RGB 定点）；写入为 VP8L lossless（真实像素 canonical Huffman 编码，含 alpha），noimg save→dwebp 逐像素互通（编码端不写 transform/LZ77/色缓存，压缩率次优但位流标准合法） |
 
 ### CLI 命令
 
