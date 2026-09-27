@@ -1,0 +1,210 @@
+; test-webp.no — WebP (VP8L lossless) self round-trip test
+; Builds images with known pixels (incl. high bytes >=128 and alpha),
+; saves them via our lossless encoder, reads them back via our decoder,
+; and verifies pixel-exact equality. This exercises the full encode->decode
+; pipeline without depending on any external tool (dwebp) in CI.
+; Run: no run tests/test-webp.no
+
+# /noimg/src/image.new
+# /noimg/src/image.get-pixel
+# /noimg/src/image.set-pixel
+# /noimg/src/webp.load
+# /noimg/src/webp.save
+
+main = () {
+    print('--- Testing WebP lossless round-trip ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ---- opaque 3-band image with high-byte channel values ----
+    img = image.new(12, 8, 3)
+    y <- [0..8): {
+        x <- [0..12): {
+            ; values deliberately cross the 128 boundary (>=128 high bytes)
+            #{overflow=wrap}
+            image.set-pixel(img, x, y, 0, 128 + x * 10)
+            #{overflow=wrap}
+            image.set-pixel(img, x, y, 1, 255 - y * 20)
+            #{overflow=wrap}
+            image.set-pixel(img, x, y, 2, x * y + 200)
+        }
+    }
+
+    saved = webp.save('/tmp/noimg-test.webp', img)
+    {
+        saved -> {
+            print('PASS: WebP save (opaque)')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: WebP save (opaque)')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        saved -> {
+            result = webp.load('/tmp/noimg-test.webp')
+            result: {
+                nil -> {
+                    print('FAIL: WebP load returned nil')
+                    #{overflow=wrap}
+                    n-fail = n-fail + 1
+                }
+
+                err -> {
+                    print('FAIL: WebP load returned error')
+                    #{overflow=wrap}
+                    n-fail = n-fail + 1
+                }
+
+                ok -> {
+                    loaded = it
+                    {
+                        loaded.width == 12 && loaded.height == 8 -> {
+                            print('PASS: WebP load dimensions (opaque)')
+                            #{overflow=wrap}
+                            n-pass = n-pass + 1
+                        }
+
+                        -> {
+                            print('FAIL: WebP load dimensions ({loaded.width}x{loaded.height})')
+                            #{overflow=wrap}
+                            n-fail = n-fail + 1
+                        }
+                    }
+
+                    match = true
+                    yy <- [0..8): {
+                        xx <- [0..12): {
+                            #{overflow=wrap}
+                            e0 = 128 + xx * 10
+                            #{overflow=wrap}
+                            e1 = 255 - yy * 20
+                            #{overflow=wrap}
+                            e2 = xx * yy + 200
+                            {
+                                image.get-pixel(loaded, xx, yy, 0) != e0 ||
+                                image.get-pixel(loaded, xx, yy, 1) != e1 ||
+                                image.get-pixel(loaded, xx, yy, 2) != e2 -> {
+                                    match = false
+                                }
+                            }
+                        }
+                    }
+                    {
+                        match -> {
+                            print('PASS: WebP opaque pixel round-trip exact')
+                            #{overflow=wrap}
+                            n-pass = n-pass + 1
+                        }
+
+                        -> {
+                            print('FAIL: WebP opaque pixel mismatch')
+                            #{overflow=wrap}
+                            n-fail = n-fail + 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ; ---- RGBA 4-band image with alpha ramp ----
+    rgba = image.new(10, 10, 4)
+    y2 <- [0..10): {
+        x2 <- [0..10): {
+            #{overflow=wrap}
+            image.set-pixel(rgba, x2, y2, 0, x2 * 25)
+            #{overflow=wrap}
+            image.set-pixel(rgba, x2, y2, 1, y2 * 25)
+            #{overflow=wrap}
+            image.set-pixel(rgba, x2, y2, 2, 255 - x2 * 25)
+            #{overflow=wrap}
+            image.set-pixel(rgba, x2, y2, 3, x2 * y2 + 100)
+        }
+    }
+
+    saved-a = webp.save('/tmp/noimg-test-rgba.webp', rgba)
+    {
+        saved-a -> {
+            print('PASS: WebP save (alpha)')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: WebP save (alpha)')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    {
+        saved-a -> {
+            r2 = webp.load('/tmp/noimg-test-rgba.webp')
+            r2: {
+                nil -> {
+                    print('FAIL: WebP load (alpha) returned nil')
+                    #{overflow=wrap}
+                    n-fail = n-fail + 1
+                }
+
+                err -> {
+                    print('FAIL: WebP load (alpha) returned error')
+                    #{overflow=wrap}
+                    n-fail = n-fail + 1
+                }
+
+                ok -> {
+                    l2 = it
+                    amatch = true
+                    yb <- [0..10): {
+                        xb <- [0..10): {
+                            #{overflow=wrap}
+                            b0 = xb * 25
+                            #{overflow=wrap}
+                            b1 = yb * 25
+                            #{overflow=wrap}
+                            b2 = 255 - xb * 25
+                            #{overflow=wrap}
+                            b3 = xb * yb + 100
+                            {
+                                image.get-pixel(l2, xb, yb, 0) != b0 ||
+                                image.get-pixel(l2, xb, yb, 1) != b1 ||
+                                image.get-pixel(l2, xb, yb, 2) != b2 ||
+                                image.get-pixel(l2, xb, yb, 3) != b3 -> {
+                                    amatch = false
+                                }
+                            }
+                        }
+                    }
+                    {
+                        amatch -> {
+                            print('PASS: WebP RGBA pixel round-trip exact')
+                            #{overflow=wrap}
+                            n-pass = n-pass + 1
+                        }
+
+                        -> {
+                            print('FAIL: WebP RGBA pixel mismatch')
+                            #{overflow=wrap}
+                            n-fail = n-fail + 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    print('')
+    print('--- Results: {n-pass} passed, {n-fail} failed ---')
+    {
+        n-fail == 0 -> print('ALL PASS')
+
+        -> os.exit(1)
+    }
+}
