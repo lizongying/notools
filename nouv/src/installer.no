@@ -7,6 +7,7 @@
 # /nouv/src/venv
 # /nouv/src/cache
 # /nouv/src/dependency
+# /nouv/src/sdist
 # /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
@@ -48,7 +49,7 @@ sync-packages = (dir str, resolved str, cfg str) (ok bool) {
                             name = utils.slice-str(line, 0, eq-pos)
 
                             #{overflow=wrap}
-                            ver = utils.slice-str(line, eq-pos + 2, line.len())
+                            ver = utils.slice-str(line, eq-pos + 2, line.len-bytes())
                             #{overflow=wrap}
                             targets = targets - name - '=' - ver - '\n'
                         }
@@ -78,7 +79,7 @@ sync-packages = (dir str, resolved str, cfg str) (ok bool) {
                     name = utils.slice-str(line, 0, eq-pos)
 
                     #{overflow=wrap}
-                    ver = utils.slice-str(line, eq-pos + 1, line.len())
+                    ver = utils.slice-str(line, eq-pos + 1, line.len-bytes())
                     installed-ver = lookup-map(installed-map, name)
                     {
                         #{overflow=wrap}
@@ -139,7 +140,7 @@ sync-packages = (dir str, resolved str, cfg str) (ok bool) {
                             name = utils.slice-str(line, 0, eq-pos)
 
                             #{overflow=wrap}
-                            ver = utils.slice-str(line, eq-pos + 2, line.len())
+                            ver = utils.slice-str(line, eq-pos + 2, line.len-bytes())
                             inst-ok = install-named-package(venv-path, name, ver)
                             {
                                 inst-ok -> print('  + {name}=={ver}')
@@ -278,7 +279,7 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
     }
 
     ; get cache dir
-    cache-dir = get-cache-dir()
+    cache-dir = cache.get-cache-dir()
     p = path {
         p: cache-dir
     }
@@ -486,7 +487,7 @@ install-dependencies = (venv-path str, name str, ver str) (ok bool) {
         }
     }
 
-    ; parse requires_dist from info
+    ; parse requires_dist from info (collect every requires_dist= line)
     req-val = ''
     lines = utils.split-str(info, '\n')
     n = lines.len()
@@ -500,8 +501,9 @@ install-dependencies = (venv-path str, name str, ver str) (ok bool) {
         i = i + 1
         {
             utils.starts-with-str(line, 'requires_dist=') -> {
-                req-val = utils.slice-str(line, 14, line.len())
-                break
+                one = utils.slice-str(line, 14, line.len-bytes())
+                #{overflow=wrap}
+                req-val = req-val - one - '\n'
             }
         }
     }
@@ -626,7 +628,7 @@ get-installed-version = (venv-path str, name str) (ver str) {
                     eq-pos >= 0 -> {
 
                         #{overflow=wrap}
-                        ver = utils.slice-str(line, eq-pos + 2, line.len())
+                        ver = utils.slice-str(line, eq-pos + 2, line.len-bytes())
                         return
                     }
                 }
@@ -640,7 +642,7 @@ get-installed-version = (venv-path str, name str) (ver str) {
                     eq-pos >= 0 -> {
 
                         #{overflow=wrap}
-                        ver = utils.slice-str(line, eq-pos + 2, line.len())
+                        ver = utils.slice-str(line, eq-pos + 2, line.len-bytes())
                         return
                     }
                 }
@@ -835,7 +837,7 @@ list-installed = (venv-path str) (list str) {
             utils.ends-with-str(line, '.dist-info') -> {
 
                 #{overflow=wrap}
-                base = utils.slice-str(line, 0, line.len() - 10)
+                base = utils.slice-str(line, 0, line.len-bytes() - 10)
                 parts = utils.split-str(base, '-')
                 {
                     parts.len() >= 2 -> {
@@ -946,7 +948,7 @@ lookup-map = (map str, name str) (ver str) {
                     eq-pos >= 0 -> {
 
                         #{overflow=wrap}
-                        ver = utils.slice-str(line, eq-pos + 2, line.len())
+                        ver = utils.slice-str(line, eq-pos + 2, line.len-bytes())
                     }
                 }
                 return
@@ -960,11 +962,7 @@ lookup-map = (map str, name str) (ver str) {
 ; ═══════════════════════════════════════════════
 
 install-editable = (venv-path str, src-dir str, pkg-name str) (ok bool) {
-    ok = false
-    edit-ok = false
-
-    ; TODO: sdist.build-editable temporarily disabled (circular dependency)
-    ok = edit-ok
+    ok = sdist.build-editable(src-dir, venv-path, pkg-name)
 }
 
 ; ═══════════════════════════════════════════════
@@ -972,11 +970,7 @@ install-editable = (venv-path str, src-dir str, pkg-name str) (ok bool) {
 ; ═══════════════════════════════════════════════
 
 install-from-source = (venv-path str, sdist-path str) (ok bool) {
-    ok = false
-    inst-ok = false
-
-    ; TODO: sdist.install-sdist temporarily disabled (circular dependency)
-    ok = inst-ok
+    ok = sdist.install-sdist(sdist-path, venv-path)
 }
 
 ; ═══════════════════════════════════════════════
@@ -1018,13 +1012,13 @@ pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
                     pkg-path = pkg
                     {
                         utils.starts-with-str(pkg-path, '-e ') -> {
-                            tmp = utils.slice-str(pkg-path, 3, pkg-path.len())
+                            tmp = utils.slice-str(pkg-path, 3, pkg-path.len-bytes())
                             pkg-path = utils.trim-str(tmp)
                         }
                     }
                     {
                         utils.starts-with-str(pkg-path, '--editable ') -> {
-                            tmp2 = utils.slice-str(pkg-path, 11, pkg-path.len())
+                            tmp2 = utils.slice-str(pkg-path, 11, pkg-path.len-bytes())
                             pkg-path = utils.trim-str(tmp2)
                         }
                     }
@@ -1034,7 +1028,7 @@ pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
                         slash >= 0 -> {
 
                             #{overflow=wrap}
-                            pkg-name = utils.slice-str(pkg-name, slash + 1, pkg-name.len())
+                            pkg-name = utils.slice-str(pkg-name, slash + 1, pkg-name.len-bytes())
                         }
                     }
                     inst-ok = install-editable(venv-path, pkg-path, pkg-name)
@@ -1055,7 +1049,7 @@ pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
                         utils.contains-str(opts, 'reinstall') || utils.contains-str(opts, 'force-reinstall') -> {
                             ver = ver-spec
                             {
-                                utils.starts-with-str(ver-spec, '==') -> ver = utils.slice-str(ver-spec, 2, ver-spec.len())
+                                utils.starts-with-str(ver-spec, '==') -> ver = utils.slice-str(ver-spec, 2, ver-spec.len-bytes())
 
                                 -> {
                                     info, info-ok = registry.get-package-info(name)

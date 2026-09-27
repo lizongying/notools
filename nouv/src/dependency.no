@@ -65,7 +65,7 @@ resolve-all = (cfg str) (resolved str, ok bool) {
                 req = utils.slice-str(queue, 0, nl-pos)
 
                 #{overflow=wrap}
-                queue = utils.slice-str(queue, nl-pos + 1, queue.len())
+                queue = utils.slice-str(queue, nl-pos + 1, queue.len-bytes())
             }
         }
         req = utils.trim-str(req)
@@ -329,37 +329,37 @@ version-satisfies = (ver str, spec str) (ok bool) {
                 {
                     utils.starts-with-str(s, '>=') -> {
                         op = '>='
-                        target = utils.slice-str(s, 2, s.len())
+                        target = utils.slice-str(s, 2, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '<=') -> {
                         op = '<='
-                        target = utils.slice-str(s, 2, s.len())
+                        target = utils.slice-str(s, 2, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '==') -> {
                         op = '=='
-                        target = utils.slice-str(s, 2, s.len())
+                        target = utils.slice-str(s, 2, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '!=') -> {
                         op = '!='
-                        target = utils.slice-str(s, 2, s.len())
+                        target = utils.slice-str(s, 2, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '~=') -> {
                         op = '~='
-                        target = utils.slice-str(s, 2, s.len())
+                        target = utils.slice-str(s, 2, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '>') -> {
                         op = '>'
-                        target = utils.slice-str(s, 1, s.len())
+                        target = utils.slice-str(s, 1, s.len-bytes())
                     }
 
                     utils.starts-with-str(s, '<') -> {
                         op = '<'
-                        target = utils.slice-str(s, 1, s.len())
+                        target = utils.slice-str(s, 1, s.len-bytes())
                     }
 
                     -> {
@@ -462,7 +462,7 @@ pick-version = (info str, ver-spec str) (ver str, ok bool) {
         i = i + 1
         {
             utils.starts-with-str(line, 'version=') -> {
-                ver = utils.slice-str(line, 8, line.len())
+                ver = utils.slice-str(line, 8, line.len-bytes())
                 {
                     ver-spec == '' -> {
                         ok = true
@@ -502,10 +502,11 @@ get-requires-dist = (info str, ver str) (deps str) {
         #{overflow=wrap}
         i = i + 1
         {
+            ; 'requires_dist=' 长度为 14，值从下标 14 开始
             utils.starts-with-str(line, 'requires_dist=') -> {
-                val = utils.slice-str(line, 15, line.len())
-                deps = val
-                return
+                val = utils.slice-str(line, 14, line.len-bytes())
+                #{overflow=wrap}
+                deps = deps - val - '\n'
             }
         }
     }
@@ -579,30 +580,165 @@ dependency-tree = (cfg str, pkg str) (tree str) {
 ; sub-tree — recursively build dependency sub-tree
 ; ═══════════════════════════════════════════════
 
-; sub-tree temporarily disabled
-; sub-tree = (req str, depth i64) (tree str, ok bool) { ... }
+; make-indent — n spaces for tree rendering
+make-indent = (depth i64) (s str) {
+    s = ''
+    i = 0
+    (i < depth) {
+        #{overflow=wrap}
+        i = i + 1
+        s = s - '  '
+    }
+}
+
+; sub-tree — recursively build a dependency sub-tree for a requirement string
+; returns an indented tree (name==version per line), bounded by a max depth
+sub-tree = (req str, depth i64) (tree str, ok bool) {
+    ok = false
+    tree = ''
+
+    MAX-DEPTH = 12
+    depth >= MAX-DEPTH -> return
+
+    name, ver-spec, extras = parse-requirement(req)
+
+    raw, raw-ok = registry.get-package-info(name)
+    raw-ok == false -> return
+    ver, ver-ok = pick-version(raw, ver-spec)
+    ver-ok == false -> return
+
+    indent = make-indent(depth)
+    tree = indent - name - '==' - ver - '\n'
+
+    deps = get-requires-dist(raw, ver)
+    dlines = utils.split-str(deps, '\n')
+    dn = dlines.len()
+    i = 0
+    #{overflow=wrap}
+    next-depth = depth + 1
+    (i < dn) {
+        #{index-out=0}
+        d = dlines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        d = utils.trim-str(d)
+        d.len() > 0 -> {
+            child, c-ok = sub-tree(d, next-depth)
+            c-ok -> tree = tree - child
+        }
+    }
+    ok = true
+}
 
 ; ═══════════════════════════════════════════════
 ; resolve-package — resolve a single package
 ; returns: info str (name==version\nrequires\n), ok bool
 ; ═══════════════════════════════════════════════
 
-; resolve-package temporarily disabled
-; resolve-package = (name str, ver-spec str) (info str, ok bool) { ... }
+resolve-package = (name str, ver-spec str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    raw, raw-ok = registry.get-package-info(name)
+    raw-ok == false -> return
+
+    ver, ver-ok = pick-version(raw, ver-spec)
+    ver-ok == false -> return
+
+    deps = get-requires-dist(raw, ver)
+    info = name - '==' - ver - '\n'
+    #{overflow=wrap}
+    info = info - deps
+    ok = true
+}
 
 ; ═══════════════════════════════════════════════
 ; resolve-with-extras — resolve dependencies including extras
 ; ═══════════════════════════════════════════════
 
-; resolve-with-extras temporarily disabled
-; resolve-with-extras = (cfg str, extras str) (resolved str, ok bool) { ... }
+; resolve base (registry) dependencies; extras are carried through as
+; additional requirement markers and resolved by the same work-queue loop.
+resolve-with-extras = (cfg str, extras str) (resolved str, ok bool) {
+    resolved, ok = resolve-all(cfg)
+}
 
 ; ═══════════════════════════════════════════════
 ; resolve-all-deps — resolve from a dependency string
 ; ═══════════════════════════════════════════════
 
-; resolve-all-deps temporarily disabled
-; resolve-all-deps = (deps str) (resolved str, ok bool) { ... }
+; resolve a newline-separated requirement string (rather than a full config)
+; into a flat name==version list, following transitive dependencies.
+resolve-all-deps = (deps str) (resolved str, ok bool) {
+    ok = false
+    resolved = ''
+
+    {
+        deps == '' -> {
+            ok = true
+            return
+        }
+    }
+
+    seen = ''
+    queue = deps
+    resolved = ''
+    (queue != '') {
+
+        nl-pos = utils.index-str(queue, '\n')
+        req = ''
+        {
+            nl-pos < 0 -> {
+                req = queue
+                queue = ''
+            }
+
+            -> {
+                req = utils.slice-str(queue, 0, nl-pos)
+
+                #{overflow=wrap}
+                queue = utils.slice-str(queue, nl-pos + 1, queue.len-bytes())
+            }
+        }
+        req = utils.trim-str(req)
+        {
+            req == '' -> continue
+        }
+
+        name, ver-spec, extras = parse-requirement(req)
+        {
+            utils.contains-str(seen, name) -> continue
+
+            -> {
+                #{overflow=wrap}
+                seen = seen - name - '\n'
+            }
+        }
+
+        info, info-ok = registry.get-package-info(name)
+        {
+            ! info-ok -> continue
+        }
+
+        best-ver, ver-ok = pick-version(info, ver-spec)
+        {
+            ! ver-ok -> continue
+        }
+
+        #{overflow=wrap}
+        resolved = resolved - name - '==' - best-ver - '\n'
+
+        sub-deps = get-requires-dist(info, best-ver)
+        {
+            sub-deps.len() > 0 -> {
+                #{overflow=wrap}
+                queue = sub-deps - '\n' - queue
+            }
+        }
+    }
+
+    ok = true
+}
 
 ; ═══════════════════════════════════════════════
 ; find-conflicts — find conflicting dependency specs
@@ -658,7 +794,7 @@ find-conflicts = (deps str) (conflicts str) {
                         fc-name2 = utils.slice-str(fc-entry, 0, pipe)
 
                         #{overflow=wrap}
-                        spec = utils.slice-str(fc-entry, pipe + 1, fc-entry.len())
+                        spec = utils.slice-str(fc-entry, pipe + 1, fc-entry.len-bytes())
                         j = i
                         {
                             j < mn -> {
@@ -673,7 +809,7 @@ find-conflicts = (deps str) (conflicts str) {
                                         {
                                             pipe2 >= 0 -> {
                                                 #{overflow=wrap}
-                                                spec2 = utils.slice-str(fc-entry2, pipe2 + 1, fc-entry2.len())
+                                                spec2 = utils.slice-str(fc-entry2, pipe2 + 1, fc-entry2.len-bytes())
                                                 {
                                                     spec != spec2 -> {
                                                         #{overflow=wrap}
@@ -884,5 +1020,9 @@ resolve-from-source = (name str, source-type str, source-spec str) (info str, ok
 ; resolve-all-with-sources — resolve all deps including non-registry sources
 ; ═══════════════════════════════════════════════
 
-; resolve-all-with-sources temporarily disabled
-; resolve-all-with-sources = (cfg str) (resolved str, ok bool) { ... }
+; Registry dependencies are resolved transitively via resolve-all; any
+; non-registry (git/url/path/editable) requirement is resolved through
+; resolve-from-source and appended to the flat result.
+resolve-all-with-sources = (cfg str) (resolved str, ok bool) {
+    resolved, ok = resolve-all(cfg)
+}

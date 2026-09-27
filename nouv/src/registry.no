@@ -53,76 +53,353 @@ get-index-url = () (url str) {
 ; returns a flat string with name, version, requires_dist, etc.
 ; ═══════════════════════════════════════════════
 
-; get-package-info — stub (json API not yet available)
+; ═══════════════════════════════════════════════
+; JSON API plumbing
+;
+; The PyPI JSON API (GET <json-url><name>/json) is decoded with the std
+; `json` module.  Network fetch (fetch-package-json) is separated from the
+; pure decoder (parse-package-json / parse-releases-json) so the parsing
+; logic can be unit-tested offline with a fixture string.
+;
+; parse-package-json produces the flat info string consumed downstream:
+;   version=<v>
+;   requires_dist=<dep>   (one line per dependency)
+;   wheel-url=<url>  wheel-hash=<sha256>  wheel-filename=<fn>
+;   sdist-url=<url>  sdist-hash=<sha256>  sdist-filename=<fn>
+; ═══════════════════════════════════════════════
+
+; fetch-package-json — GET the raw JSON body for a package (nil on failure)
+fetch-package-json = (name str) (body str, ok bool) {
+    ok = false
+    body = ''
+
+    base = get-json-url()
+    #{overflow=wrap}
+    url = base - name - '/json'
+
+    resp = http.get(url)
+    resp: {
+        nil -> return
+
+        err -> return
+
+        ok -> {
+            status = it.status-code
+            body = it.body
+            ok = status >= 200 && status < 300
+        }
+    }
+}
+
+; parse-package-json — decode a PyPI JSON payload into the flat info string
+parse-package-json = (s str) (info str, ok bool) {
+    ok = false
+    info = ''
+
+    root-opt = json.parse(s)
+    root-opt: {
+        nil -> return
+
+        err -> return
+
+        ok -> {
+            root = it
+
+            ; ── info section ──
+            info-opt = root.get('info')
+            info-opt: {
+                nil -> {}
+
+                err -> {}
+
+                ok -> {
+                    meta = it
+                    ver, has-ver = meta.get-str('version')
+                    has-ver -> info = info - 'version=' - ver - '\n'
+
+                    pname, has-pname = meta.get-str('name')
+                    has-pname -> info = info - 'name=' - pname - '\n'
+
+                    rd-opt = meta.get('requires_dist')
+                    rd-opt: {
+                        nil -> {}
+
+                        err -> {}
+
+                        ok -> {
+                            arr = it
+                            rn = arr.arr-len()
+                            k = 0
+                            (k < rn) {
+                                elem = arr.arr-get(k)
+
+                                #{overflow=wrap}
+                                k = k + 1
+                                elem: {
+                                    nil -> {}
+
+                                    err -> {}
+
+                                    ok -> {
+                                        dep, dp-ok = it.str()
+                                        dp-ok -> info = info - 'requires_dist=' - dep - '\n'
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ; ── urls section (wheel / sdist download metadata) ──
+            urls-opt = root.get('urls')
+            urls-opt: {
+                nil -> {}
+
+                err -> {}
+
+                ok -> {
+                    arr = it
+                    n = arr.arr-len()
+                    i = 0
+                    (i < n) {
+                        fel = arr.arr-get(i)
+
+                        #{overflow=wrap}
+                        i = i + 1
+                        fel: {
+                            nil -> {}
+
+                            err -> {}
+
+                            ok -> {
+                                file = it
+                                ptype, pt-ok = file.get-str('packagetype')
+                                pt-ok -> {
+                                    tag = ''
+                                    ptype == 'bdist_wheel' -> tag = 'wheel'
+                                    ptype == 'sdist' -> tag = 'sdist'
+
+                                    tag != '' -> {
+                                        url, u-ok = file.get-str('url')
+                                        u-ok -> info = info - tag - '-url=' - url - '\n'
+
+                                        fname, f-ok = file.get-str('filename')
+                                        f-ok -> info = info - tag - '-filename=' - fname - '\n'
+
+                                        dg-opt = file.get('digests')
+                                        dg-opt: {
+                                            nil -> {}
+
+                                            err -> {}
+
+                                            ok -> {
+                                                sha, sha-ok = it.get-str('sha256')
+                                                sha-ok -> info = info - tag - '-hash=' - sha - '\n'
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            info != '' -> ok = true
+        }
+    }
+}
+
+; parse-releases-json — decode the `releases` object keys into a
+; newline-separated version list
+parse-releases-json = (s str) (versions str, ok bool) {
+    ok = false
+    versions = ''
+
+    root-opt = json.parse(s)
+    root-opt: {
+        nil -> return
+
+        err -> return
+
+        ok -> {
+            root = it
+            rel-opt = root.get('releases')
+            rel-opt: {
+                nil -> {}
+
+                err -> {}
+
+                ok -> {
+                    rel = it
+                    versions = rel.obj-keys-str()
+                    versions != '' -> ok = true
+                }
+            }
+        }
+    }
+}
+
+; get-info-field — read the first `key=` value from a flat info string
+get-info-field = (info str, key str) (val str, found bool) {
+    found = false
+    val = ''
+
+    #{overflow=wrap}
+    prefix = key - '='
+    plen = prefix.len-bytes()
+    lines = utils.split-str(info, '\n')
+    n = lines.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        {
+            utils.starts-with-str(line, prefix) -> {
+                val = utils.trim-str(utils.slice-str(line, plen, line.len-bytes()))
+                found = true
+                return
+            }
+        }
+    }
+}
+
+; get-package-info — get package metadata via JSON API
 get-package-info = (name str) (info str, ok bool) {
     ok = false
     info = ''
-    ; TODO: implement when json API is available
+
+    body, fetch-ok = fetch-package-json(name)
+    fetch-ok -> info, ok = parse-package-json(body)
 }
 
-; get-package-versions — stub (json obj iteration API not available)
+; get-package-versions — list all available versions (newline-separated)
 get-package-versions = (name str) (versions str, ok bool) {
     ok = false
     versions = ''
-    ; TODO: implement when json API is available
+
+    body, fetch-ok = fetch-package-json(name)
+    fetch-ok -> versions, ok = parse-releases-json(body)
 }
 
-; get-latest-version — stub (json API not yet available)
+; get-latest-version — get the latest version of a package
 get-latest-version = (name str) (ver str, ok bool) {
     ok = false
     ver = ''
-    ; TODO: implement when json API is available
+
+    info, info-ok = get-package-info(name)
+    info-ok -> ver, ok = get-info-field(info, 'version')
 }
 
-; get-package-url — stub
+; get-package-url — get the download URL for a specific version (wheel first)
 get-package-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
+
+    url, ok = get-wheel-url(name, ver)
+    ok == false -> url, ok = get-sdist-url(name, ver)
 }
 
-; download-package — stub
+; download-package — download a package to a destination path
 download-package = (name str, ver str, dest str) (ok bool) {
     ok = false
-    ; TODO: implement when get-package-url is available
+
+    url, url-ok = get-package-url(name, ver)
+    url-ok == false -> return
+
+    resp = http.get(url)
+    resp: {
+        nil -> return
+
+        err -> return
+
+        ok -> {
+            status = it.status-code
+            body = it.body
+            status >= 200 && status < 300 -> {
+                fd = fs.open-write(dest)
+                fd > 0 -> {
+                    fs.write(fd, body, body.len-bytes())
+                    fs.close(fd)
+                    ok = true
+                }
+            }
+        }
+    }
 }
 
-; get-wheel-url — stub
+; get-wheel-url — get the wheel download URL for a package version
 get-wheel-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
+
+    info, info-ok = get-package-info(name)
+    info-ok -> url, ok = get-info-field(info, 'wheel-url')
 }
 
-; get-sdist-url — stub
+; get-sdist-url — get the source distribution URL for a package version
 get-sdist-url = (name str, ver str) (url str, ok bool) {
     ok = false
     url = ''
+
+    info, info-ok = get-package-info(name)
+    info-ok -> url, ok = get-info-field(info, 'sdist-url')
 }
 
-; get-package-hashes — stub
+; get-package-hashes — get file hashes (newline-separated sha256 values)
 get-package-hashes = (name str, ver str) (hashes str) {
     hashes = ''
+
+    info, info-ok = get-package-info(name)
+    info-ok -> {
+        wh, w-ok = get-info-field(info, 'wheel-hash')
+        w-ok -> hashes = hashes - wh - '\n'
+
+        sh, s-ok = get-info-field(info, 'sdist-hash')
+        s-ok -> hashes = hashes - sh - '\n'
+    }
 }
 
-; get-package-info-with-auth — stub
+; get-package-info-with-auth — get package info (auth is not applied to the
+; public JSON API; retained for API compatibility)
 get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
-    ok = false
-    info = ''
+    info, ok = get-package-info(name)
 }
 
-; download-with-retry — stub
+; download-with-retry — download a package with retry logic
 download-with-retry = (name str, ver str, dest str, max-retries i64) (ok bool) {
     ok = false
+    retries = max-retries
+    retries < 1 -> retries = 3
+
+    attempt = 0
+    (attempt < retries) {
+
+        #{overflow=wrap}
+        attempt = attempt + 1
+        dl-ok = download-package(name, ver, dest)
+        dl-ok -> {
+            ok = true
+            return
+        }
+    }
 }
 
-; download-with-auth — stub
+; download-with-auth — download a package with an auth token
 download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
     ok = false
+    os.set-env('UV-TOKEN', token)
+    ok = download-package(name, ver, dest)
 }
 
-; get-package-info-cached — stub
+; get-package-info-cached — get package info (cache passthrough)
 get-package-info-cached = (name str) (info str, ok bool) {
-    ok = false
-    info = ''
+    info, ok = get-package-info(name)
 }
 
 ; ═══════════════════════════════════════════════
@@ -380,7 +657,7 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                 line = utils.trim-str(line)
                 {
                     utils.starts-with-str(line, 'machine ') -> {
-                        machine-host = utils.trim-str(utils.slice-str(line, 8, line.len()))
+                        machine-host = utils.trim-str(utils.slice-str(line, 8, line.len-bytes()))
                         {
                             machine-host == host -> found-machine = true
 
@@ -392,12 +669,12 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                         found-machine -> {
                             {
                                 utils.starts-with-str(line, 'login ') -> {
-                                    user = utils.trim-str(utils.slice-str(line, 6, line.len()))
+                                    user = utils.trim-str(utils.slice-str(line, 6, line.len-bytes()))
                                 }
                             }
                             {
                                 utils.starts-with-str(line, 'password ') -> {
-                                    pass = utils.trim-str(utils.slice-str(line, 9, line.len()))
+                                    pass = utils.trim-str(utils.slice-str(line, 9, line.len-bytes()))
                                 }
                             }
                             {
@@ -429,7 +706,7 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                                     login-pos >= 0 -> {
                                         #{overflow=wrap}
                                         login-end = login-pos + 6
-                                        rest = utils.trim-str(utils.slice-str(line, login-end, line.len()))
+                                        rest = utils.trim-str(utils.slice-str(line, login-end, line.len-bytes()))
                                         space = utils.index-str(rest, ' ')
                                         {
                                             space > 0 -> user = utils.slice-str(rest, 0, space)
@@ -443,7 +720,7 @@ read-netrc = (host str) (user str, pass str, ok bool) {
                                     pass-pos >= 0 -> {
                                         #{overflow=wrap}
                                         pass-end = pass-pos + 9
-                                        rest2 = utils.trim-str(utils.slice-str(line, pass-end, line.len()))
+                                        rest2 = utils.trim-str(utils.slice-str(line, pass-end, line.len-bytes()))
                                         space2 = utils.index-str(rest2, ' ')
                                         {
                                             space2 > 0 -> pass = utils.slice-str(rest2, 0, space2)
@@ -603,13 +880,14 @@ get-index-url-for-config = (cfg str) (url str) {
         #{overflow=wrap}
         i = i + 1
         {
+            ; 'index_url=' / 'index-url=' 长度为 10，值从下标 10 开始
             utils.starts-with-str(line, 'index_url=') -> {
-                url = utils.trim-str(utils.slice-str(line, 10, line.len()))
+                url = utils.trim-str(utils.slice-str(line, 10, line.len-bytes()))
                 return
             }
 
             utils.starts-with-str(line, 'index-url=') -> {
-                url = utils.trim-str(utils.slice-str(line, 10, line.len()))
+                url = utils.trim-str(utils.slice-str(line, 10, line.len-bytes()))
                 return
             }
         }
@@ -636,14 +914,15 @@ get-extra-index-urls = (cfg str) (urls str) {
         #{overflow=wrap}
         i = i + 1
         {
+            ; 'extra_index_url=' / 'extra-index-url=' 长度为 16，值从下标 16 开始
             utils.starts-with-str(line, 'extra_index_url=') -> {
-                url = utils.trim-str(utils.slice-str(line, 16, line.len()))
+                url = utils.trim-str(utils.slice-str(line, 16, line.len-bytes()))
                 #{overflow=wrap}
                 urls = urls - url - '\n'
             }
 
             utils.starts-with-str(line, 'extra-index-url=') -> {
-                url = utils.trim-str(utils.slice-str(line, 16, line.len()))
+                url = utils.trim-str(utils.slice-str(line, 16, line.len-bytes()))
                 #{overflow=wrap}
                 urls = urls - url - '\n'
             }

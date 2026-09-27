@@ -1,0 +1,171 @@
+; test-registry-json.no — Offline tests for registry JSON-API parsing
+;
+; These tests exercise the PURE decoding path (parse-package-json /
+; parse-releases-json / get-info-field) with a small PyPI-shaped fixture.
+; They do not touch the network, so they run even where TLS is unavailable.
+;
+; Run: no run nouv/tests/test-registry-json.no
+
+# /nouv/src/registry
+# /nouv/src/utils
+
+count-lines = (s str, prefix str) (n i64) {
+    n = 0
+    lines = utils.split-str(s, '\n')
+    ln = lines.len()
+    i = 0
+    (i < ln) {
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        utils.starts-with-str(line, prefix) -> {
+            #{overflow=wrap}
+            n = n + 1
+        }
+    }
+}
+
+main = () {
+    print('--- Testing registry JSON-API parsing (offline) ---')
+    n-pass = 0
+    n-fail = 0
+
+    fixture = '{"info":{"name":"requests","version":"2.31.0","requires_dist":["charset-normalizer (>=2.0,<4.0)","idna (>=2.5,<4)","urllib3 (>=1.21.1,<3)"]},"releases":{"2.30.0":[],"2.31.0":[]},"urls":[{"packagetype":"bdist_wheel","url":"https://files.pythonhosted.org/requests-2.31.0-py3-none-any.whl","filename":"requests-2.31.0-py3-none-any.whl","digests":{"sha256":"aa111"}},{"packagetype":"sdist","url":"https://files.pythonhosted.org/requests-2.31.0.tar.gz","filename":"requests-2.31.0.tar.gz","digests":{"sha256":"bb222"}}]}'
+
+    ; Test 1: parse succeeds
+    info, ok = registry.parse-package-json(fixture)
+    {
+        ok -> {
+            print('PASS: parse-package-json ok')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: parse-package-json should succeed')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 2: version= line
+    ver, ver-ok = registry.get-info-field(info, 'version')
+    {
+        ver-ok && ver == '2.31.0' -> {
+            print('PASS: version field')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: version field (got {ver})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 3: three requires_dist lines
+    rd-count = count-lines(info, 'requires_dist=')
+    {
+        rd-count == 3 -> {
+            print('PASS: requires_dist count == 3')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: requires_dist count (got {rd-count})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 4: wheel-url
+    wurl, w-ok = registry.get-info-field(info, 'wheel-url')
+    {
+        w-ok && wurl == 'https://files.pythonhosted.org/requests-2.31.0-py3-none-any.whl' -> {
+            print('PASS: wheel-url field')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: wheel-url field (got {wurl})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 5: sdist-url
+    surl, s-ok = registry.get-info-field(info, 'sdist-url')
+    {
+        s-ok && surl == 'https://files.pythonhosted.org/requests-2.31.0.tar.gz' -> {
+            print('PASS: sdist-url field')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: sdist-url field (got {surl})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 6: wheel-hash / sdist-hash digests
+    whash, wh-ok = registry.get-info-field(info, 'wheel-hash')
+    shash, sh-ok = registry.get-info-field(info, 'sdist-hash')
+    {
+        wh-ok && whash == 'aa111' && sh-ok && shash == 'bb222' -> {
+            print('PASS: hash fields')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: hash fields (wheel={whash} sdist={shash})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 7: releases list (both keys start with '2.')
+    versions, rel-ok = registry.parse-releases-json(fixture)
+    rc = count-lines(versions, '2.')
+    {
+        rel-ok && rc == 2 -> {
+            print('PASS: releases count == 2')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: releases count (got {rc})')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    ; Test 8: malformed JSON -> ok false
+    bad-info, bad-ok = registry.parse-package-json('not json at all')
+    {
+        ! bad-ok -> {
+            print('PASS: malformed json rejected')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: malformed json should be rejected')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+
+    print('')
+    print('Results: {n-pass} passed, {n-fail} failed')
+    {
+        n-fail > 0 -> os.exit(1)
+    }
+}
