@@ -12,6 +12,7 @@
 # /noimg/src/image.copy
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
+# /noimg/src/vp8.vp8-decode-frame
 
 ; ── VP8L Bit Reader ──
 
@@ -2132,9 +2133,22 @@ load = (path str) (img ?image) {
 
                 fourcc == 'VP8 ' -> {
 
-                    ; Lossy VP8 — not supported
-                    img = nil
-                    return
+                    ; Lossy VP8 — decode with the vp8 module (fixed-point path).
+                    payload = data.slice(chunk-data-pos, chunk-data-pos + chunk-size)
+                    rgb, dw, dh, vok = vp8.vp8-decode-frame(payload, chunk-size)
+                    vok == 0 -> {
+                        img = nil
+                        return
+                    }
+                    {
+                        #{overflow=wrap}
+                        _vd []byte = with-len(dw * dh * 3)
+                        vk <- [0..dw * dh * 3): {
+                            _vd[vk] = rgb[vk]
+                        }
+                        img = image.new-from-data(dw, dh, 3, _vd)
+                        return
+                    }
                 }
             }
             pos = chunk-data-pos + chunk-size
@@ -2261,20 +2275,24 @@ save = (path str, img image) (ok bool) {
         sum-raw = 0
         sum-sg = 0
         i <- [0..npix): {
+            #{overflow=wrap}
             dr = r0[i] - 128
             {
                 dr < 0 -> dr = -dr
             }
+            #{overflow=wrap}
             db = b0[i] - 128
             {
                 db < 0 -> db = -db
             }
             #{overflow=wrap}
             sum-raw = sum-raw + dr + db
+            #{overflow=wrap}
             dg = r0[i] - g0[i]
             {
                 dg < 0 -> dg = -dg
             }
+            #{overflow=wrap}
             db2 = b0[i] - g0[i]
             {
                 db2 < 0 -> db2 = -db2
@@ -2303,7 +2321,10 @@ save = (path str, img image) (ok bool) {
     enc-a []i64 = with-len(npix)
     {
         ci-mode -> {
-            main-w = (w + ppw - 1) / ppw
+            #{overflow=wrap}
+            num = w + ppw - 1
+            #{overflow=wrap}
+            main-w = num / ppw
             #{overflow=wrap}
             enc-n = main-w * h
             i <- [0..enc-n): {
@@ -2317,6 +2338,7 @@ save = (path str, img image) (ok bool) {
                     sx < w -> p = idx[sy * w + sx]
                     #{overflow=wrap}
                     bit-pos = k * ci-bits
+                    #{overflow=wrap}
                     chunk = bit-pos / 8
                     #{overflow=wrap}
                     shift = (bit-pos - chunk * 8) * 8
@@ -2467,6 +2489,7 @@ save = (path str, img image) (ok bool) {
     }
 
     ; RIFF/WEBP container with a single VP8L chunk
+    #{overflow=wrap}
     total = 8 + 8 + vp8l-out.len()
     #{overflow=wrap}
     padded = total + (total & 1)
@@ -2475,6 +2498,7 @@ save = (path str, img image) (ok bool) {
     buf.push(73); I
     buf.push(70); F
     buf.push(70); F
+    #{overflow=wrap}
     sz = total - 8
     buf.push(sz & 255)
     buf.push((sz >> 8) & 255)
