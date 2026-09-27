@@ -254,58 +254,36 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
     }
     p.exists() -> {
         result = fs.read-str(pkg-path)
+        content = ''
         result: {
             ok -> content = it
 
-            nil -> content = ''
-
-            err -> content = ''
+            -> content = ''
         }
-        v = json.parse(content)
-        v: {
-            ok -> {
 
-                ; determine save version
-                save-ver = range-str
-                range-str == '' -> {
+        ; determine save version
+        save-ver = range-str
+        range-str == '' -> {
 
-                    #{overflow=wrap}
-                    save-ver = cfg.save-prefix - ver
-                    cfg.save-exact -> save-ver = ver
-                }
+            #{overflow=wrap}
+            save-ver = cfg.save-prefix - ver
+            cfg.save-exact -> save-ver = ver
+        }
 
-                ; set dependency in package.json
-                dep-key = 'dependencies'
-                dev -> dep-key = 'devDependencies'
-                dep-obj ?json = it.get(dep-key)
-                dep-obj: {
-                    ok -> {
-                        it.set-str(name, save-ver)
-                        v.set-key(dep-key, it)
-                    }
+        ; set dependency in package.json
+        dep-key = 'dependencies'
+        dev -> dep-key = 'devDependencies'
+        updated ?str = pj.set-dep(content, dep-key, name, save-ver)
+        updated: {
+            ok -> utils.write-file(pkg-path, it)
 
-                    nil -> {
-                        new-deps = pj.create-obj()
-                        new-deps.set-str(name, save-ver)
-                        v.set-key(dep-key, new-deps)
-                    }
-
-                    err -> {
-                    }
-                }
-
-                ; write back
-                out = v.stringify()
-                utils.write-file(pkg-path, out)
-            }
-
-            nil -> {
-            }
-
-            err -> {
-            }
+            -> print('warn: could not update package.json')
         }
     }
+
+    ; regenerate lockfile（基于已更新的 cfg，重新解析全部依赖）
+    graph, g-ok = resolver.resolve-project(cfg, dir)
+    g-ok -> lockfile.generate(cfg, dir, graph)
 
     ok = true
 }
@@ -337,10 +315,11 @@ remove-dep = (cfg config, name str, dir str) (ok bool) {
     }
     p.exists() -> {
 
-        ; use sed to remove the dependency key from JSON
-        ; handles: "name":"value" with optional comma/whitespace
+       ; use sed to remove the dependency key from JSON
+        ; handles: "name":"value" with optional trailing comma, then cleans a dangling `,}`
+        ; -E 用 ERE（`?`/`+` 才有效）；sed 程式以單引號包住，路徑與 name 串接
         #{overflow=wrap}
-        sed-cmd = 'sed -i "" \\"s/\\\"' - name - '\\":\\"[^,\\\"]+\\\",*//g;s/,*\\\"' - name - '\\":\\"[^,\\\"]+\\\"//g\\" ' - pkg-path
+        sed-cmd = 'sed -i \'\' -E \'s/[[:space:]]*"' - name - '"[[:space:]]*:[[:space:]]*"[^"]*",?//g; s/,([[:space:]]*})/\1/g\' ' - pkg-path
         process.process-system(sed-cmd)
     }
 

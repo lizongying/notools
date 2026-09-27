@@ -619,8 +619,10 @@ vp8-get-signed-value = (data []byte, b vp8-br, nb i64) (res i64, nb-state vp8-br
 
 ; k-cat-offsets[4] = start index of each cat table inside k-cat13 (sentinel 0
 ; terminates the bit loop, mirroring libwebp's kCat3456 NULL-terminated tables).
+; Offsets MUST account for the 0 sentinel stored at the end of every sub-table in
+; k-cat13: cat3=idx[0..3], cat4=idx[4..8], cat5=idx[9..14], cat6=idx[15..26].
 k-cat-offsets = () (t []i64) {
-    t = [ 0, 3, 7, 12 ]
+    t = [ 0, 4, 9, 15 ]
 }
 
 ; k-cat13 = kCat3 ++ kCat4 ++ kCat5 ++ kCat6, each with a trailing 0 sentinel.
@@ -706,6 +708,7 @@ vp8-get-large-value = (data []byte, b vp8-br, proba []i64, off i64) (v i64, nb v
                     b3, x = vp8-get-bit(data, x, t)
                     #{overflow=wrap}
                     v = v + v + b3
+                    #{overflow=wrap}
                     i = i + 1
                     t = kc13[i] #{index-out=0}
                     t == 0 -> { stop = 1 }
@@ -761,6 +764,7 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
     ; position; `bit==0` on tree[1] walks a zero-run; otherwise a non-zero
     ; coefficient is decoded. Mirrors libwebp GetCoeffs exactly.
     iter <- [0..80): {
+        #{overflow=wrap}
         live i64 = 1 - done
         live != 0 -> {
             need-eob != 0 -> {
@@ -782,6 +786,7 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                 pv = proba[idx]
                 bit, x = vp8-get-bit(data, x, pv)
                 bit == 0 -> {
+                    #{overflow=wrap}
                     n = n + 1
                     n == 16 -> {
                         nzl = 16
@@ -792,7 +797,9 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                     }
                 }
                 -> {
+                    #{overflow=wrap}
                     pn = vp8-coeff-base(t, n + 1, 0)
+                    #{overflow=wrap}
                     idx = p + 2
                     #{index-out=0}
                     pv = proba[idx]
@@ -800,9 +807,11 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                     v = 1
                     bit != 0 -> {
                         v, x = vp8-get-large-value(data, x, proba, p)
+                        #{overflow=wrap}
                         p = pn + 22
                     }
                     -> {
+                        #{overflow=wrap}
                         p = pn + 11
                     }
                     sgn, x = vp8-get-signed(data, x, v)
@@ -817,13 +826,17 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                     zz = kzz[n]
                     #{overflow=wrap}
                     out[ooff + zz] = sgn * scale
+                    #{overflow=wrap}
                     n = n + 1
                     n == 16 -> {
                         nzl = 16
                         done = 1
                     }
                     -> {
-                        p = vp8-coeff-base(t, n, 0)
+                        ; keep p = pn+11/pn+22 (probas[1]/[2] for the new
+                        ; position n): the next EOB bit is read from p[0] with
+                        ; the context of the just-decoded coeff magnitude
+                        ; (small->1, large->2), mirroring GetCoeffsFast.
                         need-eob = 1
                     }
                 }
@@ -882,7 +895,7 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64,
         -> {
             segbit, x = vp8-get-bit-vec(data, x, seg, 13)
             #{overflow=wrap}
-            mb_data[mbase] = 2 * segbit + 2
+            mb_data[mbase] = segbit + 2
         }
     }
     -> {
@@ -919,7 +932,12 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64,
     }
     -> {
         yv <- [0..4): {
-            ymode = lmode
+            ; libwebp: `for y: { int ymode = left[y]; ... }` — each row's initial
+            ; left mode is intra_left[yv] (previous MB's per-row final mode, or
+            ; the boundary value at the left image edge). Using a single carried
+            ; scalar here only works for the first MB (all boundary values equal).
+            #{index-out=0}
+            ymode = intra_left[yv]
             xv <- [0..4): {
                 #{index-out=0}
                 tmode = intra_top[tbase + xv]
@@ -1001,131 +1019,240 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64,
 
 ; vp8-clip8: clip_8b -> (v & ~0xff)==0 ? v : (v<0 ? 0 : 255).
 vp8-clip8 = (v i64) (r i64) {
+    ; libwebp WEBP_CLIP255: full clamp to [0,255]. MUST use range comparison,
+    ; not a 32-bit mask (`v & ~255`) — values with bits >= 32 (e.g. an upstream
+    ; 2^46 tag) would slip past a 0xFFFFFF00 mask and stay unclamped.
     r = v
-    (v & 4294967040) != 0 -> {
-        r = 255
-        { v < 0 -> { r = 0 } }
-    }
+    r < 0 -> { r = 0 }
+    r > 255 -> { r = 255 }
 }
 
 ; vp8-mul1: WEBP_TRANSFORM_AC3_MUL1(a) = ((a*20091)>>16) + a.
+; NOTE: the intermediate product can be negative, so the shift MUST be an
+; arithmetic shift (Nolang `>>` is logical/unsigned -> would tag 2^48 etc).
 vp8-mul1 = (a i64) (r i64) {
-    p = ((a * 20091) >> 16)
+    #{overflow=wrap}
+    prod i64 = a * 20091
+    p = vp8-ashr(prod, 16)
     #{overflow=wrap}
     r = p + a
 }
 
+; vp8-mul2: WEBP_TRANSFORM_AC3_MUL2(a) = ((a*35468)>>16) (arithmetic shift).
+vp8-mul2 = (a i64) (r i64) {
+    #{overflow=wrap}
+    prod i64 = a * 35468
+    r = vp8-ashr(prod, 16)
+}
+
+; vp8-idct-store: STORE(x,y,v) -> dst[sidx] = clip_8b(dst[sidx] + (v>>3)).
+; dst is a param vec so the write persists (a with-len local written inside a
+; for-range would NOT persist past the loop -> hence transform-one is unrolled).
+vp8-idct-store = (dst []i64, sidx i64, v i64) {
+    #{index-out=0}
+    d = dst[sidx]
+    #{overflow=wrap}
+    r = vp8-clip8(d + vp8-ashr(v, 3))
+    #{overflow=wrap}
+    dst[sidx] = r
+}
+
 ; vp8-transform-one: TransformOne_C — 4x4 inverse DCT of coeffs[idx..idx+15]
-; added into dst[j*stride + i] (clamped to 8 bits). C uses stride 4.
+; added into dst[didx + row*stride + col] (clamped to 8 bits). Fully unrolled
+; (no scratch vec / no loops) to dodge the for-range-write-persistence bug.
 vp8-transform-one = (coeffs []i64, idx i64, dst []i64, didx i64, stride i64) {
-    C []i64 = with-len(16)
-    c <- [0..16): { C[c] = 0 }
-    j <- [0..4): {
-        iv <- [0..4): {
-            #{overflow=wrap}
-            ic = idx + iv
-            #{index-out=0}
-            i0 = coeffs[ic]
-            #{overflow=wrap}
-            ic = idx + iv + 8
-            #{index-out=0}
-            i8 = coeffs[ic]
-            #{overflow=wrap}
-            ic = idx + iv + 4
-            #{index-out=0}
-            i4 = coeffs[ic]
-            #{overflow=wrap}
-            ic = idx + iv + 12
-            #{index-out=0}
-            i12 = coeffs[ic]
-            #{overflow=wrap}
-            a = i0 + i8
-            #{overflow=wrap}
-            b = i0 - i8
-            m1a = vp8-mul1(i4)
-            m2a = ((i4 * 35468) >> 16)
-            m1c = vp8-mul1(i12)
-            m2c = ((i12 * 35468) >> 16)
-            #{overflow=wrap}
-            cval = m2a - m1c
-            #{overflow=wrap}
-            dval = m1a + m2c
-            #{overflow=wrap}
-            C[j * 4 + 0] = a + dval
-            #{overflow=wrap}
-            C[j * 4 + 1] = b + cval
-            #{overflow=wrap}
-            C[j * 4 + 2] = b - cval
-            #{overflow=wrap}
-            C[j * 4 + 3] = a - dval
-        }
-    }
-    jj <- [0..4): {
-        ro = jj
-        #{index-out=0}
-        c0 = C[ro]
-        #{overflow=wrap}
-        #{index-out=0}
-        c8 = C[ro + 8]
-        #{overflow=wrap}
-        #{index-out=0}
-        c4 = C[ro + 4]
-        #{overflow=wrap}
-        #{index-out=0}
-        c12 = C[ro + 12]
-        #{overflow=wrap}
-        dc = c0 + 4
-        #{overflow=wrap}
-        a = dc + c8
-        #{overflow=wrap}
-        b = dc - c8
-        m1a = vp8-mul1(c4)
-        m2a = ((c4 * 35468) >> 16)
-        m1c = vp8-mul1(c12)
-        m2c = ((c12 * 35468) >> 16)
-        #{overflow=wrap}
-        cval = m2a - m1c
-        #{overflow=wrap}
-        dval = m1a + m2c
-        #{overflow=wrap}
-        woff = jj * stride
-        #{overflow=wrap}
-        v = a + dval
-        #{overflow=wrap}
-        sidx = didx + woff
-        #{index-out=0}
-        dstv = dst[sidx]
-        #{overflow=wrap}
-        fv = vp8-clip8(dstv + vp8-ashr(v, 3))
-        dst[sidx] = fv
-        #{overflow=wrap}
-        v = b + cval
-        #{overflow=wrap}
-        sidx = didx + woff + 1
-        #{index-out=0}
-        dstv = dst[sidx]
-        #{overflow=wrap}
-        fv = vp8-clip8(dstv + vp8-ashr(v, 3))
-        dst[sidx] = fv
-        #{overflow=wrap}
-        v = b - cval
-        #{overflow=wrap}
-        sidx = didx + woff + 2
-        #{index-out=0}
-        dstv = dst[sidx]
-        #{overflow=wrap}
-        fv = vp8-clip8(dstv + vp8-ashr(v, 3))
-        dst[sidx] = fv
-        #{overflow=wrap}
-        v = a - dval
-        #{overflow=wrap}
-        sidx = didx + woff + 3
-        #{index-out=0}
-        dstv = dst[sidx]
-        #{overflow=wrap}
-        fv = vp8-clip8(dstv + vp8-ashr(v, 3))
-        dst[sidx] = fv
-    }
+    ; load the 16 (dequantized) coefficients
+    #{index-out=0}
+    in0 = coeffs[idx]
+    #{overflow=wrap}
+    #{index-out=0}
+    in1 = coeffs[idx + 1]
+    #{overflow=wrap}
+    #{index-out=0}
+    in2 = coeffs[idx + 2]
+    #{overflow=wrap}
+    #{index-out=0}
+    in3 = coeffs[idx + 3]
+    #{overflow=wrap}
+    #{index-out=0}
+    in4 = coeffs[idx + 4]
+    #{overflow=wrap}
+    #{index-out=0}
+    in5 = coeffs[idx + 5]
+    #{overflow=wrap}
+    #{index-out=0}
+    in6 = coeffs[idx + 6]
+    #{overflow=wrap}
+    #{index-out=0}
+    in7 = coeffs[idx + 7]
+    #{overflow=wrap}
+    #{index-out=0}
+    in8 = coeffs[idx + 8]
+    #{overflow=wrap}
+    #{index-out=0}
+    in9 = coeffs[idx + 9]
+    #{overflow=wrap}
+    #{index-out=0}
+    in10 = coeffs[idx + 10]
+    #{overflow=wrap}
+    #{index-out=0}
+    in11 = coeffs[idx + 11]
+    #{overflow=wrap}
+    #{index-out=0}
+    in12 = coeffs[idx + 12]
+    #{overflow=wrap}
+    #{index-out=0}
+    in13 = coeffs[idx + 13]
+    #{overflow=wrap}
+    #{index-out=0}
+    in14 = coeffs[idx + 14]
+    #{overflow=wrap}
+    #{index-out=0}
+    in15 = coeffs[idx + 15]
+    ; vertical pass -> C[0..15] held in scalars q0..q15
+    #{overflow=wrap}
+    a = in0 + in8
+    #{overflow=wrap}
+    b = in0 - in8
+    #{overflow=wrap}
+    c = vp8-mul2(in4) - vp8-mul1(in12)
+    #{overflow=wrap}
+    d = vp8-mul1(in4) + vp8-mul2(in12)
+    #{overflow=wrap}
+    q0 = a + d
+    #{overflow=wrap}
+    q1 = b + c
+    #{overflow=wrap}
+    q2 = b - c
+    #{overflow=wrap}
+    q3 = a - d
+    #{overflow=wrap}
+    a = in1 + in9
+    #{overflow=wrap}
+    b = in1 - in9
+    #{overflow=wrap}
+    c = vp8-mul2(in5) - vp8-mul1(in13)
+    #{overflow=wrap}
+    d = vp8-mul1(in5) + vp8-mul2(in13)
+    #{overflow=wrap}
+    q4 = a + d
+    #{overflow=wrap}
+    q5 = b + c
+    #{overflow=wrap}
+    q6 = b - c
+    #{overflow=wrap}
+    q7 = a - d
+    #{overflow=wrap}
+    a = in2 + in10
+    #{overflow=wrap}
+    b = in2 - in10
+    #{overflow=wrap}
+    c = vp8-mul2(in6) - vp8-mul1(in14)
+    #{overflow=wrap}
+    d = vp8-mul1(in6) + vp8-mul2(in14)
+    #{overflow=wrap}
+    q8 = a + d
+    #{overflow=wrap}
+    q9 = b + c
+    #{overflow=wrap}
+    q10 = b - c
+    #{overflow=wrap}
+    q11 = a - d
+    #{overflow=wrap}
+    a = in3 + in11
+    #{overflow=wrap}
+    b = in3 - in11
+    #{overflow=wrap}
+    c = vp8-mul2(in7) - vp8-mul1(in15)
+    #{overflow=wrap}
+    d = vp8-mul1(in7) + vp8-mul2(in15)
+    #{overflow=wrap}
+    q12 = a + d
+    #{overflow=wrap}
+    q13 = b + c
+    #{overflow=wrap}
+    q14 = b - c
+    #{overflow=wrap}
+    q15 = a - d
+    ; horizontal pass -> add residual into dst rows
+    #{overflow=wrap}
+    rb1 = didx + stride
+    #{overflow=wrap}
+    rb2 = rb1 + stride
+    #{overflow=wrap}
+    rb3 = rb2 + stride
+    #{overflow=wrap}
+    dc = q0 + 4
+    #{overflow=wrap}
+    a = dc + q8
+    #{overflow=wrap}
+    b = dc - q8
+    #{overflow=wrap}
+    c = vp8-mul2(q4) - vp8-mul1(q12)
+    #{overflow=wrap}
+    d = vp8-mul1(q4) + vp8-mul2(q12)
+    #{overflow=wrap}
+    vp8-idct-store(dst, didx, a + d)
+    #{overflow=wrap}
+    vp8-idct-store(dst, didx + 1, b + c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, didx + 2, b - c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, didx + 3, a - d)
+    #{overflow=wrap}
+    dc = q1 + 4
+    #{overflow=wrap}
+    a = dc + q9
+    #{overflow=wrap}
+    b = dc - q9
+    #{overflow=wrap}
+    c = vp8-mul2(q5) - vp8-mul1(q13)
+    #{overflow=wrap}
+    d = vp8-mul1(q5) + vp8-mul2(q13)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb1, a + d)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb1 + 1, b + c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb1 + 2, b - c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb1 + 3, a - d)
+    #{overflow=wrap}
+    dc = q2 + 4
+    #{overflow=wrap}
+    a = dc + q10
+    #{overflow=wrap}
+    b = dc - q10
+    #{overflow=wrap}
+    c = vp8-mul2(q6) - vp8-mul1(q14)
+    #{overflow=wrap}
+    d = vp8-mul1(q6) + vp8-mul2(q14)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb2, a + d)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb2 + 1, b + c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb2 + 2, b - c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb2 + 3, a - d)
+    #{overflow=wrap}
+    dc = q3 + 4
+    #{overflow=wrap}
+    a = dc + q11
+    #{overflow=wrap}
+    b = dc - q11
+    #{overflow=wrap}
+    c = vp8-mul2(q7) - vp8-mul1(q15)
+    #{overflow=wrap}
+    d = vp8-mul1(q7) + vp8-mul2(q15)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb3, a + d)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb3 + 1, b + c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb3 + 2, b - c)
+    #{overflow=wrap}
+    vp8-idct-store(dst, rb3 + 3, a - d)
 }
 
 ; vp8-transform-ac3: TransformAC3_C — simplified transform when only in[0],
@@ -1144,9 +1271,9 @@ vp8-transform-ac3 = (coeffs []i64, idx i64, dst []i64, didx i64, stride i64) {
     #{overflow=wrap}
     aa = i0 + 4
     d4 = vp8-mul1(i4)
-    c4 = ((i4 * 35468) >> 16)
+    c4 = vp8-mul2(i4)
     d1 = vp8-mul1(i1)
-    c1 = ((i1 * 35468) >> 16)
+    c1 = vp8-mul2(i1)
     jj <- [0..4): {
         dc i64 = aa
         { jj == 0 -> {
@@ -1217,75 +1344,183 @@ vp8-transform-dc = (coeffs []i64, idx i64, dst []i64, didx i64, stride i64) {
 ; vp8-transform-wht: TransformWHT_C — 4x4 inverse Hadamard on the 16 DC
 ; coefficients; writes the 16 residue values at out[o .. o+63] step 16.
 vp8-transform-wht = (coeffs []i64, idx i64, out []i64, o i64) {
-    tmp []i64 = with-len(16)
-    c <- [0..16): { tmp[c] = 0 }
-    i <- [0..4): {
-        #{index-out=0}
-        x0 = coeffs[idx + i]
-        #{index-out=0}
-        x12 = coeffs[idx + i + 12]
-        #{index-out=0}
-        x4 = coeffs[idx + i + 4]
-        #{index-out=0}
-        x8 = coeffs[idx + i + 8]
-        #{overflow=wrap}
-        a0 = x0 + x12
-        #{overflow=wrap}
-        a1 = x4 + x8
-        #{overflow=wrap}
-        a2 = x4 - x8
-        #{overflow=wrap}
-        a3 = x0 - x12
-        #{overflow=wrap}
-        tmp[i] = a0 + a1
-        #{overflow=wrap}
-        tmp[i + 8] = a0 - a1
-        #{overflow=wrap}
-        tmp[i + 4] = a3 + a2
-        #{overflow=wrap}
-        tmp[i + 12] = a3 - a2
-    }
-    i <- [0..4): {
-        #{index-out=0}
-        y0 = tmp[i * 4]
-        #{index-out=0}
-        y3 = tmp[i * 4 + 3]
-        #{index-out=0}
-        y1 = tmp[i * 4 + 1]
-        #{index-out=0}
-        y2 = tmp[i * 4 + 2]
-        #{overflow=wrap}
-        dc = y0 + 3
-        #{overflow=wrap}
-        a0 = dc + y3
-        #{overflow=wrap}
-        a1 = y1 + y2
-        #{overflow=wrap}
-        a2 = y1 - y2
-        #{overflow=wrap}
-        a3 = dc - y3
-        oi = o
-        #{overflow=wrap}
-        tmpv = a0 + a1
-        out[oi] = vp8-ashr(tmpv, 3)
-        #{overflow=wrap}
-        oi = o + 16
-        #{overflow=wrap}
-        tmpv = a3 + a2
-        out[oi] = vp8-ashr(tmpv, 3)
-        #{overflow=wrap}
-        oi = o + 32
-        #{overflow=wrap}
-        tmpv = a0 - a1
-        out[oi] = vp8-ashr(tmpv, 3)
-        #{overflow=wrap}
-        oi = o + 48
-        #{overflow=wrap}
-        tmpv = a3 - a2
-        out[oi] = vp8-ashr(tmpv, 3)
-        #{overflow=wrap}
-        o = o + 64
-    }
+    ; fully unrolled (no scratch vec / no loop) to dodge the for-range-write
+    ; persistence bug. First pass -> t0..t15, second pass -> out[o + i*64 + {0,16,32,48}].
+    #{index-out=0}
+    x0 = coeffs[idx]
+    #{index-out=0}
+    x12 = coeffs[idx + 12]
+    #{index-out=0}
+    x4 = coeffs[idx + 4]
+    #{index-out=0}
+    x8 = coeffs[idx + 8]
+    #{overflow=wrap}
+    a0 = x0 + x12
+    #{overflow=wrap}
+    a1 = x4 + x8
+    #{overflow=wrap}
+    a2 = x4 - x8
+    #{overflow=wrap}
+    a3 = x0 - x12
+    #{overflow=wrap}
+    t0 = a0 + a1
+    #{overflow=wrap}
+    t8 = a0 - a1
+    #{overflow=wrap}
+    t4 = a3 + a2
+    #{overflow=wrap}
+    t12 = a3 - a2
+    #{index-out=0}
+    x0 = coeffs[idx + 1]
+    #{index-out=0}
+    x12 = coeffs[idx + 13]
+    #{index-out=0}
+    x4 = coeffs[idx + 5]
+    #{index-out=0}
+    x8 = coeffs[idx + 9]
+    #{overflow=wrap}
+    a0 = x0 + x12
+    #{overflow=wrap}
+    a1 = x4 + x8
+    #{overflow=wrap}
+    a2 = x4 - x8
+    #{overflow=wrap}
+    a3 = x0 - x12
+    #{overflow=wrap}
+    t1 = a0 + a1
+    #{overflow=wrap}
+    t9 = a0 - a1
+    #{overflow=wrap}
+    t5 = a3 + a2
+    #{overflow=wrap}
+    t13 = a3 - a2
+    #{index-out=0}
+    x0 = coeffs[idx + 2]
+    #{index-out=0}
+    x12 = coeffs[idx + 14]
+    #{index-out=0}
+    x4 = coeffs[idx + 6]
+    #{index-out=0}
+    x8 = coeffs[idx + 10]
+    #{overflow=wrap}
+    a0 = x0 + x12
+    #{overflow=wrap}
+    a1 = x4 + x8
+    #{overflow=wrap}
+    a2 = x4 - x8
+    #{overflow=wrap}
+    a3 = x0 - x12
+    #{overflow=wrap}
+    t2 = a0 + a1
+    #{overflow=wrap}
+    t10 = a0 - a1
+    #{overflow=wrap}
+    t6 = a3 + a2
+    #{overflow=wrap}
+    t14 = a3 - a2
+    #{index-out=0}
+    x0 = coeffs[idx + 3]
+    #{index-out=0}
+    x12 = coeffs[idx + 15]
+    #{index-out=0}
+    x4 = coeffs[idx + 7]
+    #{index-out=0}
+    x8 = coeffs[idx + 11]
+    #{overflow=wrap}
+    a0 = x0 + x12
+    #{overflow=wrap}
+    a1 = x4 + x8
+    #{overflow=wrap}
+    a2 = x4 - x8
+    #{overflow=wrap}
+    a3 = x0 - x12
+    #{overflow=wrap}
+    t3 = a0 + a1
+    #{overflow=wrap}
+    t11 = a0 - a1
+    #{overflow=wrap}
+    t7 = a3 + a2
+    #{overflow=wrap}
+    t15 = a3 - a2
+    ; second pass
+    #{overflow=wrap}
+    o2 = o + 64
+    #{overflow=wrap}
+    o3 = o + 128
+    #{overflow=wrap}
+    o4 = o + 192
+    #{overflow=wrap}
+    dc = t0 + 3
+    #{overflow=wrap}
+    a0 = dc + t3
+    #{overflow=wrap}
+    a1 = t1 + t2
+    #{overflow=wrap}
+    a2 = t1 - t2
+    #{overflow=wrap}
+    a3 = dc - t3
+    #{overflow=wrap}
+    out[o] = vp8-ashr(a0 + a1, 3)
+    #{overflow=wrap}
+    out[o + 16] = vp8-ashr(a3 + a2, 3)
+    #{overflow=wrap}
+    out[o + 32] = vp8-ashr(a0 - a1, 3)
+    #{overflow=wrap}
+    out[o + 48] = vp8-ashr(a3 - a2, 3)
+    #{overflow=wrap}
+    dc = t4 + 3
+    #{overflow=wrap}
+    a0 = dc + t7
+    #{overflow=wrap}
+    a1 = t5 + t6
+    #{overflow=wrap}
+    a2 = t5 - t6
+    #{overflow=wrap}
+    a3 = dc - t7
+    #{overflow=wrap}
+    out[o2] = vp8-ashr(a0 + a1, 3)
+    #{overflow=wrap}
+    out[o2 + 16] = vp8-ashr(a3 + a2, 3)
+    #{overflow=wrap}
+    out[o2 + 32] = vp8-ashr(a0 - a1, 3)
+    #{overflow=wrap}
+    out[o2 + 48] = vp8-ashr(a3 - a2, 3)
+    #{overflow=wrap}
+    dc = t8 + 3
+    #{overflow=wrap}
+    a0 = dc + t11
+    #{overflow=wrap}
+    a1 = t9 + t10
+    #{overflow=wrap}
+    a2 = t9 - t10
+    #{overflow=wrap}
+    a3 = dc - t11
+    #{overflow=wrap}
+    out[o3] = vp8-ashr(a0 + a1, 3)
+    #{overflow=wrap}
+    out[o3 + 16] = vp8-ashr(a3 + a2, 3)
+    #{overflow=wrap}
+    out[o3 + 32] = vp8-ashr(a0 - a1, 3)
+    #{overflow=wrap}
+    out[o3 + 48] = vp8-ashr(a3 - a2, 3)
+    #{overflow=wrap}
+    dc = t12 + 3
+    #{overflow=wrap}
+    a0 = dc + t15
+    #{overflow=wrap}
+    a1 = t13 + t14
+    #{overflow=wrap}
+    a2 = t13 - t14
+    #{overflow=wrap}
+    a3 = dc - t15
+    #{overflow=wrap}
+    out[o4] = vp8-ashr(a0 + a1, 3)
+    #{overflow=wrap}
+    out[o4 + 16] = vp8-ashr(a3 + a2, 3)
+    #{overflow=wrap}
+    out[o4 + 32] = vp8-ashr(a0 - a1, 3)
+    #{overflow=wrap}
+    out[o4 + 48] = vp8-ashr(a3 - a2, 3)
 }
 
 ; ── Header parsing (Paragraphs 9.1-9.9, faithful port of VP8GetHeaders) ──
@@ -1322,28 +1557,40 @@ vp8-parse-segment = (data []byte, b vp8-br) (nb vp8-br, seg []i64) {
             s <- [0..4): {
                 g i64
                 g, x = vp8-get(data, x)
-                q i64 = 0
-                { g != 0 -> { q, x = vp8-get-signed-value(data, x, 7) } }
-                #{overflow=wrap}
-                seg[3 + s] = q
+                #{index-out=0}
+                g != 0 -> {
+                    v i64
+                    v, x = vp8-get-signed-value(data, x, 7)
+                    #{overflow=wrap}
+                    seg[3 + s] = v
+                }
             }
             s2 <- [0..4): {
                 g i64
                 g, x = vp8-get(data, x)
-                q i64 = 0
-                { g != 0 -> { q, x = vp8-get-signed-value(data, x, 6) } }
-                #{overflow=wrap}
-                seg[7 + s2] = q
+                #{index-out=0}
+                g != 0 -> {
+                    v i64
+                    v, x = vp8-get-signed-value(data, x, 6)
+                    #{overflow=wrap}
+                    seg[7 + s2] = v
+                }
             }
         }
         um != 0 -> {
             s3 <- [0..3): {
                 g i64
                 g, x = vp8-get(data, x)
-                q i64 = 255
-                { g != 0 -> { q, x = vp8-get-value(data, x, 8) } }
-                #{overflow=wrap}
-                seg[11 + s3] = q
+                #{index-out=0}
+                g != 0 -> {
+                    v i64
+                    v, x = vp8-get-value(data, x, 8)
+                    #{overflow=wrap}
+                    seg[11 + s3] = v
+                }
+                -> {
+                    seg[11 + s3] = 255
+                }
             }
         }
     }
@@ -1463,13 +1710,19 @@ vp8-parse-quant = (data []byte, b vp8-br, seg []i64) (nb vp8-br, qmat []i64) {
             #{overflow=wrap}
             idx = si * 7
             #{overflow=wrap}
+            idx1 = idx + 1
+            #{overflow=wrap}
+            idx4 = idx + 4
+            #{overflow=wrap}
+            idx5 = idx + 5
+            #{overflow=wrap}
             t = q + dqy1-dc
             #{overflow=wrap}
             #{index-out=0}
-            qmat[idx + 0] = kdc[vp8-clip(t, 127)]
+            qmat[idx] = kdc[vp8-clip(t, 127)]
             #{overflow=wrap}
             #{index-out=0}
-            qmat[idx + 1] = kac[vp8-clip(q, 127)]
+            qmat[idx1] = kac[vp8-clip(q, 127)]
             #{overflow=wrap}
             t = q + dqy2-dc
             #{overflow=wrap}
@@ -1486,12 +1739,12 @@ vp8-parse-quant = (data []byte, b vp8-br, seg []i64) (nb vp8-br, qmat []i64) {
             t = q + dquv-dc
             #{overflow=wrap}
             #{index-out=0}
-            qmat[idx + 4] = kdc[vp8-clip(t, 117)]
+            qmat[idx4] = kdc[vp8-clip(t, 117)]
             #{overflow=wrap}
             t = q + dquv-ac
             #{overflow=wrap}
             #{index-out=0}
-            qmat[idx + 5] = kac[vp8-clip(t, 127)]
+            qmat[idx5] = kac[vp8-clip(t, 127)]
             #{overflow=wrap}
             qmat[idx + 6] = q + dquv-ac
         } }
@@ -1544,6 +1797,15 @@ vp8-parse-proba = (data []byte, b vp8-br) (nb vp8-br, proba []i64, use-skip i64,
 ; The 8 token partitions each carry their own bit-reader. A vp8-br is marshalled
 ; in/out of a flat []i64 (8 * 7 slots, field order buf,buf-max,buf-end,value,
 ; bits,range,eof) so the frame loop can persist per-row partition state.
+
+; vp8-vec-set / vp8-vec-get: param-vec element access helpers. A write done
+; directly on a with-len local vec inside the driver's for-range body does NOT
+; persist to a later outer MB-row iteration (Nolang for-range local-vec write
+; persistence bug), so the persistent per-column top-nz arrays (tnz/tdc) must be
+; read and written through these helpers (v is a param -> the write sticks).
+vp8-vec-set = (v []i64, i i64, x i64) { v[i] = x }
+vp8-vec-get = (v []i64, i i64) (x i64) { #{index-out=0}
+    x = v[i] }
 
 ; vp8-br-store / vp8-br-load: marshal one vp8-br into parts[p*7 .. p*7+7).
 vp8-br-store = (parts []i64, p i64, b vp8-br) {
@@ -1643,7 +1905,6 @@ vp8-parse-residuals = (data []byte, br vp8-br, proba []i64, qmat []i64,
                       (nb vp8-br, out-t-nz i64, out-t-nz-dc i64,
                        out-l-nz i64, out-l-nz-dc i64,
                        nz-y i64, nz-uv i64, all-zero i64) {
-    print('PR-IN')
     x vp8-br = br
     ctx i64
     nz i64
@@ -1689,7 +1950,8 @@ vp8-parse-residuals = (data []byte, br vp8-br, proba []i64, qmat []i64,
         -> {
             #{index-out=0}
             d0 = dc[0]
-            dc0 = (d0 + 3) >> 3
+            #{overflow=wrap}
+            dc0 = vp8-ashr(d0 + 3, 3)
             j <- [0..256): { { (j & 15) == 0 -> { #{overflow=wrap}
                 coeffs[cbase + j] = dc0
             } } }
@@ -1701,7 +1963,6 @@ vp8-parse-residuals = (data []byte, br vp8-br, proba []i64, qmat []i64,
         first = 0
         atype = 3
     } }
-    print('PR-DC-DONE')
     tnz = top-nz & 15
     lnz = left-nz & 15
     non-zero-y = 0
@@ -1732,7 +1993,6 @@ vp8-parse-residuals = (data []byte, br vp8-br, proba []i64, qmat []i64,
         lnz = (lnz >> 1) | (l << 7)
         non-zero-y = (non-zero-y << 8) | nz-coeffs
     }
-    print('PR-Y-DONE')
     out-t-nz = tnz
     out-l-nz = lnz >> 4
     non-zero-uv = 0
@@ -1770,7 +2030,6 @@ vp8-parse-residuals = (data []byte, br vp8-br, proba []i64, qmat []i64,
         out-t-nz = out-t-nz | ((tnz << 4) << ch)
         out-l-nz = out-l-nz | ((lnz & 240) << ch)
     }
-    print('PR-OUT')
     nz-y = non-zero-y
     nz-uv = non-zero-uv
     all-zero = 0
@@ -2567,7 +2826,6 @@ vp8-reconstruct-mb = (yb []i64, yt []i64, mb-data []i64, coeffs []i64,
 vp8-reconstruct-row = (yb []i64, yt []i64, mb-data []i64, coeffs []i64,
                        y-out []i64, u-out []i64, v-out []i64, y-str i64, uv-str i64,
                        mb-w i64, mb-h i64, mb-y i64) {
-    print('RECON-IN my' , mb-y)
     Y i64 = 40
     U i64 = 584
     V i64 = 600
@@ -2820,6 +3078,7 @@ vp8-decode-to-rgb = (y []i64, u []i64, v []i64, ys i64, us i64, w i64, h i64) (o
             #{overflow=wrap}
             vp8-upsample-pair(y, ys, 2 * ki - 1, 2 * ki, u, v, us, ki - 1, ki, out, w, true)
         }
+        #{overflow=wrap}
         ki = ki + 1
     }
     h % 2 == 0 -> {
@@ -2880,7 +3139,7 @@ vp8-needs-filter = (plane []i64, p i64, step i64, t i64) (r i64) {
 }
 
 ; vp8-needs-filter2: NeedsFilter2_C (flatness across the 8-tap window).
-vp8-needs-filter2 = (plane []i64, p i64, step i64, t i64, it i64) (r i64) {
+vp8-needs-filter2 = (plane []i64, p i64, step i64, t i64, ith i64) (r i64) {
     #{overflow=wrap}
     ia3 = p - 4 * step
     #{overflow=wrap}
@@ -2940,12 +3199,12 @@ vp8-needs-filter2 = (plane []i64, p i64, step i64, t i64, it i64) (r i64) {
     a5 = vp8-abs0(c5)
     a6 = vp8-abs0(c6)
     flat = 1
-    a1 > it -> flat = 0
-    a2 > it -> flat = 0
-    a3 > it -> flat = 0
-    a4 > it -> flat = 0
-    a5 > it -> flat = 0
-    a6 > it -> flat = 0
+    a1 > ith -> flat = 0
+    a2 > ith -> flat = 0
+    a3 > ith -> flat = 0
+    a4 > ith -> flat = 0
+    a5 > ith -> flat = 0
+    a6 > ith -> flat = 0
     flat != 0 -> r = 1
 }
 
@@ -3003,8 +3262,8 @@ vp8-filter2 = (plane []i64, p i64, step i64) {
     s1 = a + 4
     #{overflow=wrap}
     s2 = a + 3
-    a1 = vp8-sclip2(s1 >> 3)
-    a2 = vp8-sclip2(s2 >> 3)
+    a1 = vp8-sclip2(vp8-ashr(s1, 3))
+    a2 = vp8-sclip2(vp8-ashr(s2, 3))
     #{overflow=wrap}
     np0 = pp0 + a2
     #{overflow=wrap}
@@ -3039,9 +3298,10 @@ vp8-filter4 = (plane []i64, p i64, step i64) {
     s1 = a + 4
     #{overflow=wrap}
     s2 = a + 3
-    a1 = vp8-sclip2(s1 >> 3)
-    a2 = vp8-sclip2(s2 >> 3)
-    a3 = (a1 + 1) >> 1
+    a1 = vp8-sclip2(vp8-ashr(s1, 3))
+    a2 = vp8-sclip2(vp8-ashr(s2, 3))
+    #{overflow=wrap}
+    a3 = vp8-ashr(a1 + 1, 1)
     #{overflow=wrap}
     np1 = pp1 + a3
     #{overflow=wrap}
@@ -3094,9 +3354,9 @@ vp8-filter6 = (plane []i64, p i64, step i64) {
     t2 = 18 * a + 63
     #{overflow=wrap}
     t3 = 9 * a + 63
-    a1 = t1 >> 7
-    a2 = t2 >> 7
-    a3 = t3 >> 7
+    a1 = vp8-ashr(t1, 7)
+    a2 = vp8-ashr(t2, 7)
+    a3 = vp8-ashr(t3, 7)
     #{overflow=wrap}
     np2 = pp2 + a3
     #{overflow=wrap}
@@ -3397,7 +3657,6 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
     tok-off > data-len -> { return }
     mb-w i64 = (w + 15) >> 4
     mb-h i64 = (h + 15) >> 4
-    print('DBGHDR w', w, 'h', h, 'mbw', mb-w, 'mbh', mb-h, 'tokoff', tok-off, 'dlen', data-len)
     ; ---- control bit reader over first partition data[10 .. 10+partition-length) ----
     br vp8-br = vp8-init-br(10, partition-length)
     cs i64
@@ -3422,7 +3681,6 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
     use-skip i64
     skip-p i64
     br, proba, use-skip, skip-p = vp8-parse-proba(data, br)
-    print('DBGAFTER-HEADER np1', np1, 'use-skip', use-skip)
     ; ---- allocate reconstruction buffers ----
     #{overflow=wrap}
     y-str i64 = mb-w * 16
@@ -3456,7 +3714,6 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
     mb-seg []i64 = with-len(ncells)
     mb-i4 []i64 = with-len(ncells)
     mb-inner []i64 = with-len(ncells)
-    print('DBGALLOC ncells', ncells, 'yn', yn)
     ; ---- per-MB-row decode loop ----
     ; loop-local scalars declared once at fn scope (bare/first-use decls inside
     ; nested while bodies may fail MIR lowering -> unresolved identifier).
@@ -3503,16 +3760,14 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
             mbase = mx * 24
             #{index-out=0}
             sgid = mb-data[mbase]
+            #{overflow=wrap}
             #{index-out=0}
             isi4 = mb-data[mbase + 2]
-            #{index-out=0}
-            pskip = mb-data[mbase + 1]
+            pskip = mb-data[mbase + 1] #{index-out=0}
             skip = 0
             use-skip != 0 -> { skip = pskip }
-            #{index-out=0}
-            tn = tnz[mx]
-            #{index-out=0}
-            td = tdc[mx]
+            tn = vp8-vec-get(tnz, mx)
+            td = vp8-vec-get(tdc, mx)
             skip == 0 -> {
                 #{overflow=wrap}
                 cb = mx * 384
@@ -3528,16 +3783,16 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
                 mb-data[b22] = nzy
                 #{index-out=0}
                 mb-data[b23] = nzuv
-                tnz[mx] = ntn
-                tdc[mx] = ntd
+                vp8-vec-set(tnz, mx, ntn)
+                vp8-vec-set(tdc, mx, ntd)
                 left-nz = nln
                 left-nz-dc = nlnd
             }
             -> {
-                tnz[mx] = 0
+                vp8-vec-set(tnz, mx, 0)
                 left-nz = 0
                 isi4 == 0 -> {
-                    tdc[mx] = 0
+                    vp8-vec-set(tdc, mx, 0)
                     left-nz-dc = 0
                 }
                 #{overflow=wrap}
@@ -3567,10 +3822,8 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
         vp8-reconstruct-row(yb, yt, mb-data, coeffs, y-out, u-out, v-out, y-str, uv-str, mb-w, mb-h, my)
     }
     ; ---- whole-frame loop filter, then YUV->RGB ----
-    print('DBGBEFORE-FILTER')
     fst []i64 = vp8-precompute-strengths(filt, seg, filter-type)
     vp8-filter-frame(y-out, u-out, v-out, y-str, uv-str, fst, filter-type, mb-seg, mb-i4, mb-inner, mb-w, mb-h)
-    print('DBGBEFORE-RGB')
     rgb = vp8-decode-to-rgb(y-out, u-out, v-out, y-str, uv-str, w, h)
     ok = 1
 }

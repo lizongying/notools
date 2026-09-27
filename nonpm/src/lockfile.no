@@ -24,7 +24,71 @@
 
 generate = (cfg config, dir str, graph dep-graph) (ok bool) {
     ok = false
-    ; TODO: implement using fs.write
+    lock-path = dir - '/pnpm-lock.yaml'
+    lock = 'lockfileVersion: 9.0\n\n'
+
+    ; v6 平铺格式：直接依赖列于 dependencies / devDependencies，供 list/outdated 读取
+    lock = lock - 'dependencies:\n'
+    has-prod = false
+    i <- [0..graph.node-count): {
+        #{index-out=0}
+        node = graph.nodes[i]
+        node.depth == 1 && node.is-dev == false -> has-prod = true
+    }
+    has-prod -> {
+        i <- [0..graph.node-count): {
+            #{index-out=0}
+            node = graph.nodes[i]
+            node.depth == 1 && node.is-dev == false -> {
+                lock = lock - '  ' - node.name - ':\n'
+                lock = lock - '    version: ' - node.version - '\n'
+                lock = lock - '    resolved: ' - node.resolved - '\n'
+                lock = lock - '    integrity: ' - node.integrity - '\n'
+            }
+        }
+    }
+    has-prod == false -> lock = lock - '  {}\n'
+
+    has-dev = false
+    i <- [0..graph.node-count): {
+        #{index-out=0}
+        node = graph.nodes[i]
+        node.depth == 1 && node.is-dev -> has-dev = true
+    }
+    has-dev -> {
+        lock = lock - '\ndevDependencies:\n'
+        i <- [0..graph.node-count): {
+            #{index-out=0}
+            node = graph.nodes[i]
+            node.depth == 1 && node.is-dev -> {
+                lock = lock - '  ' - node.name - ':\n'
+                lock = lock - '    version: ' - node.version - '\n'
+                lock = lock - '    resolved: ' - node.resolved - '\n'
+                lock = lock - '    integrity: ' - node.integrity - '\n'
+            }
+        }
+    }
+
+    ; packages：全部节点（含传递依赖）记录 resolution
+    lock = lock - '\npackages:\n'
+    j <- [0..graph.node-count): {
+        #{index-out=0}
+        node = graph.nodes[j]
+        #{overflow=wrap}
+        key = '  ' - node.name - '@' - node.version - ':'
+        lock = lock - key - '\n'
+        {
+            node.resolved != '' -> {
+                lock = lock - '    resolution: {integrity: ' - node.integrity - ', tarball: ' - node.resolved - '}\n'
+            }
+
+            node.resolved == '' && node.integrity != '' -> {
+                lock = lock - '    resolution: {integrity: ' - node.integrity - '}\n'
+            }
+        }
+    }
+
+    ok = utils.write-file(lock-path, lock)
 }
 
 ; ═══════════════════════════════════════════════
@@ -55,7 +119,19 @@ read-lockfile = (dir str) (content str, ok bool) {
         p: lock-path
     }
     p.exists() -> {
-        ok = true
+        result = fs.read-str(lock-path)
+        result: {
+            ok -> {
+                content = it
+                ok = true
+            }
+
+            nil -> {
+            }
+
+            err -> {
+            }
+        }
     }
 }
 
@@ -143,6 +219,12 @@ get-pkg-integrity = (content str, name str) (integrity ?str) {
             int-str = after
             nl >= 0 -> int-str = after.slice(0, nl)
             int-str = int-str.trim()
+            ; v9 內聯 mapping 格式：`resolution: {integrity: sha512-...==}` 的值後會帶一個結尾 `}`，需剝除
+            int-str.ends-with('}') -> {
+                #{overflow=wrap}
+                int-str = int-str.slice(0, int-str.len-bytes() - 1)
+                int-str = int-str.trim()
+            }
             integrity = int-str
         }
     }
