@@ -22,7 +22,7 @@ bytes-range = (data []byte, start i64, end i64) (out str) {
     out str = with-len(n)
     i <- [0..n): {
 
-        #{overflow=wrap}
+        #{index-out=0, overflow=wrap}
         out[i] = data[start + i]
     }
 }
@@ -61,45 +61,78 @@ str-range = (s str, start i64, end i64) (out str) {
     }
 }
 
+; mkdir-seg: create a single directory segment; returns made i64 (1 if present/created, 0 on failure).
+; i64 (not bool) is returned because bool arithmetic miscompiles in this toolchain version.
+mkdir-seg = (parent str) (made i64) {
+    made = 0
+    {
+        parent.len-bytes() == 0 -> made = 1
+
+        -> {
+            fs.is-dir(parent) -> made = 1
+
+            -> {
+                d = path {
+                    p: parent
+                }
+                d.make-dir() -> made = 1
+
+                -> made = 0
+            }
+        }
+    }
+}
+
 ; mkdir-all: recursively create a directory (like mkdir -p)
 ; p str: directory path (must be a directory, not a file)
 ; returns ok bool: true if the directory exists at the end
+; NOTE: conditional arms inside loop bodies are dead-stripped by the compiler in
+; module functions, so segment creation is delegated to mkdir-seg.
 mkdir-all = (p str) (ok bool) {
     ok = true
-    cur = ''
-    i <- [0..p.len-bytes()): {
-        c = p.byte(i)
-        ch = char-str(c)
-        cur = cur - ch
-        c == '/' -> {
-            cur.len-bytes() > 0 -> {
-                {
-                    fs.is-dir(cur) ->
-
-                    -> {
-                        d = path {
-                            p: cur
-                        }
-                        d.make-dir() -> {}
-
-                        -> ok = false
-                    }
-                }
-            }
+    full = p
+    #{overflow=wrap}
+    p.byte(p.len-bytes() - 1) != 47 -> full = p - '/'
+    #{overflow=wrap}
+    prefix str = full.slice-bytes(0, full.len-bytes() - 1)
+    parts = prefix.split('/')
+    n = parts.len()
+    made-count = 0
+    i <- [0..n): {
+        mk-acc = ''
+        j <- [0..i + 1): {
+            mk-acc = mk-acc - parts[j] - '/'
         }
+        #{overflow=wrap}
+        seg = util.str-range(mk-acc, 0, mk-acc.len-bytes() - 1)
+        made = mkdir-seg(seg)
+        #{overflow=wrap}
+        made-count = made-count + made
     }
-    {
-        fs.is-dir(cur) ->
+    ok = mkdir-seg(full) != 0
+    ok = ok && made-count == n
+}
 
-        -> {
-            d = path {
-                p: cur
-            }
-            d.make-dir() -> {}
+; remove-tree: recursively remove a file or directory tree (like rm -rf).
+; p str: path to remove; missing paths are a no-op.
+; returns ok bool: true when the tree is gone
+; NOTE: MUST use fs.dir-entries (filters . and ..). fs.list-dir includes them,
+; and recursing into '..' walks the delete up out of the target directory.
+remove-tree = (p str) (ok bool) {
+    ok = true
+    isf = fs.is-file(p)
+    isd = fs.is-dir(p)
+    ! isf && ! isd -> return
+    isf -> fs.remove(p)
+    kids = fs.dir-entries(p)
+    i <- [0..kids.len()): {
 
-            -> ok = false
-        }
+        #{index-out=0}
+        name = kids[i]
+        child = p - '/' - name
+        ok = remove-tree(child)
     }
+    isd -> fs.rmdir(p)
 }
 
 ; read-u32-be: read a big-endian 32-bit unsigned integer from a byte slice
@@ -107,6 +140,8 @@ mkdir-all = (p str) (ok bool) {
 ; pos i64: offset of the most-significant byte
 ; returns v i64: the integer value
 read-u32-be = (data []byte, pos i64) (v i64) {
+
+    #{index-out=0}
     v = data[pos]
 
     #{overflow=wrap}
@@ -141,6 +176,8 @@ write-u32-be = (buf []byte, pos i64, v i64) {
 ; pos i64: offset
 ; returns v i64: value
 read-u16-be = (data []byte, pos i64) (v i64) {
+
+    #{index-out=0}
     v = data[pos]
 
     #{overflow=wrap}
@@ -194,9 +231,11 @@ trim-newline = (s str) (out str) {
     L = out.len-bytes()
     {
         L > 0 -> {
+
             #{overflow=wrap}
             {
                 out.byte(L - 1) == 10 -> {
+
                     #{overflow=wrap}
                     L = L - 1
                     out = str-range(out, 0, L)
@@ -230,10 +269,14 @@ hexdigit = (c byte) (v i64) {
         }
 
         c >= 97 && c <= 102 -> {
+
+            #{overflow=wrap}
             v = c - 87
         }
 
         c >= 65 && c <= 70 -> {
+
+            #{overflow=wrap}
             v = c - 55
         }
     }
@@ -270,6 +313,8 @@ hex-encode = (data []byte) (out str) {
     #{overflow=wrap}
     out str = with-len(data.len() * 2)
     i <- [0..data.len()): {
+
+        #{index-out=0}
         b = data[i]
 
         #{overflow=wrap}
@@ -306,7 +351,7 @@ i64-to-str = (n i64) (out str) {
     i <- [0..L): {
         cb str = with-len(1)
 
-        #{overflow=wrap}
+        #{index-out=0, overflow=wrap}
         cb[0] = tmp[L - 1 - i]
         out = out - cb
     }

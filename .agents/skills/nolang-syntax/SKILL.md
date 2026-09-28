@@ -866,6 +866,28 @@ This is consistent with the naming style of Nolang identifiers such as variable 
 
 ### Code Style
 
+#### Recursive directory traversal & deletion (safety rule)
+
+`fs.list-dir` follows POSIX readdir — its result **includes** `.` and `..`.
+Any recursive traversal that feeds a destructive call (`fs.remove` /
+`fs.rmdir`) MUST use `fs.dir-entries` (which filters `.`/`..`) or explicitly
+skip `.`/`..` before recursing — otherwise recursing into `..` walks the
+delete *up* out of the target directory and destroys the whole parent tree
+(root cause of the remove-tree incident).
+
+`no vet` enforces this: a function combining `fs.list-dir` + (destructive
+delete or self-recursion) with no `"."`/`".."` filter emits
+`[WARNING] nolang-list-dir-unfiltered`.
+
+Testing rule (mandatory for recursive-delete functions):
+
+1. Operate only inside a directory created by `fs.mkdtemp` — never target a
+   real workspace or user directory.
+2. Assert escape protection: the parent of the target directory must still
+   exist (`fs.is-dir(parent)` true) before and after the delete.
+3. Include a case with a nested directory tree and verify the traversal
+   result contains no `.`/`..` entries.
+
 #### Trailing newline (EOF)
 
 Every non-empty `.no` source file **must end with exactly one trailing newline** (i.e. one blank line at the end of the file).
@@ -1579,6 +1601,14 @@ x: {
 > `{ 1 > 2 -> x = 42 }`. The value's type is inferred from the arm's trailing
 > expression (`str` / `i64` / `?T`), the same inference the match-as-value form
 > `x = subject: { arms }` uses.
+>
+> **`no fmt` must round-trip this form through `->` verbatim.** It lowers to an
+> IfExpression *without* `RTStandalone` (it is a value, not a statement); the
+> parser flags it with `RTPipelineValue` and `src/fmt/control.go` prints it with
+> the same `cond -> body` branch as standalone if-then. Emitting the generic
+> `cond: { body }` instead is a corruption: `x = 2 > 1: { 42 }` re-parses as a
+> match-as-value and assigns the boolean `1`, not `42`. Regression guard:
+> `src/fmt/pipeline_value_test.go`.
 
 > **Match semantics inside for-in**: `i <- (a..b]: { 1 -> ... 2 -> ... }` executes the match body once for each iteration variable `i` (`1 ->` is equivalent to `i == 1 ->`, etc.). This is syntactic sugar for executing one match per iteration.
 
