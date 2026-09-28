@@ -7,17 +7,19 @@
 ; Output: three tab-separated columns by default
 
 ; split: split content into lines
+; NOTE: content.slice returns a VIEW sharing content's buffer; we append `- ''`
+; to force an owned copy so lines stay valid independent of content's lifetime.
 split = (content str, lines []str) {
     start = 0
     i <- [0..content.len-bytes()): {
         content[i] == 10 -> {
-            lines.push(content.slice(start, i))
+            lines.push(content.slice(start, i) - '')
 
             #{overflow=wrap}
             start = i + 1
         }
     }
-    start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
+    start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()) - '')
 }
 
 comm-run = () {
@@ -82,48 +84,52 @@ comm-run = () {
     n1 = lines1.len()
     n2 = lines2.len()
 
+    ; Merge-like comparison (assumes both are sorted).
+    ; The loop body is ONE explicit {} group: `cond -> arm` lines written as
+    ; DIRECT children of a loop body are independent ifs (they all execute),
+    ; NOT an if/elif chain. Only an explicit group short-circuits.
     (i1 < n1 || i2 < n2) {
-        i1 < n1 -> {
-            i2 < n2 -> {
+        {
+            i1 < n1 -> i2 < n2 -> {
                 cmp = lines1[i1].compare(lines2[i2])
-                cmp < 0 -> {
+                {
+                    cmp < 0 -> {
 
-                    ; Only in file1
-                    emit(sup1, sup2, sup3, lines1[i1], '', '')
+                        ; Only in file1 -> column 1
+                        emit(1, lines1[i1], sup1, sup2, sup3)
 
-                    #{overflow=wrap}
-                    i1 = i1 + 1
-                }
-                cmp > 0 -> {
+                        #{overflow=wrap}
+                        i1 = i1 + 1
+                    }
+                    cmp > 0 -> {
 
-                    ; Only in file2
-                    emit(sup1, sup2, sup3, '', lines2[i2], '')
-                    #{overflow=wrap}
-                    i2 = i2 + 1
-                }
-                cmp == 0 -> {
+                        ; Only in file2 -> column 2
+                        emit(2, lines2[i2], sup1, sup2, sup3)
+                        #{overflow=wrap}
+                        i2 = i2 + 1
+                    }
+                    cmp == 0 -> {
 
-                    ; In both
-                    emit(sup1, sup2, sup3, '', '', lines1[i1])
-                    #{overflow=wrap}
-                    i1 = i1 + 1
-                    #{overflow=wrap}
-                    i2 = i2 + 1
+                        ; In both -> column 3
+                        emit(3, lines1[i1], sup1, sup2, sup3)
+                        #{overflow=wrap}
+                        i1 = i1 + 1
+                        #{overflow=wrap}
+                        i2 = i2 + 1
+                    }
                 }
             }
-            i2 >= n2 -> {
+            i1 < n1 -> {
 
-                ; Only file1 remaining
-                emit(sup1, sup2, sup3, lines1[i1], '', '')
+                ; Only file1 remaining -> column 1
+                emit(1, lines1[i1], sup1, sup2, sup3)
                 #{overflow=wrap}
                 i1 = i1 + 1
             }
-        }
-        i1 >= n1 -> {
-            i2 < n2 -> {
+            i1 >= n1 -> {
 
-                ; Only file2 remaining
-                emit(sup1, sup2, sup3, '', lines2[i2], '')
+                ; Only file2 remaining -> column 2
+                emit(2, lines2[i2], sup1, sup2, sup3)
 
                 #{overflow=wrap}
                 i2 = i2 + 1
@@ -132,29 +138,18 @@ comm-run = () {
     }
 }
 
-; emit: output a row with up to 3 columns
-emit = (sup1 bool, sup2 bool, sup3 bool, col1 str, col2 str, col3 str) {
-    line = ''
-    has-output = false
-
-    {
-        ! sup1 -> {
-            has-output -> line = line - '\t'
-            line = line - col1
-            has-output = true
-        }
-
-        ! sup2 -> {
-            has-output -> line = line - '\t'
-            line = line - col2
-            has-output = true
-        }
-
-        ! sup3 -> {
-            has-output -> line = line - '\t'
-            line = line - col3
-            has-output = true
-        }
+; emit: output one comm row. col is 1/2/3. BSD comm prefixes as many tabs as
+; there are NON-suppressed columns before the current one (so with -1, column 3
+; rows get a single tab; with -12 they get none). Self-suppression skips the row.
+emit = (col i64, text str, sup1 bool, sup2 bool, sup3 bool) {
+    col == 1 -> sup1 -> return
+    col == 2 -> sup2 -> return
+    col == 3 -> sup3 -> return
+    col == 2 -> ! sup1 -> io.out('\t')
+    col == 3 -> {
+        ! sup1 -> io.out('\t')
+        ! sup2 -> io.out('\t')
     }
-    print(line)
+    io.out(text)
+    io.out('\n')
 }

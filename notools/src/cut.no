@@ -42,34 +42,32 @@ should-emit = (list-str str, field-num i64) (yes bool) {
             }
         }
 
-        ; Parse range
+        ; Parse range. These are INDEPENDENT ifs (not a {} short-circuit group),
+        ; so defaults set first can be refined by later guards.
         lo = 1
         hi = 1000000000
-        {
-            dash < 0 -> {
-                lo = atoi-slice(list-str, seg-start, seg-end)
-                hi = lo
-            }
+        dash < 0 -> {
+            lo = atoi-slice(list-str, seg-start, seg-end)
+            hi = lo
+        }
+        dash >= 0 -> {
+            lo = 1
+            hi = 1000000000
+            #{overflow=wrap}
+            dash > seg-start -> lo = atoi-slice(list-str, seg-start, dash)
+            dash == seg-start -> lo = 1
 
-            dash >= 0 -> {
-                #{overflow=wrap}
-                {
-                    dash > seg-start -> lo = atoi-slice(list-str, seg-start, dash)
-
-                    #{overflow=wrap}
-                    dash < seg-end - 1 -> hi = atoi-slice(list-str, dash + 1, seg-end)
-                }
-            }
-
-            ; Check if field-num is in range
-            field-num >= lo && field-num <= hi -> yes = true
-
-            yes -> return
-
-            ; Move to next segment or exit
-            comma < 0 -> return
+            #{overflow=wrap}
+            dash < seg-end - 1 -> hi = atoi-slice(list-str, dash + 1, seg-end)
+            dash == seg-end - 1 -> hi = 1000000000
         }
 
+        ; Check if field-num is in range
+        field-num >= lo -> field-num <= hi -> yes = true
+        yes -> return
+
+        ; Move to next segment or exit
+        comma < 0 -> return
         #{overflow=wrap}
         seg-start = comma + 1
         seg-start >= len -> return
@@ -113,8 +111,8 @@ emit-fields = (line str, list-str str, d str) {
         field = line.slice(field-start, line.len-bytes())
         io.out(field)
     }
+    print('')
 }
-print('')
 
 ; emit-chars: emit selected characters from line
 ; Iterates through the line, checking each position against the list
@@ -167,10 +165,11 @@ cut-run = () {
     (i < argc) {
         a = arg(i)
         isflag = 0
-        {
-            a.starts-with('-') && a.len-bytes() > 1 -> isflag = 1
+        ; INDEPENDENT ifs (no wrapping {}): arm1 sets isflag, arms 2/3 branch on
+        ; it. A {} group would short-circuit after arm1 and never parse the flag.
+        a.starts-with('-') && a.len-bytes() > 1 -> isflag = 1
 
-            isflag == 1 -> {
+        isflag == 1 -> {
                 key = a[1]
                 attached = 0
                 a.len-bytes() > 2 -> attached = 1
@@ -242,7 +241,6 @@ cut-run = () {
                     }
                 }
             }
-        }
 
         #{overflow=wrap}
         i = i + 1

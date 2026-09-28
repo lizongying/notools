@@ -1,53 +1,131 @@
 ; sed.no — sed utility
-; Basic stream editor for text replacement
-; Usage: sed 's/pattern/replacement/[g]' [files...]
+; Basic stream editor
+; Usage: sed [-n] 'cmd' [cmd...] [files...]
+;   s/pattern/replacement/[g]  substitute (first per line, or all with g)
+;   [addr]d                    delete line (addr = line number; absent = all lines)
+;   [addr]p                    print line (only shown with -n, or addr match)
+;   -n                         quiet: print only lines explicitly marked (s/p commands)
+
+; parse-cmd: decode one sed command into op/addr/global.
+; op: 's' substitute, 'd' delete, 'p' print. addr=0 means all lines.
+; NOTE: slice results get `- ''` to force an owned copy (slices are views).
+parse-cmd = (c str) (op str, addr i64, global bool, pat str, rep str, sp bool) {
+    op = ''
+    addr = 0
+    global = false
+    sp = false
+    {
+        c.len-bytes() == 0 -> return
+
+        c[0] == 's' -> {
+            op = 's'
+            slash1 = c.index-from('/', 2)
+            slash1 < 0 -> {
+                op = ''
+                return
+            }
+            pat = c.slice(2, slash1) - ''
+            #{overflow=wrap}
+            slash2 = c.index-from('/', slash1 + 1)
+            slash2 < 0 -> {
+                op = ''
+                return
+            }
+            rep = c.slice(slash1 + 1, slash2) - ''
+            #{overflow=wrap}
+            slash2 + 1 < c.len-bytes() -> global = c[slash2 + 1] == 'g'
+            #{overflow=wrap}
+            slash2 + 2 < c.len-bytes() -> global -> c[slash2 + 2] == 'p' -> sp = true
+            ! global -> c[slash2 + 1] == 'p' -> sp = true
+            return
+        }
+
+        digit(c[0]) -> {
+            #{overflow=wrap}
+            k = 0
+            v = 0
+            (k < c.len-bytes()) {
+                digit(c[k]) -> {
+                    v = v * 10 + (c[k] - 48)
+                    #{overflow=wrap}
+                    k = k + 1
+                }
+                ! digit(c[k]) -> break
+            }
+            addr = v
+            {
+                k < c.len-bytes() && c[k] == 'd' -> op = 'd'
+                k < c.len-bytes() && c[k] == 'p' -> op = 'p'
+            }
+        }
+
+        c[0] == 'd' -> op = 'd'
+
+        c[0] == 'p' -> op = 'p'
+    }
+}
+
+digit = (c char) (yes bool) {
+    yes = c >= '0' && c <= '9'
+}
+
+; cmd-applies: does this command address line lineno (1-based)? addr 0 = all.
+cmd-applies = (addr i64, lineno i64) (yes bool) {
+    yes = false
+    {
+        addr == 0 -> yes = true
+        addr > 0 -> addr == lineno -> yes = true
+    }
+}
 
 sed-run = () {
     argc = args()
 
-    command = ''
+    quiet = false
     files []str
+    ops []str
+    addrs []i64
+    globals []bool
+    pats []str
+    reps []str
+    sps []bool
 
     i <- [2..argc): {
         a = arg(i)
-        a.starts-with('s/') -> command = a
-        ! a.starts-with('s/') && ! a.starts-with('-') -> files.push(a)
+        a == '-n' -> quiet = true
+        a == '-e' -> { }
+        ! a.starts-with('-') -> {
+            {
+                a[0] == 's' || a[0] == 'd' || a[0] == 'p' || digit(a[0]) -> {
+                    op, addr, global, pat, rep, sp = parse-cmd(a)
+                    {
+                        op.len-bytes() == 0 -> {
+                            print('sed: invalid command: ' - a)
+                            os.exit(1)
+                        }
+                        -> {
+                            ops.push(op)
+                            addrs.push(addr)
+                            globals.push(global)
+                            pats.push(pat)
+                            reps.push(rep)
+                            sps.push(sp)
+                        }
+                    }
+                }
+                -> files.push(a)
+            }
+        }
     }
 
     {
-        command.len-bytes() == 0 -> {
+        ops.len() == 0 -> {
             print('sed: no command specified')
             os.exit(1)
         }
     }
 
-    slash1 = command.index-from('/', 2)
     {
-        slash1 < 0 -> {
-            print('sed: invalid command')
-            os.exit(1)
-        }
-    }
-    pattern = command.slice(2, slash1)
-
-    #{overflow=wrap}
-    slash2 = command.index-from('/', slash1 + 1)
-    {
-        slash2 < 0 -> {
-            print('sed: invalid command')
-            os.exit(1)
-        }
-    }
-
-    #{overflow=wrap}
-    replacement = command.slice(slash1 + 1, slash2)
-
-    global = false
-
-    #{overflow=wrap}
-    {
-        slash2 + 1 < command.len-bytes() -> global = command[slash2 + 1] == 'g'
-
         files.len() == 0 -> {
             content = ''
             r = fs.read-stdin-str()
@@ -60,7 +138,7 @@ sed-run = () {
                 err -> {
                 }
             }
-            process(content, pattern, replacement, global)
+            process(content, quiet, ops, addrs, globals, pats, reps, sps)
         }
 
         files.len() > 0 -> {
@@ -80,21 +158,70 @@ sed-run = () {
                     err -> {
                     }
                 }
-                process(content, pattern, replacement, global)
+                process(content, quiet, ops, addrs, globals, pats, reps, sps)
             }
         }
     }
 }
 
-process = (content str, pattern str, replacement str, global bool) {
+process = (content str, quiet bool, ops []str, addrs []i64, globals []bool, pats []str, reps []str, sps []bool) {
+    {
+        content.len-bytes() == 0 -> return
+    }
+    ; does the input end with a newline? BSD sed preserves that: it only emits a
+    ; trailing newline when the last line had one.
+    #{overflow=wrap}
+    last = content.len-bytes() - 1
+    hadNL = content[last] == '\n'
+
     lines = content.split('\n')
-    j <- [0..lines.len()): {
+    ; split of a newline-terminated string yields a trailing empty element
+    #{overflow=wrap}
+    tail = lines.len() - 1
+    hadNL -> lines[tail].len-bytes() == 0 -> lines.pop()
+
+    n = lines.len()
+    m = ops.len()
+    j <- [0..n): {
 
         #{index-out=0}
         result = lines[j]
-        global -> result = replace-all(lines[j], pattern, replacement)
-        ! global -> result = replace-first(lines[j], pattern, replacement)
-        print(result)
+        deleted = false
+        printed = false
+
+        #{overflow=wrap}
+        lineno = j + 1
+        k <- [0..m): {
+            cmd-applies(addrs[k], lineno) -> {
+                {
+                    ops[k] == 's' -> {
+                        ; BSD sed: with -n an s command prints only when the line
+                        ; was actually changed, or when written with the p suffix
+                        ; (s/x/y/p).
+                        before = result
+                        globals[k] -> result = replace-all(result, pats[k], reps[k])
+                        ! globals[k] -> result = replace-first(result, pats[k], reps[k])
+                        result != before -> printed = true
+                        sps[k] -> printed = true
+                    }
+                    ops[k] == 'd' -> deleted = true
+                    ops[k] == 'p' -> printed = true
+                }
+            }
+        }
+
+        ! deleted -> {
+            {
+                ! quiet -> {
+                    #{overflow=wrap}
+                    isLast = j == n - 1
+                    isLast -> ! hadNL -> io.out(result)
+                    ! isLast -> print(result)
+                    isLast -> hadNL -> print(result)
+                }
+                quiet -> printed -> print(result)
+            }
+        }
     }
 }
 

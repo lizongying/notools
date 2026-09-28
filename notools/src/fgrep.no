@@ -1,17 +1,24 @@
 ; fgrep.no — fgrep utility
 ; grep -F 别名（固定字串匹配）。与 notools 的 grep 行为一致。
-; Usage: fgrep [-n] pattern [files...]
+; Usage: fgrep [-invc] pattern [files...]
 
 fgrep = () {
     argc = args()
 
     show-line-num = false
+    ignore-case = false
+    count-only = false
+    invert = false
     pattern = ''
     files []str
+    matches = 0
 
     i <- [2..argc): {
         a = arg(i)
         a == '-n' -> show-line-num = true
+        a == '-i' -> ignore-case = true
+        a == '-v' -> invert = true
+        a == '-c' -> count-only = true
         ! a.starts-with('-') -> {
             {
                 pattern.len-bytes() == 0 -> pattern = a
@@ -39,7 +46,10 @@ fgrep = () {
                 err -> {
                 }
             }
-            fgrep-search(content, pattern, show-line-num, false, '')
+            fm = fgrep-search(content, pattern, show-line-num, false, '', ignore-case, count-only, invert)
+
+            #{overflow=wrap}
+            matches = matches + fm
         }
 
         files.len() > 0 -> {
@@ -60,13 +70,18 @@ fgrep = () {
                     err -> {
                     }
                 }
-                fgrep-search(content, pattern, show-line-num, files.len() > 1, files[fi])
+                fm = fgrep-search(content, pattern, show-line-num, files.len() > 1, files[fi], ignore-case, count-only, invert)
+
+                #{overflow=wrap}
+                matches = matches + fm
             }
         }
     }
+
+    matches == 0 -> os.exit(1)
 }
 
-fgrep-search = (content str, pattern str, show-line-num bool, show-filename bool, filename str) {
+fgrep-search = (content str, pattern str, show-line-num bool, show-filename bool, filename str, ignore-case bool, count-only bool, invert bool) (total i64) {
     lines []str
     start = 0
     i <- [0..content.len-bytes()): {
@@ -78,21 +93,44 @@ fgrep-search = (content str, pattern str, show-line-num bool, show-filename bool
         }
     }
     start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
+
+    needle = pattern
+    ignore-case -> needle = pattern.to-lower()
+    total = 0
     j <- [0..lines.len()): {
 
         #{index-out=0}
         line = lines[j]
-        pos = line.index(pattern)
-        pos >= 0 -> {
-            show-filename -> io.out(filename - ':')
-            show-line-num -> {
-
-                #{overflow=wrap}
-                lineno = j + 1
-                #{overflow=wrap}
-                io.out(lineno.to-str() - ':')
-            }
-            print(line)
+        pos = -1
+        ignore-case -> {
+            pos = line.to-lower().index(needle)
         }
+        ! ignore-case -> {
+            pos = line.index(pattern)
+        }
+        sel = 0
+        pos >= 0 -> ! invert -> sel = 1
+        pos < 0 -> invert -> sel = 1
+        sel == 1 -> {
+
+            #{overflow=wrap}
+            total = total + 1
+            ! count-only -> {
+                show-filename -> io.out(filename - ':')
+                show-line-num -> {
+
+                    #{overflow=wrap}
+                    lineno = j + 1
+                    #{overflow=wrap}
+                    io.out(lineno.to-str() - ':')
+                }
+                print(line)
+            }
+        }
+    }
+    count-only -> {
+        show-filename -> io.out(filename - ':')
+        io.out(total.to-str())
+        io.out('\n')
     }
 }

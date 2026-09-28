@@ -64,81 +64,73 @@ diff-engine-lcs = (a []str, b []str) (ops []diff-op) {
     i = 0
     j = 0
     (i < na || j < nb) {
-        i < na && j < nb -> {
-            a[i].compare(b[j]) == 0 -> {
-                op = diff-op {}
-                op.kind = 0
-
-                #{index-out=0}
-                tmp-line = a[i]
-                op.line = tmp-line
-
-                #{overflow=wrap}
-                op.a-no = i + 1
-                #{overflow=wrap}
-                op.b-no = j + 1
-                ops.push(op)
-                #{overflow=wrap}
-                i = i + 1
-                #{overflow=wrap}
-                j = j + 1
+        ; hoist every index/overflow computation to loop-body level: the #{...}
+        ; annotations bind reliably on direct children of the while body, but NOT
+        ; inside a nested `{}` if/elif group, so the group arms below reference
+        ; only plain locals (no a[i]/b[j]/dp[...] arithmetic).
+        #{index-out=0}
+        ai-line = a[i]
+        #{index-out=0}
+        bj-line = b[j]
+        #{overflow=wrap}
+        ip1 = i + 1
+        #{overflow=wrap}
+        jp1 = j + 1
+        #{overflow=wrap}
+        drow = (i + 1) * cols
+        #{index-out=0, overflow=wrap}
+        vdown = dp[drow + j]
+        #{index-out=0, overflow=wrap}
+        vright = dp[i * cols + (j + 1)]
+        ; explicit {} group => the three arms form ONE if/elif chain and advance
+        ; exactly one step per iteration. As DIRECT children of the loop body they
+        ; would each run independently (cond -> arm is a standalone if there),
+        ; so a single iteration would push a delete AND an insert AND move i/j.
+        {
+            i < na && j < nb -> {
+                ai-line.compare(bj-line) == 0 -> {
+                    op = diff-op {}
+                    op.kind = 0
+                    op.line = ai-line
+                    op.a-no = ip1
+                    op.b-no = jp1
+                    ops.push(op)
+                    i = ip1
+                    j = jp1
+                }
+                vdown >= vright -> {
+                    op = diff-op {}
+                    op.kind = 1
+                    op.line = ai-line
+                    op.a-no = ip1
+                    ops.push(op)
+                    i = ip1
+                }
+                vdown < vright -> {
+                    op = diff-op {}
+                    op.kind = 2
+                    op.line = bj-line
+                    op.b-no = jp1
+                    ops.push(op)
+                    j = jp1
+                }
             }
-            #{overflow=wrap}
-            dp[(i + 1) * cols + j] >= dp[i * cols + (j + 1)] -> {
+            i < na -> {
                 op = diff-op {}
                 op.kind = 1
-
-                #{index-out=0}
-                tmp-line = a[i]
-                op.line = tmp-line
-                #{overflow=wrap}
-                op.a-no = i + 1
+                op.line = ai-line
+                op.a-no = ip1
                 ops.push(op)
-                #{overflow=wrap}
-                i = i + 1
+                i = ip1
             }
-            #{overflow=wrap}
-            dp[(i + 1) * cols + j] < dp[i * cols + (j + 1)] -> {
+            j < nb -> {
                 op = diff-op {}
                 op.kind = 2
-
-                #{index-out=0}
-                tmp-line = b[j]
-                op.line = tmp-line
-                #{overflow=wrap}
-                op.b-no = j + 1
+                op.line = bj-line
+                op.b-no = jp1
                 ops.push(op)
-                #{overflow=wrap}
-                j = j + 1
+                j = jp1
             }
-        }
-        i < na -> {
-            op = diff-op {}
-            op.kind = 1
-
-            #{index-out=0}
-            tmp-line = a[i]
-            op.line = tmp-line
-
-            #{overflow=wrap}
-            op.a-no = i + 1
-            ops.push(op)
-            #{overflow=wrap}
-            i = i + 1
-        }
-        j < nb -> {
-            op = diff-op {}
-            op.kind = 2
-
-            #{index-out=0}
-            tmp-line = b[j]
-            op.line = tmp-line
-
-            #{overflow=wrap}
-            op.b-no = j + 1
-            ops.push(op)
-            #{overflow=wrap}
-            j = j + 1
         }
     }
 }
@@ -339,6 +331,108 @@ emit-normal = (a-start i64, a-count i64, b-start i64, b-count i64, a-before i64,
     }
 }
 
+; emit-normal-all: drive the full ed-script (normal) format from LCS ops.
+; A hunk is a maximal run of non-equal ops; equal ops only advance the
+; before-counters. Replaces the old prefix/suffix heuristic that could emit
+; at most ONE change block (and collapsed interior matches into a big c).
+emit-normal-all = (ops []diff-op) {
+    n = ops.len()
+    i = 0
+    (i < n) {
+        ; hoist the ops[i-1] read to loop-body level: index/overflow annotations
+        ; do not bind inside the nested {} if/elif group below.
+        #{index-out=0, overflow=wrap}
+        iprev = i - 1
+        #{index-out=0}
+        prev = ops[iprev]
+        {
+            ops[i].kind == 0 -> {
+                #{overflow=wrap}
+                i = i + 1
+            }
+
+            ops[i].kind != 0 -> {
+                abefore = 0
+                bbefore = 0
+                {
+                    i > 0 -> {
+                        prev.kind == 0 -> {
+                            abefore = prev.a-no
+                            bbefore = prev.b-no
+                        }
+                    }
+                }
+                del-lines []str
+                ins-lines []str
+                a-start = -1
+                b-start = -1
+                j = i
+                (j < n && ops[j].kind != 0) {
+                    {
+                        ops[j].kind == 1 -> {
+                            a-start < 0 -> a-start = ops[j].a-no
+                            del-lines.push(ops[j].line)
+                        }
+                        ops[j].kind == 2 -> {
+                            b-start < 0 -> b-start = ops[j].b-no
+                            ins-lines.push(ops[j].line)
+                        }
+                    }
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+                dcount = del-lines.len()
+                icount = ins-lines.len()
+                {
+                    a-start < 0 -> {
+                        #{overflow=wrap}
+                        a-start = abefore + 1
+                    }
+                    b-start < 0 -> {
+                        #{overflow=wrap}
+                        b-start = bbefore + 1
+                    }
+                }
+                emit-normal(a-start, dcount, b-start, icount, abefore, bbefore, del-lines, ins-lines)
+                i = j
+            }
+        }
+    }
+}
+
+; ops-in-hunk: mark every op that belongs in a hunk.
+; A change op (kind!=0) is always shown, plus the `context` ops immediately
+; before/after it (which may be equal or another change). Two changes separated
+; by <= 2*context equal lines therefore share a marked run and merge into one
+; hunk, exactly like BSD/GNU diff. Returns a 0/1 flag per op index.
+; (The old hunk-boundary loop relied on `A && B || C` boolean precedence that
+; silently dropped trailing context, so grouping is done with this marking pass.)
+ops-in-hunk = (ops []diff-op, context i64) (flags []i64) {
+    n = ops.len()
+    flags []i64 = with-len(n)
+    i <- [0..n): {
+        #{index-out=0}
+        op = ops[i]
+        op.kind != 0 -> {
+            flags[i] = 1
+            #{overflow=wrap}
+            d <- [1..context + 1): {
+                #{overflow=wrap}
+                j = i - d
+                #{index-out=0}
+                j >= 0 -> flags[j] = 1
+            }
+            #{overflow=wrap}
+            d <- [1..context + 1): {
+                #{overflow=wrap}
+                j = i + d
+                #{index-out=0}
+                j < n -> flags[j] = 1
+            }
+        }
+    }
+}
+
 ; emit-unified: emit unified diff hunk with context
 emit-unified = (file1 str, file2 str, ops []diff-op, context i64) {
     print('--- ' - file1)
@@ -347,127 +441,196 @@ emit-unified = (file1 str, file2 str, ops []diff-op, context i64) {
     n = ops.len()
     n == 0 -> return
 
-    i = 0
-    (i < n && ops[i].kind == 0) {
-        i < n -> {
-            ops[i].kind == 0 -> {
+    flags = ops-in-hunk(ops, context)
 
+    i = 0
+    (i < n) {
+        {
+            flags[i] == 0 -> {
                 #{overflow=wrap}
                 i = i + 1
             }
 
-            -> break
+            flags[i] == 1 -> {
+                run-start = i
+                (i < n && flags[i] == 1) {
+                    flags[i] == 1 -> {
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
+                }
+                #{overflow=wrap}
+                run-end = i - 1
+
+                a-first = -1
+                a-last = -1
+                b-first = -1
+                b-last = -1
+                k <- [run-start..run-end + 1): {
+                    #{index-out=0}
+                    op = ops[k]
+                    op.kind == 0 -> {
+                        a-first < 0 -> a-first = op.a-no
+                        a-last = op.a-no
+                        b-first < 0 -> b-first = op.b-no
+                        b-last = op.b-no
+                    }
+                    op.kind == 1 -> {
+                        a-first < 0 -> a-first = op.a-no
+                        a-last = op.a-no
+                    }
+                    op.kind == 2 -> {
+                        b-first < 0 -> b-first = op.b-no
+                        b-last = op.b-no
+                    }
+                }
+
+                a-first < 0 -> a-first = 0
+                a-last < 0 -> a-last = 0
+                b-first < 0 -> b-first = 0
+                b-last < 0 -> b-last = 0
+
+                #{overflow=wrap}
+                a-count = a-last - a-first + 1
+
+                #{overflow=wrap}
+                b-count = b-last - b-first + 1
+
+                ; unified `@@` ranges are start,count (NOT start,end like -c).
+                ; count<=1 collapses to just the start number.
+                {
+                    a-count <= 1 -> ra = a-first.to-str()
+                    a-count > 1 -> {
+                        #{overflow=wrap}
+                        ra = a-first.to-str() - ',' - a-count.to-str()
+                    }
+                }
+                {
+                    b-count <= 1 -> rb = b-first.to-str()
+                    b-count > 1 -> {
+                        #{overflow=wrap}
+                        rb = b-first.to-str() - ',' - b-count.to-str()
+                    }
+                }
+                print('@@ -' - ra - ' +' - rb - ' @@')
+
+                k <- [run-start..run-end + 1): {
+                    #{index-out=0}
+                    op = ops[k]
+                    #{overflow=wrap}
+                    op.kind == 0 -> print(' ' - op.line)
+                    #{overflow=wrap}
+                    op.kind == 1 -> print('-' - op.line)
+                    #{overflow=wrap}
+                    op.kind == 2 -> print('+' - op.line)
+                }
+            }
         }
     }
+}
 
-    i >= n -> return
+; emit-context: BSD `diff -c` context-format diff driven by LCS ops.
+; Header dates are omitted: the toolchain has no local-timezone support, so a
+; fabricated date could never byte-match BSD. The hunk bodies are exact.
+; Markers observed from system diff: '  ' context, '! ' changed, '- ' delete-only,
+; '+ ' insert-only. The a-side section body is printed only when the hunk has a
+; deletion; the b-side body only when it has an insertion (both range headers
+; are always printed). `***************` precedes every hunk.
+emit-context = (file1 str, file2 str, ops []diff-op, context i64) {
+    print('*** ' - file1)
+    print('--- ' - file2)
 
+    n = ops.len()
+    n == 0 -> return
+
+    flags = ops-in-hunk(ops, context)
+
+    i = 0
     (i < n) {
-        hunk-start = i
-        back = 0
-        (hunk-start > 0 && back < context) {
-            hunk-start > 0 && back < context -> {
-
+        {
+            flags[i] == 0 -> {
                 #{overflow=wrap}
-                hunk-start = hunk-start - 1
-                #{overflow=wrap}
-                ops[hunk-start].kind == 0 -> back = back + 1
-                ops[hunk-start].kind != 0 -> back = 0
+                i = i + 1
             }
-        }
 
-        hunk-end = i
-        trailing-eq = 0
-
-        #{overflow=wrap}
-        (hunk-end < n - 1 && (ops[hunk-end + 1].kind == 0 && trailing-eq <= context || ops[hunk-end + 1].kind != 0)) {
-
-            #{overflow=wrap}
-            hunk-end < n - 1 -> {
-                next = hunk-end + 1
-                ops[next].kind == 0 -> {
-                    trailing-eq = trailing-eq + 1
-                    trailing-eq > context -> break
-                    hunk-end = next
+            flags[i] == 1 -> {
+                run-start = i
+                (i < n && flags[i] == 1) {
+                    flags[i] == 1 -> {
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
                 }
-                ops[next].kind != 0 -> {
-                    hunk-end = next
-                    trailing-eq = 0
-                }
-            }
-        }
+                #{overflow=wrap}
+                run-end = i - 1
 
-        (hunk-end > hunk-start && ops[hunk-end].kind == 0 && trailing-eq > context) {
-            hunk-end > hunk-start && ops[hunk-end].kind == 0 && trailing-eq > context -> {
+                a-first = -1
+                a-last = -1
+                b-first = -1
+                b-last = -1
+                has-del = false
+                has-ins = false
+                k <- [run-start..run-end + 1): {
+                    #{index-out=0}
+                    op = ops[k]
+                    op.kind == 0 -> {
+                        a-first < 0 -> a-first = op.a-no
+                        a-last = op.a-no
+                        b-first < 0 -> b-first = op.b-no
+                        b-last = op.b-no
+                    }
+                    op.kind == 1 -> {
+                        has-del = true
+                        a-first < 0 -> a-first = op.a-no
+                        a-last = op.a-no
+                    }
+                    op.kind == 2 -> {
+                        has-ins = true
+                        b-first < 0 -> b-first = op.b-no
+                        b-last = op.b-no
+                    }
+                }
+
+                a-first < 0 -> a-first = 0
+                a-last < 0 -> a-last = 0
+                b-first < 0 -> b-first = 0
+                b-last < 0 -> b-last = 0
+
+                print('***************')
 
                 #{overflow=wrap}
-                hunk-end = hunk-end - 1
-            }
-        }
-
-        a-first = -1
-        a-last = -1
-        b-first = -1
-        b-last = -1
-        k <- [hunk-start..hunk-end + 1): {
-            k < n -> {
-
-                #{index-out=0}
-                op = ops[k]
-                op.kind == 0 -> {
-                    a-first < 0 -> a-first = op.a-no
-                    a-last = op.a-no
-                    b-first < 0 -> b-first = op.b-no
-                    b-last = op.b-no
+                ra = format-range(a-first, a-last - a-first + 1)
+                print('*** ' - ra - ' ****')
+                has-del -> {
+                    k <- [run-start..run-end + 1): {
+                        #{index-out=0}
+                        op = ops[k]
+                        {
+                            op.kind == 0 -> print('  ' - op.line)
+                            op.kind == 1 -> {
+                                has-ins -> print('! ' - op.line)
+                                ! has-ins -> print('- ' - op.line)
+                            }
+                        }
+                    }
                 }
-                op.kind == 1 -> {
-                    a-first < 0 -> a-first = op.a-no
-                    a-last = op.a-no
+
+                #{overflow=wrap}
+                rb = format-range(b-first, b-last - b-first + 1)
+                print('--- ' - rb - ' ----')
+                has-ins -> {
+                    k <- [run-start..run-end + 1): {
+                        #{index-out=0}
+                        op = ops[k]
+                        {
+                            op.kind == 0 -> print('  ' - op.line)
+                            op.kind == 2 -> {
+                                has-del -> print('! ' - op.line)
+                                ! has-del -> print('+ ' - op.line)
+                            }
+                        }
+                    }
                 }
-                op.kind == 2 -> {
-                    b-first < 0 -> b-first = op.b-no
-                    b-last = op.b-no
-                }
-            }
-        }
-
-        a-first < 0 -> a-first = 0
-        a-last < 0 -> a-last = 0
-        b-first < 0 -> b-first = 0
-        b-last < 0 -> b-last = 0
-
-        #{overflow=wrap}
-        a-count = a-last - a-first + 1
-
-        #{overflow=wrap}
-        b-count = b-last - b-first + 1
-
-        ra = format-range(a-first, a-count)
-        rb = format-range(b-first, b-count)
-        #{overflow=wrap}
-        print('@@ -' - ra - ' +' - rb - ' @@')
-
-        k <- [hunk-start..hunk-end + 1): {
-            k < n -> {
-
-                #{index-out=0}
-                op = ops[k]
-                #{overflow=wrap}
-                op.kind == 0 -> print(' ' - op.line)
-                #{overflow=wrap}
-                op.kind == 1 -> print('-' - op.line)
-                #{overflow=wrap}
-                op.kind == 2 -> print('+' - op.line)
-            }
-        }
-
-        #{overflow=wrap}
-        i = hunk-end + 1
-        (i < n && ops[i].kind == 0) {
-            i < n -> {
-
-                #{overflow=wrap}
-                ops[i].kind == 0 -> i = i + 1
             }
         }
     }
@@ -571,88 +734,16 @@ diff-run = () {
         }
     }
 
-    ; simple diff: find common prefix and suffix
-    pre = 0
-    (pre < n1 && pre < n2) {
-        pre < n1 && pre < n2 -> {
-
-            #{overflow=wrap}
-            lines1[pre].compare(lines2[pre]) == 0 -> pre = pre + 1
-
-            -> break
-        }
-    }
-
-    suf = 0
-    (suf < (n1 - pre) && suf < (n2 - pre)) {
-        suf < (n1 - pre) && suf < (n2 - pre) -> {
-
-            #{overflow=wrap}
-            lines1[n1 - 1 - suf].compare(lines2[n2 - 1 - suf]) == 0 -> suf = suf + 1
-
-            -> break
-        }
-    }
-
-    #{overflow=wrap}
-    a-start = pre + 1
-
-    #{overflow=wrap}
-    a-end = n1 - suf
-
-    #{overflow=wrap}
-    b-start = pre + 1
-
-    #{overflow=wrap}
-    b-end = n2 - suf
-
-    #{overflow=wrap}
-    a-count = a-end - a-start + 1
-
-    #{overflow=wrap}
-    b-count = b-end - b-start + 1
-
-    ; emit normal diff hunk
-    has-del = a-count > 0
-    has-ins = b-count > 0
-
+    ; LCS-based diff -> ops, then emit in the requested format.
+    ; The old prefix/suffix heuristic (which produced a single change block for
+    ; any interior match) is gone; emit-normal-all groups real hunks.
+    ops = diff-engine(lines1, lines2)
     {
-        has-del && has-ins -> {
-            ra = format-range(a-start, a-count)
-            rb = format-range(b-start, b-count)
+        unified -> emit-unified(files[0], files[1], ops, 3)
 
-            #{overflow=wrap}
-            print(ra - 'c' - rb)
-            k <- [pre..n1 - suf): {
-                #{overflow=wrap}
-                print('< ' - lines1[k])
-            }
-            print('---')
-            k <- [pre..n2 - suf): {
-                #{overflow=wrap}
-                print('> ' - lines2[k])
-            }
-        }
+        context -> emit-context(files[0], files[1], ops, 3)
 
-        has-del && ! has-ins -> {
-            ra = format-range(a-start, a-count)
-            #{overflow=wrap}
-            print(ra - 'd' - b-start.to-str())
-            k <- [pre..n1 - suf): {
-                #{overflow=wrap}
-                print('< ' - lines1[k])
-            }
-        }
-
-        ! has-del && has-ins -> {
-            rb = format-range(b-start, b-count)
-            #{overflow=wrap}
-            print(a-start.to-str() - 'a' - rb)
-            k <- [pre..n2 - suf): {
-                #{overflow=wrap}
-                print('> ' - lines2[k])
-            }
-        }
+        ! unified && ! context -> emit-normal-all(ops)
     }
 
     os.exit(1)
@@ -698,21 +789,97 @@ sdiff-pad = (s str, width i64) (out str) {
     }
 }
 
-; sdiff-emit-line: emit one sdiff line
+; sdiff-emit-line: one side-by-side line using the BSD column model.
+; sepcol = width/2; left field width = sepcol-2 (left-aligned, padded/truncated);
+; gutter " " + sep + " "; right field left-aligned & truncated to sepcol-2. When
+; the right column is empty (a deletion) the gutter's trailing space is dropped,
+; so the line ends at the separator, exactly like BSD sdiff.
 sdiff-emit-line = (left str, right str, sep str, width i64) {
+    #{overflow=wrap}
+    sepcol = width / 2
 
     #{overflow=wrap}
-    half = width / 2
-    padded = sdiff-pad(left, half)
-    #{overflow=wrap}
-    print(padded - ' ' - sep - ' ' - right)
+    lw = sepcol - 2
+    padded = sdiff-pad(left, lw)
+    {
+        right.len-bytes() == 0 -> print(padded - ' ' - sep)
+
+        right.len-bytes() > 0 -> {
+            rl = right
+            right.len-bytes() > lw -> {
+                #{overflow=wrap}
+                rl = right.slice(0, lw)
+            }
+            print(padded - ' ' - sep - ' ' - rl)
+        }
+    }
+}
+
+; emit-sdiff: drive the side-by-side layout from LCS ops.
+; A maximal run of non-equal ops is a change region: its deletes (dl) and
+; inserts (il) zip pairwise -> '|'; leftover deletes -> '<' (empty right);
+; leftover inserts -> '>' (empty left). Equal ops -> both columns, sep ' '.
+; left-only (-l), calibrated against BSD: paired difference shows
+; "left | right"; an equal or left-only line is followed by '(' (equal) or '<'
+; (delete) padded to the separator column; an unpaired insert keeps "  > right".
+emit-sdiff = (ops []diff-op, width i64, left-only bool) {
+    n = ops.len()
+    i = 0
+    (i < n) {
+        #{index-out=0}
+        oi = ops[i]
+        {
+            oi.kind == 0 -> {
+                left-only -> {
+                    sdiff-emit-line(oi.line, '', '(', width)
+                }
+                ! left-only -> {
+                    sdiff-emit-line(oi.line, oi.line, ' ', width)
+                }
+                #{overflow=wrap}
+                i = i + 1
+            }
+
+            oi.kind != 0 -> {
+                dl []str
+                il []str
+                j = i
+                (j < n && ops[j].kind != 0) {
+                    #{index-out=0}
+                    o = ops[j]
+                    o.kind == 1 -> dl.push(o.line)
+                    o.kind == 2 -> il.push(o.line)
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+                dn = dl.len()
+                inn = il.len()
+                mx = dn
+                inn > mx -> mx = inn
+                k <- [0..mx): {
+                    hasl = false
+                    hasr = false
+                    hasl = k < dn
+                    hasr = k < inn
+                    #{index-out=0}
+                    lline = dl[k]
+                    #{index-out=0}
+                    rline = il[k]
+                    hasl && hasr -> sdiff-emit-line(lline, rline, '|', width)
+                    hasl && ! hasr -> sdiff-emit-line(lline, '', '<', width)
+                    ! hasl && hasr -> sdiff-emit-line('', rline, '>', width)
+                }
+                i = j
+            }
+        }
+    }
 }
 
 ; sdiff-run: sdiff command entry
 sdiff-run = () {
     argc = args()
 
-    width = 130
+    width = 126
     left-only = false
     files []str
 
@@ -730,6 +897,8 @@ sdiff-run = () {
                     w = arg(i).to-i64()
                     w: {
                         ok -> width = it
+                        -> {
+                        }
                     }
                 }
             }
@@ -738,6 +907,8 @@ sdiff-run = () {
                 w = a.slice(2, a.len-bytes()).to-i64()
                 w: {
                     ok -> width = it
+                    -> {
+                    }
                 }
             }
 
@@ -782,91 +953,375 @@ sdiff-run = () {
     lines2 []str
     split-inline(c1, lines1)
     split-inline(c2, lines2)
-    n1 = lines1.len()
-    n2 = lines2.len()
 
-    ; simple side-by-side diff using common prefix/suffix
-    pre = 0
-    (pre < n1 && pre < n2) {
-        pre < n1 && pre < n2 -> {
+    ops = diff-engine(lines1, lines2)
+    emit-sdiff(ops, width, left-only)
+}
 
-            #{overflow=wrap}
-            lines1[pre].compare(lines2[pre]) == 0 -> pre = pre + 1
+; ---------- diff3 (BSD diff3 default output format) ----------
+; Port of FreeBSD usr.bin/diff3/diff3.c default (no -e/-m/-A) mode:
+; d13 = hunks of diff(mine, yours), d23 = hunks of diff(older, yours);
+; ranges are 1-based half-open [from, to). Each differing region prints
+; '====N' (1/2/3 = the odd-one-out file, empty = all differ) then three
+; 'N:range' ed-style headers; a header whose body duplicates one printed
+; later is emitted without text ('keep'/dup). Region bodies get a 2-space
+; prefix. Common text prints nothing (observed macOS behaviour, exit 0).
 
-            -> break
+d3-hunk {
+    a-from i64
+    a-to i64
+    b-from i64
+    b-to i64
+}
+
+; d3-hunks: turn a diff-op stream into BSD diff hunks. A maximal run of
+; non-equal ops is one hunk; a pure insert yields an empty a-range just
+; after the preceding common line (the 'Na' form), a pure delete an empty
+; b-range after the preceding common b line.
+d3-hunks = (ops []diff-op) (hunks []d3-hunk) {
+    n = ops.len()
+    i = 0
+    prev-a = 0
+    prev-b = 0
+    (i < n) {
+        #{index-out=0}
+        oi = ops[i]
+        #{overflow=wrap}
+        ii = i + 1
+        #{overflow=wrap}
+        pa1 = prev-a + 1
+        #{overflow=wrap}
+        pb1 = prev-b + 1
+        oi.kind == 0 -> {
+            prev-a = oi.a-no
+            prev-b = oi.b-no
+            i = ii
+        }
+        oi.kind != 0 -> {
+            has-del = false
+            has-ins = false
+            da-first = 0
+            da-last-p1 = 0
+            ib-first = 0
+            ib-last-p1 = 0
+            j = i
+            (j < n && ops[j].kind != 0) {
+                #{index-out=0}
+                oj = ops[j]
+                #{overflow=wrap}
+                jj = j + 1
+                #{overflow=wrap}
+                anp1 = oj.a-no + 1
+                #{overflow=wrap}
+                bnp1 = oj.b-no + 1
+                oj.kind == 1 -> {
+                    ! has-del -> da-first = oj.a-no
+                    has-del = true
+                    da-last-p1 = anp1
+                }
+                oj.kind == 2 -> {
+                    ! has-ins -> ib-first = oj.b-no
+                    has-ins = true
+                    ib-last-p1 = bnp1
+                }
+                j = jj
+            }
+            h = d3-hunk {}
+            h.a-from = pa1
+            h.a-to = pa1
+            h.b-from = pb1
+            h.b-to = pb1
+            has-del -> h.a-from = da-first
+            has-del -> h.a-to = da-last-p1
+            has-ins -> h.b-from = ib-first
+            has-ins -> h.b-to = ib-last-p1
+            hunks.push(h)
+            i = j
         }
     }
+}
 
-    suf = 0
-    (suf < (n1 - pre) && suf < (n2 - pre)) {
-        suf < (n1 - pre) && suf < (n2 - pre) -> {
-
-            #{overflow=wrap}
-            lines1[n1 - 1 - suf].compare(lines2[n2 - 1 - suf]) == 0 -> suf = suf + 1
-
-            -> break
-        }
-    }
-
-    ; emit common prefix
-    k <- [0..pre): {
-        left-only -> {
-            sdiff-emit-line(lines1[k], '', ' ', width)
-        }
-        ! left-only -> {
-            sdiff-emit-line(lines1[k], lines1[k], ' ', width)
-        }
-    }
-
-    ; emit differing middle
+; d3-prange: BSD diff3 prange() — empty range prints '(from-1)a', else
+; 'from[,to-1]c'.
+d3-prange = (from i64, to i64) (s str) {
     #{overflow=wrap}
-    a-mid = n1 - pre - suf
-
+    t1 = to - 1
     #{overflow=wrap}
-    b-mid = n2 - pre - suf
-    max-mid = a-mid
-    b-mid > max-mid -> max-mid = b-mid
+    f1 = from - 1
+    #{overflow=wrap}
+    span = to - from
+    to <= from -> s = f1.to-str() - 'a'
+    to > from -> {
+        s = from.to-str()
+        span > 1 -> s = s - ',' - t1.to-str()
+        s = s - 'c'
+    }
+}
 
-    k <- [0..max-mid): {
-        a-line = ''
-        b-line = ''
-        has-a = false
-        has-b = false
-        k < a-mid -> {
+d3-print-body = (lines []str, from i64, to i64) {
+    #{overflow=wrap}
+    lo = from - 1
+    #{overflow=wrap}
+    hi = to - 1
+    k <- [lo..hi): {
+        #{index-out=0}
+        ln = lines[k]
+        print('  ' - ln)
+    }
+}
 
+; d3-change: BSD change() — '%d:' header + prange, body unless dup; last[] bookkeeping.
+d3-change = (no i64, from i64, to i64, dup bool, lines []str, last []i64) {
+    #{index-out=0}
+    last[no] = to
+    rs = d3-prange(from, to)
+    print(no.to-str() - ':' - rs)
+    ! dup -> d3-print-body(lines, from, to)
+}
+
+; d3-keep: BSD keep() — synthetic header for file i using the yours-range
+; shifted by last[3]-last[i]; never a body.
+d3-keep = (no i64, b-from i64, b-to i64, last []i64) {
+    #{index-out=0}
+    l3 = last[3]
+    #{index-out=0}
+    li = last[no]
+    #{overflow=wrap}
+    delta = l3 - li
+    #{overflow=wrap}
+    tf = b-from - delta
+    #{overflow=wrap}
+    tt = b-to - delta
+    rs = d3-prange(tf, tt)
+    print(no.to-str() - ':' - rs)
+    #{index-out=0}
+    last[no] = tt
+}
+
+; d3-same-range: BSD duplicate() — same line count and identical text.
+d3-same-range = (a1 i64, a2 i64, c1 i64, c2 i64, f1 []str, f2 []str) (same bool) {
+    same = true
+    #{overflow=wrap}
+    n = a2 - a1
+    #{overflow=wrap}
+    m = c2 - c1
+    #{overflow=wrap}
+    lo1 = a1 - 1
+    #{overflow=wrap}
+    lo2 = c1 - 1
+    n != m -> same = false
+    same -> {
+        k <- [0..n): {
             #{index-out=0, overflow=wrap}
-            a-line = lines1[pre + k]
-            has-a = true
-        }
-        k < b-mid -> {
-
+            s1 = f1[lo1 + k]
             #{index-out=0, overflow=wrap}
-            b-line = lines2[pre + k]
-            has-b = true
-        }
-        has-a && has-b -> {
-            sdiff-emit-line(a-line, b-line, '|', width)
-        }
-        has-a && ! has-b -> {
-            sdiff-emit-line(a-line, '', '<', width)
-        }
-        ! has-a && has-b -> {
-            sdiff-emit-line('', b-line, '>', width)
+            s2 = f2[lo2 + k]
+            s1.compare(s2) != 0 -> same = false
         }
     }
+}
 
-    ; emit common suffix
-    k <- [0..suf): {
+d3-set-h = (h []d3-hunk, idx i64, v d3-hunk) {
+    #{index-out=0, overflow=wrap}
+    h[idx] = v
+}
 
+; d3-fold: BSD 'merge overlapping changes' — the next hunk inherits the
+; current hunk's from-endpoints.
+d3-fold = (h []d3-hunk, ni i64, cur d3-hunk, nxt d3-hunk) {
+    nxt.a-from = cur.a-from
+    nxt.b-from = cur.b-from
+    d3-set-h(h, ni, nxt)
+}
+
+; d3-extend: BSD overlap extension — widen both hunks' b-ranges until they
+; coincide, adjusting the a-ranges by the same deltas, and store back.
+d3-extend = (h1 []d3-hunk, h2 []d3-hunk, i1 i64, i2 i64, d1 d3-hunk, d2 d3-hunk) {
+    d1.b-from < d2.b-from -> {
+        #{overflow=wrap}
+        df = d2.b-from - d1.b-from
+        #{overflow=wrap}
+        d2.a-from = d2.a-from - df
+        d2.b-from = d1.b-from
+        d3-set-h(h2, i2, d2)
+    }
+    d2.b-from < d1.b-from -> {
+        #{overflow=wrap}
+        df = d1.b-from - d2.b-from
+        #{overflow=wrap}
+        d1.a-from = d1.a-from - df
+        d1.b-from = d2.b-from
+        d3-set-h(h1, i1, d1)
+    }
+    d1.b-to > d2.b-to -> {
+        #{overflow=wrap}
+        dt = d1.b-to - d2.b-to
+        #{overflow=wrap}
+        d2.a-to = d2.a-to + dt
+        d2.b-to = d1.b-to
+        d3-set-h(h2, i2, d2)
+    }
+    d2.b-to > d1.b-to -> {
+        #{overflow=wrap}
+        dt = d2.b-to - d1.b-to
+        #{overflow=wrap}
+        d1.a-to = d1.a-to + dt
+        d1.b-to = d2.b-to
+        d3-set-h(h1, i1, d1)
+    }
+}
+
+; d3-merge: BSD merge() main loop, default output path. Arms fire in the
+; same order as the C if-chain; every arm advances or mutates state so the
+; loop terminates exactly like the original.
+d3-merge = (mine []str, older []str, yours []str, h1 []d3-hunk, h2 []d3-hunk) {
+    n1 = h1.len()
+    n2 = h2.len()
+    last []i64 = with-len(4)
+    i1 = 0
+    i2 = 0
+    (i1 < n1 || i2 < n2) {
+        #{index-out=0}
+        d1 = h1[i1]
+        #{index-out=0}
+        d2 = h2[i2]
+        #{overflow=wrap}
+        ni1 = i1 + 1
+        #{overflow=wrap}
+        ni2 = i2 + 1
         #{index-out=0, overflow=wrap}
-        l = lines1[n1 - suf + k]
-        left-only -> {
-            sdiff-emit-line(l, '', ' ', width)
-        }
-        ! left-only -> {
-            sdiff-emit-line(l, l, ' ', width)
+        dn1 = h1[ni1]
+        #{index-out=0, overflow=wrap}
+        dn2 = h2[ni2]
+        t1 = i1 < n1
+        t2 = i2 < n2
+        go1 = false
+        go2 = false
+        ! t2 -> go1 = true
+        t1 && t2 && d1.b-to < d2.b-from -> go1 = true
+        ! t1 -> go2 = true
+        t1 && t2 && d2.b-to < d1.b-from -> go2 = true
+        has-n1 = false
+        ni1 < n1 -> has-n1 = true
+        has-n2 = false
+        ni2 < n2 -> has-n2 = true
+        dup = false
+        {
+            go1 -> {
+                print('====1')
+                d3-change(1, d1.a-from, d1.a-to, false, mine, last)
+                d3-keep(2, d1.b-from, d1.b-to, last)
+                d3-change(3, d1.b-from, d1.b-to, false, yours, last)
+                i1 = ni1
+            }
+            go2 -> {
+                print('====2')
+                d3-keep(1, d2.b-from, d2.b-to, last)
+                d3-change(3, d2.b-from, d2.b-to, false, yours, last)
+                d3-change(2, d2.a-from, d2.a-to, false, older, last)
+                i2 = ni2
+            }
+            t1 && t2 && has-n1 && d1.b-to >= dn1.b-from -> {
+                d3-fold(h1, ni1, d1, dn1)
+                i1 = ni1
+            }
+            t1 && t2 && has-n2 && d2.b-to >= dn2.b-from -> {
+                d3-fold(h2, ni2, d2, dn2)
+                i2 = ni2
+            }
+            t1 && t2 && d1.b-from == d2.b-from && d1.b-to == d2.b-to -> {
+                dup = d3-same-range(d1.a-from, d1.a-to, d2.a-from, d2.a-to, mine, older)
+                dup -> print('====3')
+                ! dup -> print('====')
+                d3-change(1, d1.a-from, d1.a-to, dup, mine, last)
+                d3-change(2, d2.a-from, d2.a-to, false, older, last)
+                d1.a-to > d1.a-from -> d3-change(3, d1.b-from, d1.b-to, false, yours, last)
+                d1.a-to <= d1.a-from -> d3-change(3, d2.b-from, d2.b-to, false, yours, last)
+                i1 = ni1
+                i2 = ni2
+            }
+            t1 && t2 -> d3-extend(h1, h2, i1, i2, d1, d2)
         }
     }
+}
+
+diff3-run = () {
+    argc = args()
+
+    files []str
+    i = 2
+    (i < argc) {
+        a = arg(i)
+        #{overflow=wrap}
+        ii = i + 1
+        a.starts-with('-') && a.len-bytes() > 1 -> {
+            o = a.slice(1, 2)
+            o != '-' -> eprint('diff3: invalid option -- ' - o)
+            a == '--' -> files.push(a)
+        }
+        ! a.starts-with('-') -> files.push(a)
+        i = ii
+    }
+
+    files.len() < 3 -> {
+        eprint('usage: diff3 [-3aAeEimTxX] [-L label1] [-L label2] [-L label3] file1 file2 file3')
+        os.exit(2)
+    }
+
+    #{index-out=0}
+    mine-file = files[0]
+    #{index-out=0}
+    older-file = files[1]
+    #{index-out=0}
+    yours-file = files[2]
+
+    ; BSD diff3 fopen()s the paths (so /dev/null etc. are fine) and only
+    ; errors when the open fails — mirror that with the read result rather
+    ; than fs.is-file, which rejects non-regular files.
+    mine-content = ''
+    r = fs.read-str(mine-file)
+    r: {
+        ok -> mine-content = it
+        nil -> {
+        }
+        err -> {
+            eprint('diff3: Can\'t open ' - mine-file - ': No such file or directory')
+            os.exit(2)
+        }
+    }
+    older-content = ''
+    r = fs.read-str(older-file)
+    r: {
+        ok -> older-content = it
+        nil -> {
+        }
+        err -> {
+            eprint('diff3: Can\'t open ' - older-file - ': No such file or directory')
+            os.exit(2)
+        }
+    }
+    yours-content = ''
+    r = fs.read-str(yours-file)
+    r: {
+        ok -> yours-content = it
+        nil -> {
+        }
+        err -> {
+            eprint('diff3: Can\'t open ' - yours-file - ': No such file or directory')
+            os.exit(2)
+        }
+    }
+
+    mine []str
+    older []str
+    yours []str
+    split-inline(mine-content, mine)
+    split-inline(older-content, older)
+    split-inline(yours-content, yours)
+
+    h1 = d3-hunks(diff-engine(mine, yours))
+    h2 = d3-hunks(diff-engine(older, yours))
+    d3-merge(mine, older, yours, h1, h2)
 }
 
 ; diff-dispatch: dispatch diff/sdiff commands
@@ -877,5 +1332,7 @@ diff-dispatch = (cmd str) {
         cmd == 'diff' -> diff-run()
 
         cmd == 'sdiff' -> sdiff-run()
+
+        cmd == 'diff3' -> diff3-run()
     }
 }

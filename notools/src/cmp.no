@@ -5,6 +5,52 @@
 ;   -s: silent mode, only exit status (0=same, 1=differ, 2=error)
 ; Exit: 0=identical, 1=differ, 2=error
 
+; octal3: byte value (0-255) as octal digits, no leading zeros (BSD cmp -l style)
+octal3 = (v i64) (s str) {
+    digits = '01234567'
+    #{overflow=wrap}
+    d2 = v / 64
+    #{overflow=wrap}
+    d1 = (v - d2 * 64) / 8
+    #{overflow=wrap}
+    d0 = v - d2 * 64 - d1 * 8
+    s = ''
+    d2 > 0 -> s = s - digits[d2].to-str()
+    d2 > 0 || d1 > 0 -> s = s - digits[d1].to-str()
+    s = s - digits[d0].to-str()
+}
+
+; rjw: write s right-justified in a width-w field directly to stdout.
+; Padding is built in a LOCAL anchored at a literal ('' - s): mutating the
+; str PARAMETER in place (`s = ' ' - s`) is a no-op — the compiler's
+; buffer-aliasing bug drops in-place prepends on out-param-derived strings.
+rjw = (s str, w i64) {
+    pad = '' - s
+    (pad.len-bytes() < w) {
+        pad.len-bytes() < w -> pad = ' ' - pad
+    }
+    io.out(pad)
+}
+
+; diff-line: one BSD cmp -l record == printf("%6ju %3o %3o\\n", off, v1, v2)
+; offset decimal (min width 6), each byte value octal (min width 3),
+; single-space separators; wider-than-min values are never truncated.
+diff-line = (off i64, v1 i64, v2 i64) {
+    rjw(off.to-str(), 6)
+    io.out(' ')
+    rjw(octal3(v1), 3)
+    io.out(' ')
+    rjw(octal3(v2), 3)
+    io.out('\n')
+}
+
+; eof-msg: BSD prints "cmp: EOF on <shorter file>" to stderr
+; (first-listed file when byte values are equal).
+eof-msg = (f1 str, f2 str, same bool) {
+    same -> eprint('cmp: EOF on ' - f1)
+    ! same -> eprint('cmp: EOF on ' - f2)
+}
+
 cmp-run = () {
     argc = args()
 
@@ -28,9 +74,10 @@ cmp-run = () {
         }
     }
 
-    ; Handle - as stdin
-    c1 = ''
-    r = fs.read-str(files[0])
+    ; Read raw bytes (NOT read-str: UTF-8 lossy decoding would corrupt
+    ; lengths/indexes for high bytes, breaking byte-exact comparison)
+    c1 []byte
+    r = fs.read-bytes(files[0])
     r: {
         ok -> c1 = it
 
@@ -40,8 +87,8 @@ cmp-run = () {
         err -> {
         }
     }
-    c2 = ''
-    r = fs.read-str(files[1])
+    c2 []byte
+    r = fs.read-bytes(files[1])
     r: {
         ok -> c2 = it
 
@@ -53,8 +100,8 @@ cmp-run = () {
     }
 
     ; Find first difference
-    n1 = c1.len-bytes()
-    n2 = c2.len-bytes()
+    n1 = c1.len()
+    n2 = c2.len()
     min-len = n1
     n2 < min-len -> min-len = n2
 
@@ -85,44 +132,24 @@ cmp-run = () {
 
         long-mode -> {
 
-            ; Print all differences
+            ; Print all differences; stop at the shorter file, then EOF notice
             pos = first-diff
-            (pos < n1 || pos < n2) {
-                pos < n1 && pos < n2 -> {
-                    c1[pos] != c2[pos] -> {
-
-                        ; byte offset (1-based, octal), val1 (octal), val2 (octal)
-                        #{overflow=wrap}
-                        off = pos + 1
-                        #{overflow=wrap}
-                        print(off.to-str() - ' ' - c1[pos].to-str() - ' ' - c2[pos].to-str())
-                    }
+            (pos < n1 && pos < n2) {
+                c1[pos] != c2[pos] -> {
                     #{overflow=wrap}
-                    pos = pos + 1
+                    diff-line(pos + 1, c1[pos], c2[pos])
                 }
-                pos < n1 -> {
-
-                    ; c2 exhausted, c1 has extra bytes (value vs EOF=0)
-                    #{overflow=wrap}
-                    off = pos + 1
-                    #{overflow=wrap}
-                    print(off.to-str() - ' ' - c1[pos].to-str() - ' 0')
-                    #{overflow=wrap}
-                    pos = pos + 1
-                }
-                pos < n2 -> {
-
-                    ; c1 exhausted, c2 has extra bytes
-                    #{overflow=wrap}
-                    off = pos + 1
-                    #{overflow=wrap}
-                    print(off.to-str() - ' 0 ' - c2[pos].to-str())
-                    #{overflow=wrap}
-                    pos = pos + 1
-                }
+                #{overflow=wrap}
+                pos = pos + 1
             }
+            ; EOF notice only when one file is shorter (never for equal length)
+            n1 != n2 -> eof-msg(files[0], files[1], n1 < n2)
             os.exit(1)
         }
+    }
+
+    { ; -l with identical prefix content but different lengths: EOF only
+        long-mode -> os.exit(1)
     }
 
     ; Default: print first difference position
@@ -137,9 +164,8 @@ cmp-run = () {
     #{overflow=wrap}
     byte-no = first-diff + 1
 
-    ; Format: "FILE1 FILE2 differ: byte BYTE, line LINE"
-    #{overflow=wrap}
-    msg = files[0] - ' ' - files[1] - ' differ: byte ' - byte-no.to-str() - ', line ' - line-no.to-str()
+    ; Format: "FILE1 FILE2 differ: char CHAR, line LINE"
+    msg = files[0] - ' ' - files[1] - ' differ: char ' - byte-no.to-str() - ', line ' - line-no.to-str()
     print(msg)
     os.exit(1)
 }

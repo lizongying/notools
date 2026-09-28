@@ -1,18 +1,28 @@
 ; grep.no — grep utility
 ; Search for patterns in files or stdin
-; Usage: grep [-n] pattern [files...]
+; Usage: grep [-invc] pattern [files...]
 ;   -n: show line numbers
+;   -i: ignore case
+;   -v: invert match (print non-matching lines)
+;   -c: print count of matching lines only
 
 grep-run = () {
     argc = args()
 
     show-line-num = false
+    ignore-case = false
+    count-only = false
+    invert = false
     pattern = ''
     files []str
+    matches = 0
 
     i <- [2..argc): {
         a = arg(i)
         a == '-n' -> show-line-num = true
+        a == '-i' -> ignore-case = true
+        a == '-v' -> invert = true
+        a == '-c' -> count-only = true
         ! a.starts-with('-') -> {
             {
                 pattern.len-bytes() == 0 -> pattern = a
@@ -40,7 +50,10 @@ grep-run = () {
                 err -> {
                 }
             }
-            search(content, pattern, show-line-num, false, '')
+            fm = search(content, pattern, show-line-num, false, '', ignore-case, count-only, invert)
+
+            #{overflow=wrap}
+            matches = matches + fm
         }
 
         files.len() > 0 -> {
@@ -64,13 +77,19 @@ grep-run = () {
                     err -> {
                     }
                 }
-                search(content, pattern, show-line-num, files.len() > 1, f)
+                fm = search(content, pattern, show-line-num, files.len() > 1, f, ignore-case, count-only, invert)
+
+                #{overflow=wrap}
+                matches = matches + fm
             }
         }
     }
+
+    ; grep exits 1 when no line was selected
+    matches == 0 -> os.exit(1)
 }
 
-search = (content str, pattern str, show-line-num bool, show-filename bool, filename str) {
+search = (content str, pattern str, show-line-num bool, show-filename bool, filename str, ignore-case bool, count-only bool, invert bool) (total i64) {
     lines []str
     start = 0
     i <- [0..content.len-bytes()): {
@@ -82,24 +101,52 @@ search = (content str, pattern str, show-line-num bool, show-filename bool, file
         }
     }
     start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
+
+    ; -i: fold case on both sides before matching
+    needle = pattern
+    ignore-case -> needle = pattern.to-lower()
+    total = 0
     j <- [0..lines.len()): {
 
         #{index-out=0}
         line = lines[j]
-        pos = line.index(pattern)
-        pos >= 0 -> {
-            show-filename -> {
-                prefix = filename - ':'
-                io.out(prefix)
-            }
-            show-line-num -> {
-
-                #{overflow=wrap}
-                lineno = j + 1
-                #{overflow=wrap}
-                io.out(lineno.to-str() - ':')
-            }
-            print(line)
+        ; EXCLUSIVE branches (not sequential reassignment): reassigning a str var
+        ; that aliases another string triggers a compiler buffer-reuse bug.
+        pos = -1
+        ignore-case -> {
+            pos = line.to-lower().index(needle)
         }
+        ! ignore-case -> {
+            pos = line.index(pattern)
+        }
+
+        ; sel = line should be emitted (match AND NOT invert, or non-match AND invert)
+        sel = 0
+        pos >= 0 -> ! invert -> sel = 1
+        pos < 0 -> invert -> sel = 1
+        sel == 1 -> {
+
+            #{overflow=wrap}
+            total = total + 1
+            ! count-only -> {
+                show-filename -> {
+                    prefix = filename - ':'
+                    io.out(prefix)
+                }
+                show-line-num -> {
+
+                    #{overflow=wrap}
+                    lineno = j + 1
+                    #{overflow=wrap}
+                    io.out(lineno.to-str() - ':')
+                }
+                print(line)
+            }
+        }
+    }
+    count-only -> {
+        show-filename -> io.out(filename - ':')
+        io.out(total.to-str())
+        io.out('\n')
     }
 }
