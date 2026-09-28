@@ -1,294 +1,1288 @@
-; pr.no — pr utility
+; pr.no — pr utility (single-column mode)
 ; Paginate files for printing
-; Usage: pr [-l LENGTH] [-w WIDTH] [-h HEADER] [-t] [-o MARGIN] [-d] [file...]
-;   -l LENGTH:  page length in lines (default: 66)
-;   -w WIDTH:   page width in chars (default: 72)
-;   -h HEADER:  custom header text (default: filename)
-;   -t:         omit header and footer (5-line each)
-;   -o MARGIN:  left margin (spaces before each line)
-;   -d:         double-space output
-;   files:      input files (read from stdin if none)
-; Default page: 66 lines = 5 header + 56 body + 5 footer
+; Port of FreeBSD usr.bin/pr/pr.c onecol(): setup + nxtfile + inln + otln
+;   + prhead + prtail, one-column only (clcnt==1, no -m/-a/-columns).
+; Usage: pr [+page] [-t] [-d] [-l line] [-w width] [-o offset] [-h header]
+;          [-e[ch][gap]] [-i[ch][gap]] [-n[ch][width]] [-s[ch]] [-L locale]
+;          [-Ffprr] [-] [file ...]
+;   -l LENGTH:  page length in lines (default: 66; body = l-10 when headed)
+;   -w WIDTH:   page width (accepted; single column does not truncate)
+;   -h HEADER:  header file name field (default: file path, '' for stdin)
+;   -t:         omit header and footer (5 lines each)
+;   -o OFFSET:  left offset in spaces (>=1)
+;   -d:         double-space output (body lines per page halved)
+;   +PAGE:      start at page PAGE (skipped per file, page numbering kept)
+;   - / empty file list: read stdin (header time = now; files use mtime)
 
-; split-lines: split content into lines
-split-lines = (content str, lines []str) {
-    start = 0
-    i <- [0..content.len-bytes()): {
-        content[i] == 10 -> {
-            lines.push(content.slice(start, i))
+; pr-is-digit: single ASCII digit test on a one-char string
+pr-is-digit = (s str) (ok bool) {
+    c = s[0]
+    ok = c >= 48 && c <= 57
+}
 
-            #{overflow=wrap}
-            start = i + 1
-        }
+; safe arithmetic wrappers: overflow=wrap annotations only bind at function
+; body top level, so every +/-/* inside conditional arms must go through them.
+safe-add = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a + b
+}
+
+safe-sub = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a - b
+}
+
+safe-mul = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a * b
+}
+
+safe-div = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a / b
+}
+
+safe-mod = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a % b
+}
+
+safe-slice2 = (s str, from i64, to i64) (r str) {
+    #{index-out=''}
+    r = s.slice(from, to)
+}
+
+; safe-rest-of-option: cluster tail after the option char (from index 1)
+safe-rest1 = (a str) (r str) {
+    al = a.len-bytes()
+    #{index-out=''}
+    r = a.slice(1, al)
+}
+
+; safe-rest-of-col: '-N' column spec tail
+safe-rest2 = (a str) (r str) {
+    al = a.len-bytes()
+    #{index-out=''}
+    r = a.slice(2, al)
+}
+
+; pr-num-ok: BSD setup() digit check — first char must be a digit and the
+; rest must all be digits (atoi semantics); non-empty only.
+pr-num-ok = (s str) (ok bool) {
+    ok = false
+    s.len-bytes() == 0 -> return
+    ! pr-is-digit(s.slice(0, 1)) -> return
+    rest = s.slice(1, s.len-bytes())
+    j = 0
+    (j < rest.len-bytes()) {
+        j1 = safe-add(j, 1)
+        jj = safe-add(j, 2)
+        seg = safe-slice2(rest, j, jj)
+        pr-is-digit(seg) -> j = j1
+        ! pr-is-digit(seg) -> return
     }
-    start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
+    ok = true
 }
 
-; pad: right-pad or truncate line to width, with left margin
-pad = (line str, width i64, margin i64) (out str) {
-    out = ' '.repeat(margin)
-    out = out - line
-    ; Don't truncate; pr doesn't truncate by default (only -w affects header)
+; pr-lines-ok: -l validation (isdigit(*arg) && atoi >= 1)
+pr-lines-ok = (s str) (ok bool) {
+    ok = false
+    s.len-bytes() == 0 -> return
+    ! pr-is-digit(s.slice(0, 1)) -> return
+    v = s.to-i64()
+    ok = v >= 1
 }
 
-; print-page: print one page of lines
-; Returns number of lines actually printed
-print-page = (lines []str, start i64, count i64, margin i64, double bool) (next i64) {
-    next = start
-    printed = 0
-    (printed < count && next < lines.len()) {
-        printed < count -> {
-            next >= lines.len() -> break
-            #{overflow=wrap}
-            line = lines[next] - ''
-            padded = pad(line, 0, margin)
-            print(padded)
+; pr-num-str: BSD addnum() — right-justified digits of width wd, truncated
+; from the front when the number overflows the field, space padded.
+pr-num-str = (line i64, wd i64) (s str) {
+    tmp = ''
+    l2 = line
+    used = 0
+    (l2 > 0 && used < wd) {
+        r = safe-mod(l2, 10)
+        c = safe-add(48, r)
+        ch = number.char-to-str(c)
+        tmp = ch - tmp
+        l2 = safe-div(l2, 10)
+        used = safe-add(used, 1)
+    }
+    (used < wd) {
+        tmp = ' ' - tmp
+        used = safe-add(used, 1)
+    }
+    s = tmp
+}
 
-            #{overflow=wrap}
-            printed = printed + 1
-            #{overflow=wrap}
-            next = next + 1
+; pr-date-str: render header time via system date so the local timezone is
+; byte-identical to BSD pr (strftime %b %e %H:%M %Y, TIMEFMTM).
+pr-date-str = (script str) (s str) {
+    sa []str = with-len(2)
+    sa[0] = '-c'
+    sa[1] = script
+    o, e2, c2, r2 = process.cmd('sh', sa, '', '', with-len(0), 0, false)
+    c2 != 0 -> return
+    s = o.trim()
+}
 
-            ; Double-space: print a blank line after each text line
-            double -> {
-                printed < count -> {
-                    bl = pad('', 0, margin)
-                    print(bl)
-                    #{overflow=wrap}
-                    printed = printed + 1
-                }
+; pr-out: raw stdout buffer. print() always appends '\n', but pr must be
+; able to end a file without a newline (final line missing '\n'), so all
+; output goes through buffered fs.write to /dev/stdout (base32.no precedent).
+pr-out {
+    s str
+}
+
+po-new = () (b pr-out) {
+    b = pr-out {}
+    b.s = ''
+}
+
+po-add = (b pr-out, t str) {
+    b.s = b.s - t
+}
+
+po-blank = (b pr-out, n i64) {
+    k = 0
+    (k < n) {
+        k1 = safe-add(k, 1)
+        b.s = b.s - '\n'
+        k = k1
+    }
+}
+
+po-flush = (b pr-out) {
+    b.s.len-bytes() == 0 -> return
+    fd = fs.open-write('/dev/stdout')
+    fs.write(fd, b.s.to-bytes(), b.s.len-bytes())
+    b.s = ''
+}
+
+; pr-head: BSD prhead() — two blank lines then HDFMT '%s %s Page %d\n\n\n'
+pr-head = (b pr-out, time str, fname str, page i64) {
+    po-add(b, '\n\n')
+    line = time - ' ' - fname - ' Page ' - page.to-str() - '\n\n\n'
+    po-add(b, line)
+}
+
+; pr-nl: BSD otln() line-end: one '\n', doubled when -d (dspace)
+pr-nl = (b pr-out, dspace i64) {
+    po-add(b, '\n')
+    dspace != 0 -> po-add(b, '\n')
+}
+
+; pr-inln-state: nxt/pos carry the read cursor across calls (byte positions)
+pr-inln-state {
+    nxt i64
+    pos i64
+}
+
+; pr-inln: BSD inln() without -e expansion or -r truncation: read up to
+; LBUF(512) bytes of one line. end marks 'a newline was consumed'; eof marks
+; input exhausted; mor means 'line continues in another chunk'.
+pr-inln = (st pr-inln-state, content str) (chunk str, mor i64, eof i64) {
+    eof = 0
+    mor = 0
+    lim = 512
+    p = st.nxt
+    p >= content.len-bytes() -> {
+        eof = 1
+        st.pos = p
+        return
+    }
+    i = p
+    end = false
+    nl = false
+    seeneof = false
+    lim2 = 0
+    (lim > 0) {
+        n1 = safe-add(i, 1)
+        clen = content.len-bytes()
+        beyond = i >= clen
+        inwork = i < clen
+        lim2 = safe-sub(lim, 1)
+        ch = 0
+        is-nl = false
+        not-nl = false
+        inwork -> ch = content.byte(i)
+        inwork && ch == 10 -> is-nl = true
+        inwork && ch != 10 -> not-nl = true
+        beyond -> st.pos = i
+        beyond -> lim = 0
+        beyond -> seeneof = true
+        is-nl -> st.pos = n1
+        is-nl -> lim = 0
+        is-nl -> end = true
+        is-nl -> nl = true
+        not-nl -> st.pos = n1
+        not-nl -> lim = lim2
+        not-nl -> i = n1
+    }
+    ! end -> st.pos = i
+    mor = 0
+    lim == 0 && ! end && ! seeneof -> mor = 1
+    st.nxt = st.pos
+    clen2 = content.len-bytes()
+    nl -> chunk = safe-slice2(content, p, safe-sub(st.pos, 1))
+    ! nl -> chunk = safe-slice2(content, p, st.pos)
+    clen2 == 0 -> chunk = ''
+}
+
+; pr-file: BSD onecol() + nxtfile() for one source. src='' means stdin.
+; time-str is the header time (file mtime or now). last-file mirrors the
+; twice/stdin rule: on EOF of stdin without a trailing newline the '\n' is
+; flushed only when it is the final source.
+pr-file = (b pr-out, content str, time str, fname str, last-file bool, body i64, offst i64, dspace i64, addone i64, pgnm i64, nohead i64, formfeed i64, nmw i64, nmc str) (ret i64, errcnt i64) {
+    ret = 0
+    errcnt = 0
+    off = ' '.repeat(offst)
+    page = 1
+    pgnm >= 1 -> page = pgnm
+    skip = safe-sub(pgnm, 1)
+    st = pr-inln-state {}
+    st.nxt = 0
+    st.pos = 0
+    ck = ''
+    mor8 = 0
+    eof8 = 1
+    (skip > 0) {
+        skip = safe-sub(skip, 1)
+        cnt9 = body
+        eof9 = 0
+        done9 = 0
+        (eof9 == 0 && done9 == 0) {
+            ck, mor8, eof9 = pr-inln(st, content)
+            keep9 = eof9 == 0 && mor8 == 0
+            cnt9b = safe-sub(cnt9, 1)
+            keep9 -> cnt9 = cnt9b
+            keep9 && cnt9b <= 0 -> done9 = 1
+        }
+        eof9 != 0 -> return
+    }
+    lncnt = 0
+    (true) {
+        eof7 = 0
+        linecnt = 0
+        lrgln = 0
+        eof8 = 0
+        eofin = 0
+        (linecnt < body && eofin == 0) {
+            ck, mor8, eof8 = pr-inln(st, content)
+            go = eof8 == 0
+            ln1 = safe-add(lncnt, 1)
+            lc1 = safe-add(linecnt, 1)
+            first = lrgln == 0
+            hd = go && linecnt == 0 && nohead == 0
+            adv = go && mor8 == 0
+            emitf = go && ck.len-bytes() > 0 && first
+            emitc = go && ck.len-bytes() > 0 && ! first
+            tail = go && eof8 == 0 && mor8 == 0
+            stop = go && eof8 == 0 && mor8 != 0
+            go && first -> lncnt = ln1
+            adv -> linecnt = lc1
+            hd -> pr-head(b, time, fname, page)
+            ns = ''
+            go && first && nmw > 0 -> ns = pr-num-str(lncnt, nmw)
+            emitf && nmw == 0 -> po-add(b, off - ck)
+            emitf && nmw > 0 -> po-add(b, off - ns - nmc - ck)
+            emitc -> po-add(b, ck)
+            adv -> pr-nl(b, dspace)
+            tail -> lrgln = 0
+            stop -> lrgln = 1
+            eof8 != 0 -> eofin = 1
+        }
+        ret != 0 -> break
+        st.nxt >= content.len-bytes() -> eof7 = 1
+        pad = safe-sub(safe-sub(body, linecnt), lrgln)
+        pad3 = pad
+        dspace != 0 -> pad3 = safe-mul(pad, 2)
+        addone != 0 -> pad3 = safe-add(pad3, 1)
+        linecnt > 0 && nohead == 0 && formfeed == 0 -> {
+            p1 = safe-add(pad3, 5)
+            po-blank(b, p1)
+        }
+        linecnt > 0 && nohead == 0 && formfeed != 0 -> {
+            lrgln != 0 -> po-add(b, '\n')
+            po-add(b, number.char-to-str(12))
+        }
+        linecnt > 0 && nohead != 0 -> {
+            lrgln != 0 -> po-add(b, '\n')
+            lrgln != 0 -> dspace != 0 -> po-add(b, '\n')
+            formfeed != 0 -> po-add(b, number.char-to-str(12))
+        }
+        eof7 != 0 -> break
+        page = safe-add(page, 1)
+    }
+}
+
+; --- multi-column support (vertcol / horzcol / mulfile) ------------------
+; Faithful port of FreeBSD pr.c column engines. Each output line is assembled
+; as one contiguous string (offset + per-column [number + nmchar + cell + pad])
+; and then fed through pr-rowout (= otln, mor==0). Assembling the whole row and
+; contracting once is byte-equivalent to BSD calling otln per column with mor==1
+; (ips/ops carried) and a final mor==0 line term (trailing pad is never flushed).
+
+; pr-opts: all layout option state shared by the engines.
+pr-opts {
+    clcnt i64
+    colwd i64
+    pgwd i64
+    lines i64
+    offst i64
+    dspace i64
+    addone i64
+    formfeed i64
+    nohead i64
+    pgnm i64
+    sflag i64
+    schar i64
+    ingap i64
+    inchb i64
+    ogap i64
+    ocharb i64
+    nmwd i64
+    nmcharb i64
+}
+
+; pr-cellstate: byte cursor + column carry (mirrors inln cps).
+pr-cellstate {
+    nxt i64
+    cps i64
+}
+
+; pr-cell: BSD inln() with trnc==1 — read one source line into a cell at most
+; colwd bytes wide, expanding inchar to spaces when ingap>0, discarding the rest
+; of an over-long line up to its newline. eof==1 only when no bytes remain at
+; all (source exhausted). Returns the cell text (newline excluded).
+pr-cell = (st pr-cellstate, content str, lim i64, o pr-opts) (out str, eof i64) {
+    eof = 0
+    out = ''
+    op = 0
+    idx = st.nxt
+    clen = content.len-bytes()
+    gap = o.ingap
+    ib = o.inchb
+    rem = lim
+    iseof = false
+    isnl = false
+    (true) {
+        rem = safe-sub(rem, 1)
+        rem < 0 -> break
+        idx >= clen -> { iseof = true; break }
+        c = content.byte(idx)
+        idx = safe-add(idx, 1)
+        is-tab = gap > 0 && c == ib
+        is-tab -> {
+            col = safe-add(op, st.cps)
+            col = safe-sub(gap, safe-mod(col, gap))
+            (col > 0 && rem >= 0) {
+                out = out - ' '
+                op = safe-add(op, 1)
+                col = safe-sub(col, 1)
+                rem = safe-sub(rem, 1)
             }
         }
+        c == 10 -> { isnl = true; break }
+        ! is-tab && c != 10 -> {
+            out = out - number.char-to-str(c)
+            op = safe-add(op, 1)
+        }
     }
+    st.cps = 0
+    iseof -> {
+        st.nxt = idx
+        op == 0 -> eof = 1
+        return
+    }
+    isnl -> {
+        st.nxt = idx
+        return
+    }
+    ; capacity exhausted mid-line (trnc==1): throw away the remainder up to \n
+    (true) {
+        idx >= clen -> break
+        c2 = content.byte(idx)
+        idx = safe-add(idx, 1)
+        c2 == 10 -> break
+    }
+    st.nxt = idx
+}
+
+; pr-rowout: BSD otln() with mor==0 — contract runs of spaces into ochar (tabs)
+; when ogap>0, else emit raw; always terminated by one newline (two when dspace).
+; Trailing spaces after the last non-space are NOT emitted (matches mor==0).
+pr-rowout = (b pr-out, data str, o pr-opts) {
+    n = data.len-bytes()
+    o.ogap == 0 -> {
+        n > 0 -> po-add(b, data)
+        po-add(b, '\n')
+        o.dspace != 0 -> po-add(b, '\n')
+        return
+    }
+    gap = o.ogap
+    ocstr = number.char-to-str(o.ocharb)
+    oc = o.ocharb
+    ips = 0
+    ops = 0
+    i = 0
+    (i < n) {
+        ch = data.byte(i)
+        ch == 32 -> {
+            ips = safe-add(ips, 1)
+            i = safe-add(i, 1)
+            continue
+        }
+        ch == oc -> {
+            ips = safe-add(ips, safe-sub(gap, safe-mod(ips, gap)))
+            i = safe-add(i, 1)
+            continue
+        }
+        (safe-sub(ips, ops) > 1) {
+            tbps = safe-add(ops, safe-sub(gap, safe-mod(ops, gap)))
+            tbps > ips -> break
+            po-add(b, ocstr)
+            ops = tbps
+        }
+        (ops < ips) {
+            po-add(b, ' ')
+            ops = safe-add(ops, 1)
+        }
+        po-add(b, number.char-to-str(ch))
+        ips = safe-add(ips, 1)
+        ops = safe-add(ops, 1)
+        i = safe-add(i, 1)
+    }
+    po-add(b, '\n')
+    o.dspace != 0 -> po-add(b, '\n')
+}
+
+; pr-pagehead: emit the two leading blanks + HDFMT header for a page. The
+; offset (if any) is written as raw spaces; contraction of the header offset is
+; not exercised by the common cases (offst==0) so it is passed through.
+pr-pagehead = (b pr-out, time str, fname str, page i64, o pr-opts) {
+    o.nohead != 0 -> return
+    po-add(b, '\n\n')
+    o.offst > 0 -> po-add(b, ' '.repeat(o.offst))
+    line = time - ' ' - fname - ' Page ' - page.to-str() - '\n\n\n'
+    po-add(b, line)
+}
+
+; pr-padtail: BSD prtail() — pad the short page with blanks then honor
+; formfeed / dspace / addone / nohead semantics.
+pr-padtail = (b pr-out, pad i64, o pr-opts) {
+    o.nohead != 0 -> {
+        o.formfeed != 0 -> po-add(b, number.char-to-str(12))
+        return
+    }
+    pad3 = pad
+    o.dspace != 0 -> pad3 = safe-mul(pad3, 2)
+    o.addone != 0 -> pad3 = safe-add(pad3, 1)
+    o.formfeed != 0 -> {
+        po-add(b, number.char-to-str(12))
+        return
+    }
+    total = safe-add(pad3, 5)
+    po-blank(b, total)
+}
+
+; pr-skip-lines: advance the cursor past n newline-terminated lines (BSD
+; inskip: (pgnm-1) pages of `lines` lines each). Stops early at EOF.
+pr-skip-lines = (st pr-cellstate, content str, n i64) {
+    clen = content.len-bytes()
+    k = 0
+    (k < n) {
+        found = false
+        (st.nxt < clen && ! found) {
+            c = content.byte(st.nxt)
+            st.nxt = safe-add(st.nxt, 1)
+            c == 10 -> found = true
+        }
+        ! found -> k = n
+        found -> k = safe-add(k, 1)
+    }
+}
+
+; pr-vert: BSD vertcol() — parallel fill. Read up to lines*clcnt cells per page
+; in read order; a full page lays columns `lines` tall, the short final page
+; balances to height=ceil(C/clcnt). Row i reads cells[i + j*height].
+pr-vert = (b pr-out, content str, time str, fname str, o pr-opts) {
+    #{overflow=wrap}
+    st = pr-cellstate {}
+    st.nxt = 0
+    st.cps = 0
+    cl = o.clcnt
+    colc = safe-add(o.colwd, 1)
+    o.pgnm >= 1 -> pr-skip-lines(st, content, safe-mul(safe-sub(o.pgnm, 1), o.lines))
+    page = 1
+    o.pgnm >= 1 -> page = o.pgnm
+    lncnt = 0
+    (true) {
+        cells []str
+        nums []i64
+        maxc = safe-mul(o.lines, cl)
+        (cells.len() < maxc) {
+            cell, eof = pr-cell(st, content, o.colwd, o)
+            eof == 1 -> break
+            cells.push(cell)
+            lncnt = safe-add(lncnt, 1)
+            nums.push(lncnt)
+        }
+        C = cells.len()
+        C == 0 -> break
+        height = o.lines
+        C < maxc -> {
+            height = safe-div(C, cl)
+            safe-mod(C, cl) != 0 -> height = safe-add(height, 1)
+        }
+        pr-pagehead(b, time, fname, page, o)
+        i = 0
+        (i < height) {
+            i >= C -> break
+            lastj = 0
+            j = 0
+            (j < cl) {
+                safe-add(i, safe-mul(j, height)) < C -> lastj = j
+                j = safe-add(j, 1)
+            }
+            raw = ' '.repeat(o.offst)
+            j = 0
+            (j <= lastj) {
+                #{index-out=0}
+                k = safe-add(i, safe-mul(j, height))
+                cell = cells[k]
+                ni = nums[k]
+                numstr = pr-num-str(ni, o.nmwd)
+                o.nmwd > 0 -> raw = raw - numstr - number.char-to-str(o.nmcharb)
+                raw = raw - cell
+                cnt = cell.len-bytes()
+                sep = ''
+                pln = safe-sub(colc, cnt)
+                j < lastj && o.sflag != 0 -> sep = number.char-to-str(o.schar)
+                j < lastj && o.sflag == 0 && pln > 0 -> sep = ' '.repeat(pln)
+                raw = raw - sep
+                j = safe-add(j, 1)
+            }
+            pr-rowout(b, raw, o)
+            i = safe-add(i, 1)
+        }
+        pr-padtail(b, safe-sub(o.lines, height), o)
+        st.nxt >= content.len-bytes() -> break
+        page = safe-add(page, 1)
+    }
+}
+
+; pr-horz: BSD horzcol() — across fill. Cells fill row-major: row i holds
+; cells[i*clcnt .. i*clcnt+clcnt-1]. Interior columns pad to colwd+1 (or schar).
+pr-horz = (b pr-out, content str, time str, fname str, o pr-opts) {
+    st = pr-cellstate {}
+    st.nxt = 0
+    st.cps = 0
+    cl = o.clcnt
+    colc = safe-add(o.colwd, 1)
+    o.pgnm >= 1 -> pr-skip-lines(st, content, safe-mul(safe-sub(o.pgnm, 1), o.lines))
+    page = 1
+    o.pgnm >= 1 -> page = o.pgnm
+    lncnt = 0
+    (true) {
+        cells []str
+        nums []i64
+        maxc = safe-mul(o.lines, cl)
+        (cells.len() < maxc) {
+            cell, eof = pr-cell(st, content, o.colwd, o)
+            eof == 1 -> break
+            cells.push(cell)
+            lncnt = safe-add(lncnt, 1)
+            nums.push(lncnt)
+        }
+        C = cells.len()
+        C == 0 -> break
+        rows = safe-div(C, cl)
+        safe-mod(C, cl) != 0 -> rows = safe-add(rows, 1)
+        pr-pagehead(b, time, fname, page, o)
+        i = 0
+        (i < rows) {
+            base = safe-mul(i, cl)
+            lastj = 0
+            j = 0
+            (j < cl) {
+                safe-add(base, j) < C -> lastj = j
+                j = safe-add(j, 1)
+            }
+            raw = ' '.repeat(o.offst)
+            j = 0
+            (j <= lastj) {
+                #{index-out=0}
+                k = safe-add(base, j)
+                cell = cells[k]
+                ni = nums[k]
+                numstr = pr-num-str(ni, o.nmwd)
+                o.nmwd > 0 -> raw = raw - numstr - number.char-to-str(o.nmcharb)
+                raw = raw - cell
+                cnt = cell.len-bytes()
+                sep = ''
+                pln = safe-sub(colc, cnt)
+                j < lastj && o.sflag != 0 -> sep = number.char-to-str(o.schar)
+                j < lastj && o.sflag == 0 && pln > 0 -> sep = ' '.repeat(pln)
+                raw = raw - sep
+                j = safe-add(j, 1)
+            }
+            pr-rowout(b, raw, o)
+            i = safe-add(i, 1)
+        }
+        pr-padtail(b, safe-sub(o.lines, rows), o)
+        st.nxt >= content.len-bytes() -> break
+        page = safe-add(page, 1)
+    }
+}
+
+; pr-merge: BSD mulfile() — one column per input file, read concurrently.
+; files = parallel contents; a column whose file is exhausted emits an empty
+; cell until all files are done. Numbering is per row (not per column).
+pr-merge = (b pr-out, contents []str, time str, fname str, o pr-opts) {
+    cl = o.clcnt
+    colc = safe-add(o.colwd, 1)
+    sts []pr-cellstate
+    alive []i64
+    f <- [0..cl): {
+        #{index-out=0}
+        s = pr-cellstate {}
+        s.nxt = 0
+        s.cps = 0
+        cf = contents[f]
+        o.pgnm >= 1 -> pr-skip-lines(s, cf, safe-mul(safe-sub(o.pgnm, 1), o.lines))
+        sts.push(s)
+        alive.push(1)
+    }
+    page = 1
+    o.pgnm >= 1 -> page = o.pgnm
+    lncnt = 0
+    actf = cl
+    (actf > 0) {
+        pr-pagehead(b, time, fname, page, o)
+        i = 0
+        rows = 0
+        (i < o.lines && actf > 0) {
+            raw = ' '.repeat(o.offst)
+            o.nmwd > 0 -> {
+                lncnt = safe-add(lncnt, 1)
+                raw = raw - pr-num-str(lncnt, o.nmwd) - number.char-to-str(o.nmcharb)
+            }
+            lastj = -1
+            j = 0
+            (j < cl) {
+                #{index-out=0}
+                aj = alive[j]
+                stj = sts[j]
+                cj = contents[j]
+                aj == 1 && stj.nxt < cj.len-bytes() -> lastj = j
+                j = safe-add(j, 1)
+            }
+            lastj < 0 -> i = o.lines
+            lastj >= 0 -> {
+                cells []str
+                cnts []i64
+                j = 0
+                (j <= lastj) {
+                    #{index-out=0}
+                    cell = ''
+                    st = sts[j]
+                    cj = contents[j]
+                    aj = alive[j]
+                    hasdata = aj == 1 && st.nxt < cj.len-bytes()
+                    hasdata -> {
+                        c2, e2 = pr-cell(st, cj, o.colwd, o)
+                        e2 == 0 -> cell = c2
+                        e2 == 1 -> {
+                            aj = 0
+                            actf = safe-sub(actf, 1)
+                        }
+                    }
+                    sts[j] = st
+                    alive[j] = aj
+                    cells.push(cell)
+                    cnts.push(cell.len-bytes())
+                    j = safe-add(j, 1)
+                }
+                out = raw
+                j = 0
+                (j <= lastj) {
+                    #{index-out=0}
+                    cv = cells[j]
+                    cnt2 = cnts[j]
+                    sep = ''
+                    pln = safe-sub(colc, cnt2)
+                    j < lastj && o.sflag != 0 -> sep = number.char-to-str(o.schar)
+                    j < lastj && o.sflag == 0 && pln > 0 -> sep = ' '.repeat(pln)
+                    out = out - cv - sep
+                    j = safe-add(j, 1)
+                }
+                pr-rowout(b, out, o)
+                rows = safe-add(rows, 1)
+                i = safe-add(i, 1)
+            }
+        }
+        rows == 0 -> actf = 0
+        rows > 0 -> pr-padtail(b, safe-sub(o.lines, rows), o)
+        page = safe-add(page, 1)
+    }
+}
+
+; pr-usage: BSD usage() text
+pr-usage = (b pr-out) {
+    po-flush(b)
+    eprint('usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]')
+    eprint('          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]')
+    eprint('          [-L locale] [-s[ch]] [-w width] [-] [file ...]')
 }
 
 pr-run = () {
     argc = args()
-    page-len = 66
-    page-width = 72
+    b = po-new()
+    ; setup() defaults (pr.h): LINES=66 PGWD=72 HEADLEN=TAILLEN=5
+    lines = 66
+    pgwd = 72
+    offst = 0
+    dspace = 0
+    addone = 0
+    formfeed = 0
+    nohead = 0
+    nodiag = 0
+    pgnm = 0
     header = ''
-    no-header = false
-    margin = 0
-    double = false
+    have-header = false
+    setup-err = false
     files []str
+    dash-stdin = false
+    all-rest = false
+    seen-page = false
+    errcnt = 0
+    nmwd = 0
+    nmch = ''
+    ; multi-column / merge / tab-expansion option state (setup globals)
+    clcnt = 0
+    across = 0
+    merge = 0
+    cflag = 0
+    eflag = 0
+    iflag = 0
+    wflag = 0
+    sflag = 0
+    scharb = 9
+    inchb = 9
+    ingap = 0
+    ocharb = 9
+    ogap = 0
+    nmcharb = 9
+    colwd = 0
+
+    ; --- setup(): egetopt("#adFfmrte?h:i?L:l:n?o:ps?w:") plus '+page' ---
+    ix = 2
+    i = 2
+    a = ''
+    al = 0
+    pl2 = ''
+    cl2 = ''
+    rest = ''
+    one-char = false
+    is-plus = false
+    is-dashdash = false
+    is-opts = false
+    take-next = false
+    nxt-arg = ''
     skip-next = false
+    was-skip = false
+    (ix < argc) {
+        a = arg(ix)
+        i = safe-add(ix, 1)
+        ix = i
+        nxt-arg = arg(i)
+        al = a.len-bytes()
+        one-char = al == 1
+        is-plus = a.starts-with('+')
+        is-dashdash = a.starts-with('--')
+        is-opts = a.starts-with('-')
+        take-next = false
+        pl2 = ''
+        cl2 = ''
+        rest = ''
+        is-dash = a == '-'
+        is-only = a == '--'
+        last-cstr = ''
+        al > 0 -> last-cstr = number.char-to-str(a.byte(safe-sub(al, 1)))
+        plus-uns = is-plus && ! seen-page
+        col-spec = is-opts && ! is-dashdash && al >= 2 && pr-is-digit(safe-slice2(a, 1, 2))
+        opt-run = is-opts && ! is-dashdash && ! one-char && ! is-dash && ! all-rest && ! col-spec
 
-    i <- [2..argc): {
-        skip-next -> {
-            skip-next = false
-            continue
+        was-skip = skip-next
+
+        skip-next = false
+        ! was-skip -> a == '-' -> files.push(a)
+        ! was-skip -> pl2 = safe-rest1(a)
+        ! was-skip -> cl2 = safe-rest2(a)
+        ! was-skip -> rest = safe-rest1(a)
+        ! was-skip -> is-plus && seen-page -> files.push(a)
+        ! was-skip -> plus-uns -> {
+            pv = 0
+            pok = false
+            pl2.len-bytes() > 0 -> {
+                pv = pl2.to-i64()
+                pok = pr-num-ok(pl2) && pv >= 1
+            }
+            ! pok -> {
+                po-flush(b)
+                eprint('pr: +page number must be 1 or more')
+                setup-err = true
+            }
+            pgnm = pv
+            seen-page = true
         }
-        a = arg(i)
-        a == '-t' -> no-header = true
-        a == '-d' -> double = true
-        a == '-h' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                header = arg(i + 1)
-                skip-next = true
+        ! was-skip -> col-spec -> {
+            cv = 0
+            cok = false
+            rest.len-bytes() > 0 -> {
+                cv = rest.to-i64()
+                cok = pr-num-ok(rest) && cv >= 1
+            }
+            ! cok -> {
+                po-flush(b)
+                eprint('pr: -columns must be 1 or more')
+                setup-err = true
+            }
+            cok -> {
+                clcnt = cv
+                cv > 1 -> cflag = 1
             }
         }
-        a.starts-with('-h') -> {
-            a.len-bytes() > 2 -> header = a.slice(2, a.len-bytes())
-        }
-        a == '-l' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                v = 0
-                s = arg(i + 1)
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+        ! was-skip -> opt-run -> {
+            ci = 1
+            (ci < al) {
+                n1 = safe-add(ci, 1)
+                co = a.byte(ci)
+                cstr = number.char-to-str(co)
+                ci = n1
+                otail = safe-slice2(a, n1, al)
+                reqopt = cstr == 'l' || cstr == 'o' || cstr == 'h' || cstr == 'w' || cstr == 'L'
+                optopt2 = cstr == 'e' || cstr == 'i' || cstr == 'n' || cstr == 's'
+                valopt = reqopt || optopt2
+                bad-mlt = cstr == 'a' || cstr == 'm'
+                d1 = safe-add(dspace, 1)
+                f1 = safe-add(formfeed, 1)
+                r1 = safe-add(nodiag, 1)
+                valopt -> ci = al
+                reqopt && otail.len-bytes() == 0 -> take-next = true
+                cstr == 't' -> nohead = 1
+                cstr == 'd' -> dspace = d1
+                cstr == 'f' -> formfeed = f1
+                cstr == 'F' -> formfeed = f1
+                cstr == 'p' -> {
                 }
-                v > 0 -> page-len = v
-                skip-next = true
-            }
-        }
-        a.starts-with('-l') -> {
-            a.len-bytes() > 2 -> {
-                v = 0
-                s = a.slice(2, a.len-bytes())
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-
-                    #{overflow=wrap}
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+                cstr == 'r' -> nodiag = r1
+                cstr == 'a' -> across = 1
+                cstr == 'm' -> merge = 1
+                cstr == 'e' -> {
+                    eflag = 1
+                    et2 = otail
+                    inchb = 9
+                    et2.len-bytes() > 0 && ! pr-is-digit(safe-slice2(et2, 0, 1)) -> {
+                        inchb = et2.byte(0)
+                        et2 = safe-rest1(et2)
+                    }
+                    et2.len-bytes() > 0 && pr-is-digit(safe-slice2(et2, 0, 1)) -> {
+                        eg = et2.to-i64()
+                        eg < 0 -> {
+                            po-flush(b)
+                            eprint('pr: -e gap must be 0 or more')
+                            setup-err = true
+                        }
+                        ingap = eg
+                        eg == 0 -> ingap = 8
+                    }
+                    et2.len-bytes() > 0 && ! pr-is-digit(safe-slice2(et2, 0, 1)) -> {
+                        po-flush(b)
+                        eprint('pr: invalid value for -e')
+                        setup-err = true
+                    }
+                    et2.len-bytes() == 0 -> ingap = 8
                 }
-                v > 0 -> page-len = v
-            }
-        }
-        a == '-w' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                v = 0
-                s = arg(i + 1)
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+                cstr == 'i' -> {
+                    iflag = 1
+                    it2 = otail
+                    ocharb = 9
+                    it2.len-bytes() > 0 && ! pr-is-digit(safe-slice2(it2, 0, 1)) -> {
+                        ocharb = it2.byte(0)
+                        it2 = safe-rest1(it2)
+                    }
+                    it2.len-bytes() > 0 && pr-is-digit(safe-slice2(it2, 0, 1)) -> {
+                        ig = it2.to-i64()
+                        ig < 0 -> {
+                            po-flush(b)
+                            eprint('pr: -i gap must be 0 or more')
+                            setup-err = true
+                        }
+                        ogap = ig
+                        ig == 0 -> ogap = 8
+                    }
+                    it2.len-bytes() > 0 && ! pr-is-digit(safe-slice2(it2, 0, 1)) -> {
+                        po-flush(b)
+                        eprint('pr: invalid value for -i')
+                        setup-err = true
+                    }
+                    it2.len-bytes() == 0 -> ogap = 8
                 }
-                v > 0 -> page-width = v
-                skip-next = true
-            }
-        }
-        a.starts-with('-w') -> {
-            a.len-bytes() > 2 -> {
-                v = 0
-                s = a.slice(2, a.len-bytes())
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-
-                    #{overflow=wrap}
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+                cstr == 's' -> {
+                    sflag = 1
+                    otail.len-bytes() == 0 -> scharb = 9
+                    otail.len-bytes() > 0 -> {
+                        scharb = otail.byte(0)
+                        safe-rest1(otail).len-bytes() > 0 -> {
+                            po-flush(b)
+                            eprint('pr: invalid value for -s')
+                            setup-err = true
+                        }
+                    }
                 }
-                v > 0 -> page-width = v
-            }
-        }
-        a == '-o' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                v = 0
-                s = arg(i + 1)
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+                cstr == 'h' && otail.len-bytes() > 0 -> {
+                    header = otail
+                    have-header = true
                 }
-                v > 0 -> margin = v
-                skip-next = true
-            }
-        }
-        a.starts-with('-o') -> {
-            a.len-bytes() > 2 -> {
-                v = 0
-                s = a.slice(2, a.len-bytes())
-                j <- [0..s.len-bytes()): {
-                    c = s[j]
-
-                    #{overflow=wrap}
-                    c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+                cstr == 'w' -> wflag = 1
+                cstr == 'w' && otail.len-bytes() > 0 -> {
+                    wok = pr-num-ok(otail)
+                    wv = otail.to-i64()
+                    ! wok || wv < 1 -> {
+                        po-flush(b)
+                        eprint('pr: -w width must be 1 or more ')
+                        setup-err = true
+                    }
+                    wok -> pgwd = wv
                 }
-                v > 0 -> margin = v
+                cstr == 'l' && otail.len-bytes() > 0 -> {
+                    vok = pr-lines-ok(otail)
+                    v = otail.to-i64()
+                    ! vok || v < 1 -> {
+                        po-flush(b)
+                        eprint('pr: number of lines must be 1 or more')
+                        setup-err = true
+                    }
+                    vok -> lines = v
+                }
+                cstr == 'o' && otail.len-bytes() > 0 -> {
+                    ook = pr-num-ok(otail)
+                    ov = otail.to-i64()
+                    ! ook || ov < 1 -> {
+                        po-flush(b)
+                        eprint('pr: -o offset must be 1 or more')
+                        setup-err = true
+                    }
+                    ook -> offst = ov
+                }
+                cstr == 'n' -> {
+                    nl1 = otail.len-bytes() > 0
+                    nd1 = false
+                    nl1 -> nd1 = pr-is-digit(safe-slice2(otail, 0, 1))
+                    nmch = '\t'
+                    t2 = otail
+                    nl1 && ! nd1 -> {
+                        nmch = safe-slice2(otail, 0, 1)
+                        t2 = safe-rest1(otail)
+                    }
+                    nmw = 0
+                    t2.len-bytes() == 0 -> nmw = 5
+                    t2.len-bytes() > 0 && pr-num-ok(t2) -> {
+                        tv = t2.to-i64()
+                        tv < 1 -> {
+                            po-flush(b)
+                            eprint('pr: -n width must be 1 or more')
+                            setup-err = true
+                        }
+                        nmw = tv
+                    }
+                    t2.len-bytes() > 0 && ! pr-num-ok(t2) -> {
+                        po-flush(b)
+                        eprint('pr: invalid value for -n ' - t2)
+                        setup-err = true
+                    }
+                    nmwd = nmw
+                    nmcharb = 9
+                    nmch.len-bytes() > 0 -> nmcharb = nmch.byte(0)
+                }
+                cstr != 't' && cstr != 'd' && cstr != 'f' && cstr != 'F' && cstr != 'p' && cstr != 'r' && ! valopt && ! bad-mlt -> {
+                    po-flush(b)
+                    eprint('pr: illegal option -- ' - cstr)
+                    setup-err = true
+                }
             }
         }
-        ! a.starts-with('-') -> files.push(a)
+        ! was-skip -> is-only -> all-rest = true
+        ! was-skip -> ! is-opts -> ! plus-uns && ! all-rest -> files.push(a)
+        ! was-skip -> take-next -> a == '-h' -> {
+            header = nxt-arg
+            have-header = true
+        }
+        ! was-skip -> take-next -> i >= argc -> {
+            po-flush(b)
+            eprint('pr: option requires an argument -- ' - last-cstr)
+            setup-err = true
+        }
+        ! was-skip -> take-next -> {
+            nv = nxt-arg.to-i64()
+            vok2 = pr-lines-ok(nxt-arg)
+            ook2 = pr-num-ok(nxt-arg) && nv >= 1
+            wok2 = pr-num-ok(nxt-arg) && nv >= 1
+            a == '-l' && ! vok2 -> {
+                po-flush(b)
+                eprint('pr: number of lines must be 1 or more')
+                setup-err = true
+            }
+            a == '-l' && vok2 -> lines = nv
+            a == '-o' && ! ook2 -> {
+                po-flush(b)
+                eprint('pr: -o offset must be 1 or more')
+                setup-err = true
+            }
+            a == '-o' && ook2 -> offst = nv
+            a == '-w' && ! wok2 -> {
+                po-flush(b)
+                eprint('pr: -w width must be 1 or more ')
+                setup-err = true
+            }
+            a == '-w' && wok2 -> pgwd = nv
+            skip-next = true
+        }
+        ! was-skip -> all-rest && ! is-only -> files.push(a)
     }
 
-    ; Determine body lines per page
-    header-lines = 5
-    footer-lines = 5
-    {
-        no-header -> {
-            header-lines = 0
-            footer-lines = 0
+    ; --- setup() tail: header sizes, double-space halving ---
+    ! setup-err -> {
+        ; clcnt default / merge operand count (BSD setup)
+        clcnt == 0 -> {
+            merge != 0 -> {
+                clcnt = files.len()
+                clcnt <= 1 -> {
+                    clcnt = 1
+                    merge = 0
+                }
+            }
+            merge == 0 -> clcnt = 1
+        }
+        ; -a requires multiple columns and cannot combine with -m
+        across != 0 -> {
+            clcnt == 1 -> {
+                po-flush(b)
+                eprint('pr: -a flag requires multiple columns')
+                setup-err = true
+            }
+            merge != 0 -> {
+                po-flush(b)
+                eprint('pr: -m cannot be used with -a')
+                setup-err = true
+            }
+        }
+        ; default page width when no -w
+        wflag == 0 -> {
+            sflag != 0 -> pgwd = 512
+            sflag == 0 -> pgwd = 72
+        }
+        ; multiple columns / merge imply default tab expand + contract
+        cflag != 0 || merge != 0 -> {
+            eflag == 0 -> {
+                inchb = 9
+                ingap = 8
+            }
+            iflag == 0 -> {
+                ocharb = 9
+                ogap = 8
+            }
+        }
+        ; -m cannot combine with explicit multiple columns
+        cflag != 0 && merge != 0 -> {
+            po-flush(b)
+            eprint('pr: -m cannot be used with multiple columns')
+            setup-err = true
+        }
+        ; column width math (cflag)
+        cflag != 0 -> {
+            nmwd > 0 -> {
+                colwd = safe-div(safe-sub(safe-add(pgwd, 1), safe-mul(clcnt, safe-add(nmwd, 2))), clcnt)
+                pgwd = safe-sub(safe-mul(safe-add(safe-add(colwd, nmwd), 2), clcnt), 1)
+            }
+            nmwd == 0 -> {
+                colwd = safe-div(safe-sub(safe-add(pgwd, 1), clcnt), clcnt)
+                pgwd = safe-sub(safe-mul(safe-add(colwd, 1), clcnt), 1)
+            }
+            colwd < 1 -> {
+                po-flush(b)
+                eprint('pr: page width is too small for ' - clcnt.to-str() - ' columns')
+                setup-err = true
+            }
+        }
+        lines == 0 -> lines = 66
+        lines <= 10 -> nohead = 1
+        lines > 10 && nohead == 0 -> lines = safe-sub(lines, 10)
+        dspace != 0 -> {
+            lines == 1 -> dspace = 0
+            lines != 1 -> {
+                safe-mod(lines, 2) != 0 -> addone = 1
+                lines = safe-div(lines, 2)
+            }
         }
     }
+    setup-err -> {
+        pr-usage(b)
+        po-flush(b)
+        os.exit(1)
+    }
 
-    #{overflow=wrap}
-    body-lines = page-len - header-lines - footer-lines
-    {
-        body-lines < 1 -> body-lines = 1
+    ; --- sources: file list, implicit stdin ---
+    sources []str
+    fi <- [0..files.len()): {
+        #{index-out=0}
+        f = files[fi]
+        f == '-' -> sources.push('')
+        f != '-' -> sources.push(f)
+    }
+    sources.len() == 0 -> {
+        sources.push('')
+        dash-stdin = true
+    }
 
-        ; Process each file
-        files.len() == 0 -> {
-            content = ''
-            r = fs.read-stdin-str()
-            r: {
-                ok -> content = it
+    ; --- build shared option struct for the engines ---
+    o = pr-opts {}
+    o.clcnt = clcnt
+    o.colwd = colwd
+    o.pgwd = pgwd
+    o.lines = lines
+    o.offst = offst
+    o.dspace = dspace
+    o.addone = addone
+    o.formfeed = formfeed
+    o.nohead = nohead
+    o.pgnm = pgnm
+    o.sflag = sflag
+    o.schar = scharb
+    o.ingap = ingap
+    o.inchb = inchb
+    o.ogap = ogap
+    o.ocharb = ocharb
+    o.nmwd = nmwd
+    o.nmcharb = nmcharb
 
+    ; --- merge mode (-m): all files read concurrently, one column each ---
+    merge != 0 -> {
+        mcol = clcnt
+        nmwd > 0 -> {
+            colwd = safe-div(safe-sub(safe-sub(pgwd, mcol), nmwd), mcol)
+            pgwd = safe-sub(safe-mul(safe-add(colwd, 1), mcol), safe-add(nmwd, 2))
+        }
+        nmwd == 0 -> {
+            colwd = safe-div(safe-sub(safe-add(pgwd, 1), mcol), mcol)
+            pgwd = safe-sub(safe-mul(safe-add(colwd, 1), mcol), 1)
+        }
+        colwd < 1 -> {
+            po-flush(b)
+            eprint('pr: page width too small for ' - mcol.to-str() - ' columns')
+            po-flush(b)
+            errcnt != 0 -> os.exit(1)
+            os.exit(0)
+        }
+        o.colwd = colwd
+        o.pgwd = pgwd
+        contents []str
+        mf <- [0..sources.len()): {
+            #{index-out=0}
+            msrc = sources[mf]
+            mcontent = ''
+            mokc = false
+            mr ?str = ''
+            msrc == '' -> mr = fs.read-stdin-str()
+            msrc != '' -> mr = fs.read-str(msrc)
+            mr: {
+                ok -> {
+                    mcontent = it
+                    mokc = true
+                }
                 nil -> {
                 }
-
                 err -> {
                 }
             }
-            lines []str
-            split-lines(content, lines)
-            output(lines, header, header-lines, footer-lines, body-lines, margin, double)
+            ! mokc && msrc == '' -> mokc = true
+            ! mokc && msrc != '' && fs.exists(msrc) -> mokc = true
+            ! mokc && nodiag == 0 -> {
+                po-flush(b)
+                eprint('pr: cannot open ' - msrc - ', No such file or directory')
+            }
+            contents.push(mcontent)
         }
+        mtime = pr-date-str('date ' - number.char-to-str(39) - '+%b %e %H:%M %Y' - number.char-to-str(39))
+        mfname = ''
+        have-header -> mfname = header
+        pr-merge(b, contents, mtime, mfname, o)
+        po-flush(b)
+        errcnt != 0 -> os.exit(1)
+        os.exit(0)
+    }
 
-        files.len() > 0 -> {
-            fi <- [0..files.len()): {
-                ! fs.is-file(files[fi]) -> {
-                    #{overflow=wrap}
-                    msg = 'pr: ' - files[fi] - ': No such file or directory'
-                    io.errln(msg)
-                    continue
-                }
-                content = ''
-                r = fs.read-str(files[fi])
-                r: {
-                    ok -> content = it
-
-                    nil -> {
-                    }
-
-                    err -> {
-                    }
-                }
-                lines []str
-                split-lines(content, lines)
-                hdr = header
-                hdr.len-bytes() == 0 -> {
-
-                    #{index-out=0}
-                    hdr = files[fi]
-                }
-                output(lines, hdr, header-lines, footer-lines, body-lines, margin, double)
+    ; --- per-file processing (nxtfile + onecol) ---
+    body = lines
+    si = 0
+    (si < sources.len()) {
+        #{index-out=0}
+        src = sources[si]
+        sip1 = safe-add(si, 1)
+        snp = arg(sip1)
+        stdin-src = src == ''
+        last-file = sip1 == sources.len()
+        errcnt1 = safe-add(errcnt, 1)
+        content = ''
+        r ?str = ''
+        stdin-src -> r = fs.read-stdin-str()
+        ! stdin-src -> r = fs.read-str(src)
+        okc = false
+        r: {
+            ok -> {
+                content = it
+                okc = true
+            }
+            nil -> {
+            }
+            err -> {
             }
         }
-    }
-}
-
-; output: paginate and output all lines
-output = (lines []str, header str, header-lines i64, footer-lines i64, body-lines i64, margin i64, double bool) {
-    n = lines.len()
-    n == 0 -> return
-
-    page = 1
-    pos = 0
-    (pos < n) {
-        pos >= n -> break
-
-        ; Print header (5 lines: blank, date+filename+page, blank, separator-line, blank)
-        header-lines > 0 -> {
-
-            ; Line 1: blank
-            print('')
-
-            ; Line 2: date  filename  page (simplified: just filename + page)
-            ; Format: "  <filename>  Page <N>"
-            #{overflow=wrap}
-            hdr-line = '  ' - header - '  Page ' - page.to-str()
-            print(hdr-line)
-
-            ; Line 3: blank
-            print('')
-
-            ; Line 4: separator (dashes)
-            print('---------------------------------------------------------------')
-
-            ; Line 5: blank
-            print('')
+        ! okc && stdin-src -> okc = true
+        ! okc && ! stdin-src && fs.exists(src) -> okc = true
+        ! okc -> errcnt = errcnt1
+        ! okc -> nodiag == 0 -> {
+            po-flush(b)
+            eprint('pr: cannot open ' - src - ', No such file or directory')
         }
-
-        ; Print body
-        next = print-page(lines, pos, body-lines, margin, double)
-        pos = next
-
-        ; Print footer (5 blank lines)
-        footer-lines > 0 -> {
-            k <- [0..footer-lines): {
-                print('')
-            }
+        ep = 0
+        time = ''
+        stdin-src -> time = pr-date-str('date ' - number.char-to-str(39) - '+%b %e %H:%M %Y' - number.char-to-str(39))
+        ! stdin-src -> ep = fs.stat-mtime(src)
+        ! stdin-src -> time = pr-date-str('date -r ' - ep.to-str() - ' ' - number.char-to-str(39) - '+%b %e %H:%M %Y' - number.char-to-str(39))
+        ! stdin-src && time.len-bytes() == 0 -> {
+            po-flush(b)
+            eprint('pr: time conversion failed')
+            os.exit(1)
         }
-
-        ; Form feed between pages (but not after last page)
-        pos < n -> print('\f')
-
-        #{overflow=wrap}
-        page = page + 1
+        fname = ''
+        have-header -> fname = header
+        ! have-header -> {
+            stdin-src -> fname = ''
+            ! stdin-src -> fname = src
+        }
+        rc = 0
+        fe = 0
+        rc = 0
+        {
+            clcnt == 1 -> rc, fe = pr-file(b, content, time, fname, last-file, body, offst, dspace, addone, pgnm, nohead, formfeed, nmwd, nmch)
+            clcnt > 1 && across != 0 -> pr-horz(b, content, time, fname, o)
+            clcnt > 1 && across == 0 -> pr-vert(b, content, time, fname, o)
+        }
+        okc -> errcnt = safe-add(errcnt, fe)
+        si = sip1
+        ! okc && si >= sources.len() -> si = sources.len()
     }
+    po-flush(b)
+    errcnt != 0 -> os.exit(1)
 }

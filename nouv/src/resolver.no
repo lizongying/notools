@@ -5,11 +5,11 @@
 ; Designed to handle complex dependency graphs with multiple constraints.
 ;
 ; API:
-;   resolve(deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved str, ok bool)
-;   resolve-with-context(deps str, extras str, cfg str) (resolved str, ok bool)
+;   resolve(deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved ?str)
+;   resolve-with-context(deps str, extras str, cfg str) (resolved ?str)
 ;   find-conflicts(deps str) (conflicts str)
 ;   check-compatible(name str, ver str, specs str) (ok bool)
-;   build-resolution-graph(deps str) (graph str, ok bool)
+;   build-resolution-graph(deps str) (graph ?str)
 
 # /nouv/src/registry
 # /nouv/src/pep508
@@ -30,13 +30,11 @@
 ; cfg str — parsed pyproject.toml config
 ;
 ; returns:
-;   resolved str — flat representation: name==version\nname==version\n...
-;   ok bool — success
+;   resolved ?str — flat representation: name==version\nname==version\n... (nil on failure)
 ; ═══════════════════════════════════════════════
 
-resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved str, ok bool) {
-    ok = false
-    resolved = ''
+resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (resolved ?str) {
+    resolved-b = ''
 
     ; combine all requirements
     all-deps = deps
@@ -54,7 +52,7 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
 
     {
         all-deps == '' -> {
-            ok = true
+            resolved = resolved-b
             return
         }
     }
@@ -65,7 +63,7 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
     ; build list of requirements to process
     seen = ''
     queue = all-deps
-    resolved = ''
+    resolved-b = ''
 
     ; process queue
     {
@@ -135,19 +133,19 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
 
                         source-kind == 'url' -> {
                             #{overflow=wrap}
-                            resolved = resolved - name - '==<source:' - source-kind - '>\n'
+                            resolved-b = resolved-b - name - '==<source:' - source-kind - '>\n'
                             continue
                         }
 
                         source-kind == 'path' -> {
                             #{overflow=wrap}
-                            resolved = resolved - name - '==<source:' - source-kind - '>\n'
+                            resolved-b = resolved-b - name - '==<source:' - source-kind - '>\n'
                             continue
                         }
 
                         source-kind == 'editable' -> {
                             #{overflow=wrap}
-                            resolved = resolved - name - '==<source:' - source-kind - '>\n'
+                            resolved-b = resolved-b - name - '==<source:' - source-kind - '>\n'
                             continue
                         }
                     }
@@ -180,9 +178,13 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
             }
 
             ; determine best version
-            best-ver, ver-ok = pick-best-version(info, merged-specs)
-            {
-                ! ver-ok -> {
+            best-ver-opt = pick-best-version(info, merged-specs)
+            best-ver-opt: {
+                ok -> {
+                    best-ver = it
+                }
+
+                -> {
                     print('warning: no suitable version for {name} ({merged-specs})')
                     continue
                 }
@@ -190,7 +192,7 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
 
             ; add to resolved
             #{overflow=wrap}
-            resolved = resolved - name - '==' - best-ver - '\n'
+            resolved-b = resolved-b - name - '==' - best-ver - '\n'
 
             ; get sub-dependencies
             sub-deps = get-requires-dist(info, best-ver)
@@ -203,16 +205,15 @@ resolve = (deps str, dev-deps str, constraints str, overrides str, cfg str) (res
         }
     }
 
-    ok = true
+    resolved = resolved-b
 }
 
 ; ═══════════════════════════════════════════════
 ; resolve-with-context — resolve dependencies with extras context
 ; ═══════════════════════════════════════════════
 
-resolve-with-context = (deps str, extras str, cfg str) (resolved str, ok bool) {
-    ok = false
-    resolved = ''
+resolve-with-context = (deps str, extras str, cfg str) (resolved ?str) {
+    resolved-b = ''
 
     ; for each dep, check if it should include extras
     lines = deps.split('\n')
@@ -244,7 +245,7 @@ resolve-with-context = (deps str, extras str, cfg str) (resolved str, ok bool) {
 
                         ; re-add to the deps to process
                         #{overflow=wrap}
-                        resolved = resolved - line - '\n'
+                        resolved-b = resolved-b - line - '\n'
                     }
                 }
             }
@@ -252,7 +253,13 @@ resolve-with-context = (deps str, extras str, cfg str) (resolved str, ok bool) {
     }
 
     ; now do full resolution
-    resolved, ok = resolve(resolved, '', '', '', cfg)
+    resolved-opt = resolve(resolved-b, '', '', '', cfg)
+    resolved-opt: {
+        ok -> resolved = it
+
+        nil -> {
+        }
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -398,9 +405,8 @@ lookup-constraint = (map str, name str) (spec str) {
 ; that satisfies all version specs
 ; ═══════════════════════════════════════════════
 
-pick-best-version = (info str, specs str) (ver str, ok bool) {
-    ok = false
-    ver = ''
+pick-best-version = (info str, specs str) (ver ?str) {
+    ver = nil
 
     ; extract all versions from info
     versions = extract-versions(info)
@@ -418,9 +424,9 @@ pick-best-version = (info str, specs str) (ver str, ok bool) {
                     lines = sorted.split('\n')
                     {
                         lines.len() > 0 -> {
-                            ver = lines[0].trim()
+                            v0 = lines[0].trim()
                             {
-                                ver != '' -> ok = true
+                                v0 != '' -> ver = v0
                             }
                         }
                     }
@@ -442,7 +448,6 @@ pick-best-version = (info str, specs str) (ver str, ok bool) {
                     candidate.len() > 0 -> {
                         check-compatible(candidate, specs) -> {
                             ver = candidate
-                            ok = true
                             return
                         }
                     }
@@ -857,9 +862,9 @@ find-conflicts = (deps str) (conflicts str) {
 ; returns: name==version→dep1,dep2,dep3\n...
 ; ═══════════════════════════════════════════════
 
-build-resolution-graph = (deps str) (graph str, ok bool) {
-    ok = false
-    graph = ''
+build-resolution-graph = (deps str) (graph ?str) {
+    graph = nil
+    graph-b = ''
 
     seen = ''
     queue = deps
@@ -906,9 +911,11 @@ build-resolution-graph = (deps str) (graph str, ok bool) {
                 ! info-ok -> continue
             }
 
-            best-ver, ver-ok = pick-best-version(info, specs)
-            {
-                ! ver-ok -> continue
+            best-ver-opt = pick-best-version(info, specs)
+            best-ver-opt: {
+                ok -> best-ver = it
+
+                nil -> continue
             }
 
             ; get sub-deps
@@ -945,7 +952,7 @@ build-resolution-graph = (deps str) (graph str, ok bool) {
             }
 
             #{overflow=wrap}
-            graph = graph - name - '==' - best-ver - '->' - sub-names - '\n'
+            graph-b = graph-b - name - '==' - best-ver - '->' - sub-names - '\n'
 
             {
                 #{overflow=wrap}
@@ -954,16 +961,14 @@ build-resolution-graph = (deps str) (graph str, ok bool) {
         }
     }
 
-    ok = true
+    graph = graph-b
 }
 
 ; ═══════════════════════════════════════════════
 ; upgrade-package — resolve with upgrade for specific packages
 ; ═══════════════════════════════════════════════
 
-upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved str, ok bool) {
-    ok = false
-    resolved = ''
+upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved ?str) {
 
     ; if upgrade-pkgs is empty, upgrade all
     ; if upgrade-pkgs is not empty, only upgrade listed packages,
@@ -973,7 +978,13 @@ upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved str, ok bool) 
         upgrade-pkgs == '' -> {
 
             ; upgrade everything — just do fresh resolution
-            resolved, ok = resolve(deps, '', '', '', cfg)
+            resolved-opt = resolve(deps, '', '', '', cfg)
+            resolved-opt: {
+                ok -> resolved = it
+
+                nil -> {
+                }
+            }
         }
 
         -> {
@@ -981,7 +992,13 @@ upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved str, ok bool) 
             ; for each package in upgrade-pkgs, force upgrade
             ; others stay as-is (from lockfile)
             ; simplified: just do full resolution
-            resolved, ok = resolve(deps, '', '', '', cfg)
+            resolved-opt = resolve(deps, '', '', '', cfg)
+            resolved-opt: {
+                ok -> resolved = it
+
+                nil -> {
+                }
+            }
         }
     }
 }

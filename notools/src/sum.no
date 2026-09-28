@@ -1,14 +1,14 @@
 ; sum.no — 文件校验和
 ; 计算文件的 16-bit 校验和和块数
 ; 用法：sum [-r] [-s] [file...]
-;   -r  System V 模式（每字节累加，块大小 512）
-;   -s  BSD 模式（默认，每 2 字节 big-endian 累加，块大小 1024）
+;   -r  System V 模式（默认，与 macOS 一致：每字节 16-bit 右旋累加，块大小 512）
+;   -s  BSD 模式（每 2 字节 big-endian 累加，块大小 1024）
 ; 无参数时读取 stdin
 ; 输出格式：CHECKSUM BLOCKS FILENAME（stdin 时无 FILENAME）
 
 sum-run = () {
     argc = args()
-    sysv = false
+    sysv = true
     files []str
     i <- [2..argc): {
         a = arg(i)
@@ -39,14 +39,12 @@ sum-run = () {
                 sysv -> {
                     checksum, blocks = calc-sysv(data)
 
-                    #{overflow=wrap}
                     line = checksum.to-str() - ' ' - blocks.to-str()
                     print(line)
                 }
 
                 -> {
                     checksum, blocks = bsd(data)
-                    #{overflow=wrap}
                     line = checksum.to-str() - ' ' - blocks.to-str()
                     print(line)
                 }
@@ -59,7 +57,6 @@ sum-run = () {
                 #{index-out=0}
                 f = files[fi]
                 ! fs.is-file(f) -> {
-                    #{overflow=wrap}
                     io.errln('sum: ' - f - ': No such file or directory')
                     os.exit(1)
                 }
@@ -78,14 +75,12 @@ sum-run = () {
                 {
                     sysv -> {
                         checksum, blocks = calc-sysv(data)
-                        #{overflow=wrap}
                         line = checksum.to-str() - ' ' - blocks.to-str() - ' ' - f
                         print(line)
                     }
 
                     -> {
                         checksum, blocks = bsd(data)
-                        #{overflow=wrap}
                         line = checksum.to-str() - ' ' - blocks.to-str() - ' ' - f
                         print(line)
                     }
@@ -125,30 +120,19 @@ bsd = (data []byte) (checksum i64, blocks i64) {
     blocks == 0 -> blocks = 1
 }
 
-; sysv: System V 校验和
-; 每字节累加到 32-bit，最后回绕到 16-bit（r=1）
-; blocks = ceil(size / 512)，最少 1
+; sysv: System V 校验和（macOS 实现）
+; 每字节 16-bit 右旋后累加，mask 0xffff
+; blocks = ceil(size / 1024)，空文件为 0
 calc-sysv = (data []byte) (checksum i64, blocks i64) {
     checksum = 0
     n = data.len()
     i <- [0..n): {
-
-        #{overflow=wrap}
-        checksum = checksum + (data[i] & 255)
-    }
-
-    ; 回绕：将高位折叠到低位
-    {
-        checksum > 0xffff -> {
-
-            #{overflow=wrap}
-            checksum = (checksum & 0xffff) + (checksum >> 16)
-            #{overflow=wrap}
-            checksum > 0xffff -> checksum = (checksum & 0xffff) + (checksum >> 16)
-        }
+        ; System V: 16-bit 右旋一位（lsb 回卷到 msb）后加字节
+        low = checksum & 1
+        rot = (checksum >> 1) | (low << 15)
+        checksum = (rot + (data[i] & 255)) & 0xffff
     }
 
     #{overflow=wrap}
-    blocks = (n + 511) / 512
-    blocks == 0 -> blocks = 1
+    blocks = (n + 1023) / 1024
 }

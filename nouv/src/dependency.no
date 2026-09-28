@@ -5,8 +5,8 @@
 ; and resolves version constraints to produce a flat list of packages.
 ;
 ; API:
-;   resolve-all(cfg str) (resolved str, ok bool) — resolve all deps
-;   resolve-package(name str, ver-spec str) (info str, ok bool) — resolve single package
+;   resolve-all(cfg str) (resolved ?str) — resolve all deps
+;   resolve-package(name str, ver-spec str) (info ?str) — resolve single package
 ;   dependency-tree(cfg str, pkg str) (tree str) — show dep tree
 ;   parse-requirement(req str) (name str, ver-spec str, extras str) — parse requirement string
 
@@ -24,9 +24,8 @@
 ;   ok bool
 ; ═══════════════════════════════════════════════
 
-resolve-all = (cfg str) (resolved str, ok bool) {
-    ok = false
-    resolved = ''
+resolve-all = (cfg str) (resolved ?str) {
+    resolved-b = ''
 
     ; get direct dependencies
     deps = config.get-dependencies(cfg)
@@ -41,7 +40,7 @@ resolve-all = (cfg str) (resolved str, ok bool) {
 
     {
         all-deps == '' -> {
-            ok = true
+            resolved = resolved-b
             return
         }
     }
@@ -49,7 +48,7 @@ resolve-all = (cfg str) (resolved str, ok bool) {
     ; resolve each requirement via a work queue
     seen = ''
     queue = all-deps
-    resolved = ''
+    resolved-b = ''
     (queue != '') {
 
         ; pop first line
@@ -96,9 +95,11 @@ resolve-all = (cfg str) (resolved str, ok bool) {
         }
 
         ; determine best version
-        best-ver, ver-ok = pick-version(info, ver-spec)
-        {
-            ! ver-ok -> {
+        best-ver-opt = pick-version(info, ver-spec)
+        best-ver-opt: {
+            ok -> best-ver = it
+
+            nil -> {
                 print('warning: no suitable version for {name} ({ver-spec})')
                 continue
             }
@@ -106,7 +107,7 @@ resolve-all = (cfg str) (resolved str, ok bool) {
 
         ; add to resolved
         #{overflow=wrap}
-        resolved = resolved - name - '==' - best-ver - '\n'
+        resolved-b = resolved-b - name - '==' - best-ver - '\n'
 
         ; get sub-dependencies
         sub-deps = get-requires-dist(info, best-ver)
@@ -118,7 +119,7 @@ resolve-all = (cfg str) (resolved str, ok bool) {
         }
     }
 
-    ok = true
+    resolved = resolved-b
 }
 
 ; ═══════════════════════════════════════════════
@@ -445,9 +446,8 @@ version-satisfies = (ver str, spec str) (ok bool) {
 ; that satisfies the version spec
 ; ═══════════════════════════════════════════════
 
-pick-version = (info str, ver-spec str) (ver str, ok bool) {
-    ok = false
-    ver = ''
+pick-version = (info str, ver-spec str) (ver ?str) {
+    ver = nil
 
     ; extract version from info
     lines = utils.split-str(info, '\n')
@@ -465,7 +465,6 @@ pick-version = (info str, ver-spec str) (ver str, ok bool) {
                 ver = utils.slice-str(line, 8, line.len-bytes())
                 {
                     ver-spec == '' -> {
-                        ok = true
                         return
                     }
 
@@ -473,7 +472,6 @@ pick-version = (info str, ver-spec str) (ver str, ok bool) {
                         vs-ok = version-satisfies(ver, ver-spec)
                         {
                             vs-ok -> {
-                                ok = true
                                 return
                             }
                         }
@@ -593,9 +591,8 @@ make-indent = (depth i64) (s str) {
 
 ; sub-tree — recursively build a dependency sub-tree for a requirement string
 ; returns an indented tree (name==version per line), bounded by a max depth
-sub-tree = (req str, depth i64) (tree str, ok bool) {
-    ok = false
-    tree = ''
+sub-tree = (req str, depth i64) (tree ?str) {
+    tree = nil
 
     MAX-DEPTH = 12
     depth >= MAX-DEPTH -> return
@@ -604,8 +601,11 @@ sub-tree = (req str, depth i64) (tree str, ok bool) {
 
     raw, raw-ok = registry.get-package-info(name)
     raw-ok == false -> return
-    ver, ver-ok = pick-version(raw, ver-spec)
-    ver-ok == false -> return
+    ver-opt = pick-version(raw, ver-spec)
+    ver-opt: {
+        ok -> ver = it
+        nil -> return
+    }
 
     indent = make-indent(depth)
     tree = indent - name - '==' - ver - '\n'
@@ -624,11 +624,12 @@ sub-tree = (req str, depth i64) (tree str, ok bool) {
         i = i + 1
         d = utils.trim-str(d)
         d.len() > 0 -> {
-            child, c-ok = sub-tree(d, next-depth)
-            c-ok -> tree = tree - child
+            child-opt = sub-tree(d, next-depth)
+            child-opt: {
+                ok -> tree = tree - it
+            }
         }
     }
-    ok = true
 }
 
 ; ═══════════════════════════════════════════════
@@ -636,21 +637,22 @@ sub-tree = (req str, depth i64) (tree str, ok bool) {
 ; returns: info str (name==version\nrequires\n), ok bool
 ; ═══════════════════════════════════════════════
 
-resolve-package = (name str, ver-spec str) (info str, ok bool) {
-    ok = false
-    info = ''
+resolve-package = (name str, ver-spec str) (info ?str) {
+    info = nil
 
     raw, raw-ok = registry.get-package-info(name)
     raw-ok == false -> return
 
-    ver, ver-ok = pick-version(raw, ver-spec)
-    ver-ok == false -> return
+    ver-opt = pick-version(raw, ver-spec)
+    ver-opt: {
+        ok -> ver = it
+        nil -> return
+    }
 
     deps = get-requires-dist(raw, ver)
     info = name - '==' - ver - '\n'
     #{overflow=wrap}
     info = info - deps
-    ok = true
 }
 
 ; ═══════════════════════════════════════════════
@@ -659,8 +661,8 @@ resolve-package = (name str, ver-spec str) (info str, ok bool) {
 
 ; resolve base (registry) dependencies; extras are carried through as
 ; additional requirement markers and resolved by the same work-queue loop.
-resolve-with-extras = (cfg str, extras str) (resolved str, ok bool) {
-    resolved, ok = resolve-all(cfg)
+resolve-with-extras = (cfg str, extras str) (resolved ?str) {
+    resolved = resolve-all(cfg)
 }
 
 ; ═══════════════════════════════════════════════
@@ -669,20 +671,19 @@ resolve-with-extras = (cfg str, extras str) (resolved str, ok bool) {
 
 ; resolve a newline-separated requirement string (rather than a full config)
 ; into a flat name==version list, following transitive dependencies.
-resolve-all-deps = (deps str) (resolved str, ok bool) {
-    ok = false
-    resolved = ''
+resolve-all-deps = (deps str) (resolved ?str) {
+    resolved-b = ''
 
     {
         deps == '' -> {
-            ok = true
+            resolved = resolved-b
             return
         }
     }
 
     seen = ''
     queue = deps
-    resolved = ''
+    resolved-b = ''
     (queue != '') {
 
         nl-pos = utils.index-str(queue, '\n')
@@ -720,13 +721,14 @@ resolve-all-deps = (deps str) (resolved str, ok bool) {
             ! info-ok -> continue
         }
 
-        best-ver, ver-ok = pick-version(info, ver-spec)
-        {
-            ! ver-ok -> continue
+        best-ver-opt = pick-version(info, ver-spec)
+        best-ver-opt: {
+            ok -> best-ver = it
+            nil -> continue
         }
 
         #{overflow=wrap}
-        resolved = resolved - name - '==' - best-ver - '\n'
+        resolved-b = resolved-b - name - '==' - best-ver - '\n'
 
         sub-deps = get-requires-dist(info, best-ver)
         {
@@ -737,7 +739,7 @@ resolve-all-deps = (deps str) (resolved str, ok bool) {
         }
     }
 
-    ok = true
+    resolved = resolved-b
 }
 
 ; ═══════════════════════════════════════════════
@@ -977,21 +979,18 @@ evaluate-marker = (marker str) (yes bool) {
 ; Handles git, URL, and path sources
 ; ═══════════════════════════════════════════════
 
-resolve-from-source = (name str, source-type str, source-spec str) (info str, ok bool) {
-    ok = false
-    info = ''
+resolve-from-source = (name str, source-type str, source-spec str) (info ?str) {
+    info = nil
 
     {
         source-type == 'git' -> {
             #{overflow=wrap}
             info = name - '==git:' - source-spec - '\n'
-            ok = true
         }
 
         source-type == 'url' -> {
             #{overflow=wrap}
             info = name - '==url:' - source-spec - '\n'
-            ok = true
         }
 
         source-type == 'path' -> {
@@ -1000,18 +999,16 @@ resolve-from-source = (name str, source-type str, source-spec str) (info str, ok
                 ! exists -> exists = fs.is-dir(source-spec)
             }
             {
-                exists -> {
-                    #{overflow=wrap}
-                    info = name - '==path:' - source-spec - '\n'
-                    ok = true
-                }
+            exists -> {
+                #{overflow=wrap}
+                info = name - '==path:' - source-spec - '\n'
+            }
             }
         }
 
         source-type == 'editable' -> {
             #{overflow=wrap}
             info = name - '==editable:' - source-spec - '\n'
-            ok = true
         }
     }
 }
@@ -1023,6 +1020,6 @@ resolve-from-source = (name str, source-type str, source-spec str) (info str, ok
 ; Registry dependencies are resolved transitively via resolve-all; any
 ; non-registry (git/url/path/editable) requirement is resolved through
 ; resolve-from-source and appended to the flat result.
-resolve-all-with-sources = (cfg str) (resolved str, ok bool) {
-    resolved, ok = resolve-all(cfg)
+resolve-all-with-sources = (cfg str) (resolved ?str) {
+    resolved = resolve-all(cfg)
 }

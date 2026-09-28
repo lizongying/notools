@@ -69,9 +69,8 @@ get-index-url = () (url str) {
 ; ═══════════════════════════════════════════════
 
 ; fetch-package-json — GET the raw JSON body for a package (nil on failure)
-fetch-package-json = (name str) (body str, ok bool) {
-    ok = false
-    body = ''
+fetch-package-json = (name str) (body ?str) {
+    body = nil
 
     base = get-json-url()
     #{overflow=wrap}
@@ -85,16 +84,16 @@ fetch-package-json = (name str) (body str, ok bool) {
 
         ok -> {
             status = it.status-code
-            body = it.body
-            ok = status >= 200 && status < 300
+            {
+                status >= 200 && status < 300 -> body = it.body
+            }
         }
     }
 }
 
 ; parse-package-json — decode a PyPI JSON payload into the flat info string
-parse-package-json = (s str) (info str, ok bool) {
-    ok = false
-    info = ''
+parse-package-json = (s str) (info ?str) {
+    info = nil
 
     root-opt = json.parse(s)
     root-opt: {
@@ -206,16 +205,14 @@ parse-package-json = (s str) (info str, ok bool) {
                 }
             }
 
-            info != '' -> ok = true
         }
     }
 }
 
 ; parse-releases-json — decode the `releases` object keys into a
 ; newline-separated version list
-parse-releases-json = (s str) (versions str, ok bool) {
-    ok = false
-    versions = ''
+parse-releases-json = (s str) (versions ?str) {
+    versions = nil
 
     root-opt = json.parse(s)
     root-opt: {
@@ -234,7 +231,6 @@ parse-releases-json = (s str) (versions str, ok bool) {
                 ok -> {
                     rel = it
                     versions = rel.obj-keys-str()
-                    versions != '' -> ok = true
                 }
             }
         }
@@ -242,9 +238,8 @@ parse-releases-json = (s str) (versions str, ok bool) {
 }
 
 ; get-info-field — read the first `key=` value from a flat info string
-get-info-field = (info str, key str) (val str, found bool) {
-    found = false
-    val = ''
+get-info-field = (info str, key str) (val ?str) {
+    val = nil
 
     #{overflow=wrap}
     prefix = key - '='
@@ -262,7 +257,6 @@ get-info-field = (info str, key str) (val str, found bool) {
         {
             utils.starts-with-str(line, prefix) -> {
                 val = utils.trim-str(utils.slice-str(line, plen, line.len-bytes()))
-                found = true
                 return
             }
         }
@@ -270,21 +264,21 @@ get-info-field = (info str, key str) (val str, found bool) {
 }
 
 ; get-package-info — get package metadata via JSON API
-get-package-info = (name str) (info str, ok bool) {
-    ok = false
-    info = ''
-
-    body, fetch-ok = fetch-package-json(name)
-    fetch-ok -> info, ok = parse-package-json(body)
+get-package-info = (name str) (info ?str) {
+    body-opt = fetch-package-json(name)
+    body-opt: {
+        ok -> info = parse-package-json(it)
+        nil -> {}
+    }
 }
 
 ; get-package-versions — list all available versions (newline-separated)
-get-package-versions = (name str) (versions str, ok bool) {
-    ok = false
-    versions = ''
-
-    body, fetch-ok = fetch-package-json(name)
-    fetch-ok -> versions, ok = parse-releases-json(body)
+get-package-versions = (name str) (versions ?str) {
+    body-opt = fetch-package-json(name)
+    body-opt: {
+        ok -> versions = parse-releases-json(it)
+        nil -> {}
+    }
 }
 
 ; get-latest-version — get the latest version of a package
