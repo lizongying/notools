@@ -1,8 +1,220 @@
-; sha256.no — SHA-256 哈希
-; 计算文件或 stdin 的 SHA-256（十六进制，64 字符）
-; 用法：sha256 [file...]   无参数时读取 stdin
-# /notools/src/hashutil.hash-cmd
+; sha256.no — BSD sha256 工具（对齐 /sbin/sha256）
+; 用法：sha256 [-pqrsx] [-c str] [-s str] [files ...]
+;   无参数：读 stdin，打印裸哈希（-c 时无输出）
+;   文件：  SHA256 (path) = hash（-r 改 hash path；-q 只打印 hash；-c 追加 [ Failed ] 且 rc=2）
+;   -s str：打印 str 的裸哈希（忽略文件）
+;   -p：原样回显 stdin 再打印其裸哈希
+;   -x：先运行内置测试套件，再正常处理
+; 注意：不经 hashutil.do-hash 中转 —— md5x 的 str 返回值跨两层调用
+; 且输入超过短字符串阈值时会丢失（B13 变体），直接单层调用则正常
+
 
 sha256-run = () {
-    hash-cmd('sha256')
+    argc = args()
+    rflag = false
+    qflag = false
+    sflag = false
+    pflag = false
+    xflag = false
+    cflag = false
+    sval = ''
+    files []str
+    status = 0
+    suffix = ''
+    emitted = false
+    i = 2
+    (i < argc) {
+        a = arg(i)
+        {
+            a.len-bytes() > 2 && a[0] == 45 && a[1] == 45 -> {
+                io.errln('sha256: unrecognized option `' - a - number.char-to-str(39))
+                io.errln('usage: sha256 [-pqrtx] [-c string] [-s string] [files ...]')
+                os.exit(1)
+            }
+            a.len-bytes() > 1 && a[0] == 45 -> {
+                j <- [1..a.len-bytes()): {
+                    ch i64 = a[j]
+                    {
+                        ch == 114 -> rflag = true
+                        ch == 113 -> qflag = true
+                        ch == 112 -> pflag = true
+                        ch == 120 -> xflag = true
+                        ch == 116 -> {
+                        }
+                        ch == 99 -> {
+                            cflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                        }
+                        ch == 115 -> {
+                            sflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                            i < argc -> sval = arg(i)
+                        }
+                        -> {
+                            io.errln('sha256: invalid option -- ' - number.char-to-str(ch))
+                            io.errln('usage: sha256 [-pqrtx] [-c string] [-s string] [files ...]')
+                            os.exit(1)
+                        }
+                    }
+                }
+            }
+            -> files.push(a)
+        }
+        #{overflow=wrap}
+        i = i + 1
+    }
+
+    {
+        xflag -> {
+            print('SHA256 test suite:')
+            ts []str
+            ts.push('')
+            ts.push('a')
+            ts.push('abc')
+            ts.push('message digest')
+            ts.push('abcdefghijklmnopqrstuvwxyz')
+            ts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+            ts.push('12345678901234567890123456789012345678901234567890123456789012345678901234567890')
+            ts.push('MD5 has not yet (2001-09-03) been broken, but sufficient attacks have been made that its security is in some doubt')
+            ev []str
+            ev.push('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+            ev.push('ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb')
+            ev.push('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+            ev.push('f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650')
+            ev.push('71c480df93d6ae2f1efad1447c66c9525e316218cf51fc8d9ed832f2daf18b73')
+            ev.push('db4bfcbd4da0cd85a60c3c37d3fbd8805c77f15fc6b1fdfe614ee0a7c8fdb4c0')
+            ev.push('f371bc4a311f2b009eef952dd83ca80e2b60026c8e935592d0f9c308453c813e')
+            ev.push('e6eae09f10ad4122a0e2a4075761d185a272ebd9f5aa489e998ff2f09cbfdd9f')
+            k <- [0..ts.len()): {
+                #{index-out=0}
+                tv = ts[k]
+                tdata = tv.to-bytes()
+                th = sha256.sha256-hex(tdata)
+                res = ' - verified correct'
+                #{index-out=0}
+                th != ev[k] -> res = ' - NOT correct'
+                print('SHA256 ("' - tv - '") = ' - th - res)
+            }
+        }
+    }
+
+    cflag -> suffix = ' [ Failed ]'
+
+    {
+        pflag -> {
+            ! cflag -> {
+                pinp []byte
+                pr = fs.read-stdin()
+                pr: {
+                    ok -> pinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                pdata = pinp
+                fd = fs.open-write('/dev/stdout')
+                fs.write(fd, pdata, pdata.len())
+                ph = sha256.sha256-hex(pdata)
+                print(ph)
+            }
+        }
+
+        sflag -> {
+            sdata = sval.to-bytes()
+            sh = sha256.sha256-hex(sdata)
+            print(sh - suffix)
+            emitted = true
+        }
+
+        -> {
+            files.len() == 0 && ! xflag -> {
+                sinp []byte
+                sr = fs.read-stdin()
+                sr: {
+                    ok -> sinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                sdata2 = sinp
+                sh2 = sha256.sha256-hex(sdata2)
+                ! cflag -> print(sh2)
+            }
+
+            files.len() > 0 -> {
+                k2 <- [0..files.len()): {
+                    #{index-out=0}
+                    path = files[k2]
+                    ok2 = true
+                    {
+                        path == '-' -> {
+                        }
+                        ! fs.is-file(path) -> {
+                            ok2 = false
+                            fs.is-dir(path) -> io.errln('sha256: ' - path - ': Is a directory')
+                            -> io.errln('sha256: ' - path - ': No such file or directory')
+                            status = 1
+                        }
+                    }
+                    ok2 -> {
+                        data []byte
+                        {
+                            path == '-' -> {
+                                rinp []byte
+                                rr = fs.read-stdin()
+                                rr: {
+                                    ok -> rinp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                rb = rinp
+                                m <- [0..rb.len()): {
+                                    data.push(rb[m])
+                                }
+                            }
+                            -> {
+                                finp []byte
+                                fr = fs.read-bytes(path)
+                                fr: {
+                                    ok -> finp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                fb = finp
+                                m2 <- [0..fb.len()): {
+                                    data.push(fb[m2])
+                                }
+                            }
+                        }
+                        h = sha256.sha256-hex(data)
+                        {
+                            qflag -> print(h - suffix)
+                            rflag -> print(h - ' ' - path - suffix)
+                            -> print('SHA256 (' - path - ') = ' - h - suffix)
+                        }
+                        emitted = true
+                    }
+                }
+            }
+        }
+    }
+
+    status != 0 -> os.exit(status)
+    cflag && emitted -> os.exit(2)
 }

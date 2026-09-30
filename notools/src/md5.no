@@ -1,38 +1,114 @@
-; md5.no — MD5 哈希
-; 计算文件或 stdin 的 MD5（十六进制，32 字符）
-; 用法：md5 [file...]   无参数时读取 stdin
+; md5.no — BSD md5 工具（对齐 /sbin/md5）
+; 用法：md5 [-pqrsx] [-c str] [-s str] [files ...]
+;   无参数：读 stdin，打印裸哈希（-c 时无输出）
+;   文件：  MD5 (path) = hash（-r 改 hash path；-q 只打印 hash；-c 追加 [ Failed ] 且 rc=2）
+;   -s str：打印 str 的裸哈希（忽略文件）
+;   -p：原样回显 stdin 再打印其裸哈希
+;   -x：先运行内置测试套件，再正常处理
 ; 注意：不经 hashutil.do-hash 中转 —— md5x 的 str 返回值跨两层调用
 ; 且输入超过短字符串阈值时会丢失（B13 变体），直接单层调用则正常
 # /notools/src/md5x.md5x
 
 md5-run = () {
     argc = args()
-    {
-        argc <= 2 -> {
-
-            ; stdin: use fs.get-line() which uses fgets (no stat needed)
-            ; for pipes. Use fs.get-line() which uses fgets (no stat needed).
-            inp, ok = fs.get-line()
-            data = inp
-            h = md5x(data)
-            print(h)
-        }
-
-        -> {
-            i <- [2..argc): {
-                path = arg(i)
-                {
-                    ! fs.is-file(path) -> {
-                        #{overflow=wrap}
-                        emsg = 'md5: ' - path - ': No such file or directory'
-                        io.errln(emsg)
-                        os.exit(1)
+    rflag = false
+    qflag = false
+    sflag = false
+    pflag = false
+    xflag = false
+    cflag = false
+    sval = ''
+    files []str
+    status = 0
+    suffix = ''
+    emitted = false
+    i = 2
+    (i < argc) {
+        a = arg(i)
+        {
+            a.len-bytes() > 2 && a[0] == 45 && a[1] == 45 -> {
+                io.errln('md5: unrecognized option `' - a - number.char-to-str(39))
+                io.errln('usage: md5 [-pqrtx] [-c string] [-s string] [files ...]')
+                os.exit(1)
+            }
+            a.len-bytes() > 1 && a[0] == 45 -> {
+                j <- [1..a.len-bytes()): {
+                    ch i64 = a[j]
+                    {
+                        ch == 114 -> rflag = true
+                        ch == 113 -> qflag = true
+                        ch == 112 -> pflag = true
+                        ch == 120 -> xflag = true
+                        ch == 116 -> {
+                        }
+                        ch == 99 -> {
+                            cflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                        }
+                        ch == 115 -> {
+                            sflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                            i < argc -> sval = arg(i)
+                        }
+                        -> {
+                            io.errln('md5: invalid option -- ' - number.char-to-str(ch))
+                            io.errln('usage: md5 [-pqrtx] [-c string] [-s string] [files ...]')
+                            os.exit(1)
+                        }
                     }
                 }
-                inp []byte
-                r = fs.read-bytes(path)
-                r: {
-                    ok -> inp = it
+            }
+            -> files.push(a)
+        }
+        #{overflow=wrap}
+        i = i + 1
+    }
+
+    {
+        xflag -> {
+            print('MD5 test suite:')
+            ts []str
+            ts.push('')
+            ts.push('a')
+            ts.push('abc')
+            ts.push('message digest')
+            ts.push('abcdefghijklmnopqrstuvwxyz')
+            ts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+            ts.push('12345678901234567890123456789012345678901234567890123456789012345678901234567890')
+            ts.push('MD5 has not yet (2001-09-03) been broken, but sufficient attacks have been made that its security is in some doubt')
+            ev []str
+            ev.push('d41d8cd98f00b204e9800998ecf8427e')
+            ev.push('0cc175b9c0f1b6a831c399e269772661')
+            ev.push('900150983cd24fb0d6963f7d28e17f72')
+            ev.push('f96b697d7cb7938d525a2f31aaf161d0')
+            ev.push('c3fcd3d76192e4007dfb496cca67e13b')
+            ev.push('d174ab98d277d9f5a5611c2c9f419d9f')
+            ev.push('57edf4a22be3c955ac49da2e2107b67a')
+            ev.push('b50663f41d44d92171cb9976bc118538')
+            k <- [0..ts.len()): {
+                #{index-out=0}
+                tv = ts[k]
+                tdata = tv.to-bytes()
+                th = md5x(tdata)
+                res = ' - verified correct'
+                #{index-out=0}
+                th != ev[k] -> res = ' - NOT correct'
+                print('MD5 ("' - tv - '") = ' - th - res)
+            }
+        }
+    }
+
+    cflag -> suffix = ' [ Failed ]'
+
+    {
+        pflag -> {
+            ! cflag -> {
+                pinp []byte
+                pr = fs.read-stdin()
+                pr: {
+                    ok -> pinp = it
 
                     nil -> {
                     }
@@ -40,13 +116,105 @@ md5-run = () {
                     err -> {
                     }
                 }
-                data = inp
-                h = md5x(data)
+                pdata = pinp
+                fd = fs.open-write('/dev/stdout')
+                fs.write(fd, pdata, pdata.len())
+                ph = md5x(pdata)
+                print(ph)
+            }
+        }
 
-                #{overflow=wrap}
-                line = h - '  ' - path
-                print(line)
+        sflag -> {
+            sdata = sval.to-bytes()
+            sh = md5x(sdata)
+            print(sh - suffix)
+            emitted = true
+        }
+
+        -> {
+            files.len() == 0 && ! xflag -> {
+                sinp []byte
+                sr = fs.read-stdin()
+                sr: {
+                    ok -> sinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                sdata2 = sinp
+                sh2 = md5x(sdata2)
+                ! cflag -> print(sh2)
+            }
+
+            files.len() > 0 -> {
+                k2 <- [0..files.len()): {
+                    #{index-out=0}
+                    path = files[k2]
+                    ok2 = true
+                    {
+                        path == '-' -> {
+                        }
+                        ! fs.is-file(path) -> {
+                            ok2 = false
+                            fs.is-dir(path) -> io.errln('md5: ' - path - ': Is a directory')
+                            -> io.errln('md5: ' - path - ': No such file or directory')
+                            status = 1
+                        }
+                    }
+                    ok2 -> {
+                        data []byte
+                        {
+                            path == '-' -> {
+                                rinp []byte
+                                rr = fs.read-stdin()
+                                rr: {
+                                    ok -> rinp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                rb = rinp
+                                m <- [0..rb.len()): {
+                                    data.push(rb[m])
+                                }
+                            }
+                            -> {
+                                finp []byte
+                                fr = fs.read-bytes(path)
+                                fr: {
+                                    ok -> finp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                fb = finp
+                                m2 <- [0..fb.len()): {
+                                    data.push(fb[m2])
+                                }
+                            }
+                        }
+                        h = md5x(data)
+                        {
+                            qflag -> print(h - suffix)
+                            rflag -> print(h - ' ' - path - suffix)
+                            -> print('MD5 (' - path - ') = ' - h - suffix)
+                        }
+                        emitted = true
+                    }
+                }
             }
         }
     }
+
+    status != 0 -> os.exit(status)
+    cflag && emitted -> os.exit(2)
 }

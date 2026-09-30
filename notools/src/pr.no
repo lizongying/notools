@@ -52,6 +52,21 @@ safe-slice2 = (s str, from i64, to i64) (r str) {
     r = s.slice(from, to)
 }
 
+; idx-str / idx-i64: bounds-safe vec reads yielding CONCRETE element types.
+; A vec index degrades to option<elem> on out-of-range, and a mismatched
+; index-out default (e.g. integer 0 for a []str) makes the element non-str, so
+; `str - elem` falls onto the integer-subtraction path. These helpers pin the
+; default to the element type so callers get a plain str / i64.
+idx-str = (v []str, i i64) (s str) {
+    #{index-out=''}
+    s = v[i]
+}
+
+idx-i64 = (v []i64, i i64) (n i64) {
+    #{index-out=0}
+    n = v[i]
+}
+
 ; safe-rest-of-option: cluster tail after the option char (from index 1)
 safe-rest1 = (a str) (r str) {
     al = a.len-bytes()
@@ -367,7 +382,10 @@ pr-cell = (st pr-cellstate, content str, lim i64, o pr-opts) (out str, eof i64) 
     (true) {
         rem = safe-sub(rem, 1)
         rem < 0 -> break
-        idx >= clen -> { iseof = true; break }
+        idx >= clen -> {
+            iseof = true
+            break
+        }
         c = content.byte(idx)
         idx = safe-add(idx, 1)
         is-tab = gap > 0 && c == ib
@@ -381,7 +399,10 @@ pr-cell = (st pr-cellstate, content str, lim i64, o pr-opts) (out str, eof i64) 
                 rem = safe-sub(rem, 1)
             }
         }
-        c == 10 -> { isnl = true; break }
+        c == 10 -> {
+            isnl = true
+            break
+        }
         ! is-tab && c != 10 -> {
             out = out - number.char-to-str(c)
             op = safe-add(op, 1)
@@ -546,10 +567,9 @@ pr-vert = (b pr-out, content str, time str, fname str, o pr-opts) {
             raw = ' '.repeat(o.offst)
             j = 0
             (j <= lastj) {
-                #{index-out=0}
                 k = safe-add(i, safe-mul(j, height))
-                cell = cells[k]
-                ni = nums[k]
+                cell = idx-str(cells, k)
+                ni = idx-i64(nums, k)
                 numstr = pr-num-str(ni, o.nmwd)
                 o.nmwd > 0 -> raw = raw - numstr - number.char-to-str(o.nmcharb)
                 raw = raw - cell
@@ -610,10 +630,9 @@ pr-horz = (b pr-out, content str, time str, fname str, o pr-opts) {
             raw = ' '.repeat(o.offst)
             j = 0
             (j <= lastj) {
-                #{index-out=0}
                 k = safe-add(base, j)
-                cell = cells[k]
-                ni = nums[k]
+                cell = idx-str(cells, k)
+                ni = idx-i64(nums, k)
                 numstr = pr-num-str(ni, o.nmwd)
                 o.nmwd > 0 -> raw = raw - numstr - number.char-to-str(o.nmcharb)
                 raw = raw - cell
@@ -640,23 +659,26 @@ pr-horz = (b pr-out, content str, time str, fname str, o pr-opts) {
 pr-merge = (b pr-out, contents []str, time str, fname str, o pr-opts) {
     cl = o.clcnt
     colc = safe-add(o.colwd, 1)
-    sts []pr-cellstate
-    alive []i64
+    nxts []i64
     f <- [0..cl): {
-        #{index-out=0}
         s = pr-cellstate {}
         s.nxt = 0
         s.cps = 0
-        cf = contents[f]
+        cf = idx-str(contents, f)
         o.pgnm >= 1 -> pr-skip-lines(s, cf, safe-mul(safe-sub(o.pgnm, 1), o.lines))
-        sts.push(s)
-        alive.push(1)
+        nxts.push(s.nxt)
     }
     page = 1
     o.pgnm >= 1 -> page = o.pgnm
     lncnt = 0
-    actf = cl
-    (actf > 0) {
+    (true) {
+        actf = 0
+        a <- [0..cl): {
+            an = idx-i64(nxts, a)
+            av = idx-str(contents, a)
+            an < av.len-bytes() -> actf = safe-add(actf, 1)
+        }
+        actf == 0 -> break
         pr-pagehead(b, time, fname, page, o)
         i = 0
         rows = 0
@@ -664,52 +686,46 @@ pr-merge = (b pr-out, contents []str, time str, fname str, o pr-opts) {
             raw = ' '.repeat(o.offst)
             o.nmwd > 0 -> {
                 lncnt = safe-add(lncnt, 1)
-                raw = raw - pr-num-str(lncnt, o.nmwd) - number.char-to-str(o.nmcharb)
+                ns = pr-num-str(lncnt, o.nmwd)
+                nsep = number.char-to-str(o.nmcharb)
+                raw = raw - ns - nsep
             }
             lastj = -1
             j = 0
             (j < cl) {
-                #{index-out=0}
-                aj = alive[j]
-                stj = sts[j]
-                cj = contents[j]
-                aj == 1 && stj.nxt < cj.len-bytes() -> lastj = j
+                nj = idx-i64(nxts, j)
+                cj = idx-str(contents, j)
+                nj < cj.len-bytes() -> lastj = j
                 j = safe-add(j, 1)
             }
             lastj < 0 -> i = o.lines
             lastj >= 0 -> {
                 cells []str
-                cnts []i64
                 j = 0
                 (j <= lastj) {
-                    #{index-out=0}
                     cell = ''
-                    st = sts[j]
-                    cj = contents[j]
-                    aj = alive[j]
-                    hasdata = aj == 1 && st.nxt < cj.len-bytes()
-                    hasdata -> {
+                    nj = idx-i64(nxts, j)
+                    cj = idx-str(contents, j)
+                    ; if (not while): read exactly one cell for this column when
+                    ; it still has data left. nj is a local cursor snapshot, so a
+                    ; `(nj < ..)` while form would spin forever here.
+                    nj < cj.len-bytes() -> {
+                        st = pr-cellstate {}
+                        st.nxt = nj
+                        st.cps = 0
                         c2, e2 = pr-cell(st, cj, o.colwd, o)
                         e2 == 0 -> cell = c2
-                        e2 == 1 -> {
-                            aj = 0
-                            actf = safe-sub(actf, 1)
-                        }
+                        nxts[j] = st.nxt
                     }
-                    sts[j] = st
-                    alive[j] = aj
                     cells.push(cell)
-                    cnts.push(cell.len-bytes())
                     j = safe-add(j, 1)
                 }
                 out = raw
                 j = 0
                 (j <= lastj) {
-                    #{index-out=0}
-                    cv = cells[j]
-                    cnt2 = cnts[j]
+                    cv = idx-str(cells, j)
                     sep = ''
-                    pln = safe-sub(colc, cnt2)
+                    pln = safe-sub(colc, cv.len-bytes())
                     j < lastj && o.sflag != 0 -> sep = number.char-to-str(o.schar)
                     j < lastj && o.sflag == 0 && pln > 0 -> sep = ' '.repeat(pln)
                     out = out - cv - sep

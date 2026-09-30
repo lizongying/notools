@@ -1,21 +1,53 @@
-; hexdump.no — hexdump utility
-; Display file contents in hexadecimal
-; Usage: hexdump [-C] [-n LENGTH] [-s OFFSET] [file]
+; hexdump.no — hexdump utility (BSD/macOS /usr/bin/hexdump compatible)
+; Usage: hexdump [-C] [-v] [-n LENGTH] [-s OFFSET] [file]
+;   -C  canonical hex+ASCII display
+;   -v  do not collapse identical lines to '*'
+;   -n  only LENGTH bytes
+;   -s  skip OFFSET bytes from the start
 
 # /notools/src/hexdump.hexdump
 
 atoi = (s str) (v i64) {
     v = 0
+    #{overflow=wrap}
     i <- [0..s.len-bytes()): {
         c = s[i]
-
-        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
     }
 }
 
+; safe arithmetic wrappers (overflow=wrap only binds at function-body top level,
+; so +/-/*/% inside loop/conditional arms must go through these).
+safe-add = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a + b
+}
+
+safe-mod = (a i64, b i64) (r i64) {
+    #{overflow=wrap}
+    r = a % b
+}
+
+; lowercase hex, left-padded with zeros to at least w digits.
+addrhex = (v i64, w i64) (s str) {
+    hx = '0123456789abcdef'
+    s = ''
+    x = v
+    x == 0 -> s = '0'
+    (x > 0) {
+        d = x & 15
+        s = number.char-to-str(hx.byte(d)) - s
+        x = x >> 4
+    }
+    #{overflow=wrap}
+    pad = w - s.len-bytes()
+    pad > 0 -> s = '0'.repeat(pad) - s
+}
+
 hexdump-run = () {
     argc = args()
+    canonical = false
+    vflag = false
     length = -1
     skip = 0
     files []str
@@ -32,30 +64,32 @@ hexdump-run = () {
             ! handled -> {
                 a = arg(i)
                 {
-                    a == '-C' -> handled = true
+                    a == '-C' -> {
+                        canonical = true
+                        handled = true
+                    }
+
+                    a == '-v' -> {
+                        vflag = true
+                        handled = true
+                    }
 
                     a == '-n' -> {
-                        {
-
-                            #{overflow=wrap}
-                            i + 1 < argc -> {
-                                length = atoi(arg(i + 1))
-                                skip-next = true
-                            }
-                            handled = true
+                        #{overflow=wrap}
+                        i + 1 < argc -> {
+                            length = atoi(arg(i + 1))
+                            skip-next = true
                         }
+                        handled = true
                     }
 
                     a == '-s' -> {
-                        {
-                            #{overflow=wrap}
-                            i + 1 < argc -> {
-                                #{overflow=wrap}
-                                skip = atoi(arg(i + 1))
-                                skip-next = true
-                            }
-                            handled = true
+                        #{overflow=wrap}
+                        i + 1 < argc -> {
+                            skip = atoi(arg(i + 1))
+                            skip-next = true
                         }
+                        handled = true
                     }
 
                     a.starts-with('-n') -> {
@@ -73,9 +107,7 @@ hexdump-run = () {
                     }
                 }
                 {
-                    ! handled -> {
-                        ! a.starts-with('-') -> files.push(a)
-                    }
+                    ! handled -> ! a.starts-with('-') -> files.push(a)
                 }
             }
         }
@@ -88,10 +120,8 @@ hexdump-run = () {
             r = fs.read-stdin()
             r: {
                 ok -> inp = it
-
                 nil -> {
                 }
-
                 err -> {
                 }
             }
@@ -100,11 +130,9 @@ hexdump-run = () {
 
         -> {
             fi <- [0..files.len()): {
-
                 #{index-out=0}
                 f = files[fi]
                 ! fs.is-file(f) -> {
-                    #{overflow=wrap}
                     io.errln('hexdump: ' - f - ': No such file or directory')
                     os.exit(1)
                 }
@@ -112,10 +140,8 @@ hexdump-run = () {
                 r = fs.read-bytes(f)
                 r: {
                     ok -> inp = it
-
                     nil -> {
                     }
-
                     err -> {
                     }
                 }
@@ -127,7 +153,6 @@ hexdump-run = () {
         }
     }
 
-    ; 应用 -s OFFSET 和 -n LENGTH
     n = data.len()
     start-off = skip
     {
@@ -136,89 +161,154 @@ hexdump-run = () {
     end-off = n
     {
         length >= 0 -> {
-
             #{overflow=wrap}
             end-off = start-off + length
             end-off > n -> end-off = n
         }
     }
 
-    canonical(data, start-off, end-off)
-}
-
-; canonical: hexdump -C 格式输出
-; 00000000:  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|
-canonical = (data []byte, start-off i64, end-off i64) {
-    hex-digits = '0123456789abcdef'
-    space = ' '
-    offset = start-off
-    (offset < end-off) {
-        offset < end-off -> {
-
-            #{overflow=wrap}
-            line-n = end-off - offset
-            line-n > 16 -> line-n = 16
-
-            ; 总长度 79：8(offset) + 1(:) + 2(spaces) + 23(group1) + 2(spaces) + 23(group2) + 2(spaces) + 1(|) + 16(ascii) + 1(|)
-            line = space.repeat(79)
-
-            ; 8 位地址（小写十六进制，零填充）
-            a = offset
-            k <- [0..8): {
-                #{overflow=wrap}
-                line[7 - k] = hex-digits[a & 15]
-                a = a >> 4
-            }
-            line[8] = ':'
-
-            ; line[9] 和 line[10] 已是空格（repeat 预填充）
-            ; 十六进制区段，第一组从位置 11 开始
-            hi = 11
-            j <- [0..line-n): {
-                #{overflow=wrap}
-                b = data[offset + j] & 255
-                line[hi] = hex-digits[(b >> 4) & 15]
-                #{overflow=wrap}
-                hi = hi + 1
-                line[hi] = hex-digits[b & 15]
-                #{overflow=wrap}
-                hi = hi + 1
-
-                ; 字节间空格（除每组最后一个字节外）
-                j != 7 && j != 15 -> {
-                    line[hi] = ' '
-                    #{overflow=wrap}
-                    hi = hi + 1
-                }
-
-                ; 第一组后额外空格（组间分隔）
-                j == 7 -> {
-                    line[hi] = ' '
-                    #{overflow=wrap}
-                    hi = hi + 1
-                }
-            }
-
-            ; ASCII 区段：位置 61 是 |，62-77 是 ASCII，78 是 |
-            ascii-start = 62
-            #{overflow=wrap}
-            line[ascii-start - 1] = '|'
-            j <- [0..line-n): {
-                #{overflow=wrap}
-                b = data[offset + j] & 255
-                {
-                    #{overflow=wrap}
-                    b >= 32 && b < 127 -> line[ascii-start + j] = b
-
-                    #{overflow=wrap}
-                    -> line[ascii-start + j] = '.'
-                }
-            }
-            #{overflow=wrap}
-            line[ascii-start + 16] = '|'
-            print(line)
-            #{overflow=wrap}
-            offset = offset + 16
-        }
+    {
+        canonical -> render-canonical(data, start-off, end-off, vflag)
+        -> render-default(data, start-off, end-off, vflag)
     }
 }
+
+; render-canonical: BSD hexdump -C layout
+; 00000000  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|
+; 8-hex offset, 2 spaces, 50-col hex region (2 groups of 8), then |ascii| (padded
+; hex region only; ascii is exactly the line's bytes). A final total-offset line.
+render-canonical = (data []byte, s i64, e i64, vf bool) {
+    hx = '0123456789abcdef'
+    space = ' '
+    offset = s
+    have = false
+    supp = false
+    prev = ''
+    (offset < e) {
+        #{overflow=wrap}
+        ln = e - offset
+        ln > 16 -> ln = 16
+
+        ; hex region: fixed 50 cols, bytes right-placed at stride 3 (+1 group gap)
+        reg = space.repeat(50)
+        key = ''
+        j <- [0..ln): {
+            #{overflow=wrap}
+            b = data[offset + j] & 255
+            #{overflow=wrap}
+            r0 = 3 * j
+            j >= 8 -> {
+                #{overflow=wrap}
+                r0 = r0 + 1
+            }
+            #{overflow=wrap}
+            reg[r0] = hx[(b >> 4) & 15]
+            #{overflow=wrap}
+            reg[r0 + 1] = hx[b & 15]
+            ; ascii + collapse key
+            {
+                b >= 32 && b < 127 -> key = key - number.char-to-str(b)
+                -> key = key - '.'
+            }
+        }
+        line = addrhex(offset, 8) - '  ' - reg - '|' - key - '|'
+        cur = reg - '|' - key - '|'
+
+        repeat = ! vf && have && cur == prev
+        {
+            repeat -> {
+                supp -> {
+                }
+                -> {
+                    print('*')
+                    supp = true
+                }
+            }
+            ! repeat -> {
+                print(line)
+                supp = false
+            }
+        }
+        prev = cur
+        have = true
+
+        #{overflow=wrap}
+        offset = offset + 16
+    }
+    {
+        e > 0 -> print(addrhex(e, 8))
+    }
+}
+
+; render-default: BSD hexdump (no -C) layout
+; 0000000 XXXX XXXX ... (8 little-endian shorts per line, "%04x"), 7-hex offset,
+; short lines padded to full width; final total-offset line.
+render-default = (data []byte, s i64, e i64, vf bool) {
+    hx = '0123456789abcdef'
+    space = ' '
+    offset = s
+    have = false
+    supp = false
+    prev = ''
+    (offset < e) {
+        #{overflow=wrap}
+        ln = e - offset
+        ln > 16 -> ln = 16
+        ; shorts in this line = ceil(ln / 2)
+        #{overflow=wrap}
+        nshort = ln / 2
+        safe-mod(ln, 2) != 0 -> nshort = safe-add(nshort, 1)
+
+        region = ''
+        j <- [0..8): {
+            j < nshort -> {
+                #{overflow=wrap}
+                lo = 0
+                #{overflow=wrap}
+                hi = 0
+                #{overflow=wrap}
+                p0 = offset + j * 2
+                p1 = safe-add(p0, 1)
+                p0 < e -> lo = data[p0] & 255
+                p1 < e -> hi = data[p1] & 255
+                #{overflow=wrap}
+                v = lo | (hi << 8)
+                ; build 4 hex digits, left-zero-padded
+                d0 = (v >> 12) & 15
+                d1 = (v >> 8) & 15
+                d2 = (v >> 4) & 15
+                d3 = v & 15
+                shex = '' - number.char-to-str(hx.byte(d0)) - number.char-to-str(hx.byte(d1)) - number.char-to-str(hx.byte(d2)) - number.char-to-str(hx.byte(d3))
+                region = region - ' ' - shex
+            }
+            j >= nshort -> region = region - '     '
+        }
+        line = addrhex(offset, 7) - region
+
+        repeat = ! vf && have && region == prev
+        {
+            repeat -> {
+                supp -> {
+                }
+                -> {
+                    print('*')
+                    supp = true
+                }
+            }
+            ! repeat -> {
+                print(line)
+                supp = false
+            }
+        }
+        prev = region
+        have = true
+
+        #{overflow=wrap}
+        offset = offset + 16
+    }
+    {
+        e > 0 -> print(addrhex(e, 7))
+    }
+}
+
+hexdump-run()

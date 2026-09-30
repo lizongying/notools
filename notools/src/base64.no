@@ -1,229 +1,254 @@
-; base64.no — Base64 编解码（RFC 4648）
-; 用法：
-;   base64 [file...]         编码（默认），无参数时读取 stdin，输出带换行
-;   base64 -d [file...]      解码，原始字节写入 stdout（不额外加换行）
+; base64.no — 對齊 FreeBSD /usr/bin/base64
+; 用法：base64 [-Ddh] [-b num] [-i in_file] [-o out_file]
+;   -b, --break       編碼輸出每行折行寬度（0/未設定 = 不折行）
+;   -D, -d, --decode  解碼
+;   -h, --help        印出用法（stdout, rc=0）
+;   -i, --input       輸入檔案（預設 "-" = stdin）
+;   -o, --output      輸出檔案（預設 "-" = stdout）
+; 位置參數（非選項）→ base64: invalid argument <arg> + usage, rc=64
 
 base64-run = () {
     argc = args()
     decode = false
-    files []str
-    i <- [2..argc): {
+    bwidth = -1
+    infile = ''
+    outfile = ''
+    i = 2
+    (i < argc) {
         a = arg(i)
+        alen = a.len-bytes()
         {
-            a == '-d' -> decode = true
-
-            a == '-D' -> decode = true
-
-            ! a.starts-with('-') -> files.push(a)
+            alen >= 2 && a[0] == 45 && a[1] == 45 -> {
+                base64-longopt(a)
+                {
+                    a == '--help' -> {
+                        base64-usage(false)
+                        os.exit(0)
+                    }
+                    a == '--decode' -> decode = true
+                    a == '--break' -> {
+                        v = base64-nextarg(i, argc, 98)
+                        bwidth = base64-pnum(v)
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
+                    a == '--input' -> {
+                        v2 = base64-nextarg(i, argc, 105)
+                        infile = v2
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
+                    a == '--output' -> {
+                        v3 = base64-nextarg(i, argc, 111)
+                        outfile = v3
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
+                    -> {
+                    }
+                }
+            }
+            alen > 1 && a[0] == 45 -> {
+                j = 1
+                (j < alen) {
+                    ch i64 = a[j]
+                    {
+                        ch == 100 || ch == 68 -> decode = true
+                        ch == 104 -> {
+                            base64-usage(false)
+                            os.exit(0)
+                        }
+                        ch == 98 || ch == 105 || ch == 111 -> {
+                            #{overflow=wrap}
+                            rest = a.slice-bytes(j + 1, alen)
+                            v = rest
+                            {
+                                rest == '' -> {
+                                    v = base64-nextarg(i, argc, ch)
+                                    #{overflow=wrap}
+                                    i = i + 1
+                                }
+                                -> {
+                                }
+                            }
+                            {
+                                ch == 98 -> bwidth = base64-pnum(v)
+                                ch == 105 -> infile = v
+                                -> outfile = v
+                            }
+                            j = alen
+                        }
+                        -> {
+                            io.errln('base64: invalid option -- ' - number.char-to-str(ch))
+                            base64-usage(true)
+                            os.exit(64)
+                        }
+                    }
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+            }
+            -> {
+                io.errln('base64: invalid argument ' - a)
+                base64-usage(true)
+                os.exit(64)
+            }
         }
+        #{overflow=wrap}
+        i = i + 1
     }
-    {
-        ! decode -> encode-cmd(files)
 
-        decode -> decode-cmd(files)
+    label = 'stdin'
+    infile != '' && infile != '-' -> label = infile
+    data = base64-read(infile)
+
+    {
+        ! decode -> base64-encode(data, bwidth, outfile)
+        decode -> base64-decode(data, label, outfile)
     }
 }
 
-; encode-cmd: 编码模式
-encode-cmd = (files []str) {
+; base64-longopt: 處理 --xxx 前綴（未知者於此處即報錯退出）
+base64-longopt = (a str) {
     {
-        files.len() == 0 -> {
-            inp []byte
+        a == '--decode' || a == '--break' || a == '--input' || a == '--output' || a == '--help' -> {
+        }
+        -> {
+            io.errln('base64: unrecognized option `' - a - number.char-to-str(39))
+            base64-usage(true)
+            os.exit(64)
+        }
+    }
+}
+
+; base64-nextarg: 取下一個 argv 作為選項值，缺少則報錯退出（ch 為選項字母）
+base64-nextarg = (i i64, argc i64, ch i64) (v str) {
+    #{overflow=wrap}
+    ni = i + 1
+    ni >= argc -> {
+        io.errln('base64: option requires an argument -- ' - number.char-to-str(ch))
+        base64-usage(true)
+        os.exit(64)
+    }
+    v = arg(ni)
+}
+
+; base64-pnum: 字串轉非負整數（無效視為 0）
+base64-pnum = (s str) (v i64) {
+    v = 0
+    n = s.to-i64()
+    n: {
+        ok -> v = it
+        -> {
+        }
+    }
+}
+
+; base64-read: 依 infile 讀取輸入位元組（缺檔報錯退出）
+base64-read = (infile str) (data []byte) {
+    {
+        infile == '' || infile == '-' -> {
             r = fs.read-stdin()
             r: {
-                ok -> inp = it
-
+                ok -> data = it
                 nil -> {
                 }
-
                 err -> {
                 }
             }
-            inp.len() == 0 -> os.exit(0)
-            data = inp
-            enc = base64.encode-std(data)
-            print(enc)
         }
-
-        files.len() > 0 -> {
-            fi <- [0..files.len()): {
-
-                #{index-out=0}
-                f = files[fi]
-                ! fs.is-file(f) -> {
-                    #{overflow=wrap}
-                    io.errln('base64: ' - f - ': No such file or directory')
-                    os.exit(1)
+        -> {
+            ! fs.is-file(infile) -> {
+                io.errln('base64: ' - infile - ': No such file or directory')
+                os.exit(1)
+            }
+            r2 = fs.read-bytes(infile)
+            r2: {
+                ok -> data = it
+                nil -> {
                 }
-                inp []byte
-                r = fs.read-bytes(f)
-                r: {
-                    ok -> inp = it
-
-                    nil -> {
-                    }
-
-                    err -> {
-                    }
+                err -> {
                 }
-                data = inp
-                enc = base64.encode-std(data)
-                print(enc)
             }
         }
     }
 }
 
-; decode-cmd: 解码模式
-decode-cmd = (files []str) {
+; base64-emit: 將位元組寫至 outfile（'-'/空 = stdout）
+base64-emit = (bytes []byte, outfile str) {
     {
-        files.len() == 0 -> {
-            s = ''
-            r = fs.read-stdin-str()
-            r: {
-                ok -> s = it
-
-                nil -> {
-                }
-
-                err -> {
-                }
-            }
-            decode-write(s)
+        outfile == '' || outfile == '-' -> {
+            fd = fs.open-write('/dev/stdout')
+            fs.write(fd, bytes, bytes.len())
         }
-
-        files.len() > 0 -> {
-            fi <- [0..files.len()): {
-
-                #{index-out=0}
-                f = files[fi]
-                ! fs.is-file(f) -> {
-                    #{overflow=wrap}
-                    io.errln('base64: ' - f - ': No such file or directory')
-                    os.exit(1)
-                }
-                s = ''
-                r = fs.read-str(f)
-                r: {
-                    ok -> s = it
-
-                    nil -> {
-                    }
-
-                    err -> {
-                    }
-                }
-                decode-write(s)
-            }
+        -> {
+            fs.write-bytes(outfile, bytes)
         }
     }
 }
 
-; decode-write: 手动解码并直接写 stdout（void 模式）
-; 注意：不能拆成「返回 str 的解码函数」——编译器对含循环的 str 返回函数会静默丢弃返回值
-decode-write = (s str) {
+; base64-encode: 標準字母表編碼，依 bwidth 折行，末尾恆有換行
+base64-encode = (data []byte, bwidth i64, outfile str) {
+    enc = base64.encode-std(data)
+    NL = number.char-to-str(10)
+    res = ''
+    {
+        bwidth <= 0 -> {
+            res = enc - NL
+        }
+        -> {
+            p = 0
+            elen = enc.len-bytes()
+            (p < elen) {
+                #{overflow=wrap}
+                e = p + bwidth
+                e > elen -> e = elen
+                res = res - enc.slice-bytes(p, e) - NL
+                #{overflow=wrap}
+                p = p + bwidth
+            }
+        }
+    }
+    base64-emit(res.to-bytes(), outfile)
+}
+
+; base64-decode: 手動解碼（忽略空白與 '='，遇非法字元報錯退出 rc=1），原位元組不附加換行
+base64-decode = (data []byte, label str, outfile str) {
     alpha = base64.BASE64-STD
     rev []i64 = with-len(256)
-    i <- [0..256): {
-        rev[i] = -1
+    z <- [0..256): {
+        rev[z] = -1
     }
-    i <- [0..64): {
-        rev[alpha[i] & 255] = i
+    z <- [0..64): {
+        rev[alpha[z] & 255] = z
     }
-
-    ; 统计有效字符数（忽略空白与 '='）
-    n = 0
-    i <- [0..s.len-bytes()): {
-        c = s[i] & 255
-        skip = false
-        {
-            c == 10 -> skip = true
-        }
-        {
-            c == 13 -> skip = true
-        }
-        {
-            c == 32 -> skip = true
-        }
-        {
-            c == 9 -> skip = true
-        }
-        {
-            c == 61 -> skip = true
-        }
-        {
-            ! skip -> {
-
-                #{overflow=wrap}
-                rev[c] >= 0 -> n = n + 1
-            }
-        }
-    }
-
-    ; 末尾 '=' 个数
-    pad = 0
-
-    #{overflow=wrap}
-    e = s.len-bytes() - 1
-    (e >= 0 && (s[e] & 255) == 61) {
-        e >= 0 && (s[e] & 255) == 61 -> {
-
-            #{overflow=wrap}
-            pad = pad + 1
-            #{overflow=wrap}
-            e = e - 1
-        }
-    }
-
-    #{overflow=wrap}
-    out-len = (3 * n - pad) / 4
-    out []byte = with-len(out-len)
+    out []byte
     acc = 0
     cnt = 0
-    p = 0
-    i <- [0..s.len-bytes()): {
-        c = s[i] & 255
-        skip = false
+    bad = false
+    i <- [0..data.len()): {
+        c = data[i] & 255
+        ws = c == 10 || c == 13 || c == 32 || c == 9
         {
-            c == 10 -> skip = true
-        }
-        {
-            c == 13 -> skip = true
-        }
-        {
-            c == 32 -> skip = true
-        }
-        {
-            c == 9 -> skip = true
-        }
-        {
-            c == 61 -> skip = true
-        }
-        {
-            ! skip -> {
-
+            ws -> {
+            }
+            c == 61 -> {
+            }
+            -> {
                 #{index-out=0}
                 v = rev[c]
                 {
-                    v >= 0 -> {
+                    v < 0 -> bad = true
+                    -> {
                         acc = (acc << 6) | v
-
                         #{overflow=wrap}
                         cnt = cnt + 1
-                        {
-                            cnt == 4 -> {
-                                out[p] = (acc >> 16) & 255
-                                #{overflow=wrap}
-                                p = p + 1
-                                out[p] = (acc >> 8) & 255
-                                #{overflow=wrap}
-                                p = p + 1
-                                out[p] = acc & 255
-                                #{overflow=wrap}
-                                p = p + 1
-                                cnt = 0
-                                acc = 0
-                            }
+                        cnt == 4 -> {
+                            out.push((acc >> 16) & 255)
+                            out.push((acc >> 8) & 255)
+                            out.push(acc & 255)
+                            acc = 0
+                            cnt = 0
                         }
                     }
                 }
@@ -232,23 +257,46 @@ decode-write = (s str) {
     }
     {
         cnt == 3 -> {
-            out[p] = (acc >> 10) & 255
-
-            #{overflow=wrap}
-            p = p + 1
-            out[p] = (acc >> 2) & 255
-            #{overflow=wrap}
-            p = p + 1
+            out.push((acc >> 10) & 255)
+            out.push((acc >> 2) & 255)
+        }
+        cnt == 2 -> {
+            out.push((acc >> 4) & 255)
+        }
+        -> {
         }
     }
-    {
-        cnt == 2 -> {
-            out[p] = (acc >> 4) & 255
+    bad -> {
+        io.errln('base64: ' - label - ': (null): error decoding base64 input stream')
+        os.exit(1)
+    }
+    base64-emit(out, outfile)
+}
 
-            #{overflow=wrap}
-            p = p + 1
+; base64-usage: 印用法（toErr=true 走 stderr 供錯誤情境，否則 stdout）
+base64-usage = (toErr bool) {
+    L1 = 'Usage:' - number.char-to-str(9) - 'base64 [-Ddh] [-b num] [-i in_file] [-o out_file]'
+    L2 = '  -b, --break       break encoded output up into lines of length num'
+    L3 = '  -D, -d, --decode  decode input'
+    L4 = '  -h, --help        display this message'
+    L5 = '  -i, --input       input file (default: "-" for stdin)'
+    L6 = '  -o, --output      output file (default: "-" for stdout)'
+    {
+        toErr -> {
+            io.errln(L1)
+            io.errln(L2)
+            io.errln(L3)
+            io.errln(L4)
+            io.errln(L5)
+            io.errln(L6)
+        }
+        -> {
+            print(L1)
+            print(L2)
+            print(L3)
+            print(L4)
+            print(L5)
+            print(L6)
         }
     }
 }
-fd = fs.open-write('/dev/stdout')
-fs.write(fd, out, out.len())

@@ -1,17 +1,172 @@
-; od.no — od 八进制/十六进制转储
-; 用法：od [-A FORMAT] [-t FORMAT] [-N N] [file]
+; od - dump files in octal and other formats (BSD-compatible layout)
+; 用法：od [-A FORMAT] [-t FORMAT] [-N N] [-v] [-bcdox] [file]
 ;   -A FORMAT  地址格式：d=十进制 o=八进制 x=十六进制 n=无（默认 o）
-;   -t FORMAT  数据类型：o2=八进制2字节 x2=十六进制2字节 u1=无符号1字节 c=字符（默认 o2）
+;   -t FORMAT  数据类型：[ouxdc][1|2|4]，如 o2 x2 u1 c d2 o1 ...（默认 o2）
 ;   -N N       只处理前 N 字节
+;   -v         不用 '*' 折叠重复行
+;   -b/-c/-d/-o/-x  BSD obsolescent 别名：o1 / c / u2 / o2 / x2
 ;   file       指定文件，否则读取 stdin
 
 atoi = (s str) (v i64) {
     v = 0
+    #{overflow=wrap}
     i <- [0..s.len-bytes()): {
         c = s[i]
-
-        #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+    }
+}
+
+; parse-format: normalize a -t / legacy token into (size, kind, fw).
+; kind: 'o'=octal 'x'=hex 'u'=unsigned dec 'd'=signed dec 'c'=char
+; Returns via out params size (bytes/unit), kind, fw (zero-pad width, 0 = none).
+size-of = (fmt str) (s i64) {
+    s = 2
+    fmt == 'o1' || fmt == 'x1' || fmt == 'u1' || fmt == 'd1' || fmt == 'c' -> s = 1
+    fmt == 'o4' || fmt == 'x4' || fmt == 'u4' || fmt == 'd4' -> s = 4
+    fmt == 'c' -> s = 1
+}
+
+kind-of = (fmt str) (k str) {
+    k = 'o'
+    fmt.starts-with('x') -> k = 'x'
+    fmt.starts-with('u') -> k = 'u'
+    fmt.starts-with('d') -> k = 'd'
+    fmt == 'c' -> k = 'c'
+}
+
+; octal field width (digits) for a given unit size: ceil(bits/3).
+oct-fw = (size i64) (w i64) {
+    w = 3
+    size == 2 -> w = 6
+    size == 4 -> w = 11
+}
+
+; hex field width: 2 digits per byte.
+hex-fw = (size i64) (w i64) {
+    w = 2
+    size == 2 -> w = 4
+    size == 4 -> w = 8
+}
+
+; base right edge (1-based col of the last char of the FIRST cell).
+base-right = (fmt str, size i64, kind str) (b i64) {
+    b = 13
+    size == 2 -> b = 17
+    size == 4 -> b = 25
+    kind == 'c' -> b = 12
+}
+
+; stride (columns) between successive cell right edges.
+stride-of = (size i64) (st i64) {
+    st = 4
+    size == 2 -> st = 8
+    size == 4 -> st = 16
+}
+
+fmt-octal = (v i64, fw i64) (s str) {
+    digits = '01234567'
+    space = ' '
+    #{overflow=wrap}
+    s = space.repeat(fw)
+    #{overflow=wrap}
+    x = v
+    k <- [0..fw): {
+        #{overflow=wrap}
+        s[fw - 1 - k] = digits[x & 7]
+        x = x >> 3
+    }
+}
+
+fmt-hex = (v i64, fw i64) (s str) {
+    digits = '0123456789abcdef'
+    space = ' '
+    #{overflow=wrap}
+    s = space.repeat(fw)
+    #{overflow=wrap}
+    x = v
+    k <- [0..fw): {
+        #{overflow=wrap}
+        s[fw - 1 - k] = digits[x & 15]
+        x = x >> 4
+    }
+}
+
+; unsigned decimal, right-justified naturally (no zero pad).
+fmt-dec = (v i64) (s str) {
+    s = v.to-str()
+}
+
+; signed decimal, two's complement over the unit size.
+fmt-dec-signed = (v i64, size i64) (s str) {
+    #{overflow=wrap}
+    bits = size * 8
+    #{overflow=wrap}
+    signbit = 1 << (bits - 1)
+    #{overflow=wrap}
+    mod = signbit << 1
+    #{overflow=wrap}
+    adj = v - mod
+    out = v
+    v >= signbit -> out = adj
+    s = out.to-str()
+}
+
+; char cell: BSD -c escape rules. Escapes are emitted as literal two-char
+; sequences (backslash + letter), NOT raw control bytes, so build them from a
+; backslash string rather than '\0' / '\a' literals (which Nolang resolves to
+; the real control byte).
+fmt-char = (b i64) (s str) {
+    bs = '\\'
+    {
+        b == 0 -> s = bs - '0'
+        b == 7 -> s = bs - 'a'
+        b == 8 -> s = bs - 'b'
+        b == 9 -> s = bs - 't'
+        b == 10 -> s = bs - 'n'
+        b == 11 -> s = bs - 'v'
+        b == 12 -> s = bs - 'f'
+        b == 13 -> s = bs - 'r'
+        b >= 32 && b < 127 -> s = number.char-to-str(b)
+        -> s = fmt-octal(b, 3)
+    }
+}
+
+; render the address field into a fixed 7-column string.
+addr-str = (val i64, fmt str) (s str) {
+    space = ' '
+    {
+        fmt == 'd' -> {
+            s = space.repeat(7)
+            x = val
+            k <- [0..7): {
+                #{overflow=wrap}
+                s[6 - k] = 48 + (x % 10)
+                #{overflow=wrap}
+                x = x / 10
+            }
+        }
+
+        fmt == 'x' -> {
+            hex-digits = '0123456789abcdef'
+            s = space.repeat(7)
+            x = val
+            k <- [0..7): {
+                #{overflow=wrap}
+                s[6 - k] = hex-digits[x & 15]
+                x = x >> 4
+            }
+        }
+
+        -> {
+            oct-digits = '01234567'
+            s = space.repeat(7)
+            x = val
+            k <- [0..7): {
+                #{overflow=wrap}
+                s[6 - k] = oct-digits[x & 7]
+                x = x >> 3
+            }
+        }
     }
 }
 
@@ -20,7 +175,9 @@ od-run = () {
     addr-fmt = 'o'
     data-fmt = 'o2'
     nbytes = -1
+    vflag = false
     files []str
+    all-rest = false
     skip-next = false
     i <- [2..argc): {
         handled = false
@@ -34,8 +191,19 @@ od-run = () {
             ! handled -> {
                 a = arg(i)
                 {
-                    a == '-A' -> {
+                    all-rest -> files.push(a)
 
+                    a == '--' -> {
+                        all-rest = true
+                        handled = true
+                    }
+
+                    a == '-' && ! all-rest -> {
+                        files.push(a)
+                        handled = true
+                    }
+
+                    a == '-A' -> {
                         #{overflow=wrap}
                         i + 1 < argc -> {
                             addr-fmt = arg(i + 1)
@@ -47,7 +215,6 @@ od-run = () {
                     a == '-t' -> {
                         #{overflow=wrap}
                         i + 1 < argc -> {
-                            #{overflow=wrap}
                             data-fmt = arg(i + 1)
                             skip-next = true
                         }
@@ -57,10 +224,39 @@ od-run = () {
                     a == '-N' -> {
                         #{overflow=wrap}
                         i + 1 < argc -> {
-                            #{overflow=wrap}
                             nbytes = atoi(arg(i + 1))
                             skip-next = true
                         }
+                        handled = true
+                    }
+
+                    a == '-v' -> {
+                        vflag = true
+                        handled = true
+                    }
+
+                    a == '-b' -> {
+                        data-fmt = 'o1'
+                        handled = true
+                    }
+
+                    a == '-c' -> {
+                        data-fmt = 'c'
+                        handled = true
+                    }
+
+                    a == '-d' -> {
+                        data-fmt = 'u2'
+                        handled = true
+                    }
+
+                    a == '-o' -> {
+                        data-fmt = 'o2'
+                        handled = true
+                    }
+
+                    a == '-x' -> {
+                        data-fmt = 'x2'
                         handled = true
                     }
 
@@ -87,9 +283,7 @@ od-run = () {
                 }
 
                 {
-                    ! handled -> {
-                        ! a.starts-with('-') -> files.push(a)
-                    }
+                    ! handled -> ! all-rest -> ! a.starts-with('-') -> files.push(a)
                 }
             }
         }
@@ -102,10 +296,8 @@ od-run = () {
             r = fs.read-stdin()
             r: {
                 ok -> inp = it
-
                 nil -> {
                 }
-
                 err -> {
                 }
             }
@@ -114,26 +306,24 @@ od-run = () {
 
         -> {
             fi <- [0..files.len()): {
-
                 #{index-out=0}
                 f = files[fi]
+                ; BSD od treats '-' as a literal file operand (not stdin), so
+                ; every non-flag operand goes through the file path.
                 ! fs.is-file(f) -> {
-                    #{overflow=wrap}
                     io.errln('od: ' - f - ': No such file or directory')
                     os.exit(1)
                 }
-                inp []byte
-                r = fs.read-bytes(f)
-                r: {
-                    ok -> inp = it
-
+                inp3 []byte
+                r3 = fs.read-bytes(f)
+                r3: {
+                    ok -> inp3 = it
                     nil -> {
                     }
-
                     err -> {
                     }
                 }
-                b = inp
+                b = inp3
                 k <- [0..b.len()): {
                     data.push(b[k])
                 }
@@ -146,206 +336,103 @@ od-run = () {
         nbytes >= 0 && nbytes < n -> n = nbytes
     }
 
-    ; 确定单元大小与每行单元数
-    unit = 2
-    {
-        data-fmt == 'u1' -> unit = 1
-
-        data-fmt == 'c' -> unit = 1
-
-        data-fmt == 'o1' -> unit = 1
-
-        data-fmt == 'x1' -> unit = 1
-    }
-
+    unit = size-of(data-fmt)
+    kind = kind-of(data-fmt)
+    base = base-right(data-fmt, unit, kind)
+    stride = stride-of(unit)
     #{overflow=wrap}
     per-line = 16 / unit
+    #{overflow=wrap}
+    fullw = base + stride * (per-line - 1)
 
     offset = 0
+    have-prev = false
+    suppressed = false
+    prevdata = ''
     (offset < n) {
-
-        ; 打印地址
+        ; assemble one full-width line (addr + right-justified cells + pad)
+        line = ''
         {
-            addr-fmt != 'n' -> print-addr(offset, addr-fmt)
+            addr-fmt != 'n' -> line = addr-str(offset, addr-fmt)
+            -> line = ' '.repeat(7)
         }
-
-        ; 打印各单元
-        j <- [0..per-line): {
-
+        cursor = 7
+        ci <- [0..per-line): {
             #{overflow=wrap}
-            pos = offset + j * unit
-            {
-                pos < n -> {
-
-                    ; 取单元值（小端）
-                    val = 0
-                    k <- [0..unit): {
-
-                        #{overflow=wrap}
-                        p = pos + k
-                        {
-                            p < n -> val = val | ((data[p] & 255) << (k * 8))
-                        }
-                    }
-                    {
-                        data-fmt == 'o2' -> print-octal(val, 6)
-
-                        data-fmt == 'x2' -> print-hex(val, 4)
-
-                        data-fmt == 'u1' -> print-decimal(val, 3)
-
-                        data-fmt == 'o1' -> print-octal(val, 3)
-
-                        data-fmt == 'x1' -> print-hex(val, 2)
-
-                        data-fmt == 'c' -> print-char-unit(data, pos)
+            pos = offset + ci * unit
+            pos < n -> {
+                ; little-endian quantity
+                val = 0
+                k <- [0..unit): {
+                    #{overflow=wrap}
+                    p = pos + k
+                    #{overflow=wrap}
+                    p < n -> val = val | ((data[p] & 255) << (k * 8))
+                }
+                ; render to string
+                vs = ''
+                {
+                    kind == 'o' -> vs = fmt-octal(val, oct-fw(unit))
+                    kind == 'x' -> vs = fmt-hex(val, hex-fw(unit))
+                    kind == 'u' -> vs = fmt-dec(val)
+                    kind == 'd' -> vs = fmt-dec-signed(val, unit)
+                    kind == 'c' -> {
+                        cv = 0
+                        cv = data[pos] & 255
+                        vs = fmt-char(cv)
                     }
                 }
+                ; right-justify to (base-1 + stride*ci) 0-based
+                #{overflow=wrap}
+                re0 = base - 1 + stride * ci
+                #{overflow=wrap}
+                start = re0 - vs.len-bytes() + 1
+                #{overflow=wrap}
+                pad = start - cursor
+                pad > 0 -> line = line - ' '.repeat(pad)
+                line = line - vs
+                #{overflow=wrap}
+                cursor = start + vs.len-bytes()
             }
         }
-        print('')
+        ; pad short (partial) line out to full width
+        #{overflow=wrap}
+        tail = fullw - cursor
+        tail > 0 -> line = line - ' '.repeat(tail)
+
+        ; duplicate-line collapsing (unless -v)
+        #{overflow=wrap}
+        cur = line.slice(7, line.len-bytes())
+        repeat = ! vflag && have-prev && cur == prevdata
+        {
+            repeat -> {
+                suppressed -> {
+                }
+                -> {
+                    print('*')
+                    suppressed = true
+                }
+            }
+            ! repeat -> {
+                print(line)
+                suppressed = false
+            }
+        }
+        prevdata = cur
+        have-prev = true
 
         #{overflow=wrap}
         offset = offset + 16
     }
 
-    ; 末行地址
+    ; final offset line (BSD emits nothing at all for empty input)
     {
-        addr-fmt != 'n' -> {
-            print-addr(n, addr-fmt)
-            print('')
+        n > 0 && addr-fmt != 'n' -> {
+            fl = addr-str(n, addr-fmt)
+            print(fl)
         }
+        n > 0 && addr-fmt == 'n' -> print('')
     }
 }
 
-print-addr = (val i64, fmt str) {
-    space = ' '
-    {
-        fmt == 'o' -> {
-            s = space.repeat(7)
-            v = val
-            k <- [0..7): {
-
-                #{overflow=wrap}
-                s[6 - k] = 48 + (v & 7)
-                v = v >> 3
-            }
-            io.out(s)
-        }
-
-        fmt == 'd' -> {
-            s = space.repeat(7)
-            v = val
-            k <- [0..7): {
-                #{overflow=wrap}
-                s[6 - k] = 48 + (v % 10)
-                #{overflow=wrap}
-                v = v / 10
-            }
-            io.out(s)
-        }
-
-        fmt == 'x' -> {
-            hex-digits = '0123456789abcdef'
-            s = space.repeat(7)
-            v = val
-            k <- [0..7): {
-                #{overflow=wrap}
-                s[6 - k] = hex-digits[v & 15]
-                v = v >> 4
-            }
-            io.out(s)
-        }
-    }
-}
-
-print-octal = (val i64, width i64) {
-    octal-digits = '01234567'
-    space = ' '
-
-    #{overflow=wrap}
-    s = space.repeat(width + 1)
-    v = val
-    k <- [0..width): {
-
-        #{overflow=wrap}
-        s[width - k] = octal-digits[v & 7]
-        v = v >> 3
-    }
-    io.out(s)
-}
-
-print-hex = (val i64, width i64) {
-    hex-digits = '0123456789abcdef'
-    space = ' '
-
-    #{overflow=wrap}
-    s = space.repeat(width + 1)
-    v = val
-    k <- [0..width): {
-
-        #{overflow=wrap}
-        s[width - k] = hex-digits[v & 15]
-        v = v >> 4
-    }
-    io.out(s)
-}
-
-print-decimal = (val i64, width i64) {
-    space = ' '
-
-    #{overflow=wrap}
-    s = space.repeat(width + 1)
-    v = val
-    k <- [0..width): {
-
-        #{overflow=wrap}
-        s[width - k] = 48 + (v % 10)
-
-        #{overflow=wrap}
-        v = v / 10
-    }
-    io.out(s)
-}
-
-print-char-unit = (data []byte, pos i64) {
-    space = ' '
-    b = data[pos] & 255
-    s = space.repeat(4)
-    {
-        b == 0 -> {
-            s[2] = '\\'
-            s[3] = '0'
-        }
-
-        b == 9 -> {
-            s[2] = '\\'
-            s[3] = 't'
-        }
-
-        b == 10 -> {
-            s[2] = '\\'
-            s[3] = 'n'
-        }
-
-        b == 13 -> {
-            s[2] = '\\'
-            s[3] = 'r'
-        }
-
-        b >= 32 && b < 127 -> {
-            s[3] = b
-        }
-
-        -> {
-
-            ; 3 位八进制
-            octal-digits = '01234567'
-            s[1] = octal-digits[(b >> 6) & 3]
-            s[2] = octal-digits[(b >> 3) & 7]
-            s[3] = octal-digits[b & 7]
-        }
-    }
-
-    io.out(s)
-}
+od-run()

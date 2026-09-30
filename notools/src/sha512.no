@@ -1,8 +1,220 @@
-; sha512.no — SHA-512 哈希
-; 计算文件或 stdin 的 SHA-512（十六进制，128 字符）
-; 用法：sha512 [file...]   无参数时读取 stdin
-# /notools/src/hashutil.hash-cmd
+; sha512.no — BSD sha512 工具（对齐 /sbin/sha512）
+; 用法：sha512 [-pqrsx] [-c str] [-s str] [files ...]
+;   无参数：读 stdin，打印裸哈希（-c 时无输出）
+;   文件：  SHA512 (path) = hash（-r 改 hash path；-q 只打印 hash；-c 追加 [ Failed ] 且 rc=2）
+;   -s str：打印 str 的裸哈希（忽略文件）
+;   -p：原样回显 stdin 再打印其裸哈希
+;   -x：先运行内置测试套件，再正常处理
+; 注意：不经 hashutil.do-hash 中转 —— md5x 的 str 返回值跨两层调用
+; 且输入超过短字符串阈值时会丢失（B13 变体），直接单层调用则正常
+
 
 sha512-run = () {
-    hash-cmd('sha512')
+    argc = args()
+    rflag = false
+    qflag = false
+    sflag = false
+    pflag = false
+    xflag = false
+    cflag = false
+    sval = ''
+    files []str
+    status = 0
+    suffix = ''
+    emitted = false
+    i = 2
+    (i < argc) {
+        a = arg(i)
+        {
+            a.len-bytes() > 2 && a[0] == 45 && a[1] == 45 -> {
+                io.errln('sha512: unrecognized option `' - a - number.char-to-str(39))
+                io.errln('usage: sha512 [-pqrtx] [-c string] [-s string] [files ...]')
+                os.exit(1)
+            }
+            a.len-bytes() > 1 && a[0] == 45 -> {
+                j <- [1..a.len-bytes()): {
+                    ch i64 = a[j]
+                    {
+                        ch == 114 -> rflag = true
+                        ch == 113 -> qflag = true
+                        ch == 112 -> pflag = true
+                        ch == 120 -> xflag = true
+                        ch == 116 -> {
+                        }
+                        ch == 99 -> {
+                            cflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                        }
+                        ch == 115 -> {
+                            sflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                            i < argc -> sval = arg(i)
+                        }
+                        -> {
+                            io.errln('sha512: invalid option -- ' - number.char-to-str(ch))
+                            io.errln('usage: sha512 [-pqrtx] [-c string] [-s string] [files ...]')
+                            os.exit(1)
+                        }
+                    }
+                }
+            }
+            -> files.push(a)
+        }
+        #{overflow=wrap}
+        i = i + 1
+    }
+
+    {
+        xflag -> {
+            print('SHA512 test suite:')
+            ts []str
+            ts.push('')
+            ts.push('a')
+            ts.push('abc')
+            ts.push('message digest')
+            ts.push('abcdefghijklmnopqrstuvwxyz')
+            ts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+            ts.push('12345678901234567890123456789012345678901234567890123456789012345678901234567890')
+            ts.push('MD5 has not yet (2001-09-03) been broken, but sufficient attacks have been made that its security is in some doubt')
+            ev []str
+            ev.push('cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e')
+            ev.push('1f40fc92da241694750979ee6cf582f2d5d7d28e18335de05abc54d0560e0f5302860c652bf08d560252aa5e74210546f369fbbbce8c12cfc7957b2652fe9a75')
+            ev.push('ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f')
+            ev.push('107dbf389d9e9f71a3a95f6c055b9251bc5268c2be16d6c13492ea45b0199f3309e16455ab1e96118e8a905d5597b72038ddb372a89826046de66687bb420e7c')
+            ev.push('4dbff86cc2ca1bae1e16468a05cb9881c97f1753bce3619034898faa1aabe429955a1bf8ec483d7421fe3c1646613a59ed5441fb0f321389f77f48a879c7b1f1')
+            ev.push('1e07be23c26a86ea37ea810c8ec7809352515a970e9253c26f536cfc7a9996c45c8370583e0a78fa4a90041d71a4ceab7423f19c71b9d5a3e01249f0bebd5894')
+            ev.push('72ec1ef1124a45b047e8b7c75a932195135bb61de24ec0d1914042246e0aec3a2354e093d76f3048b456764346900cb130d2a4fd5dd16abb5e30bcb850dee843')
+            ev.push('e8a835195e039708b13d9131e025f4441dbdc521ce625f245a436dcd762f54bf5cb298d96235e6c6a304e087ec8189b9512cbdf6427737ea82793460c367b9c3')
+            k <- [0..ts.len()): {
+                #{index-out=0}
+                tv = ts[k]
+                tdata = tv.to-bytes()
+                th = sha512.sha512-hex(tdata)
+                res = ' - verified correct'
+                #{index-out=0}
+                th != ev[k] -> res = ' - NOT correct'
+                print('SHA512 ("' - tv - '") = ' - th - res)
+            }
+        }
+    }
+
+    cflag -> suffix = ' [ Failed ]'
+
+    {
+        pflag -> {
+            ! cflag -> {
+                pinp []byte
+                pr = fs.read-stdin()
+                pr: {
+                    ok -> pinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                pdata = pinp
+                fd = fs.open-write('/dev/stdout')
+                fs.write(fd, pdata, pdata.len())
+                ph = sha512.sha512-hex(pdata)
+                print(ph)
+            }
+        }
+
+        sflag -> {
+            sdata = sval.to-bytes()
+            sh = sha512.sha512-hex(sdata)
+            print(sh - suffix)
+            emitted = true
+        }
+
+        -> {
+            files.len() == 0 && ! xflag -> {
+                sinp []byte
+                sr = fs.read-stdin()
+                sr: {
+                    ok -> sinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                sdata2 = sinp
+                sh2 = sha512.sha512-hex(sdata2)
+                ! cflag -> print(sh2)
+            }
+
+            files.len() > 0 -> {
+                k2 <- [0..files.len()): {
+                    #{index-out=0}
+                    path = files[k2]
+                    ok2 = true
+                    {
+                        path == '-' -> {
+                        }
+                        ! fs.is-file(path) -> {
+                            ok2 = false
+                            fs.is-dir(path) -> io.errln('sha512: ' - path - ': Is a directory')
+                            -> io.errln('sha512: ' - path - ': No such file or directory')
+                            status = 1
+                        }
+                    }
+                    ok2 -> {
+                        data []byte
+                        {
+                            path == '-' -> {
+                                rinp []byte
+                                rr = fs.read-stdin()
+                                rr: {
+                                    ok -> rinp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                rb = rinp
+                                m <- [0..rb.len()): {
+                                    data.push(rb[m])
+                                }
+                            }
+                            -> {
+                                finp []byte
+                                fr = fs.read-bytes(path)
+                                fr: {
+                                    ok -> finp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                fb = finp
+                                m2 <- [0..fb.len()): {
+                                    data.push(fb[m2])
+                                }
+                            }
+                        }
+                        h = sha512.sha512-hex(data)
+                        {
+                            qflag -> print(h - suffix)
+                            rflag -> print(h - ' ' - path - suffix)
+                            -> print('SHA512 (' - path - ') = ' - h - suffix)
+                        }
+                        emitted = true
+                    }
+                }
+            }
+        }
+    }
+
+    status != 0 -> os.exit(status)
+    cflag && emitted -> os.exit(2)
 }

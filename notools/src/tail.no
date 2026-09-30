@@ -1,7 +1,8 @@
 ; tail.no — tail utility
 ; Output the last part of files
-; Usage: tail [-n N] [-N] [file...]
-;   -n N / -N: print the last N lines (default 10)
+; Usage: tail [-n N] [-c N] [-N] [file...]
+;   -n N / -N:  print the last N lines (default 10); -n -N drops the last N lines
+;   -c N:       print the last N bytes;          -c -N drops the last N bytes
 
 atoi = (s str) (v i64) {
     v = 0
@@ -13,106 +14,228 @@ atoi = (s str) (v i64) {
     }
 }
 
+; atoi-signed parses an optionally negative decimal (e.g. "-3", "10").
+atoi-signed = (s str) (v i64) {
+    slen = s.len-bytes()
+    neg = false
+    off = 0
+    {
+        slen > 0 && s[0] == 45 -> {
+            neg = true
+            off = 1
+        }
+        -> {}
+    }
+    #{overflow=wrap}
+    body = s.slice(off, slen)
+    v = atoi(body)
+    {
+        #{overflow=wrap}
+        neg -> v = 0 - v
+        -> {}
+    }
+}
+
+; tail-last-lines: emit the last n lines of content raw (byte-exact slices).
+; A negative n means "all lines except the last |n| lines".
+tail-last-lines = (content str, n i64) {
+    starts []i64
+    starts.push(0)
+    clen = content.len-bytes()
+    li <- [0..clen): {
+        {
+            content[li] == 10 -> {
+                #{overflow=wrap}
+                ns = li + 1
+                {
+                    ns < clen -> starts.push(ns)
+                    -> {}
+                }
+            }
+            -> {}
+        }
+    }
+    total = starts.len()
+    keep-from = 0
+    {
+        n >= 0 -> {
+            #{overflow=wrap}
+            keep-from = total - n
+            keep-from < 0 -> keep-from = 0
+        }
+        -> {
+            #{overflow=wrap}
+            abs-n = 0 - n
+            #{overflow=wrap}
+            keep-from = total - abs-n
+            keep-from < 0 -> keep-from = 0
+        }
+    }
+    k <- [0..total): {
+        {
+            k >= keep-from -> {
+                end = clen
+                #{overflow=wrap}
+                nk = k + 1
+                #{index-out=0}
+                ns = starts[nk]
+                { nk < total -> end = ns -> {} }
+                io.out(content.slice(starts[k], end))
+            }
+            -> {}
+        }
+    }
+}
+
+; tail-last-bytes: emit bytes per BSD tail -c semantics.
+;   cbytes > 0  -> the last cbytes bytes
+;   cbytes == 0 -> nothing
+;   cbytes < 0  -> the last |cbytes| bytes (BSD reverse offset)
+tail-last-bytes = (content str, cbytes i64) {
+    clen = content.len-bytes()
+    start = clen
+    {
+        cbytes != 0 -> {
+            abs-c = cbytes
+            {
+                #{overflow=wrap}
+                cbytes < 0 -> abs-c = 0 - cbytes
+                -> {}
+            }
+            #{overflow=wrap}
+            start = clen - abs-c
+            start < 0 -> start = 0
+        }
+        -> {}
+    }
+    {
+        #{overflow=wrap}
+        clen > start -> {
+            fd = fs.open-write('/dev/stdout')
+            #{overflow=wrap}
+            fs.write(fd, content.slice-bytes(start, clen), clen - start)
+            fs.close(fd)
+        }
+        -> {}
+    }
+}
+
 tail-run = () {
     argc = args()
     n = 10
+    cbytes = -999999
     files []str
     i <- [2..argc): {
         a = arg(i)
 
         #{overflow=wrap}
         prev = arg(i - 1)
-        prev == '-n' -> {
-            continue
-        }
-        a == '-n' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                n = atoi(arg(i + 1))
-            }
-        }
-        a.starts-with('-') -> {
-            a != '-n' -> {
-                a.len-bytes() > 1 -> n = atoi(a.slice(1, a.len-bytes()))
-            }
-        }
-        ! a.starts-with('-') -> files.push(a)
-    }
-    {
-        n < 0 -> n = 0
-
-        files.len() == 0 -> {
-            content = ''
-            r = fs.read-stdin-str()
-            r: {
-                ok -> content = it
-
-                nil -> {
-                }
-
-                err -> {
-                }
-            }
-            starts []i64
-            starts.push(0)
-            i <- [0..content.len-bytes()): {
-                content[i] == 10 -> {
-
-                    #{overflow=wrap}
-                    ns = i + 1
-                    ns < content.len-bytes() -> starts.push(ns)
-                }
-            }
-            #{overflow=wrap}
-            skip = starts.len() - n
-            k <- [0..starts.len()): {
-                k >= skip -> {
-                    end = content.len-bytes()
-                    #{overflow=wrap}
-                    nk = k + 1
-                    nk < starts.len() -> end = starts[nk]
-                    io.out(content.slice(starts[k], end))
-                }
-            }
-        }
-
-        files.len() > 0 -> {
-            i <- [0..files.len()): {
-                ! fs.is-file(files[i]) -> {
-                    #{overflow=wrap}
-                    io.errln('tail: ' - files[i] - ': No such file or directory')
-                    continue
-                }
-                content = ''
-                r = fs.read-str(files[i])
-                r: {
-                    ok -> content = it
-
-                    nil -> {
-                    }
-
-                    err -> {
-                    }
-                }
-                starts []i64
-                starts.push(0)
-                j <- [0..content.len-bytes()): {
-                    content[j] == 10 -> {
-                        #{overflow=wrap}
-                        ns = j + 1
-                        ns < content.len-bytes() -> starts.push(ns)
-                    }
-                }
+        { prev == '-n' || prev == '-c' -> { continue } -> {} }
+        {
+            a == '-n' -> {
                 #{overflow=wrap}
-                skip = starts.len() - n
-                k <- [0..starts.len()): {
-                    k >= skip -> {
-                        end = content.len-bytes()
-                        #{overflow=wrap}
-                        nk = k + 1
-                        nk < starts.len() -> end = starts[nk]
-                        io.out(content.slice(starts[k], end))
+                i + 1 < argc -> n = atoi-signed(arg(i + 1))
+                -> {}
+            }
+            a == '-c' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> cbytes = atoi-signed(arg(i + 1))
+                -> {}
+            }
+            a.starts-with('-') -> {
+                {
+                    a != '-n' && a != '-c' -> {
+                        alen = a.len-bytes()
+                        {
+                            alen > 2 && a[1] == 99 -> cbytes = atoi-signed(a.slice(2, alen))
+                            -> {
+                                alen > 1 -> n = atoi-signed(a.slice(1, alen))
+                                -> {}
+                            }
+                        }
+                    }
+                    -> {}
+                }
+            }
+            ! a.starts-with('-') -> files.push(a)
+            -> {}
+        }
+    }
+    byte-mode = cbytes != -999999
+    {
+        byte-mode -> {
+            ; byte mode
+            {
+                files.len() == 0 -> {
+                    content = ''
+                    r = fs.read-stdin-str()
+                    r: { ok -> content = it  nil -> {}  err -> {} }
+                    tail-last-bytes(content, cbytes)
+                }
+                -> {
+                    fi <- [0..files.len()): {
+                        ! fs.is-file(files[fi]) -> {
+                            io.errln('tail: ' - files[fi] - ': No such file or directory')
+                            continue
+                        }
+                        {
+                            files.len() > 1 -> {
+                                { fi > 0 -> print('') -> {} }
+                                print('==> ' - files[fi] - ' <==')
+                            }
+                            -> {}
+                        }
+                        content = ''
+                        r = fs.read-str(files[fi])
+                        r: { ok -> content = it  nil -> {}  err -> {} }
+                        tail-last-bytes(content, cbytes)
+                        ; byte mode: if emitted bytes lack a trailing newline, add one
+                        {
+                            cbytes > 0 -> {
+                                clen = content.len-bytes()
+                                #{overflow=wrap}
+                                start = clen - cbytes
+                                start < 0 -> start = 0
+                                has-out = clen > start
+                                #{overflow=wrap}
+                                #{index-out=0}
+                                last-b = content[clen - 1]
+                                ends-nl = has-out && last-b == 10
+                                ! ends-nl -> print('')
+                                -> {}
+                            }
+                            -> {}
+                        }
+                    }
+                }
+            }
+        }
+        -> {
+            ; line mode
+            {
+                files.len() == 0 -> {
+                    content = ''
+                    r = fs.read-stdin-str()
+                    r: { ok -> content = it  nil -> {}  err -> {} }
+                    tail-last-lines(content, n)
+                }
+                -> {
+                    fi <- [0..files.len()): {
+                        ! fs.is-file(files[fi]) -> {
+                            io.errln('tail: ' - files[fi] - ': No such file or directory')
+                            continue
+                        }
+                        {
+                            files.len() > 1 -> {
+                                { fi > 0 -> print('') -> {} }
+                                print('==> ' - files[fi] - ' <==')
+                            }
+                            -> {}
+                        }
+                        content = ''
+                        r = fs.read-str(files[fi])
+                        r: { ok -> content = it  nil -> {}  err -> {} }
+                        tail-last-lines(content, n)
                     }
                 }
             }

@@ -1,44 +1,114 @@
-; sha224.no — SHA-224 哈希
-; 计算文件或 stdin 的 SHA-224（十六进制，56 字符）
-; 用法：sha224 [file...]   无参数时读取 stdin
-; 走本地 sha224x（标准库 sha224 目前返回未计算的 IV，不可用）
+; sha224.no — BSD sha224 工具（对齐 /sbin/sha224）
+; 用法：sha224 [-pqrsx] [-c str] [-s str] [files ...]
+;   无参数：读 stdin，打印裸哈希（-c 时无输出）
+;   文件：  SHA224 (path) = hash（-r 改 hash path；-q 只打印 hash；-c 追加 [ Failed ] 且 rc=2）
+;   -s str：打印 str 的裸哈希（忽略文件）
+;   -p：原样回显 stdin 再打印其裸哈希
+;   -x：先运行内置测试套件，再正常处理
+; 注意：不经 hashutil.do-hash 中转 —— md5x 的 str 返回值跨两层调用
+; 且输入超过短字符串阈值时会丢失（B13 变体），直接单层调用则正常
 # /notools/src/sha224x.sha224x
 
 sha224-run = () {
     argc = args()
-    {
-        argc <= 2 -> {
-            sinp []byte
-            sr = fs.read-stdin()
-            sr: {
-                ok -> sinp = it
-
-                nil -> {
-                }
-
-                err -> {
-                }
+    rflag = false
+    qflag = false
+    sflag = false
+    pflag = false
+    xflag = false
+    cflag = false
+    sval = ''
+    files []str
+    status = 0
+    suffix = ''
+    emitted = false
+    i = 2
+    (i < argc) {
+        a = arg(i)
+        {
+            a.len-bytes() > 2 && a[0] == 45 && a[1] == 45 -> {
+                io.errln('sha224: unrecognized option `' - a - number.char-to-str(39))
+                io.errln('usage: sha224 [-pqrtx] [-c string] [-s string] [files ...]')
+                os.exit(1)
             }
-            sdata = sinp
-            h = sha224x(sdata)
-            print(h)
-        }
-
-        -> {
-            i <- [2..argc): {
-                path = arg(i)
-                {
-                    ! fs.is-file(path) -> {
-                        #{overflow=wrap}
-                        emsg = 'sha224: ' - path - ': No such file or directory'
-                        io.errln(emsg)
-                        os.exit(1)
+            a.len-bytes() > 1 && a[0] == 45 -> {
+                j <- [1..a.len-bytes()): {
+                    ch i64 = a[j]
+                    {
+                        ch == 114 -> rflag = true
+                        ch == 113 -> qflag = true
+                        ch == 112 -> pflag = true
+                        ch == 120 -> xflag = true
+                        ch == 116 -> {
+                        }
+                        ch == 99 -> {
+                            cflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                        }
+                        ch == 115 -> {
+                            sflag = true
+                            #{overflow=wrap}
+                            i = i + 1
+                            i < argc -> sval = arg(i)
+                        }
+                        -> {
+                            io.errln('sha224: invalid option -- ' - number.char-to-str(ch))
+                            io.errln('usage: sha224 [-pqrtx] [-c string] [-s string] [files ...]')
+                            os.exit(1)
+                        }
                     }
                 }
-                finp []byte
-                fr = fs.read-bytes(path)
-                fr: {
-                    ok -> finp = it
+            }
+            -> files.push(a)
+        }
+        #{overflow=wrap}
+        i = i + 1
+    }
+
+    {
+        xflag -> {
+            print('SHA224 test suite:')
+            ts []str
+            ts.push('')
+            ts.push('a')
+            ts.push('abc')
+            ts.push('message digest')
+            ts.push('abcdefghijklmnopqrstuvwxyz')
+            ts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+            ts.push('12345678901234567890123456789012345678901234567890123456789012345678901234567890')
+            ts.push('MD5 has not yet (2001-09-03) been broken, but sufficient attacks have been made that its security is in some doubt')
+            ev []str
+            ev.push('d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f')
+            ev.push('abd37534c7d9a2efb9465de931cd7055ffdb8879563ae98078d6d6d5')
+            ev.push('23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7')
+            ev.push('2cb21c83ae2f004de7e81c3c7019cbcb65b71ab656b22d6d0c39b8eb')
+            ev.push('45a5f72c39c5cff2522eb3429799e49e5f44b356ef926bcf390dccc2')
+            ev.push('bff72b4fcb7d75e5632900ac5f90d219e05e97a7bde72e740db393d9')
+            ev.push('b50aecbe4e9bb0b57bc5f3ae760a8e01db24f203fb3cdcd13148046e')
+            ev.push('5ae55f3779c8a1204210d7ed7689f661fbe140f96f272ab79e19d470')
+            k <- [0..ts.len()): {
+                #{index-out=0}
+                tv = ts[k]
+                tdata = tv.to-bytes()
+                th = sha224x(tdata)
+                res = ' - verified correct'
+                #{index-out=0}
+                th != ev[k] -> res = ' - NOT correct'
+                print('SHA224 ("' - tv - '") = ' - th - res)
+            }
+        }
+    }
+
+    cflag -> suffix = ' [ Failed ]'
+
+    {
+        pflag -> {
+            ! cflag -> {
+                pinp []byte
+                pr = fs.read-stdin()
+                pr: {
+                    ok -> pinp = it
 
                     nil -> {
                     }
@@ -46,13 +116,105 @@ sha224-run = () {
                     err -> {
                     }
                 }
-                fdata = finp
-                h = sha224x(fdata)
+                pdata = pinp
+                fd = fs.open-write('/dev/stdout')
+                fs.write(fd, pdata, pdata.len())
+                ph = sha224x(pdata)
+                print(ph)
+            }
+        }
 
-                #{overflow=wrap}
-                line = h - '  ' - path
-                print(line)
+        sflag -> {
+            sdata = sval.to-bytes()
+            sh = sha224x(sdata)
+            print(sh - suffix)
+            emitted = true
+        }
+
+        -> {
+            files.len() == 0 && ! xflag -> {
+                sinp []byte
+                sr = fs.read-stdin()
+                sr: {
+                    ok -> sinp = it
+
+                    nil -> {
+                    }
+
+                    err -> {
+                    }
+                }
+                sdata2 = sinp
+                sh2 = sha224x(sdata2)
+                ! cflag -> print(sh2)
+            }
+
+            files.len() > 0 -> {
+                k2 <- [0..files.len()): {
+                    #{index-out=0}
+                    path = files[k2]
+                    ok2 = true
+                    {
+                        path == '-' -> {
+                        }
+                        ! fs.is-file(path) -> {
+                            ok2 = false
+                            fs.is-dir(path) -> io.errln('sha224: ' - path - ': Is a directory')
+                            -> io.errln('sha224: ' - path - ': No such file or directory')
+                            status = 1
+                        }
+                    }
+                    ok2 -> {
+                        data []byte
+                        {
+                            path == '-' -> {
+                                rinp []byte
+                                rr = fs.read-stdin()
+                                rr: {
+                                    ok -> rinp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                rb = rinp
+                                m <- [0..rb.len()): {
+                                    data.push(rb[m])
+                                }
+                            }
+                            -> {
+                                finp []byte
+                                fr = fs.read-bytes(path)
+                                fr: {
+                                    ok -> finp = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                fb = finp
+                                m2 <- [0..fb.len()): {
+                                    data.push(fb[m2])
+                                }
+                            }
+                        }
+                        h = sha224x(data)
+                        {
+                            qflag -> print(h - suffix)
+                            rflag -> print(h - ' ' - path - suffix)
+                            -> print('SHA224 (' - path - ') = ' - h - suffix)
+                        }
+                        emitted = true
+                    }
+                }
             }
         }
     }
+
+    status != 0 -> os.exit(status)
+    cflag && emitted -> os.exit(2)
 }
