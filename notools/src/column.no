@@ -50,57 +50,76 @@ split-fields = (line str, delim str, fields []str) {
     in-field -> fields.push(line.slice(start, line.len-bytes()))
 }
 
-; table: format lines as an aligned table
+; fields-of: split one line into fields (returns a fresh vec).
+fields-of = (line str, delim str) (f []str) {
+    split-fields(line, delim, f)
+}
+
+; table: format lines as an aligned table (BSD column -t).
+;   Each column padded to its max cell width + 2-space gap, EXCEPT the last
+;   field of each row, which is emitted with no trailing padding.
 table = (lines []str, delim str) {
     n = lines.len()
     n == 0 -> return
 
-    ; Split each line into fields
-    all-fields [][]str
-    max-cols = 0
+    ; Pass 1: how many columns (max field count)
+    ncols = 0
     i <- [0..n): {
-        fields []str
-        split-fields(lines[i], delim, fields)
-        all-fields.push(fields)
-        fields.len() > max-cols -> max-cols = fields.len()
+        f = fields-of(lines[i], delim)
+        { f.len() > ncols -> ncols = f.len() -> {} }
+    }
+    { ncols == 0 -> { return } -> {} }
+
+    ; Column widths, initialized to 0
+    widths []i64
+    w <- [0..ncols): {
+        widths.push(0)
     }
 
-    ; Compute max width per column
-    col-widths []i64 = with-len(max-cols)
-    j <- [0..max-cols): {
-        col-widths[j] = 0
-    }
+    ; Pass 2: max width per column
     i <- [0..n): {
-
-        #{index-out=0}
-        f = all-fields[i]
+        f = fields-of(lines[i], delim)
         j <- [0..f.len()): {
-            f[j].len() > col-widths[j] -> col-widths[j] = f[j].len()
+            #{index-out=0}
+            wj = f[j]
+            lw = wj.len-bytes()
+            #{index-out=0}
+            cw = widths[j]
+            { lw > cw -> {
+                #{index-out=0}
+                widths[j] = lw
+            } -> {} }
         }
     }
 
-    ; Output each line with padding (2 spaces between columns)
+    ; Pass 3: emit rows
     i <- [0..n): {
-
-        #{index-out=0}
-        f = all-fields[i]
-        line = ''
-        j <- [0..f.len()): {
-            j > 0 -> line = line - '  '
-            #{overflow=wrap}
-            word = f[j] - ''
-
-            ; Pad to column width (left-justified)
-            word-len = word.len()
-
-            #{overflow=wrap}
-            pad = col-widths[j] - word-len
-            line = line - word
-            k <- [0..pad): {
-                line = line - ' '
+        f = fields-of(lines[i], delim)
+        nf = f.len()
+        #{overflow=wrap}
+        last = nf - 1
+        out = ''
+        j <- [0..nf): {
+            #{index-out=0}
+            wj = f[j]
+            {
+                j < last -> {
+                    #{index-out=0}
+                    cw = widths[j]
+                    out = out - wj
+                    #{overflow=wrap}
+                    pad = cw - wj.len-bytes()
+                    { pad < 0 -> pad = 0 -> {} }
+                    p <- [0..pad): {
+                        out = out - ' '
+                    }
+                    out = out - '  '
+                }
+                j >= last -> out = out - wj
+                -> {}
             }
         }
-        print(line)
+        print(out)
     }
 }
 
@@ -276,10 +295,12 @@ column-run = () {
                 split(content, lines)
             }
         }
+    }
 
-        ; Process
+    ; Process
+    {
         table-mode -> table(lines, delim)
-
         ! table-mode -> fill(lines, width, row-major)
+        -> {}
     }
 }

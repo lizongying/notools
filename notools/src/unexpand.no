@@ -104,96 +104,84 @@ process = (content str, tabstop i64, all-flag bool) {
     start < content.len-bytes() -> line(content.slice(start, content.len-bytes()), tabstop, all-flag)
 }
 
-; line: convert spaces to tabs in a single line
+; line: canonicalize whitespace in a single line, BSD-unexpand style.
+;   Input spaces/tabs are expanded to a visual column span, then re-compressed:
+;   a run is turned into tabs only where a tab covers >= 2 columns toward the
+;   next tab stop; otherwise spaces. Leading runs are always compressed;
+;   interior runs only with -a.
 line = (line str, tabstop i64, all-flag bool) {
+    n = line.len-bytes()
     col = 0
     i = 0
-    n = line.len-bytes()
-    in-leading = true
-
     (i < n) {
-        i < n -> {
-            c = line[i]
-
-            ; Check if we're still in leading whitespace (only when not -a)
-            ! all-flag -> {
-                c != 32 -> in-leading = false
-            }
-            all-flag -> {
-                in-leading = true
-            }
-
-            ; Try to convert runs of spaces at tab stops to tabs
-            c == 32 -> {
-                in-leading -> {
-
-                    ; Check if we're at a tab stop boundary
-                    at-tab-stop = (col % tabstop) == 0
-                    at-tab-stop -> {
-
-                        ; Count how many spaces until next tab stop or non-space
-                        space-run = 0
-                        remaining = tabstop
-                        j <- [0..remaining): {
-
+        c = line[i]
+        {
+            c == 32 || c == 9 -> {
+                ; measure the run's end column
+                start-col = col
+                j = i
+                (j < n) {
+                    cj = line[j]
+                    {
+                        cj == 32 -> {
                             #{overflow=wrap}
-                            idx = i + j
-                            idx < n -> {
-
-                                #{overflow=wrap}
-                                line[idx] == 32 -> space-run = space-run + 1
-                                line[idx] != 32 -> break
-                            }
+                            col = col + 1
+                            #{overflow=wrap}
+                            j = j + 1
                         }
-
-                        ; If we have a full tab stop of spaces, emit a tab
-                        space-run >= tabstop -> {
-                            io.out('\t')
+                        cj == 9 -> {
                             #{overflow=wrap}
-                            i = i + tabstop
+                            rem = tabstop - (col % tabstop)
+                            { rem == 0 -> rem = tabstop -> {} }
                             #{overflow=wrap}
-                            col = col + tabstop
+                            col = col + rem
+                            #{overflow=wrap}
+                            j = j + 1
                         }
-                        space-run < tabstop -> {
-
-                            ; Not enough spaces for a tab, emit spaces
-                            k <- [0..space-run): {
-                                io.out(' ')
-                            }
-                            #{overflow=wrap}
-                            i = i + space-run
-                            #{overflow=wrap}
-                            col = col + space-run
-                        }
-                    }
-                    ! at-tab-stop -> {
-
-                        ; Not at tab stop, emit single space
-                        io.out(' ')
-                        #{overflow=wrap}
-                        i = i + 1
-                        #{overflow=wrap}
-                        col = col + 1
+                        cj != 32 && cj != 9 -> break
+                        -> {}
                     }
                 }
-                ! in-leading -> {
-
-                    ; Not in leading whitespace, emit as-is
-                    io.out(' ')
-                    #{overflow=wrap}
-                    i = i + 1
-                    #{overflow=wrap}
-                    col = col + 1
+                end-col = col
+                do-ws = all-flag || start-col == 0
+                {
+                    do-ws -> {
+                        cc = start-col
+                        (cc < end-col) {
+                            #{overflow=wrap}
+                            next-stop = cc + (tabstop - (cc % tabstop))
+                            #{overflow=wrap}
+                            span = next-stop - cc
+                            fits = next-stop <= end-col && span >= 2
+                            {
+                                fits -> { io.out('\t')  cc = next-stop }
+                                ! fits -> {
+                                    io.out(' ')
+                                    #{overflow=wrap}
+                                    cc = cc + 1
+                                }
+                                -> {}
+                            }
+                        }
+                    }
+                    ! do-ws -> {
+                        k <- [start-col..end-col): {
+                            io.out(' ')
+                        }
+                    }
+                    -> {}
                 }
+                i = j
             }
-            c != 32 -> {
+            c != 32 && c != 9 -> {
                 #{overflow=wrap}
                 io.out(line.slice(i, i + 1))
                 #{overflow=wrap}
-                i = i + 1
-                #{overflow=wrap}
                 col = col + 1
+                #{overflow=wrap}
+                i = i + 1
             }
+            -> {}
         }
     }
 }

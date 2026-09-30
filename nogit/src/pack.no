@@ -499,9 +499,7 @@ scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
     warmup-data[8] = 0x01
     warmup-data[9] = 0x00
     warmup-data[10] = 0x01
-    _w-out str
-    _w-ok bool
-    _w-out, _w-ok = zlib.zlib-decompress(warmup-data)
+    _w-opt = zlib.zlib-decompress(warmup-data)
 
     ; walk all objects
     pos = 12
@@ -543,10 +541,20 @@ scan-pack-for-oid = (pack-path str, target oid) (offset i64, ok bool) {
 
         ; decompress the object data
         comp-start = pos
-        decompressed, decomp-ok = zlib.zlib-decompress(util.str-range(data, comp-start, data.len()))
+        decompressed str = ''
+        decomp-have = false
+        decomp-opt = zlib.zlib-decompress(util.str-range(data, comp-start, data.len()))
+        decomp-opt: {
+            ok -> {
+                decompressed = it
+                decomp-have = true
+            }
+            nil -> {}
+            err -> {}
+        }
 
         ; for direct objects (non-delta), hash and compare
-        decomp-ok -> {
+        decomp-have -> {
             type < 5 -> {
 
                 ; direct object — hash and compare
@@ -674,9 +682,7 @@ read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
     warmup-data[8] = 0x01
     warmup-data[9] = 0x00
     warmup-data[10] = 0x01
-    _w-out str
-    _w-ok bool
-    _w-out, _w-ok = zlib.zlib-decompress(warmup-data)
+    _w-opt = zlib.zlib-decompress(warmup-data)
 
     kind, data, ok = read-packed-at-offset(git-dir, pack-data, offset)
 }
@@ -705,8 +711,13 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
             base-offset = offset - ofs
 
             ; decompress delta data
-            delta-data, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, np, pack-data.len-bytes()))
-            ! decomp-ok -> return
+            delta-data str
+            delta-opt = zlib.zlib-decompress(util.str-range(pack-data, np, pack-data.len-bytes()))
+            delta-opt: {
+                ok -> { delta-data = it }
+                nil -> { return }
+                err -> { return }
+            }
 
             ; recursively read base object
             base-kind, base-data, base-ok = read-packed-at-offset(git-dir, pack-data, base-offset)
@@ -736,8 +747,13 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
             pos = pos + 20
 
             ; decompress delta data
-            delta-data, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
-            ! decomp-ok -> return
+            delta-data str
+            delta-opt = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
+            delta-opt: {
+                ok -> { delta-data = it }
+                nil -> { return }
+                err -> { return }
+            }
 
             ; read base object (try loose first, then pack)
             base-kind, base-data, base-ok = object.read-loose(git-dir, base-oid)
@@ -758,10 +774,14 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
     }
 
     ; direct object — decompress
-    decompressed, decomp-ok = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
+    decompressed str
+    decomp-opt = zlib.zlib-decompress(util.str-range(pack-data, pos, pack-data.len-bytes()))
+    decomp-opt: {
+        ok -> { decompressed = it }
+        nil -> { return }
+        err -> { return }
+    }
     {
-        ! decomp-ok -> return
-
         ; map type to kind
         type == 1 -> kind = 'commit'
 

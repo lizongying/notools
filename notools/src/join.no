@@ -1,18 +1,21 @@
 ; join.no — join utility
 ; Join lines of two files on a common field
-; Usage: join [-1 F1] [-2 F2] [-t CHAR] file1 file2
+; Usage: join [-1 F1] [-2 F2] [-j F] [-t CHAR] [-o LIST] [-e STR] [-a1] [-a2] file1 file2
 ;   -1 F1:   join field for file1 (default: 1)
 ;   -2 F2:   join field for file2 (default: 1)
-;   -t CHAR: field separator (default: whitespace)
-;   file1 file2: input files (must be sorted on join field)
+;   -j F:    use F as the join field for both files
+;   -t CHAR: field separator (default: whitespace); also used as output separator
+;   -o LIST: output format, comma-separated field specs (0 / F / F.N)
+;   -e STR:  string replacing missing fields
+;   -a1/-a2: also print unpairable lines from file1/file2
 
 atoi = (s str) (v i64) {
     v = 0
     i <- [0..s.len-bytes()): {
         c = s[i]
-
         #{overflow=wrap}
         c >= 48 && c <= 57 -> v = v * 10 + (c - 48)
+        -> {}
     }
 }
 
@@ -23,27 +26,32 @@ split = (line str) (fields []str) {
     i <- [0..line.len-bytes()): {
         c = line[i]
         is-space = c == 32 || c == 9
-        is-space && in-field -> {
-            fields.push(line.slice(start, i))
-            in-field = false
-        }
-        ! is-space && ! in-field -> {
-            start = i
-            in-field = true
+        {
+            is-space && in-field -> {
+                fields.push(line.slice(start, i))
+                in-field = false
+            }
+            ! is-space && ! in-field -> {
+                start = i
+                in-field = true
+            }
+            -> {}
         }
     }
-    in-field -> fields.push(line.slice(start, line.len-bytes()))
+    { in-field -> fields.push(line.slice(start, line.len-bytes())) -> {} }
 }
 
 ; split-char: split a line by a specific character
 split-char = (line str, delim i64) (fields []str) {
     start = 0
     i <- [0..line.len-bytes()): {
-        line[i] == delim -> {
-            fields.push(line.slice(start, i))
-
-            #{overflow=wrap}
-            start = i + 1
+        {
+            line[i] == delim -> {
+                fields.push(line.slice(start, i))
+                #{overflow=wrap}
+                start = i + 1
+            }
+            -> {}
         }
     }
     fields.push(line.slice(start, line.len-bytes()))
@@ -53,161 +61,16 @@ split-char = (line str, delim i64) (fields []str) {
 content-split = (content str, lines []str) {
     start = 0
     i <- [0..content.len-bytes()): {
-        content[i] == 10 -> {
-            lines.push(content.slice(start, i))
-
-            #{overflow=wrap}
-            start = i + 1
-        }
-    }
-    start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes()))
-}
-
-join-run = () {
-    argc = args()
-    field1 = 1
-    field2 = 1
-    delim = 0; 0 = whitespace
-    files []str
-    skip-next = false
-
-    i <- [2..argc): {
-        skip-next -> {
-            skip-next = false
-            continue
-        }
-        a = arg(i)
-        a == '-1' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                field1 = atoi(arg(i + 1))
-                skip-next = true
-            }
-        }
-        a == '-2' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                field2 = atoi(arg(i + 1))
-                skip-next = true
-            }
-        }
-        a == '-t' -> {
-
-            #{overflow=wrap}
-            i + 1 < argc -> {
-                d = arg(i + 1)
-                d.len-bytes() > 0 -> delim = d[0]
-                skip-next = true
-            }
-        }
-        ! a.starts-with('-') -> files.push(a)
-    }
-    {
-        field1 < 1 -> field1 = 1
-
-        field2 < 1 -> field2 = 1
-
-        files.len() < 2 -> {
-            eprint('Usage: join [-1 F1] [-2 F2] [-t CHAR] file1 file2')
-            os.exit(1)
-        }
-    }
-
-    content1 = ''
-    r = fs.read-str(files[0])
-    r: {
-        ok -> content1 = it
-
-        nil -> {
-        }
-
-        err -> {
-        }
-    }
-    content2 = ''
-    r = fs.read-str(files[1])
-    r: {
-        ok -> content2 = it
-
-        nil -> {
-        }
-
-        err -> {
-        }
-    }
-    lines1 []str
-    lines2 []str
-    content-split(content1, lines1)
-    content-split(content2, lines2)
-
-    ; Merge join (assumes both sorted on join field)
-    i1 = 0
-    i2 = 0
-    n1 = lines1.len()
-    n2 = lines2.len()
-
-    (i1 < n1 && i2 < n2) {
-        i1 < n1 -> {
-            i2 < n2 -> {
-
-                ; Get join keys
-                f1 []str
-                f2 []str
-                delim == 0 -> {
-                    f1 = split(lines1[i1])
-                    f2 = split(lines2[i2])
-                }
-                delim != 0 -> {
-                    f1 = split-char(lines1[i1], delim)
-                    f2 = split-char(lines2[i2], delim)
-                }
-                key1 = ''
-                key2 = ''
-
+        {
+            content[i] == 10 -> {
+                lines.push(content.slice(start, i))
                 #{overflow=wrap}
-                field1 <= f1.len() -> key1 = f1[field1 - 1]
-                #{overflow=wrap}
-                field2 <= f2.len() -> key2 = f2[field2 - 1]
-
-                cmp = key1.compare(key2)
-                #{overflow=wrap}
-                cmp < 0 -> i1 = i1 + 1
-                #{overflow=wrap}
-                cmp > 0 -> i2 = i2 + 1
-                cmp == 0 -> {
-
-                    ; Join: output key + rest of line1 (minus key field) + rest of line2 (minus key field)
-                    out = key1
-                    sep = ' '
-                    delim != 0 -> sep = line-sep-str(delim)
-
-                    j <- [0..f1.len()): {
-                        #{overflow=wrap}
-                        j != field1 - 1 -> {
-                            #{overflow=wrap}
-                            out = out - sep - f1[j]
-                        }
-                    }
-                    j <- [0..f2.len()): {
-                        #{overflow=wrap}
-                        j != field2 - 1 -> {
-                            #{overflow=wrap}
-                            out = out - sep - f2[j]
-                        }
-                    }
-                    print(out)
-                    #{overflow=wrap}
-                    i1 = i1 + 1
-                    #{overflow=wrap}
-                    i2 = i2 + 1
-                }
+                start = i + 1
             }
-            i2 >= n2 -> break
+            -> {}
         }
-        i1 >= n1 -> break
     }
+    { start < content.len-bytes() -> lines.push(content.slice(start, content.len-bytes())) -> {} }
 }
 
 ; line-sep-str: convert a delimiter byte to a single-char string
@@ -215,14 +78,363 @@ line-sep-str = (delim i64) (s str) {
     s = ' '
     {
         delim == 9 -> s = '\t'
-
         delim != 9 -> {
             delim != 32 -> {
-
-                ; For other delimiters, build a single-char string
                 s = with-cap(1)
                 s[0] = delim
             }
+            -> {}
         }
+        -> {}
+    }
+}
+
+; jopts bundles the resolved option state passed to emit-row / get-field.
+jopts {
+    o-file []i64
+    o-idx []i64
+    has-ofmt bool
+    delim i64
+    estr str
+    field1 i64
+    field2 i64
+}
+
+; parse-spec: parse one -o field spec into file number and field index.
+;   "0"    -> file 0 (join field), idx 0
+;   "N"    -> file N, idx 0 (that file's join field)
+;   "F.N"  -> file F, field N
+parse-spec = (spec str) (file i64, idx i64) {
+    file = 0
+    idx = 0
+    dot = -1
+    k <- [0..spec.len-bytes()): {
+        { spec[k] == 46 -> dot = k -> {} }
+    }
+    {
+        dot < 0 -> {
+            file = atoi(spec)
+            idx = 0
+        }
+        dot >= 0 -> {
+            #{overflow=wrap}
+            a = spec.slice(0, dot)
+            file = atoi(a)
+            #{overflow=wrap}
+            b = spec.slice(dot + 1, spec.len-bytes())
+            idx = atoi(b)
+        }
+        -> {}
+    }
+}
+
+; get-field: resolve one -o spec against the two field arrays.
+;   file==0 -> join key; file==1/2 -> that file's field (idx==0 means its join field).
+;   out-of-range -> o.estr (missing replacement).
+get-field = (file i64, idx i64, key str, f1 []str, f2 []str, o jopts) (s str) {
+    s = o.estr
+    {
+        file == 0 -> s = key
+        file == 1 -> {
+            n = idx
+            { idx == 0 -> n = o.field1 -> {} }
+            {
+                n >= 1 && n <= f1.len() -> {
+                    #{overflow=wrap}
+                    #{index-out = ''}
+                    s = f1[n - 1]
+                }
+                -> {}
+            }
+        }
+        file == 2 -> {
+            n = idx
+            { idx == 0 -> n = o.field2 -> {} }
+            {
+                n >= 1 && n <= f2.len() -> {
+                    #{overflow=wrap}
+                    #{index-out = ''}
+                    s = f2[n - 1]
+                }
+                -> {}
+            }
+        }
+        -> {}
+    }
+}
+
+; emit-row: print a joined line. Missing side is passed as an empty field array.
+emit-row = (f1 []str, f2 []str, key str, o jopts) {
+    sep = ' '
+    { o.delim != 0 -> sep = line-sep-str(o.delim) -> {} }
+
+    out = ''
+    first = true
+    {
+        o.has-ofmt -> {
+            m <- [0..o.o-file.len()): {
+                file = o.o-file[m]
+                idx = o.o-idx[m]
+                v = get-field(file, idx, key, f1, f2, o)
+                {
+                    first -> { out = v  first = false }
+                    ! first -> { out = out - sep - v }
+                    -> {}
+                }
+            }
+        }
+        ! o.has-ofmt -> {
+            out = key
+            #{overflow=wrap}
+            skip1 = o.field1 - 1
+            #{overflow=wrap}
+            skip2 = o.field2 - 1
+            j <- [0..f1.len()): {
+                {
+                    j != skip1 -> out = out - sep - f1[j]
+                    -> {}
+                }
+            }
+            j <- [0..f2.len()): {
+                {
+                    j != skip2 -> out = out - sep - f2[j]
+                    -> {}
+                }
+            }
+        }
+        -> {}
+    }
+    print(out)
+}
+
+; fields-of: split a line into fields per the delimiter option.
+fields-of = (line str, delim i64) (fs []str) {
+    {
+        delim == 0 -> fs = split(line)
+        delim != 0 -> fs = split-char(line, delim)
+        -> {}
+    }
+}
+
+; key-of: extract the join key for a given file's fields.
+key-of = (fs []str, field i64) (key str) {
+    key = ''
+    {
+        field >= 1 && field <= fs.len() -> {
+            #{overflow=wrap}
+            #{index-out = ''}
+            key = fs[field - 1]
+        }
+        -> {}
+    }
+}
+
+join-run = () {
+    argc = args()
+    field1 = 1
+    field2 = 1
+    delim = 0
+    estr = ''
+    a1 = false
+    a2 = false
+    has-ofmt = false
+    of []i64
+    oi []i64
+    files []str
+    skip-next = false
+
+    i <- [2..argc): {
+        {
+            skip-next -> { skip-next = false  continue }
+            -> {}
+        }
+        a = arg(i)
+        {
+            a == '-1' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> { field1 = atoi(arg(i + 1))  skip-next = true }
+                -> {}
+            }
+            a == '-2' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> { field2 = atoi(arg(i + 1))  skip-next = true }
+                -> {}
+            }
+            a == '-j' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> {
+                    jf = atoi(arg(i + 1))
+                    field1 = jf
+                    field2 = jf
+                    skip-next = true
+                }
+                -> {}
+            }
+            a == '-t' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> {
+                    d = arg(i + 1)
+                    { d.len-bytes() > 0 -> delim = d[0] -> {} }
+                    skip-next = true
+                }
+                -> {}
+            }
+            a == '-e' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> { estr = arg(i + 1)  skip-next = true }
+                -> {}
+            }
+            a == '-a1' -> a1 = true
+            a == '-a2' -> a2 = true
+            a == '-o' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> {
+                    has-ofmt = true
+                    list = arg(i + 1)
+                    start = 0
+                    k <- [0..list.len-bytes()): {
+                        last = k == list.len-bytes() - 1
+                        {
+                            list[k] == 44 || last -> {
+                                end = k
+                                { last -> end = list.len-bytes() -> {} }
+                                spec = list.slice(start, end)
+                                {
+                                    spec.len-bytes() > 0 -> {
+                                        file, idx = parse-spec(spec)
+                                        of.push(file)
+                                        oi.push(idx)
+                                    }
+                                    -> {}
+                                }
+                                #{overflow=wrap}
+                                start = k + 1
+                            }
+                            -> {}
+                        }
+                    }
+                    skip-next = true
+                }
+                -> {}
+            }
+            ! a.starts-with('-') -> files.push(a)
+            -> {}
+        }
+    }
+
+    { field1 < 1 -> field1 = 1 -> {} }
+    { field2 < 1 -> field2 = 1 -> {} }
+    {
+        files.len() < 2 -> {
+            eprint('Usage: join [-1 F1] [-2 F2] [-j F] [-t CHAR] [-o LIST] [-e STR] [-a1] [-a2] file1 file2')
+            os.exit(1)
+        }
+        -> {}
+    }
+
+    o = jopts {
+        o-file: of
+        o-idx: oi
+        has-ofmt: has-ofmt
+        delim: delim
+        estr: estr
+        field1: field1
+        field2: field2
+    }
+
+    content1 = ''
+    r1 = fs.read-str(files[0])
+    r1: { ok -> content1 = it  nil -> {}  err -> {} }
+    content2 = ''
+    r2 = fs.read-str(files[1])
+    r2: { ok -> content2 = it  nil -> {}  err -> {} }
+    lines1 []str
+    lines2 []str
+    content-split(content1, lines1)
+    content-split(content2, lines2)
+
+    n1 = lines1.len()
+    n2 = lines2.len()
+    i1 = 0
+    i2 = 0
+    empty []str
+
+    (i1 < n1 && i2 < n2) {
+        cf1 = fields-of(lines1[i1], delim)
+        cf2 = fields-of(lines2[i2], delim)
+        key1 = key-of(cf1, field1)
+        key2 = key-of(cf2, field2)
+        cmp = key1.compare(key2)
+        {
+            cmp < 0 -> {
+                { a1 -> emit-row(cf1, empty, key1, o) -> {} }
+                #{overflow=wrap}
+                i1 = i1 + 1
+            }
+            cmp > 0 -> {
+                { a2 -> emit-row(empty, cf2, key2, o) -> {} }
+                #{overflow=wrap}
+                i2 = i2 + 1
+            }
+            cmp == 0 -> {
+                b1-start = i1
+                #{overflow=wrap}
+                i1 = i1 + 1
+                (i1 < n1) {
+                    kk = key-of(fields-of(lines1[i1], delim), field1)
+                    { kk.compare(key1) == 0 -> {
+                        #{overflow=wrap}
+                        i1 = i1 + 1
+                    } -> {} }
+                    kk.compare(key1) != 0 -> break
+                    -> {}
+                }
+                b1-end = i1
+                b2-start = i2
+                #{overflow=wrap}
+                i2 = i2 + 1
+                (i2 < n2) {
+                    kk2 = key-of(fields-of(lines2[i2], delim), field2)
+                    { kk2.compare(key1) == 0 -> {
+                        #{overflow=wrap}
+                        i2 = i2 + 1
+                    } -> {} }
+                    kk2.compare(key1) != 0 -> break
+                    -> {}
+                }
+                b2-end = i2
+                x <- [b1-start..b1-end): {
+                    gf1 = fields-of(lines1[x], delim)
+                    gx = key-of(gf1, field1)
+                    y <- [b2-start..b2-end): {
+                        gf2 = fields-of(lines2[y], delim)
+                        emit-row(gf1, gf2, gx, o)
+                    }
+                }
+            }
+            -> {}
+        }
+    }
+    (i1 < n1) {
+        {
+            a1 -> {
+                tf1 = fields-of(lines1[i1], delim)
+                emit-row(tf1, empty, key-of(tf1, field1), o)
+            }
+            -> {}
+        }
+        #{overflow=wrap}
+        i1 = i1 + 1
+    }
+    (i2 < n2) {
+        {
+            a2 -> {
+                tf2 = fields-of(lines2[i2], delim)
+                emit-row(empty, tf2, key-of(tf2, field2), o)
+            }
+            -> {}
+        }
+        #{overflow=wrap}
+        i2 = i2 + 1
     }
 }

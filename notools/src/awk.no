@@ -1,109 +1,1522 @@
-; awk.no — awk utility
-; Basic pattern scanning and field extraction
-; Usage: awk '{print $1}' [files...]
+; awk.no — awk utility (mini interpreter)
+; Usage: awk [-F sep] [-v var=value] [-f progfile] 'prog' [file ...]
+; Supported subset:
+;   BEGIN / END / pattern-action rules (literal containment, ==, !~ pending)
+;   print (OFS-joined, ORS-terminated), variable assignment, $0/$N fields,
+;   NR / NF / FS / OFS / ORS, string concat, + - * / %, < <= == != >= >,
+;   && || !, if / else, exit, next
+; NOTE: /re/ is literal containment for now — std regexp is blocked by a
+; compiler codegen bug (fix6); mini matcher lands later.
+
+prule {
+    kind str
+    pat str
+    act str
+}
+
+awk-stmt {
+    op str
+    lhs str
+    cond str
+    then-str str
+    else-str str
+    args str
+}
+
+; bounds-safe vec reads (mirror pr.no idx-str/idx-i64): pin the index-out
+; default to the element type so a plain str / i64 is yielded instead of
+; option<elem> (an unhandled option would make `str - elem` fall onto the
+; integer-subtraction path).
+awk-idx-str = (v []str, i i64) (s str) {
+    #{index-out=''}
+    s = v[i]
+}
+
+awk-idx-i64 = (v []i64, i i64) (n i64) {
+    #{index-out=0}
+    n = v[i]
+}
+
+; ---------- program parsing ----------
+
+awk-parse-pattern = (s str) (pk str, pat str) {
+    pk = ''
+    pat = ''
+    {
+        s.len-bytes() == 0 -> pk = 'E'
+        s[0] == '/' && s.ends-with('/') && s.len-bytes() > 1 -> {
+            pk = 'R'
+            #{overflow=wrap}
+            pat = s.slice(1, s.len-bytes() - 1) - ''
+        }
+        s[0] == '!' -> {
+            pk = 'N'
+            #{overflow=wrap}
+            rest = s.slice(1, s.len-bytes()) - ''
+            rest.starts-with('~') -> {
+                #{overflow=wrap}
+                pat = rest.slice(1, rest.len-bytes()) - ''
+            }
+            -> pat = rest
+        }
+        s.index('==') >= 0 -> {
+            pk = 'Q'
+            #{overflow=wrap}
+            qi = s.index('==')
+            #{overflow=wrap}
+            pat = s.slice(qi + 2, s.len-bytes()) - ''
+            pat.starts-with(' ') -> {
+                #{overflow=wrap}
+                pat = pat.slice(1, pat.len-bytes()) - ''
+            }
+            pat.ends-with(' ') -> {
+                #{overflow=wrap}
+                plen = pat.len-bytes() - 1
+                pat = pat.slice(0, plen) - ''
+            }
+        }
+        -> {
+            pk = 'R'
+            pat = s
+        }
+    }
+}
+
+awk-parse-program = (act str) (rules []prule) {
+    n = act.len-bytes()
+    i = 0
+    (i < n) {
+        {
+            act[i] == ' ' || act[i] == '\t' || act[i] == '\n' || act[i] == ';' -> {
+                #{overflow=wrap}
+                i = i + 1
+            }
+            act[i] == '{' -> {
+                #{overflow=wrap}
+                close = awk-match-brace(act, i)
+                body = ''
+                close >= 0 -> {
+                    #{overflow=wrap}
+                    body = act.slice(i + 1, close) - ''
+                    #{overflow=wrap}
+                    i = close + 1
+                }
+                ! (close >= 0) -> {
+                    #{overflow=wrap}
+                    i = n
+                }
+                rb0 = prule {}
+                rb0.kind = 'P'
+                rb0.pat = ''
+                rb0.act = body
+                rules.push(rb0)
+            }
+            act[i] == 'E' && act.slice(i, n).starts-with('END') -> {
+                #{overflow=wrap}
+                j = i + 3
+                (j < n) {
+                    act[j] != ' ' && act[j] != '\t' && act[j] != '{' -> {
+                        #{overflow=wrap}
+                        j = j + 1
+                    }
+                    -> break
+                }
+                body = ''
+                j < n && act[j] == '{' -> {
+                    #{overflow=wrap}
+                    close = awk-match-brace(act, j)
+                    close >= 0 -> {
+                        #{overflow=wrap}
+                        body = act.slice(j + 1, close) - ''
+                        #{overflow=wrap}
+                        j = close + 1
+                    }
+                }
+                re0 = prule {}
+                re0.kind = 'E'
+                re0.pat = ''
+                re0.act = body
+                rules.push(re0)
+                #{overflow=wrap}
+                i = j
+            }
+            -> {
+                #{overflow=wrap}
+                k = i
+                depth = 0
+                instr = false
+                (k < n) {
+                    ch = act[k]
+                    {
+                        instr && ch == '"' -> instr = false
+                        instr -> {}
+                        ! instr && ch == '"' -> instr = true
+                        ! instr && ch == '(' -> {
+                            #{overflow=wrap}
+                            depth = depth + 1
+                        }
+                        ! instr && ch == ')' -> {
+                            #{overflow=wrap}
+                            depth = depth - 1
+                        }
+                        ! instr && depth == 0 && ch == '{' -> break
+                        ! instr && depth == 0 && (ch == '\n' || ch == ';') -> break
+                        -> {}
+                    }
+                    #{overflow=wrap}
+                    k = k + 1
+                }
+                ps = act.slice(i, k) - ''
+                body = ''
+                {
+                    k >= n -> {
+                        #{overflow=wrap}
+                        i = n
+                    }
+                    act[k] == '{' -> {
+                        #{overflow=wrap}
+                        close = awk-match-brace(act, k)
+                        close >= 0 -> {
+                            #{overflow=wrap}
+                            body = act.slice(k + 1, close) - ''
+                            #{overflow=wrap}
+                            i = close + 1
+                        }
+                        ! (close >= 0) -> {
+                            #{overflow=wrap}
+                            i = k + 1
+                        }
+                    }
+                    -> {
+                        #{overflow=wrap}
+                        i = k + 1
+                    }
+                }
+                rp0 = prule {}
+                rp0.kind = 'P'
+                awk-trim(ps) == 'BEGIN' -> rp0.kind = 'B'
+                rp0.pat = ps
+                rp0.act = body
+                rules.push(rp0)
+            }
+        }
+    }
+}
+
+awk-match-brace = (s str, from i64) (close i64) {
+    close = -1
+    depth = 0
+    instr = false
+    n = s.len-bytes()
+    #{overflow=wrap}
+    i <- [from..n): {
+        ch = s[i]
+        {
+            instr && ch == '"' -> instr = false
+            instr -> {}
+            ! instr && ch == '"' -> instr = true
+            ! instr && ch == '{' -> {
+                #{overflow=wrap}
+                depth = depth + 1
+            }
+            ! instr && ch == '}' -> {
+                #{overflow=wrap}
+                depth = depth - 1
+                depth == 0 -> {
+                    close = i
+                    break
+                }
+            }
+            -> {}
+        }
+    }
+}
+
+; ---------- statement parsing ----------
+
+; split one action body into statements at ; and newlines (respecting strings
+; and parens; a newline inside parens/braces continues the statement)
+awk-split-sems = (s str, top bool) (out []str) {
+    n = s.len-bytes()
+    cur = ''
+    qi = 0
+    inq = false
+    pdepth = 0
+    bdepth = 0
+    i <- [0..n): {
+        c = s[i]
+        #{overflow=wrap}
+        ni = i + 1
+        {
+            inq && c == '"' -> {
+                cur = cur - number.char-to-str(c)
+                inq = false
+            }
+            inq -> {
+                {
+                    ! top && c == '\\' && ni < n -> {
+                        ec = s[ni]
+                        esc str = '\\'
+                        {
+                            ec == 'n' -> esc = '\n'
+                            ec == 't' -> esc = '\t'
+                            -> esc = "\\" - number.char-to-str(ec)
+                        }
+                        cur = cur - esc
+                        #{overflow=wrap}
+                        i = i + 1
+                    }
+                    -> cur = cur - number.char-to-str(c)
+                }
+            }
+            c == '"' -> {
+                cur = cur - number.char-to-str(c)
+                inq = true
+            }
+            top && (c == ';' || c == '\n') && pdepth == 0 && bdepth == 0 -> {
+                t = awk-trim(cur)
+                t.len-bytes() > 0 -> out.push(t)
+                cur = ''
+            }
+            c == '(' -> {
+                #{overflow=wrap}
+                pdepth = pdepth + 1
+                cur = cur - number.char-to-str(c)
+            }
+            c == ')' -> {
+                #{overflow=wrap}
+                pdepth = pdepth - 1
+                cur = cur - number.char-to-str(c)
+            }
+            c == '{' -> {
+                #{overflow=wrap}
+                bdepth = bdepth + 1
+                cur = cur - number.char-to-str(c)
+            }
+            c == '}' -> {
+                #{overflow=wrap}
+                bdepth = bdepth - 1
+                cur = cur - number.char-to-str(c)
+            }
+            -> cur = cur - number.char-to-str(c)
+        }
+    }
+    t = awk-trim(cur)
+    t.len-bytes() > 0 -> out.push(t)
+}
+
+awk-trim = (s str) (out str) {
+    n = s.len-bytes()
+    #{overflow=wrap}
+    a = 0
+    #{overflow=wrap}
+    b = n
+    (a < b) {
+        s[a] == ' ' || s[a] == '\t' || s[a] == '\n' || s[a] == '\r' -> {
+            #{overflow=wrap}
+            a = a + 1
+        }
+        -> break
+    }
+    (a < b) {
+        #{overflow=wrap}
+        bi = b - 1
+        s[bi] == ' ' || s[bi] == '\t' || s[bi] == '\n' || s[bi] == '\r' -> b = bi
+        -> break
+    }
+    out = s.slice(a, b) - ''
+}
+
+awk-parse-stmts = (act str) (out []awk-stmt) {
+    parts = awk-split-sems(act, true)
+    i <- [0..parts.len()): {
+        st = awk-parse-stmt(parts[i])
+        ; `;`-split places a bare-stmt else (and any else-if chain) into the
+        ; NEXT fragment(s); absorb the contiguous run of `else`-led fragments,
+        ; strip only the FIRST `else`, keep the rest verbatim so exec-block
+        ; re-parses them as a nested if/else-if/else chain.
+        st.op == 'I' && st.else-str.len-bytes() == 0 -> {
+            #{overflow=wrap}
+            ni2 = i + 1
+            nx = ''
+            ni2 < parts.len() -> nx = awk-trim(parts[ni2])
+            nx.starts-with('else') -> {
+                e0 = awk-trim(nx.slice(4, nx.len-bytes()) - '')
+                chain = e0
+                #{overflow=wrap}
+                j = ni2 + 1
+                (j < parts.len()) {
+                    pj = awk-trim(parts[j])
+                    pj.starts-with('else') -> {
+                        chain = chain - ';' - pj
+                        #{overflow=wrap}
+                        j = j + 1
+                    }
+                    -> break
+                }
+                st.else-str = awk-parse-elsebody(chain)
+                #{overflow=wrap}
+                i = j - 1
+            }
+        }
+        out.push(st)
+    }
+}
+
+awk-match-paren = (s str, start i64) (end i64) {
+    end = -1
+    depth = 0
+    inq = false
+    n = s.len-bytes()
+    #{overflow=wrap}
+    i <- [start..n): {
+        c = s[i]
+        {
+            inq && c == '"' -> inq = false
+            inq -> {}
+            c == '"' -> inq = true
+            ! inq && c == '(' -> {
+                #{overflow=wrap}
+                depth = depth + 1
+            }
+            ! inq && c == ')' -> {
+                #{overflow=wrap}
+                depth = depth - 1
+                depth == 0 -> {
+                    end = i
+                    break
+                }
+            }
+            -> {}
+        }
+    }
+}
+
+; extract then/else bodies of an if whose ')' ended at `e`
+awk-parse-ifbody = (s str, e i64, st awk-stmt) {
+    n = s.len-bytes()
+    #{overflow=wrap}
+    bstart = e + 1
+    (bstart < n) {
+        s[bstart] == ' ' || s[bstart] == '\t' -> {
+            #{overflow=wrap}
+            bstart = bstart + 1
+        }
+        -> break
+    }
+    bstart < n && s[bstart] == '{' -> {
+        cb = awk-match-brace(s, bstart)
+        cb >= 0 -> {
+            #{overflow=wrap}
+            st.then-str = s.slice(bstart + 1, cb) - ''
+            #{overflow=wrap}
+            st.else-str = awk-parse-else(s, cb + 1)
+        }
+    }
+    bstart < n -> {
+        st.then-str = s.slice(bstart, n) - ''
+        st.else-str = awk-parse-else(s, n)
+    }
+}
+
+; unwrap an else-body: `{ ... }` -> inner; otherwise keep the stmt-list string
+awk-parse-elsebody = (chain str) (out str) {
+    out = chain
+    chain.starts-with('{') -> {
+        cb = awk-match-brace(chain, 0)
+        cb >= 0 -> {
+            #{overflow=wrap}
+            out = chain.slice(1, cb) - ''
+        }
+    }
+}
+
+; scan `else` (block or bare stmt) starting at `from`
+awk-parse-else = (s str, from i64) (out str) {
+    n = s.len-bytes()
+    ri = from
+    (ri < n) {
+        s[ri] == ' ' || s[ri] == '\n' || s[ri] == '\t' -> {
+            #{overflow=wrap}
+            ri = ri + 1
+        }
+        -> break
+    }
+    #{overflow=wrap}
+    re = ri + 4
+    ri < n && re <= n && s.slice(ri, re) == 'else' -> {
+        #{overflow=wrap}
+        ei = ri + 4
+        (ei < n) {
+            s[ei] == ' ' || s[ei] == '\t' -> {
+                #{overflow=wrap}
+                ei = ei + 1
+            }
+            -> break
+        }
+        {
+            ei < n && s[ei] == '{' -> {
+                cb2 = awk-match-brace(s, ei)
+                cb2 >= 0 -> {
+                    #{overflow=wrap}
+                    out = s.slice(ei + 1, cb2) - ''
+                }
+            }
+            -> {
+                j = ei
+                (j < n) {
+                    s[j] == '\n' || s[j] == ';' -> break
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+                out = s.slice(ei, j) - ''
+            }
+        }
+    }
+}
+
+; parse ONE statement (already trimmed, semicolon-free)
+awk-parse-stmt = (s str) (st awk-stmt) {
+    st = awk-stmt {}
+    st.op = 'X'
+    st.lhs = ''
+    st.cond = ''
+    st.then-str = ''
+    st.else-str = ''
+    st.args = ''
+    n = s.len-bytes()
+    {
+        s.starts-with('if') -> {
+            st.op = 'I'
+            p = s.index('(')
+            p >= 0 -> {
+                e = awk-match-paren(s, p)
+                #{overflow=wrap}
+                ci = p + 1
+                {
+                    e >= 0 -> st.cond = s.slice(ci, e) - ''
+                    -> st.cond = s.slice(ci, n) - ''
+                }
+                bi = p
+                e >= 0 -> bi = e
+                {
+                    e >= 0 -> awk-parse-ifbody(s, bi, st)
+                    -> {
+                        #{overflow=wrap}
+                        st.then-str = s.slice(p + 1, n) - ''
+                    }
+                }
+            }
+        }
+        s.starts-with('printf') -> {
+            st.op = 'F'
+            #{overflow=wrap}
+            st.args = s.slice(6, n) - ''
+        }
+        s.starts-with('print') -> {
+            st.op = 'P'
+            #{overflow=wrap}
+            st.args = s.slice(5, n) - ''
+        }
+        s.starts-with('exit') -> {
+            st.op = 'X'
+            #{overflow=wrap}
+            st.args = s.slice(4, n) - ''
+        }
+        s.starts-with('next') -> st.op = 'N'
+        -> {
+            eq = awk-find-eq(s)
+            {
+                eq >= 0 -> {
+                    st.op = 'A'
+                    st.lhs = awk-trim(s.slice(0, eq) - '')
+                    #{overflow=wrap}
+                    st.cond = s.slice(eq + 1, n) - ''
+                }
+                -> st.op = 'E'
+            }
+        }
+    }
+}
+
+awk-find-eq = (s str) (pos i64) {
+    pos = -1
+    inq = false
+    n = s.len-bytes()
+    i <- [0..n): {
+        c = s[i]
+        {
+            inq && c == '"' -> inq = false
+            inq -> {}
+            c == '"' -> inq = true
+            -> {
+                #{overflow=wrap}
+                i1 = i + 1
+                #{overflow=wrap}
+                i2 = i + 2
+                c == '=' -> {
+                    {
+                        i1 < n && s[i1] == '=' -> i = i2
+                        #{overflow=wrap}
+                        im1 = i - 1
+                        i > 0 && (s[im1] == '!' || s[im1] == '<' || s[im1] == '>' || s[im1] == '=') -> {}
+                        -> {
+                            pos = i
+                            break
+                        }
+                    }
+                }
+                -> {}
+            }
+        }
+    }
+}
+
+; ---------- expression evaluation ----------
+
+awk-skip-ws = (s str, pos i64) (out i64) {
+    out = pos
+    n = s.len-bytes()
+    (out < n) {
+        {
+            s[out] == ' ' -> {
+                #{overflow=wrap}
+                out = out + 1
+            }
+            -> break
+        }
+    }
+}
+
+awk-is-idchar = (c char) (yes bool) {
+    yes = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+awk-is-digit = (c char) (yes bool) {
+    yes = c >= '0' && c <= '9'
+}
+
+awk-parse-int = (s str) (n i64) {
+    n = 0
+    idx = 0
+    neg = false
+    sn = s.len-bytes()
+    sn > 0 && s[0] == '-' -> {
+        neg = true
+        idx = 1
+    }
+    (idx < sn) {
+        awk-is-digit(s[idx]) -> {
+            #{overflow=wrap}
+            n = n * 10 + (s[idx] - 48)
+            #{overflow=wrap}
+            idx = idx + 1
+        }
+        -> break
+    }
+    #{overflow=wrap}
+    neg -> n = 0 - n
+}
+
+awk-is-numeric = (s str) (yes bool) {
+    yes = false
+    n = s.len-bytes()
+    n > 0 -> {
+        yes = true
+        idx = 0
+        s[0] == '-' -> idx = 1
+        #{overflow=wrap}
+        idx >= n -> yes = false
+        (idx < n && yes) {
+            awk-is-digit(s[idx]) -> idx = idx + 1  #{overflow=wrap}
+
+            -> yes = false
+        }
+    }
+}
+
+; state passed as explicit []str params (vec params mutate in place):
+;   names vals fields (0 = $0 line, 1.. real)
+;   scal = [ NR, FNR, FS, OFS, ORS, flags ]
+awk-nfields = (fields []str) (n i64) {
+    n = fields.len()
+    n > 0 -> n = n - 1  #{overflow=wrap}
+}
+
+awk-sc = (scal []str, i i64, dflt str) (v str) {
+    v = dflt
+    i < scal.len() -> v = awk-idx-str(scal, i)
+}
+
+awk-getvar = (names []str, vals []str, fields []str, scal []str, t str) (v str) {
+    v = ''
+    found = false
+    i <- [0..names.len()): {
+        names[i] == t -> {
+            v = awk-idx-str(vals, i)
+            found = true
+            break
+        }
+    }
+    found -> {}
+    { t == 'FS' -> v = awk-sc(scal, 2, ' ')  -> {}
+    }
+    { t == 'OFS' -> v = awk-sc(scal, 3, ' ')  -> {}
+    }
+    { t == 'ORS' -> v = awk-sc(scal, 4, '\n')  -> {}
+    }
+    { t == 'NR' -> v = awk-sc(scal, 0, '0')  -> {}
+    }
+    { t == 'FNR' -> v = awk-sc(scal, 1, '0')  -> {}
+    }
+    { t == 'NF' -> v = awk-nfields(fields).to-str()  -> {}
+    }
+    t == '$0' -> {
+        fields.len() > 0 -> v = awk-idx-str(fields, 0)
+    }
+}
+
+awk-setvar = (names []str, vals []str, scal []str, t str, v str) {
+    i <- [0..names.len()): {
+        names[i] == t -> {
+            vals[i] = v
+            break
+        }
+    }
+    names.push(t)
+    vals.push(v)
+    t == 'FS' -> scal[2] = v
+    t == 'OFS' -> scal[3] = v
+    t == 'ORS' -> scal[4] = v
+}
+
+; value of a token (string form); numbers normalized to integers
+awk-resolve = (t str, names []str, vals []str, fields []str, scal []str) (v str) {
+    v = ''
+    t0 = ''
+    t.len-bytes() > 0 -> t0 = t.slice(0, 1) - ''
+    nr = awk-parse-int(awk-sc(scal, 0, '0'))
+    {
+        t0 == '"' -> {
+            e = t.index-from('"', 1)
+            e > 0 -> v = awk-unescape(t.slice(1, e) - '')
+            -> v = ''
+        }
+        awk-is-numeric(t) -> v = t
+        t == '$0' -> {
+            fields.len() > 0 -> v = awk-idx-str(fields, 0)
+        }
+        t == 'NR' -> v = nr.to-str()
+        t == 'NF' -> v = awk-nfields(fields).to-str()
+        t == 'FNR' -> v = awk-sc(scal, 1, '0')
+        t0 == '$' -> {
+            #{overflow=wrap}
+            fnum = awk-parse-int(t.slice(1, t.len-bytes()) - '')
+            v = ''
+            fi = fnum
+            fnum > 0 -> fi < fields.len() -> v = awk-idx-str(fields, fi)
+        }
+        -> v = awk-getvar(names, vals, fields, scal, t)
+    }
+    v = awk-numfmt(v)
+}
+
+awk-numfmt = (v str) (out str) {
+    out = v
+    awk-is-numeric(v) -> out = awk-parse-int(v).to-str()  #{overflow=wrap}
+}
+
+
+awk-unescape = (s str) (out str) {
+    out = ''
+    n = s.len-bytes()
+    i <- [0..n): {
+        #{overflow=wrap}
+        ni = i + 1
+        {
+            s[i] == '\\' && ni < n -> {
+                ec = s[ni]
+                esc str = '\\'
+                {
+                    ec == 'n' -> esc = '\n'
+                    ec == 't' -> esc = '\t'
+                    -> esc = number.char-to-str(ec)
+                }
+                out = out - esc
+                #{overflow=wrap}
+                i = i + 1
+            }
+            -> out = out - number.char-to-str(s[i])
+        }
+    }
+}
+
+awk-starts-term = (s str, pos i64) (yes bool) {
+    yes = false
+    pos < s.len-bytes() -> {
+        c = s[pos]
+        yes = awk-is-idchar(c) || awk-is-digit(c) || c == '"' || c == '$' || c == '('
+    }
+}
+
+awk-eval-full = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    pos[0] = 0
+    v = awk-eval-or(s, names, vals, fields, scal, pos)
+}
+
+awk-eval-or = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-and(s, names, vals, fields, scal, pos)
+    n = s.len-bytes()
+    (true) {
+        p = awk-skip-ws(s, pos[0])
+        #{overflow=wrap}
+        p1 = p + 1
+        isor = p < n && s[p] == '|' && p1 < n && s[p1] == '|'
+        {
+            isor -> {
+                #{overflow=wrap}
+                pos[0] = p + 2
+                rv = awk-eval-or(s, names, vals, fields, scal, pos)
+                b = awk-truthy(v) || awk-truthy(rv)
+                b -> v = '1'
+                ! b -> v = '0'
+            }
+            ! isor -> { break }
+        }
+    }
+}
+
+awk-eval-and = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-cmp(s, names, vals, fields, scal, pos)
+    n = s.len-bytes()
+    (true) {
+        p = awk-skip-ws(s, pos[0])
+        #{overflow=wrap}
+        p1 = p + 1
+        isand = p < n && s[p] == '&' && p1 < n && s[p1] == '&'
+        {
+            isand -> {
+                #{overflow=wrap}
+                pos[0] = p + 2
+                rv = awk-eval-and(s, names, vals, fields, scal, pos)
+                b = awk-truthy(v) && awk-truthy(rv)
+                b -> v = '1'
+                ! b -> v = '0'
+            }
+            ! isand -> { break }
+        }
+    }
+}
+
+awk-eval-cmp = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-cat(s, names, vals, fields, scal, pos)
+    n = s.len-bytes()
+    p = awk-skip-ws(s, pos[0])
+    inrange = p < n
+    cmp-ok = false
+    inrange -> {
+        c0 = s[p]
+        iseq = c0 == '='
+        isbang = c0 == '!'
+        islt = c0 == '<'
+        isgt = c0 == '>'
+        cmp-ok = iseq || isbang || islt || isgt
+    }
+    cmp-ok -> {
+        #{overflow=wrap}
+        p1 = p + 1
+        e2 = ''
+        adv = 1
+        twochar = p1 < n && s[p1] == '='
+        twochar -> e2 = number.char-to-str(s[p]) - '='
+        twochar -> adv = 2
+        ! twochar -> e2 = number.char-to-str(s[p])
+        #{overflow=wrap}
+        pos[0] = p + adv
+        rv = awk-eval-cat(s, names, vals, fields, scal, pos)
+        v = awk-cmp(v, rv, e2)
+    }
+}
+
+awk-num-div = (a i64, b i64) (q i64) {
+    q = 0
+    b != 0 -> q = a / b
+}
+
+awk-num-mod = (a i64, b i64) (m i64) {
+    m = 0
+    b != 0 -> m = a % b
+}
+
+awk-eval-cat = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-add(s, names, vals, fields, scal, pos)
+    (true) {
+        p = awk-skip-ws(s, pos[0])
+        pos[0] = p
+        st = awk-starts-term(s, p)
+        st -> {
+            rv = awk-eval-add(s, names, vals, fields, scal, pos)
+            v = v - rv
+        }
+        ! st -> break
+    }
+}
+
+awk-eval-add = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-mul(s, names, vals, fields, scal, pos)
+    n = s.len-bytes()
+    (true) {
+        p = awk-skip-ws(s, pos[0])
+        #{overflow=wrap}
+        p1 = p + 1
+        arrow = p < n && s[p] == '-' && p1 < n && s[p1] == '>'
+        plus-minus = p < n && (s[p] == '+' || s[p] == '-')
+        {
+            arrow -> { break }
+            ! plus-minus -> { break }
+            -> {
+                op = s[p]
+                #{overflow=wrap}
+                pos[0] = p + 1
+                rv = awk-eval-mul(s, names, vals, fields, scal, pos)
+                a = awk-parse-int(v)
+                b = awk-parse-int(rv)
+                sum = 0
+                #{overflow=wrap}
+                { op == '+' -> { sum = a + b }  -> { sum = a - b } }
+                v = sum.to-str()
+            }
+        }
+    }
+}
+
+awk-eval-mul = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = awk-eval-unary(s, names, vals, fields, scal, pos)
+    n = s.len-bytes()
+    (true) {
+        p = awk-skip-ws(s, pos[0])
+        hasop = p < n && (s[p] == '*' || s[p] == '/' || s[p] == '%')
+        {
+            ! hasop -> { break }
+            -> {
+                op = s[p]
+                #{overflow=wrap}
+                pos[0] = p + 1
+                rv = awk-eval-unary(s, names, vals, fields, scal, pos)
+                a = awk-parse-int(v)
+                b = awk-parse-int(rv)
+                acc = 0
+                #{overflow=wrap}
+                { op == '*' -> { acc = a * b }  op == '/' -> { acc = awk-num-div(a, b) }  -> { acc = awk-num-mod(a, b) } }
+                v = acc.to-str()
+            }
+        }
+    }
+}
+
+awk-eval-unary = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    p = awk-skip-ws(s, pos[0])
+    n = s.len-bytes()
+    bang = p < n && s[p] == '!'
+    minus = p < n && s[p] == '-'
+    {
+        bang -> {
+            #{overflow=wrap}
+            pos[0] = p + 1
+            rv = awk-eval-unary(s, names, vals, fields, scal, pos)
+            t = awk-truthy(rv)
+            t -> v = '0'
+            ! t -> v = '1'
+        }
+        minus -> {
+            #{overflow=wrap}
+            pos[0] = p + 1
+            rv = awk-eval-unary(s, names, vals, fields, scal, pos)
+            v = (0 - awk-parse-int(rv)).to-str()
+        }
+        -> {
+            pos[0] = p
+            v = awk-eval-prim(s, names, vals, fields, scal, pos)
+        }
+    }
+}
+
+awk-eval-prim = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    v = ''
+    n = s.len-bytes()
+    p = awk-idx-i64(pos, 0)
+    {
+        p >= n -> {}
+        s[p] == '"' -> {
+            #{overflow=wrap}
+            i = p + 1
+            (i < n) {
+                s[i] == '"' -> break
+                esc = s[i] == '\\'
+                esc -> {
+                    #{overflow=wrap}
+                    i = i + 2
+                }
+                ! esc -> {
+                    #{overflow=wrap}
+                    i = i + 1
+                }
+            }
+            #{overflow=wrap}
+            raw = s.slice(p + 1, i) - ''
+            #{overflow=wrap}
+            pos[0] = i + 1
+            v = awk-unescape(raw)
+        }
+        p < n && awk-is-digit(s[p]) -> {
+            st = p
+            (p < n) {
+                d = awk-is-digit(s[p])
+                d -> {
+                    #{overflow=wrap}
+                    p = p + 1
+                }
+                ! d -> break
+            }
+            #{overflow=wrap}
+            t = s.slice(st, p) - ''
+            pos[0] = p
+            v = awk-resolve(t, names, vals, fields, scal)
+        }
+        p < n && (s[p] == '$' || awk-is-letter(s[p])) -> {
+            st = p
+            (p < n) {
+                idc = s[p] == '$' || awk-is-idchar(s[p])
+                idc -> {
+                    #{overflow=wrap}
+                    p = p + 1
+                }
+                ! idc -> break
+            }
+            #{overflow=wrap}
+            t = s.slice(st, p) - ''
+            isfn = (t == 'length' || t == 'substr' || t == 'index') && p < n && s[p] == '('
+            isfn -> {
+                #{overflow=wrap}
+                pos[0] = p + 1
+                v = awk-eval-fn(t, s, names, vals, fields, scal, pos)
+            }
+            ! isfn -> {
+                pos[0] = p
+                v = awk-resolve(t, names, vals, fields, scal)
+            }
+        }
+        p < n && s[p] == '(' -> {
+            #{overflow=wrap}
+            pos[0] = p + 1
+            v = awk-eval-or(s, names, vals, fields, scal, pos)
+            q = awk-skip-ws(s, pos[0])
+            #{overflow=wrap}
+            pos[0] = q + 1
+        }
+        -> {
+            #{overflow=wrap}
+            pos[0] = p + 1
+        }
+    }
+}
+
+awk-is-letter = (c char) (yes bool) {
+    yes = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+; built-in function call: pos points just past '('; reads comma-separated args
+; until the matching ')', leaving pos after ')'. Supports length/substr/index.
+awk-eval-fn = (name str, s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
+    n = s.len-bytes()
+    args []str
+    (true) {
+        a = awk-eval-or(s, names, vals, fields, scal, pos)
+        args.push(a)
+        q = awk-skip-ws(s, pos[0])
+        pos[0] = q
+        {
+            q >= n -> break
+            s[q] == ',' -> {
+                #{overflow=wrap}
+                pos[0] = q + 1
+            }
+            s[q] == ')' -> {
+                #{overflow=wrap}
+                pos[0] = q + 1
+                break
+            }
+            -> break
+        }
+    }
+    v = ''
+    a0 = awk-idx-str(args, 0)
+    {
+        name == 'length' -> v = awk-rune-len(a0).to-str()
+        name == 'index' -> {
+            a1 = awk-idx-str(args, 1)
+            found = 0
+            a1.len-bytes() > 0 -> {
+                ix = a0.index(a1)
+                ix >= 0 -> {
+                    #{overflow=wrap}
+                    found = ix + 1
+                }
+            }
+            v = found.to-str()
+        }
+        name == 'substr' -> {
+            m = awk-parse-int(awk-idx-str(args, 1))
+            #{overflow=wrap}
+            stb = m - 1
+            stb < 0 -> stb = 0
+            en = awk-rune-len(a0)
+            args.len() >= 3 -> {
+                ln = awk-parse-int(awk-idx-str(args, 2))
+                #{overflow=wrap}
+                tlen = stb + ln
+                tlen < en -> en = tlen
+            }
+            stb < en -> v = a0.slice(stb, en) - ''
+        }
+    }
+}
+
+awk-rune-len = (s str) (n i64) {
+    n = 0
+    i <- [0..s.len-bytes()): {
+        #{overflow=wrap}
+        b = s[i] - 0
+        {
+            b < 128 || b >= 192 -> {
+                #{overflow=wrap}
+                n = n + 1
+            }
+            -> {}
+        }
+    }
+}
+
+awk-truthy = (v str) (yes bool) {
+    yes = false
+    {
+        v.len-bytes() == 0 -> {}
+        v == '0' -> {}
+        -> yes = true
+    }
+}
+
+awk-str-lt = (a str, b str) (yes bool) {
+    yes = false
+    an = a.len-bytes()
+    bn = b.len-bytes()
+    m = an
+    bn < m -> m = bn
+    i <- [0..m): {
+        #{overflow=wrap}
+        av = a[i] - 0
+        #{overflow=wrap}
+        bv = b[i] - 0
+        av != bv -> {
+            av < bv -> yes = true
+            break
+        }
+    }
+    (true) {
+        yes -> break
+        an < bn -> yes = true
+        -> break
+    }
+}
+
+; ---------- execution ----------
+
+awk-eval-args = (s str, names []str, vals []str, fields []str, scal []str) (out []str) {
+    n = s.len-bytes()
+    cur = ''
+    inq = false
+    pdepth = 0
+    i <- [0..n): {
+        c = s[i]
+        {
+            inq && c == '"' -> {
+                inq = false
+                cur = cur - number.char-to-str(c)
+            }
+            inq -> cur = cur - number.char-to-str(c)
+            ! inq && c == '"' -> {
+                inq = true
+                cur = cur - number.char-to-str(c)
+            }
+            ! inq && c == '(' -> {
+                #{overflow=wrap}
+                pdepth = pdepth + 1
+                cur = cur - number.char-to-str(c)
+            }
+            ! inq && c == ')' -> {
+                #{overflow=wrap}
+                pdepth = pdepth - 1
+                cur = cur - number.char-to-str(c)
+            }
+            ! inq && c == ',' && pdepth == 0 -> {
+                out.push(awk-trim(cur))
+                cur = ''
+            }
+            -> cur = cur - number.char-to-str(c)
+        }
+    }
+    out.push(awk-trim(cur))
+    pos []i64
+    pos.push(0)
+    i <- [0..out.len()): {
+        out[i] = awk-eval-full(out[i], names, vals, fields, scal, pos)
+    }
+}
+
+awk-do-assign = (lhs str, rhs str, names []str, vals []str, fields []str, scal []str) {
+    isfield = lhs.starts-with('$')
+    ! isfield -> awk-setvar(names, vals, scal, lhs, rhs)
+    isfield -> {
+        #{overflow=wrap}
+        k = awk-parse-int(lhs.slice(1, lhs.len-bytes()) - '')
+        whole = k == 0
+        whole -> {
+            fields.truncate(0)
+            awk-build-fields(rhs, names, vals, fields, scal)
+        }
+        ! whole -> {
+            (fields.len() <= k) {
+                fields.push('')
+            }
+            fields[k] = rhs
+            ofs = awk-getvar(names, vals, fields, scal, 'OFS')
+            r str = ''
+            j <- [1..fields.len()): {
+                r = r - awk-idx-str(fields, j)
+                #{overflow=wrap}
+                j1 = j + 1
+                j1 < fields.len() -> r = r - ofs
+            }
+            fields[0] = r
+        }
+    }
+}
+
+awk-build-fields = (line str, names []str, vals []str, fields []str, scal []str) {
+    fsep = awk-getvar(names, vals, fields, scal, 'FS')
+    fields.push(line)
+    n = line.len-bytes()
+    ws = fsep == ' ' || fsep == ''
+    ws -> {
+        i <- [0..n): {
+            #{overflow=wrap}
+            ni = i + 1
+            spc = line[i] == ' ' || line[i] == '\t'
+            {
+                ! spc -> {}
+                spc && ni < n && (line[ni] == ' ' || line[ni] == '\t') -> {}
+                -> {
+                    st = awk-prev-nonspace(line, i)
+                    st < i -> fields.push(line.slice(st, i) - '')
+                }
+            }
+        }
+        st2 = awk-prev-nonspace(line, n)
+        st2 < n -> fields.push(line.slice(st2, n) - '')
+    }
+    ! ws -> {
+        parts = line.split(fsep)
+        i <- [0..parts.len()): {
+            fields.push(awk-idx-str(parts, i))
+        }
+    }
+}
+
+awk-prev-nonspace = (line str, at i64) (pos i64) {
+    pos = at
+    (pos > 0) {
+        #{overflow=wrap}
+        pi = pos - 1
+        (line[pi] == ' ' || line[pi] == '\t') -> break
+        #{overflow=wrap}
+        pos = pos - 1
+    }
+}
+
+awk-exec-block = (act str, names []str, vals []str, fields []str, scal []str) {
+    stms = awk-parse-stmts(act)
+    i <- [0..stms.len()): {
+        awk-exec-stmt(stms[i], names, vals, fields, scal)
+        fl = awk-sc(scal, 5, '')
+        fl == 'exit' -> break
+        fl == 'next' -> break
+    }
+}
+
+awk-exec-stmt = (st awk-stmt, names []str, vals []str, fields []str, scal []str) {
+    fl = awk-sc(scal, 5, '')
+    fl != '' -> return
+    {
+        st.op == 'P' -> {
+            argstr = awk-trim(st.args)
+            bare = argstr == ''
+            bare -> argstr = '$0'
+            args = awk-eval-args(argstr, names, vals, fields, scal)
+            ofs = awk-getvar(names, vals, fields, scal, 'OFS')
+            out str = ''
+            i <- [0..args.len()): {
+                out = out - args[i]
+                #{overflow=wrap}
+                i1 = i + 1
+                i1 < args.len() -> out = out - ofs
+            }
+            out = out - awk-getvar(names, vals, fields, scal, 'ORS')
+            io.out(out)
+        }
+        st.op == 'A' -> {
+            pos2 []i64
+            pos2.push(0)
+            rv = awk-eval-full(st.cond, names, vals, fields, scal, pos2)
+            awk-do-assign(st.lhs, rv, names, vals, fields, scal)
+        }
+        st.op == 'I' -> {
+            pos3 []i64
+            pos3.push(0)
+            cv = awk-eval-full(st.cond, names, vals, fields, scal, pos3)
+            tc = awk-truthy(cv)
+            {
+                tc -> awk-exec-block(st.then-str, names, vals, fields, scal)
+                st.else-str.len-bytes() > 0 -> awk-exec-block(st.else-str, names, vals, fields, scal)
+            }
+        }
+        st.op == 'X' -> scal[5] = 'exit'
+        st.op == 'N' -> scal[5] = 'next'
+        -> {}
+    }
+}
+
+awk-pat-match = (r prule, names []str, vals []str, fields []str, scal []str) (yes bool) {
+    yes = false
+    pt = awk-trim(r.pat)
+    {
+        pt == '' -> yes = true
+        pt.starts-with('/') && pt.ends-with('/') && pt.len-bytes() > 1 -> {
+            #{overflow=wrap}
+            inner = pt.slice(1, pt.len-bytes() - 1) - ''
+            pline = awk-idx-str(fields, 0)
+            { pline.index(inner) >= 0 -> yes = true  -> {} }
+        }
+        awk-is-numeric(pt) -> {
+            p = awk-parse-int(pt)
+            nr = awk-parse-int(awk-sc(scal, 0, '0'))
+            { p == nr -> yes = true  -> {} }
+        }
+        -> {
+            pos []i64
+            pos.push(0)
+            ev = awk-eval-full(pt, names, vals, fields, scal, pos)
+            yes = awk-truthy(ev)
+        }
+    }
+}
+
+; ---------- main ----------
+
+awk-run-rules = (rules []prule, names []str, vals []str, fields []str, scal []str) {
+    i <- [0..rules.len()): {
+        #{index-out = prule{}}
+        r = rules[i]
+        r.kind == 'P' -> {
+            m = awk-pat-match(r, names, vals, fields, scal)
+            m -> awk-exec-block(r.act, names, vals, fields, scal)
+        }
+        fl = awk-sc(scal, 5, '')
+        fl == 'next' -> scal[5] = ''
+        fl == 'exit' -> break
+    }
+}
+
+awk-process-content = (content str, rules []prule, names []str, vals []str, fields []str, scal []str) {
+    lines = content.split('\n')
+    fnr = 0
+    i <- [0..lines.len()): {
+        x = awk-sc(scal, 5, '')
+        x == 'exit' -> break
+        line = awk-idx-str(lines, i)
+        #{overflow=wrap}
+        last = i == lines.len() - 1
+        line.len-bytes() == 0 && last -> break
+        #{overflow=wrap}
+        fnr = fnr + 1
+        nr = awk-parse-int(awk-sc(scal, 0, '0'))
+        #{overflow=wrap}
+        nr = nr + 1
+        scal[0] = nr.to-str()
+        scal[1] = fnr.to-str()
+        scal[5] = ''
+        fields.truncate(0)
+        awk-build-fields(line, names, vals, fields, scal)
+        awk-run-rules(rules, names, vals, fields, scal)
+    }
+}
 
 awk-run = () {
     argc = args()
-
-    action = ''
+    prog = ''
     files []str
-
-    i <- [2..argc): {
+    vlhs []str
+    vrhs []str
+    fsval = ' '
+    i = 2
+    (i < argc) {
         a = arg(i)
-        a.starts-with('{') && a.ends-with('}') -> action = a
-        ! (a.starts-with('{') && a.ends-with('}')) && ! a.starts-with('-') -> files.push(a)
-    }
-
-    {
-        action.len-bytes() == 0 -> {
-            print('awk: no action specified')
-            os.exit(1)
-        }
-    }
-
-    ; Parse $N out of the action. These are INDEPENDENT statements (the field-num
-    ; block is NOT in the dispatch group below): a {} group would short-circuit
-    ; after the first matching arm and never process any files.
-    field-num = 1
-    dollar-pos = action.index('$')
-    dollar-pos >= 0 -> {
-
-        #{overflow=wrap}
-        next-pos = dollar-pos + 1
-        next-pos < action.len-bytes() -> {
-            digit = action[next-pos]
-            digit >= "1" -> {
+        {
+            a == '-F' -> {
                 #{overflow=wrap}
-                digit <= "9" -> field-num = digit - "0"
+                ipf = i + 1
+                (ipf < argc) {
+                    fsval = arg(ipf)
+                    break
+                }
+                #{overflow=wrap}
+                i = i + 2
+            }
+            a.starts-with('-F') && a.len-bytes() > 2 -> {
+                fsval = a.slice(2, a.len-bytes()) - ''
+                #{overflow=wrap}
+                i = i + 1
+            }
+            a == '-v' -> {
+                #{overflow=wrap}
+                ipv = i + 1
+                (ipv < argc) {
+                    v = arg(ipv)
+                    eqp = v.index('=')
+                    eqp > 0 -> {
+                        vlhs.push(v.slice(0, eqp) - '')
+                        #{overflow=wrap}
+                        vrhs.push(v.slice(eqp + 1, v.len-bytes()) - '')
+                    }
+                    break
+                }
+                #{overflow=wrap}
+                i = i + 2
+            }
+            a == '-f' -> {
+                #{overflow=wrap}
+                ipg = i + 1
+                (ipg < argc) {
+                    fr = fs.read-str(arg(ipg))
+                    fr: {
+                        ok -> prog = it
+                        -> {}
+                    }
+                    break
+                }
+                #{overflow=wrap}
+                i = i + 2
+            }
+            ! a.starts-with('-') -> {
+                have = prog == ''
+                have -> prog = a
+                ! have -> files.push(a)
+                #{overflow=wrap}
+                i = i + 1
+            }
+            -> {
+                #{overflow=wrap}
+                i = i + 1
             }
         }
     }
+    prog.len-bytes() == 0 -> {
+        print('awk: no command given')
+        os.exit(2)
+    }
 
-    {
-        files.len() == 0 -> {
+    rules = awk-parse-program(prog)
+    names []str
+    vals []str
+    fields []str
+    scal []str
+    nl = '\n'
+    scal.push('0')
+    scal.push('0')
+    scal.push(fsval)
+    scal.push(' ')
+    scal.push(nl)
+    scal.push('')
+    k <- [0..vlhs.len()): {
+        awk-setvar(names, vals, scal, vlhs[k], vrhs[k])
+    }
+    fs2 = awk-getvar(names, vals, fields, scal, 'FS')
+    fs2 == '' -> scal[2] = ' '
+
+    bi <- [0..rules.len()): {
+        #{index-out = prule{}}
+        r2 = rules[bi]
+        r2.kind == 'B' -> awk-exec-block(r2.act, names, vals, fields, scal)
+    }
+
+    files.len() == 0 -> {
+        content = ''
+        r = fs.read-stdin-str()
+        r: {
+            ok -> content = it
+            -> {}
+        }
+        awk-process-content(content, rules, names, vals, fields, scal)
+    }
+    files.len() > 0 -> {
+        i <- [0..files.len()): {
+            ! fs.is-file(files[i]) -> {
+                print('awk: ' - files[i] - ': No such file or directory')
+                os.exit(2)
+            }
             content = ''
-            r = fs.read-stdin-str()
-            r: {
+            cr = fs.read-str(files[i])
+            cr: {
                 ok -> content = it
-
-                nil -> {
-                }
-
-                err -> {
-                }
+                -> {}
             }
-            process(content, field-num)
+            scal[1] = '0'
+            awk-process-content(content, rules, names, vals, fields, scal)
         }
+    }
 
-        files.len() > 0 -> {
-            i <- [0..files.len()): {
-                ! fs.is-file(files[i]) -> {
-                    #{overflow=wrap}
-                    print('awk: ' - files[i] - ': No such file or directory')
-                    os.exit(1)
-                }
-                content = ''
-                r = fs.read-str(files[i])
-                r: {
-                    ok -> content = it
-
-                    nil -> {
-                    }
-
-                    err -> {
-                    }
-                }
-                process(content, field-num)
-            }
+    fe = awk-sc(scal, 5, '')
+    fe != 'exit' -> {
+        ei <- [0..rules.len()): {
+            #{index-out = prule{}}
+            r3 = rules[ei]
+            r3.kind == 'E' -> awk-exec-block(r3.act, names, vals, fields, scal)
         }
     }
 }
 
-process = (content str, field-num i64) {
-    lines = content.split('\n')
-    j <- [0..lines.len()): {
-        fields = split-by-whitespace(lines[j])
-
-        #{overflow=wrap}
-        fields.len() >= field-num -> print(fields[field-num - 1])
+awk-cmp = (a str, b str, op str) (res str) {
+    res = '0'
+    an = awk-is-numeric(a)
+    bn = awk-is-numeric(b)
+    lt = false
+    gt = false
+    eq = a == b
+    ! an || ! bn -> {
+        lt = awk-str-lt(a, b)
+        ! lt -> ! eq -> gt = true
     }
-}
-
-split-by-whitespace = (line str) (fields []str) {
-    start = 0
-    in-field = false
-
-    i <- [0..line.len-bytes()): {
-        c = line[i]
-        is-space = c == " " || c == "\t"
-        is-space && in-field -> {
-            fields.push(line.slice(start, i))
-            in-field = false
-        }
-        ! is-space && ! in-field -> {
-            start = i
-            in-field = true
-        }
+    an && bn -> {
+        av = awk-parse-int(a)
+        bv = awk-parse-int(b)
+        av < bv -> lt = true
+        av > bv -> gt = true
     }
-    in-field -> fields.push(line.slice(start, line.len-bytes()))
+    cn = false
+    op == '==' -> cn = eq
+    op == '!=' -> cn = ! eq
+    op == '<' -> cn = lt
+    op == '<=' -> cn = lt || eq
+    op == '>' -> cn = gt
+    op == '>=' -> cn = gt || eq
+    cn -> res = '1'
 }

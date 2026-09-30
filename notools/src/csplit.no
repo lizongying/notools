@@ -46,21 +46,22 @@ is-pattern = (s str) (yes bool) {
     }
 }
 
-; gen-name: generate output filename xx00, xx01, ...
-gen-name = (idx i64) (name str) {
+; gen-name: generate output filename <prefix><idx zero-padded to 2>
+gen-name = (idx i64, prefix str) (name str) {
     suffix = idx.to-str()
     #{overflow=wrap}
     suffix.len-bytes() < 2 -> suffix = '0' - suffix
-    #{overflow=wrap}
-    name = 'xx' - suffix
+    name = prefix - suffix
 }
 
-; write-section: write a chunk to a numbered output file
-write-section = (file-idx i64, chunk str) {
-    fname = gen-name(file-idx)
+; write-section: write a chunk to a numbered output file and print its size
+; (BSD csplit prints each created part's byte count).
+write-section = (file-idx i64, chunk str, prefix str) {
+    fname = gen-name(file-idx, prefix)
     fd = fs.open-write(fname)
     fs.write(fd, chunk, chunk.len-bytes())
     fs.close(fd)
+    print(chunk.len-bytes())
 }
 
 ; find-line: find the first line (from cur-line) containing literal
@@ -99,19 +100,41 @@ find-line = (content str, line-starts []i64, cur-line i64, literal str) (found-l
 csplit = () {
     argc = args()
     infile = ''
+    prefix = 'xx'
     patterns []str
 
-    ; First non-option argument that is not a pattern becomes FILE;
-    ; all other non-option arguments are patterns.
+    ; Parse options: -f PREFIX (output prefix), -b (ignored suffix fmt),
+    ; -k/-z (flags, best-effort). First non-option non-pattern arg is FILE.
+    skip-next = false
     i <- [2..argc): {
+        {
+            skip-next -> { skip-next = false  continue }
+            -> {}
+        }
         a = arg(i)
-        ! a.starts-with('-') -> {
-            is-pat = is-pattern(a)
-            {
-                infile == '' && ! is-pat -> infile = a
-
-                -> patterns.push(a)
+        {
+            a == '-f' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> { prefix = arg(i + 1)  skip-next = true }
+                -> {}
             }
+            a == '-b' -> {
+                #{overflow=wrap}
+                i + 1 < argc -> { skip-next = true }
+                -> {}
+            }
+            a == '-k' || a == '-z' -> {}
+            a.starts-with('-f') && a.len-bytes() > 2 -> prefix = a.slice(2, a.len-bytes())
+            a.starts-with('-') && a != '-' -> {}
+            ! a.starts-with('-') -> {
+                is-pat = is-pattern(a)
+                take-infile = infile == '' && ! is-pat
+                {
+                    take-infile -> { infile = a }
+                    -> { patterns.push(a) }
+                }
+            }
+            -> {}
         }
     }
 
@@ -178,7 +201,7 @@ csplit = () {
         }
         first = pat[0]
         {
-            ; Integer pattern: split after line N (1-based)
+            ; Integer pattern: split before line N (1-based)
             first >= 48 && first <= 57 -> {
                 n = atoi(pat)
                 n < 1 -> {
@@ -190,20 +213,22 @@ csplit = () {
                     os.exit(1)
                 }
 
-                ; Split point is the start of line n (0-based index n)
+                ; Split point is the start of line n (0-based index n-1)
+                #{overflow=wrap}
+                li = n - 1
                 split-pos = content.len-bytes()
-                n < num-lines -> {
+                li < num-lines -> {
 
                     #{index-out=0}
-                    split-pos = line-starts[n]
+                    split-pos = line-starts[li]
                 }
                 chunk = content.slice(section-start, split-pos)
-                write-section(file-idx, chunk)
+                write-section(file-idx, chunk, prefix)
 
                 #{overflow=wrap}
                 file-idx = file-idx + 1
                 section-start = split-pos
-                cur-line = n
+                cur-line = li
             }
 
             ; /literal/ pattern: split before matching line
@@ -224,7 +249,7 @@ csplit = () {
                 #{index-out=0}
                 split-pos = line-starts[found]
                 chunk = content.slice(section-start, split-pos)
-                write-section(file-idx, chunk)
+                write-section(file-idx, chunk, prefix)
                 #{overflow=wrap}
                 file-idx = file-idx + 1
                 section-start = split-pos
@@ -265,7 +290,7 @@ csplit = () {
     {
         section-start < content.len-bytes() -> {
             chunk = content.slice(section-start, content.len-bytes())
-            write-section(file-idx, chunk)
+            write-section(file-idx, chunk, prefix)
 
             #{overflow=wrap}
             file-idx = file-idx + 1
