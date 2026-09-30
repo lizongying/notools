@@ -22,11 +22,13 @@
 
 ; read-loose-ref: read a loose ref file
 ; git-dir str, name str (e.g. "refs/heads/main")
-; returns content str, ok bool
-read-loose-ref = (git-dir str, name str) (content str, ok bool) {
+; returns content ?str (nil if ref file absent or unreadable)
+read-loose-ref = (git-dir str, name str) (content ?str) {
+    content = nil
     sl = '/'
     p = git-dir - sl - name
-    content, ok = util.read-file-str(p)
+    co, cok = util.read-file-str(p)
+    cok -> content = co
 }
 
 ; read-ref: read a reference (symbolic, loose, or packed)
@@ -42,10 +44,18 @@ read-ref = (git-dir str, name str) (o oid, ok bool) {
 
     ; try loose ref first
     content str
-    loose-ok bool
-    content, loose-ok = read-loose-ref(git-dir, name)
+    content-have = false
+    content-opt = read-loose-ref(git-dir, name)
+    content-opt: {
+        ok -> {
+            content = it
+            content-have = true
+        }
+        nil -> {}
+        err -> {}
+    }
     {
-        loose-ok -> {
+        content-have -> {
             content = util.trim-newline(content)
 
             ; check if symbolic: "ref: <target>"
@@ -71,19 +81,25 @@ read-ref = (git-dir str, name str) (o oid, ok bool) {
 
 ; read-symbolic-ref: read a symbolic ref (e.g. HEAD) and return the target name
 ; git-dir str, name str (e.g. "HEAD")
-; returns target str, ok bool (ok=false if not a symbolic ref)
-read-symbolic-ref = (git-dir str, name str) (target str, ok bool) {
-    ok = false
+; returns target ?str (nil if absent or not a symbolic ref)
+read-symbolic-ref = (git-dir str, name str) (target ?str) {
+    target = nil
     content str
-    loose-ok bool
-    content, loose-ok = read-loose-ref(git-dir, name)
-    ! loose-ok -> return
-    content = util.trim-newline(content)
-    {
+    found = false
+    content-opt = read-loose-ref(git-dir, name)
+    content-opt: {
+        ok -> {
+            content = it
+            found = true
+        }
+        nil -> {}
+        err -> {}
+    }
+    found -> {
+        content = util.trim-newline(content)
         content.starts-with('ref: ') -> {
             target = util.str-range(content, 5, content.len())
             target = util.trim-newline(target)
-            ok = true
         }
     }
 }
@@ -153,10 +169,10 @@ set-head-detached = (git-dir str, o oid) (ok bool) {
 current-branch = (git-dir str) (branch str, detached bool, ok bool) {
     ok = false
     target str
-    sym-ok bool
-    target, sym-ok = read-symbolic-ref(git-dir, 'HEAD')
-    {
-        sym-ok -> {
+    target-opt = read-symbolic-ref(git-dir, 'HEAD')
+    target-opt: {
+        ok -> {
+            target = it
             target.starts-with('refs/heads/') -> {
                 branch = util.str-range(target, 11, target.len())
                 detached = false
@@ -164,6 +180,8 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
                 return
             }
         }
+        nil -> {}
+        err -> {}
     }
 
     ; detached HEAD
