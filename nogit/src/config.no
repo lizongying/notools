@@ -72,13 +72,13 @@ to-lower-local = (s str) (out str) {
 
 ; config-get: get a config value from .git/config
 ; git-dir str, section str, key str
-; returns value str, ok bool
+; returns value ?str (nil if not found / config missing)
 ;
 ; Section matching is case-insensitive. Key matching is case-insensitive.
 ; Supports [section] and [section "subsection"] — subsection is case-sensitive.
 ; For subsection lookup, pass section as 'section.subsection' (dot-separated).
-config-get = (git-dir str, section str, key str) (value str, ok bool) {
-    ok = false
+config-get = (git-dir str, section str, key str) (value ?str) {
+    value = nil
     p = git-dir - '/config'
 
     ; Read config file directly via fs (avoid util.read-file-str cross-module str loss bug)
@@ -189,7 +189,6 @@ config-get = (git-dir str, section str, key str) (value str, ok bool) {
                                         }
                                     }
                                     value = v
-                                    ok = true
                                     done = true
                                 }
                             }
@@ -337,30 +336,52 @@ config-set = (git-dir str, section str, key str, value str) (ok bool) {
 
 ; get-user-name: get user.name from config or env
 ; git-dir str
-; returns name str, ok bool
-get-user-name = (git-dir str) (name str, ok bool) {
-    name, ok = config-get(git-dir, 'user', 'name')
-    ok -> return
+; returns name ?str (nil if not found in config or env)
+get-user-name = (git-dir str) (name ?str) {
+    name = nil
+    conf-have = false
+    conf-opt = config-get(git-dir, 'user', 'name')
+    conf-opt: {
+        ok -> {
+            name = it
+            conf-have = true
+        }
+        nil -> {}
+        err -> {}
+    }
+    conf-have -> return
 
     ; fall back to env
-    name = os.get-env('GIT_AUTHOR_NAME')
-    {
-        name == '' -> name = os.get-env('GIT_COMMITTER_NAME')
-
-        name != '' -> ok = true
+    e1 = os.get-env('GIT_AUTHOR_NAME')
+    e1 != '' -> name = e1
+    e1 == '' -> {
+        e2 = os.get-env('GIT_COMMITTER_NAME')
+        e2 != '' -> name = e2
     }
 }
 
 ; get-user-email: get user.email from config or env
 ; git-dir str
-; returns email str, ok bool
-get-user-email = (git-dir str) (email str, ok bool) {
-    email, ok = config-get(git-dir, 'user', 'email')
-    ok -> return
-    email = os.get-env('GIT_AUTHOR_EMAIL')
-    {
-        email == '' -> email = os.get-env('GIT_COMMITTER_EMAIL')
+; returns email ?str (nil if not found in config or env)
+get-user-email = (git-dir str) (email ?str) {
+    email = nil
+    conf-have = false
+    conf-opt = config-get(git-dir, 'user', 'email')
+    conf-opt: {
+        ok -> {
+            email = it
+            conf-have = true
+        }
+        nil -> {}
+        err -> {}
+    }
+    conf-have -> return
 
-        email != '' -> ok = true
+    ; fall back to env
+    e1 = os.get-env('GIT_AUTHOR_EMAIL')
+    e1 != '' -> email = e1
+    e1 == '' -> {
+        e2 = os.get-env('GIT_COMMITTER_EMAIL')
+        e2 != '' -> email = e2
     }
 }
