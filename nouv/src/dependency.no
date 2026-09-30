@@ -86,9 +86,14 @@ resolve-all = (cfg str) (resolved ?str) {
         }
 
         ; get package info from registry
-        info, info-ok = registry.get-package-info(name)
-        {
-            ! info-ok -> {
+        info-opt = registry.get-package-info(name)
+        info-opt: {
+            ok -> info = it
+            nil -> {
+                print('warning: could not resolve {name}')
+                continue
+            }
+            err -> {
                 print('warning: could not resolve {name}')
                 continue
             }
@@ -100,6 +105,10 @@ resolve-all = (cfg str) (resolved ?str) {
             ok -> best-ver = it
 
             nil -> {
+                print('warning: no suitable version for {name} ({ver-spec})')
+                continue
+            }
+            err -> {
                 print('warning: no suitable version for {name} ({ver-spec})')
                 continue
             }
@@ -599,12 +608,17 @@ sub-tree = (req str, depth i64) (tree ?str) {
 
     name, ver-spec, extras = parse-requirement(req)
 
-    raw, raw-ok = registry.get-package-info(name)
-    raw-ok == false -> return
+    raw-opt = registry.get-package-info(name)
+    raw-opt: {
+        ok -> raw = it
+        nil -> return
+        err -> return
+    }
     ver-opt = pick-version(raw, ver-spec)
     ver-opt: {
         ok -> ver = it
         nil -> return
+        err -> return
     }
 
     indent = make-indent(depth)
@@ -627,6 +641,8 @@ sub-tree = (req str, depth i64) (tree ?str) {
             child-opt = sub-tree(d, next-depth)
             child-opt: {
                 ok -> tree = tree - it
+                nil -> {}
+                err -> {}
             }
         }
     }
@@ -640,13 +656,18 @@ sub-tree = (req str, depth i64) (tree ?str) {
 resolve-package = (name str, ver-spec str) (info ?str) {
     info = nil
 
-    raw, raw-ok = registry.get-package-info(name)
-    raw-ok == false -> return
+    raw-opt = registry.get-package-info(name)
+    raw-opt: {
+        ok -> raw = it
+        nil -> return
+        err -> return
+    }
 
     ver-opt = pick-version(raw, ver-spec)
     ver-opt: {
         ok -> ver = it
         nil -> return
+        err -> return
     }
 
     deps = get-requires-dist(raw, ver)
@@ -716,15 +737,18 @@ resolve-all-deps = (deps str) (resolved ?str) {
             }
         }
 
-        info, info-ok = registry.get-package-info(name)
-        {
-            ! info-ok -> continue
+        info-opt = registry.get-package-info(name)
+        info-opt: {
+            ok -> info = it
+            nil -> continue
+            err -> continue
         }
 
         best-ver-opt = pick-version(info, ver-spec)
         best-ver-opt: {
             ok -> best-ver = it
             nil -> continue
+            err -> continue
         }
 
         #{overflow=wrap}

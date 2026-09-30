@@ -178,23 +178,43 @@ pip-install = (venv-path str, pkgs str) (ok bool) {
         pkg.len() > 0 -> {
             name, ver-spec, extras = dependency.parse-requirement(pkg)
 
+            ver = ''
+            ver-found = false
             {
                 ver-spec == '' -> {
-                    ver, ver-ok = registry.get-latest-version(name)
+                    ver-opt = registry.get-latest-version(name)
+                    ver-opt: {
+                        ok -> {
+                            ver = it
+                            ver-found = true
+                        }
+                        nil -> {}
+                        err -> {}
+                    }
                 }
 
                 -> {
-                    info, info-ok = registry.get-package-info(name)
-                    {
-                        info-ok -> {
-                            ver, ver-ok = dependency.pick-version(info, ver-spec)
+                    info-opt = registry.get-package-info(name)
+                    info-opt: {
+                        ok -> {
+                            ver-opt2 = dependency.pick-version(it, ver-spec)
+                            ver-opt2: {
+                                ok -> {
+                                    ver = it
+                                    ver-found = true
+                                }
+                                nil -> {}
+                                err -> {}
+                            }
                         }
+                        nil -> {}
+                        err -> {}
                     }
                 }
             }
 
             {
-                ! ver-ok -> {
+                ! ver-found -> {
                     print('error: could not find version for {pkg}')
                     return
                 }
@@ -315,9 +335,10 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                 utils.contains-str(opts, 'no-binary') -> {
 
                     ; build from source — get sdist URL
-                    sdist-url, sdist-ok = registry.get-sdist-url(name, ver)
-                    {
-                        sdist-ok -> {
+                    sdist-url-opt = registry.get-sdist-url(name, ver)
+                    sdist-url-opt: {
+                        ok -> {
+                            sdist-url = it
                             #{overflow=wrap}
                             sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
                             dl-ok = registry.download-package(name, ver, sdist-path)
@@ -349,7 +370,11 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                             }
                         }
 
-                        -> {
+                        nil -> {
+                            print('  error: no sdist available for {name}=={ver}')
+                            return
+                        }
+                        err -> {
                             print('  error: no sdist available for {name}=={ver}')
                             return
                         }
@@ -359,9 +384,10 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                 -> {
 
                     ; try wheel first
-                    wheel-url, wheel-ok = registry.get-wheel-url(name, ver)
-                    {
-                        wheel-ok -> {
+                    wheel-url-opt = registry.get-wheel-url(name, ver)
+                    wheel-url-opt: {
+                        ok -> {
+                            wheel-url = it
                             dl-ok = registry.download-package(name, ver, cached-path)
                             {
                                 ! dl-ok -> {
@@ -374,9 +400,10 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                                         }
 
                                         -> {
-                                            sdist-url, sdist-ok = registry.get-sdist-url(name, ver)
-                                            {
-                                                sdist-ok -> {
+                                            sdist-url-opt = registry.get-sdist-url(name, ver)
+                                            sdist-url-opt: {
+                                                ok -> {
+                                                    sdist-url = it
                                                     #{overflow=wrap}
                                                     sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
                                                     dl2-ok = registry.download-package(name, ver, sdist-path)
@@ -397,15 +424,21 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                                                         }
                                                     }
                                                 }
+
+                                                nil -> {
+                                                    return
+                                                }
+                                                err -> {
+                                                    return
+                                                }
                                             }
-                                            return
                                         }
                                     }
                                 }
                             }
                         }
 
-                        -> {
+                        nil -> {
 
                             ; no wheel available, try sdist
                             {
@@ -415,9 +448,10 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                                 }
 
                                 -> {
-                                    sdist-url, sdist-ok = registry.get-sdist-url(name, ver)
-                                    {
-                                        sdist-ok -> {
+                                    sdist-url-opt = registry.get-sdist-url(name, ver)
+                                    sdist-url-opt: {
+                                        ok -> {
+                                            sdist-url = it
                                             #{overflow=wrap}
                                             sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
                                             dl-ok = registry.download-package(name, ver, sdist-path)
@@ -437,10 +471,60 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
                                                     }
                                                 }
                                             }
-                                            return
                                         }
 
-                                        -> {
+                                        nil -> {
+                                            print('  error: no wheel or sdist available for {name}=={ver}')
+                                            return
+                                        }
+                                        err -> {
+                                            print('  error: no wheel or sdist available for {name}=={ver}')
+                                            return
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        err -> {
+
+                            ; no wheel available, try sdist
+                            {
+                                utils.contains-str(opts, 'only-binary') -> {
+                                    print('  error: no wheel available for {name}=={ver} and --only-binary is set')
+                                    return
+                                }
+
+                                -> {
+                                    sdist-url-opt = registry.get-sdist-url(name, ver)
+                                    sdist-url-opt: {
+                                        ok -> {
+                                            sdist-url = it
+                                            #{overflow=wrap}
+                                            sdist-path = cache-dir - '/' - name - '-' - ver - '.tar.gz'
+                                            dl-ok = registry.download-package(name, ver, sdist-path)
+                                            {
+                                                dl-ok -> {
+                                                    inst-ok = install-from-source(venv-path, sdist-path)
+                                                    {
+                                                        inst-ok -> {
+                                                            {
+                                                                ! utils.contains-str(opts, 'no-deps') -> {
+                                                                    deps-ok = install-dependencies(venv-path, name, ver)
+                                                                }
+                                                            }
+                                                            ok = true
+                                                            return
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        nil -> {
+                                            print('  error: no wheel or sdist available for {name}=={ver}')
+                                            return
+                                        }
+                                        err -> {
                                             print('  error: no wheel or sdist available for {name}=={ver}')
                                             return
                                         }
@@ -479,9 +563,14 @@ install-named-package-with-opts = (venv-path str, name str, ver str, opts str) (
 install-dependencies = (venv-path str, name str, ver str) (ok bool) {
     ok = false
 
-    info, info-ok = registry.get-package-info(name)
-    {
-        ! info-ok -> {
+    info-opt = registry.get-package-info(name)
+    info-opt: {
+        ok -> info = it
+        nil -> {
+            ok = true
+            return
+        }
+        err -> {
             ok = true
             return
         }
@@ -535,22 +624,42 @@ install-dependencies = (venv-path str, name str, ver str) (ok bool) {
                         has-it = is-installed(venv-path, dep-name)
                         {
                             ! has-it -> {
+                                dep-ver = ''
+                                dep-found = false
                                 {
                                     dep-spec == '' -> {
-                                        dep-ver, dep-ok = registry.get-latest-version(dep-name)
+                                        dep-ver-opt = registry.get-latest-version(dep-name)
+                                        dep-ver-opt: {
+                                            ok -> {
+                                                dep-ver = it
+                                                dep-found = true
+                                            }
+                                            nil -> {}
+                                            err -> {}
+                                        }
                                     }
 
                                     -> {
-                                        dep-info, dep-info-ok = registry.get-package-info(dep-name)
-                                        {
-                                            dep-info-ok -> {
-                                                dep-ver, dep-ok = dependency.pick-version(dep-info, dep-spec)
+                                        dep-info-opt = registry.get-package-info(dep-name)
+                                        dep-info-opt: {
+                                            ok -> {
+                                                dep-ver-opt2 = dependency.pick-version(it, dep-spec)
+                                                dep-ver-opt2: {
+                                                    ok -> {
+                                                        dep-ver = it
+                                                        dep-found = true
+                                                    }
+                                                    nil -> {}
+                                                    err -> {}
+                                                }
                                             }
+                                            nil -> {}
+                                            err -> {}
                                         }
                                     }
                                 }
                                 {
-                                    dep-ok -> {
+                                    dep-found -> {
                                         inst-ok = install-named-package-with-opts(venv-path, dep-name, dep-ver, 'no-deps')
                                         {
                                             inst-ok -> print('  + {dep-name}=={dep-ver} (dependency)')
@@ -658,9 +767,14 @@ get-installed-version = (venv-path str, name str) (ver str) {
 upgrade-package = (venv-path str, name str) (ok bool) {
     ok = false
 
-    latest-ver, ver-ok = registry.get-latest-version(name)
-    {
-        ! ver-ok -> {
+    latest-ver-opt = registry.get-latest-version(name)
+    latest-ver-opt: {
+        ok -> latest-ver = it
+        nil -> {
+            print('error: could not find latest version for {name}')
+            return
+        }
+        err -> {
             print('error: could not find latest version for {name}')
             return
         }
@@ -1052,11 +1166,18 @@ pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
                                 utils.starts-with-str(ver-spec, '==') -> ver = utils.slice-str(ver-spec, 2, ver-spec.len-bytes())
 
                                 -> {
-                                    info, info-ok = registry.get-package-info(name)
-                                    {
-                                        info-ok -> {
-                                            ver, v-ok = dependency.pick-version(info, ver-spec)
+                                    info-opt = registry.get-package-info(name)
+                                    info-opt: {
+                                        ok -> {
+                                            ver-opt = dependency.pick-version(it, ver-spec)
+                                            ver-opt: {
+                                                ok -> ver = it
+                                                nil -> {}
+                                                err -> {}
+                                            }
                                         }
+                                        nil -> {}
+                                        err -> {}
                                     }
                                 }
                             }
@@ -1083,15 +1204,27 @@ pip-install-with-options = (venv-path str, pkgs str, opts str) (ok bool) {
                             -> {
                                 {
                                     ver-spec == '' -> {
-                                        ver, ver-ok = registry.get-latest-version(name)
+                                        ver-opt = registry.get-latest-version(name)
+                                        ver-opt: {
+                                            ok -> ver = it
+                                            nil -> {}
+                                            err -> {}
+                                        }
                                     }
 
                                     -> {
-                                        info, info-ok = registry.get-package-info(name)
-                                        {
-                                            info-ok -> {
-                                                ver, ver-ok = dependency.pick-version(info, ver-spec)
+                                        info-opt = registry.get-package-info(name)
+                                        info-opt: {
+                                            ok -> {
+                                                ver-opt2 = dependency.pick-version(it, ver-spec)
+                                                ver-opt2: {
+                                                    ok -> ver = it
+                                                    nil -> {}
+                                                    err -> {}
+                                                }
                                             }
+                                            nil -> {}
+                                            err -> {}
                                         }
                                     }
                                 }

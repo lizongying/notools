@@ -94,6 +94,7 @@ fetch-package-json = (name str) (body ?str) {
 ; parse-package-json — decode a PyPI JSON payload into the flat info string
 parse-package-json = (s str) (info ?str) {
     info = nil
+    sb = ''
 
     root-opt = json.parse(s)
     root-opt: {
@@ -114,10 +115,10 @@ parse-package-json = (s str) (info ?str) {
                 ok -> {
                     meta = it
                     ver, has-ver = meta.get-str('version')
-                    has-ver -> info = info - 'version=' - ver - '\n'
+                    has-ver -> sb = sb - 'version=' - ver - '\n'
 
                     pname, has-pname = meta.get-str('name')
-                    has-pname -> info = info - 'name=' - pname - '\n'
+                    has-pname -> sb = sb - 'name=' - pname - '\n'
 
                     rd-opt = meta.get('requires_dist')
                     rd-opt: {
@@ -141,7 +142,7 @@ parse-package-json = (s str) (info ?str) {
 
                                     ok -> {
                                         dep, dp-ok = it.str()
-                                        dp-ok -> info = info - 'requires_dist=' - dep - '\n'
+                                        dp-ok -> sb = sb - 'requires_dist=' - dep - '\n'
                                     }
                                 }
                             }
@@ -181,10 +182,10 @@ parse-package-json = (s str) (info ?str) {
 
                                     tag != '' -> {
                                         url, u-ok = file.get-str('url')
-                                        u-ok -> info = info - tag - '-url=' - url - '\n'
+                                        u-ok -> sb = sb - tag - '-url=' - url - '\n'
 
                                         fname, f-ok = file.get-str('filename')
-                                        f-ok -> info = info - tag - '-filename=' - fname - '\n'
+                                        f-ok -> sb = sb - tag - '-filename=' - fname - '\n'
 
                                         dg-opt = file.get('digests')
                                         dg-opt: {
@@ -194,7 +195,7 @@ parse-package-json = (s str) (info ?str) {
 
                                             ok -> {
                                                 sha, sha-ok = it.get-str('sha256')
-                                                sha-ok -> info = info - tag - '-hash=' - sha - '\n'
+                                                sha-ok -> sb = sb - tag - '-hash=' - sha - '\n'
                                             }
                                         }
                                     }
@@ -205,6 +206,7 @@ parse-package-json = (s str) (info ?str) {
                 }
             }
 
+            info = sb
         }
     }
 }
@@ -269,6 +271,7 @@ get-package-info = (name str) (info ?str) {
     body-opt: {
         ok -> info = parse-package-json(it)
         nil -> {}
+        err -> {}
     }
 }
 
@@ -278,33 +281,47 @@ get-package-versions = (name str) (versions ?str) {
     body-opt: {
         ok -> versions = parse-releases-json(it)
         nil -> {}
+        err -> {}
     }
 }
 
 ; get-latest-version — get the latest version of a package
-get-latest-version = (name str) (ver str, ok bool) {
-    ok = false
-    ver = ''
-
-    info, info-ok = get-package-info(name)
-    info-ok -> ver, ok = get-info-field(info, 'version')
+get-latest-version = (name str) (ver ?str) {
+    info-opt = get-package-info(name)
+    info-opt: {
+        ok -> {
+            ver-opt = get-info-field(it, 'version')
+            ver-opt: {
+                ok -> ver = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
 }
 
 ; get-package-url — get the download URL for a specific version (wheel first)
-get-package-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    url, ok = get-wheel-url(name, ver)
-    ok == false -> url, ok = get-sdist-url(name, ver)
+get-package-url = (name str, ver str) (url ?str) {
+    wheel-opt = get-wheel-url(name, ver)
+    wheel-opt: {
+        ok -> url = it
+        nil -> url = get-sdist-url(name, ver)
+        err -> url = get-sdist-url(name, ver)
+    }
 }
 
 ; download-package — download a package to a destination path
 download-package = (name str, ver str, dest str) (ok bool) {
     ok = false
 
-    url, url-ok = get-package-url(name, ver)
-    url-ok == false -> return
+    url-opt = get-package-url(name, ver)
+    url-opt: {
+        ok -> url = it
+        nil -> return
+        err -> return
+    }
 
     resp = http.get(url)
     resp: {
@@ -328,41 +345,69 @@ download-package = (name str, ver str, dest str) (ok bool) {
 }
 
 ; get-wheel-url — get the wheel download URL for a package version
-get-wheel-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    info, info-ok = get-package-info(name)
-    info-ok -> url, ok = get-info-field(info, 'wheel-url')
+get-wheel-url = (name str, ver str) (url ?str) {
+    info-opt = get-package-info(name)
+    info-opt: {
+        ok -> {
+            url-opt = get-info-field(it, 'wheel-url')
+            url-opt: {
+                ok -> url = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
 }
 
 ; get-sdist-url — get the source distribution URL for a package version
-get-sdist-url = (name str, ver str) (url str, ok bool) {
-    ok = false
-    url = ''
-
-    info, info-ok = get-package-info(name)
-    info-ok -> url, ok = get-info-field(info, 'sdist-url')
+get-sdist-url = (name str, ver str) (url ?str) {
+    info-opt = get-package-info(name)
+    info-opt: {
+        ok -> {
+            url-opt = get-info-field(it, 'sdist-url')
+            url-opt: {
+                ok -> url = it
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
+    }
 }
 
 ; get-package-hashes — get file hashes (newline-separated sha256 values)
 get-package-hashes = (name str, ver str) (hashes str) {
     hashes = ''
 
-    info, info-ok = get-package-info(name)
-    info-ok -> {
-        wh, w-ok = get-info-field(info, 'wheel-hash')
-        w-ok -> hashes = hashes - wh - '\n'
+    info-opt = get-package-info(name)
+    info-opt: {
+        ok -> {
+            wh-opt = get-info-field(it, 'wheel-hash')
+            wh-opt: {
+                ok -> hashes = hashes - it - '\n'
+                nil -> {}
+                err -> {}
+            }
 
-        sh, s-ok = get-info-field(info, 'sdist-hash')
-        s-ok -> hashes = hashes - sh - '\n'
+            sh-opt = get-info-field(it, 'sdist-hash')
+            sh-opt: {
+                ok -> hashes = hashes - it - '\n'
+                nil -> {}
+                err -> {}
+            }
+        }
+        nil -> {}
+        err -> {}
     }
 }
 
 ; get-package-info-with-auth — get package info (auth is not applied to the
 ; public JSON API; retained for API compatibility)
-get-package-info-with-auth = (name str, user str, pass str) (info str, ok bool) {
-    info, ok = get-package-info(name)
+get-package-info-with-auth = (name str, user str, pass str) (info ?str) {
+    info = get-package-info(name)
 }
 
 ; download-with-retry — download a package with retry logic
@@ -392,8 +437,8 @@ download-with-auth = (name str, ver str, dest str, token str) (ok bool) {
 }
 
 ; get-package-info-cached — get package info (cache passthrough)
-get-package-info-cached = (name str) (info str, ok bool) {
-    info, ok = get-package-info(name)
+get-package-info-cached = (name str) (info ?str) {
+    info = get-package-info(name)
 }
 
 ; ═══════════════════════════════════════════════
@@ -412,9 +457,8 @@ get-json-url = () (url str) {
 ; returns the HTML content of the simple index page
 ; ═══════════════════════════════════════════════
 
-get-simple-index = (name str) (index str, ok bool) {
-    ok = false
-    index = ''
+get-simple-index = (name str) (index ?str) {
+    index = nil
 
     base = get-index-url()
 
@@ -430,7 +474,6 @@ get-simple-index = (name str) (index str, ok bool) {
 
         ok -> {
             index = it.body
-            ok = true
         }
 
         err -> return
