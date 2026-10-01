@@ -94,6 +94,44 @@ nogit checkout dev
 | `zlib` | zlib 压缩 / 解压（deflate / inflate、Adler-32） |
 | `pack` | Packfile v2 读取（变量长头、ofs-delta、ref-delta） |
 
+## 返回值约定：`?T` option 类型
+
+模块函数遵循统一的返回值约定，**"单值 + ok"一律使用 option 类型**，而非 `(T, ok bool)` 元组：
+
+| 场景 | 写法 | 示例 |
+|------|------|------|
+| 单值 + ok | `?T` | `read-file-str = (p str) (out ?str)` |
+| 多值 + ok | 元组 | `read-loose = (...) (kind str, data str, ok bool)` |
+| 纯 ok | 元组 | `write-file-simple = (p str, content str) (ok bool)` |
+
+**函数体语义**：给返回参数赋具体值 → `ok` 变体；赋 `nil` → `nil` 变体（无需显式 `return`）。
+
+```no
+read-file-str = (p str) (out ?str) {
+    out = nil
+    isf = fs.is-file(p)
+    {
+        ! isf -> { return }        ; 未找到 → 保持 nil
+    }
+    out = fs.read-file(p).to-bytes-str()
+}
+```
+
+**调用方必须使用 option-match**，三个分支（`ok` / `nil` / `err`）都要覆盖：
+
+```no
+content-opt = util.read-file-str(p)
+content-opt: {
+    ok -> content = it
+    nil -> { return }
+    err -> { return }
+}
+```
+
+> **两个已知陷阱**
+> 1. 不要用元组解构 `?T` 返回值（`x, ok = func()`）。它不会报明确类型错误，而是生成非法 MIR，表现为 `void type only allowed for function results` 或运行时 `signal: trace/BPT trap`。
+> 2. 内联**多语句**分支（`ok -> { a = it; b = true }` 同行）会被解析器误判，导致后续函数未注册并级联报 `unknown function`。应写成内联单语句 `ok -> x = it`，或多行块式（每个语句独占一行）。
+
 ## 项目结构
 
 ```

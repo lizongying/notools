@@ -56,6 +56,44 @@ notools 倉庫內含一個**純 Nolang 實現的 Git**（`nogit/` 目錄），�
 | `zlib` | zlib 壓縮 / 解壓（deflate / inflate、Adler-32） |
 | `pack` | Packfile v2 讀取（變數長頭、ofs-delta、ref-delta） |
 
+## 返回值約定：`?T` option 類型
+
+模組函式遵循統一的返回值約定：**「單值 + ok」一律使用 option 類型**，而非 `(T, ok bool)` 元組：
+
+| 場景 | 寫法 | 示例 |
+|------|------|------|
+| 單值 + ok | `?T` | `read-file-str = (p str) (out ?str)` |
+| 多值 + ok | 元組 | `read-loose = (...) (kind str, data str, ok bool)` |
+| 純 ok | 元組 | `write-file-simple = (p str, content str) (ok bool)` |
+
+**函式體語義**：給返回參數賦具體值 → `ok` 變體；賦 `nil` → `nil` 變體（無需顯式 `return`）。
+
+```no
+read-file-str = (p str) (out ?str) {
+    out = nil
+    isf = fs.is-file(p)
+    {
+        ! isf -> { return }        ; 未找到 → 保持 nil
+    }
+    out = fs.read-file(p).to-bytes-str()
+}
+```
+
+**呼叫方必須使用 option-match**，三個分支（`ok` / `nil` / `err`）都要覆蓋：
+
+```no
+content-opt = util.read-file-str(p)
+content-opt: {
+    ok -> content = it
+    nil -> { return }
+    err -> { return }
+}
+```
+
+> **兩個已知陷阱**
+> 1. 不要用元組解構 `?T` 返回值（`x, ok = func()`）。它不會報明確類型錯誤，而是生成非法 MIR，表現為 `void type only allowed for function results` 或執行期 `signal: trace/BPT trap`。
+> 2. 內聯**多語句**分支（`ok -> { a = it; b = true }` 同行）會被解析器誤判，導致後續函式未註冊並級聯報 `unknown function`。應寫成內聯單語句 `ok -> x = it`，或多行塊式（每個語句獨佔一行）。
+
 ## 構建與運行
 
 ```bash

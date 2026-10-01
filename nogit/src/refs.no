@@ -27,8 +27,12 @@ read-loose-ref = (git-dir str, name str) (content ?str) {
     content = nil
     sl = '/'
     p = git-dir - sl - name
-    co, cok = util.read-file-str(p)
-    cok -> content = co
+    co-opt = util.read-file-str(p)
+    co-opt: {
+        ok -> content = it
+        nil -> {}
+        err -> {}
+    }
 }
 
 ; read-ref: read a reference (symbolic, loose, or packed)
@@ -39,8 +43,7 @@ read-loose-ref = (git-dir str, name str) (content ?str) {
 ;   1. If the ref content starts with "ref:", follow the symbolic ref recursively
 ;   2. Otherwise, parse as 40-char hex oid
 ;   3. If the loose ref is absent, check packed-refs
-read-ref = (git-dir str, name str) (o oid, ok bool) {
-    ok = false
+read-ref = (git-dir str, name str) (o ?oid) {
 
     ; try loose ref first
     content str
@@ -62,21 +65,21 @@ read-ref = (git-dir str, name str) (o oid, ok bool) {
             content.starts-with('ref: ') -> {
                 target = util.str-range(content, 5, content.len())
                 target = util.trim-newline(target)
-                o, ok = read-ref(git-dir, target)
+                o = read-ref(git-dir, target)
                 return
             }
 
             ; parse as hex oid
             content.len() >= 40 -> {
                 hx = util.str-range(content, 0, 40)
-                o, ok = oid.oid-from-hex(hx)
+                o = oid.oid-from-hex(hx)
                 return
             }
         }
     }
 
     ; try packed-refs
-    o, ok = read-packed-ref(git-dir, name)
+    o = read-packed-ref(git-dir, name)
 }
 
 ; read-symbolic-ref: read a symbolic ref (e.g. HEAD) and return the target name
@@ -187,7 +190,16 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
     ; detached HEAD
     o oid
     ref-ok bool
-    o, ref-ok = read-ref(git-dir, 'HEAD')
+    o-opt = read-ref(git-dir, 'HEAD')
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     {
         ref-ok -> {
             branch = ''
@@ -348,20 +360,22 @@ list-tags = (git-dir str) (names str, count i64) {
 ; read-packed-refs: read .git/packed-refs file
 ; git-dir str
 ; returns lines str (raw content), ok bool
-read-packed-refs-file = (git-dir str) (content str, ok bool) {
+read-packed-refs-file = (git-dir str) (content ?str) {
     p = git-dir - '/packed-refs'
-    content, ok = util.read-file-str(p)
+    content = util.read-file-str(p)
 }
 
 ; read-packed-ref: look up a specific ref in packed-refs
 ; git-dir str, name str
 ; returns oid oid, ok bool
-read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
-    ok = false
+read-packed-ref = (git-dir str, name str) (o ?oid) {
     content str
-    packed-ok bool
-    content, packed-ok = read-packed-refs-file(git-dir)
-    ! packed-ok -> return
+    content-opt = read-packed-refs-file(git-dir)
+    content-opt: {
+        ok -> content = it
+        nil -> { return }
+        err -> { return }
+    }
 
     ; scan lines: "<40-hex> <refname>"
     pos = 0
@@ -397,8 +411,13 @@ read-packed-ref = (git-dir str, name str) (o oid, ok bool) {
                             same = util.str-eq(refname, name)
                             same -> {
                                 hx.len() >= 40 -> {
-                                    o, ok = oid.oid-from-hex(util.str-range(hx, 0, 40))
-                                    ok -> break
+                                    o = oid.oid-from-hex(util.str-range(hx, 0, 40))
+                                    o-have bool = false
+                                    o: {
+                                        ok -> o-have = true
+                                        nil || err -> { }
+                                    }
+                                    o-have -> break
                                 }
                             }
                         }
@@ -451,9 +470,13 @@ write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, em
     log-entry = old-hex - ' ' - new-hex - ' ' - name - ' <' - email - '> ' - ts - ' ' - tz - tab - message - nl
 
     ; append to file (read existing, append, write back)
-    existing str
-    ignore-ok bool
-    existing, ignore-ok = util.read-file-str(log-path)
+    existing str = ''
+    existing-opt = util.read-file-str(log-path)
+    existing-opt: {
+        ok -> existing = it
+        nil -> {}
+        err -> {}
+    }
     full = existing - log-entry
     util.write-file-simple(log-path, full)
     ok = true
@@ -462,7 +485,7 @@ write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, em
 ; read-reflog: read reflog entries
 ; git-dir str, refname str
 ; returns content str, ok bool
-read-reflog = (git-dir str, refname str) (content str, ok bool) {
+read-reflog = (git-dir str, refname str) (content ?str) {
     log-path = git-dir - '/logs/' - refname
-    content, ok = util.read-file-str(log-path)
+    content = util.read-file-str(log-path)
 }

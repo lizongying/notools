@@ -58,3 +58,10 @@ cd ..
 
 - 安装 [Nolang](https://github.com/lizongying/nolang) 编译器
 - `no version` 确认安装成功
+- LLVM 工具链需在 `PATH` 中（nogit 等项目走 LLVM 后端，需要 `llvm-config` 等可执行文件；macOS Homebrew 通常为 `/opt/homebrew/opt/llvm/bin`）
+
+## 构建注意事项
+
+- **`no build` 会回写源码**：它会规范化语法，并可能把 `package.jsonc` 的 `compiler.version` 提升到当前编译器版本。提交前请确认这类改动是否属于本次变更，不属于则还原，避免混入构建噪音。
+- **`compiler version mismatch: package.jsonc requires "0.3.11", current compiler is "dev"`** 是常见告警而非错误：本地编译器版本与 `package.jsonc` 声明不一致时出现，构建仍会成功。若用 dev 版编译器，注意不要提交被自动改动的 `package.jsonc`。
+- 子项目的测试文件也会被编译进 `dist/`（如 `nogit/dist/test-*`），属于正常产物。

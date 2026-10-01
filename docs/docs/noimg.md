@@ -160,3 +160,12 @@ noimg/
 │   └── test-resize-rotate.no ; 縮放與旋轉測試
 └── package.jsonc        ; 項目配置
 ```
+
+## 已知限制
+
+- WebP 寫入不寫 transform 頭，與標準 WebP 解碼器不互通（僅 noimg save → noimg load 可 round-trip）
+- WebP 不支持 lossy VP8 格式
+- JPEG 不支持 progressive 格式
+- TIFF 僅支持未壓縮、8 位、單 strip 格式
+- PNG 僅支持 8 位色深
+- 16-bit 圖像暫不支持進入 resize / filter / colour / IO 管線

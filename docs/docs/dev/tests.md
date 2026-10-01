@@ -54,3 +54,31 @@ no test my-test.no
 - 测试文件统一放在 test/ 目录下
 - 每个测试文件独立构建
 - 若任一测试失败，返回非零退出码
+
+## nogit 子项目测试
+
+nogit 是独立子项目，测试位于 `nogit/tests/`（83 个 `.no` 文件），**不走根目录的 `no test`**，需进入 `nogit/` 目录用 `no run` 逐个执行：
+
+```bash
+cd nogit
+
+# 统一测试运行器（12 个用例，覆盖 init/config/blob/tree/commit/branch/tag/index/checkout/discover/reflog/is-ancestor）
+no run tests/test.no
+
+# 集成测试
+no run tests/test-e2e-init.no            # 初始化
+no run tests/test-e2e-commit.no          # 提交流水线
+no run tests/test-e2e-comprehensive.no   # 全流程（22 个用例）
+
+# 单个模块测试
+no run tests/test-zlib.no
+no run tests/test-object-blob.no
+```
+
+运行约定：
+
+- 每个测试文件自带 `main`，直接打印 `PASS:` / `FAIL:` 行，末尾输出统计（如 `Passed: 22, Failed: 0`）
+- 全量跑完约 83 个文件需数分钟；串行全量时统一运行器偶发假失败，单独重跑可确认
+- 构造/运行需 LLVM 工具链在 `PATH` 中（见「构建」文档）
+
+> **注意**：`nogit/tests` 被仓库根 `.gitignore` 命中，但测试文件本身已被 git 跟踪。提交这些文件的改动时 `git add` 会被拒，需用 `git add -f`。

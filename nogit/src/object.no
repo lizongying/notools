@@ -322,9 +322,8 @@ tree-write-raw = (git-dir str, raw str) (o oid) {
 ;
 ; git-dir str, paths str (newline-separated), hexoids str (40-char each),
 ; modes-str str (newline-separated decimal mode strings), count i64
-; returns root-oid oid, ok bool
-build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, count i64) (root-oid oid, ok bool) {
-    ok = false
+; returns root-oid ?oid
+build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, count i64) (root-oid ?oid) {
 
     ; We build the tree recursively. For the root level, we collect all
     ; entries that have no '/' (files at root) and all entries that start
@@ -496,7 +495,16 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
                 }
 
                 ; recursively build subtree
-                sub-oid, sub-ok = build-tree-from-flat(git-dir, sub-paths, sub-hexoids, sub-modes, sub-count)
+                sub-oid-opt = build-tree-from-flat(git-dir, sub-paths, sub-hexoids, sub-modes, sub-count)
+                sub-oid oid
+                sub-ok bool = false
+                sub-oid-opt: {
+                    ok -> {
+                        sub-oid = sub-oid-opt
+                        sub-ok = true
+                    }
+                    nil || err -> { }
+                }
                 sub-ok -> {
 
                     ; add the subtree entry to root-raw
@@ -520,23 +528,20 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
 
     ; store the root tree
     root-oid = tree-write-raw(git-dir, root-raw)
-    ok = true
 }
 
 ; tree-read-raw: read a tree object's raw bytes (top-level str)
-tree-read-raw = (git-dir str, o oid) (raw str, ok bool) {
+tree-read-raw = (git-dir str, o oid) (raw ?str) {
     k str
     d str
     ok2 bool
     k, d, ok2 = read-loose(git-dir, o)
     {
         ! ok2 -> {
-            ok = false
             return
         }
     }
     raw = d
-    ok = true
 }
 
 ; tree-name-raw / tree-mode-raw / tree-id-raw: access entry i of a raw tree
@@ -999,7 +1004,16 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
         line str = util.str-range(text, pos, nl)
         line.starts-with('tree ') -> {
             hx str = util.str-range(line, 5, line.len())
-            toid, tok = oid.oid-from-hex(hx)
+            toid-opt = oid.oid-from-hex(hx)
+            toid oid
+            tok bool = false
+            toid-opt: {
+                ok -> {
+                    toid = toid-opt
+                    tok = true
+                }
+                nil || err -> { }
+            }
             tok -> tree-oid = toid
         }
         line.starts-with('parent ') -> {
@@ -1052,7 +1066,16 @@ parse-commit-from-data = (d str) (tree-oid oid, parenthex str, a-name str, a-ema
         line str = util.str-range(text, pos, nl)
         line.starts-with('tree ') -> {
             hx str = util.str-range(line, 5, line.len())
-            toid, tok = oid.oid-from-hex(hx)
+            toid-opt = oid.oid-from-hex(hx)
+            toid oid
+            tok bool = false
+            toid-opt: {
+                ok -> {
+                    toid = toid-opt
+                    tok = true
+                }
+                nil || err -> { }
+            }
             tok -> tree-oid = toid
         }
         line.starts-with('parent ') -> {
@@ -1126,7 +1149,16 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str, t-name str
         line str = util.str-range(text, pos, nl)
         line.starts-with('object ') -> {
             hx str = util.str-range(line, 7, line.len())
-            tobj, took = oid.oid-from-hex(hx)
+            tobj-opt = oid.oid-from-hex(hx)
+            tobj oid
+            took bool = false
+            tobj-opt: {
+                ok -> {
+                    tobj = tobj-opt
+                    took = true
+                }
+                nil || err -> { }
+            }
             took -> obj = tobj
         }
         line.starts-with('type ') -> {
@@ -1166,7 +1198,16 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ; --- tree round trip ---
     traw = tree-add-raw('', 33188, 'hello.txt', b)
     tid = tree-write-raw(git-dir, traw)
-    back, tok = tree-read-raw(git-dir, tid)
+    back-opt = tree-read-raw(git-dir, tid)
+    back str
+    tok bool = false
+    back-opt: {
+        ok -> {
+            back = back-opt
+            tok = true
+        }
+        nil || err -> { }
+    }
     ok = ok && tok
     n = tree-count-raw(back)
     ok = ok && (n == 1)

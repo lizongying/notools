@@ -39,8 +39,7 @@ read-object = (git-dir str, o oid) (kind str, data str, ok bool) {
 ; Supports: HEAD, main, refs/heads/main, 40-char hex, HEAD~N, HEAD^N, ref~N, ref^N
 ; git-dir str, ref str (e.g. "HEAD", "main", "refs/heads/main", or 40-char hex)
 ; returns oid oid, ok bool
-resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
-    ok = false
+resolve-ref = (git-dir str, ref str) (o ?oid) {
 
     ; check for ~N or ^N suffix
     tilde-pos = util.find-byte-str(ref, 126, 0)
@@ -55,7 +54,16 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
 
         #{overflow=wrap}
         suffix = util.str-range(ref, split-pos + 1, ref.len-bytes())
-        base-oid, base-ok = resolve-ref(git-dir, base-ref)
+        base-oid-opt = resolve-ref(git-dir, base-ref)
+        base-oid oid
+        base-ok bool = false
+        base-oid-opt: {
+            ok -> {
+                base-oid = base-oid-opt
+                base-ok = true
+            }
+            nil || err -> { }
+        }
         ! base-ok -> return
 
         ; parse N (default 1)
@@ -79,7 +87,16 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
             ! walk-ok -> return
             ph.len() >= 40 -> {
                 first-hex = util.str-range(ph, 0, 40)
-                cur, walk-ok = oid.oid-from-hex(first-hex)
+                cur-opt = oid.oid-from-hex(first-hex)
+                cur-opt: {
+                    ok -> {
+                        cur = cur-opt
+                        walk-ok = true
+                    }
+                    nil || err -> {
+                        walk-ok = false
+                    }
+                }
                 ! walk-ok -> return
             }
 
@@ -88,36 +105,49 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
             }
         }
         o = cur
-        ok = true
         return
     }
 
     ; try HEAD first (most common short name)
     {
         ref == 'HEAD' -> {
-            o, ok = refs.read-ref(git-dir, 'HEAD')
-            ok -> return
+            o = refs.read-ref(git-dir, 'HEAD')
+            o: {
+                ok -> return
+                nil || err -> { }
+            }
         }
     }
 
     ; try as full ref name (refs/heads/..., refs/tags/...)
-    o, ok = refs.read-ref(git-dir, ref)
-    ok -> return
+    o = refs.read-ref(git-dir, ref)
+    o: {
+        ok -> return
+        nil || err -> { }
+    }
 
     ; try as refs/heads/<ref>
-    o, ok = refs.read-ref(git-dir, 'refs/heads/' - ref)
-    ok -> return
+    o = refs.read-ref(git-dir, 'refs/heads/' - ref)
+    o: {
+        ok -> return
+        nil || err -> { }
+    }
 
     ; try as refs/tags/<ref>
-    o, ok = refs.read-ref(git-dir, 'refs/tags/' - ref)
+    o = refs.read-ref(git-dir, 'refs/tags/' - ref)
+    tags-ok bool = false
+    o: {
+        ok -> tags-ok = true
+        nil || err -> { }
+    }
     {
-        ok -> return
+        tags-ok -> return
 
         ref.len-bytes() == 40 -> {
 
             ; try as 40-char hex oid (must be exactly 40 chars)
 
-            o, ok = oid.oid-from-hex(ref)
+            o = oid.oid-from-hex(ref)
         }
     }
 }
@@ -129,8 +159,7 @@ resolve-ref = (git-dir str, ref str) (o oid, ok bool) {
 ; commit-tree-oid: read a commit and return its tree oid
 ; git-dir str, commit-oid oid
 ; returns tree-oid oid, ok bool
-commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
-    ok = false
+commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid ?oid) {
     k str
     d str
     read-ok bool
@@ -144,7 +173,7 @@ commit-tree-oid = (git-dir str, commit-oid oid) (tree-oid oid, ok bool) {
 
     ; extract the 40-char hex after "tree "
     hx = util.str-range(d, 5, 45)
-    tree-oid, ok = oid.oid-from-hex(hx)
+    tree-oid = oid.oid-from-hex(hx)
 }
 
 ; commit-parents: read a commit and return its parent oids
@@ -232,7 +261,16 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
         {
             ph.len() >= 40 -> {
                 first-parent-hex = util.str-range(ph, 0, 40)
-                cur, cok = oid.oid-from-hex(first-parent-hex)
+                cur-opt = oid.oid-from-hex(first-parent-hex)
+                cur oid
+                cok bool = false
+                cur-opt: {
+                    ok -> {
+                        cur = cur-opt
+                        cok = true
+                    }
+                    nil || err -> { }
+                }
                 ! cok -> break
             }
 
@@ -251,10 +289,18 @@ revwalk-first-parent = (git-dir str, start-oid oid, max-count i64) (commit-hex s
 ; Walks all parents (not just first-parent) using BFS with a simple
 ; queue. This ensures merge commits have all their branches visible.
 ; Visited commits are tracked by concatenated hex strings.
-revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool) {
-    ok = false
-    output = ''
-    start-oid, ref-ok = resolve-ref(git-dir, ref)
+revwalk-format-log = (git-dir str, ref str, max-count i64) (output ?str) {
+    out str = ''
+    start-oid-opt = resolve-ref(git-dir, ref)
+    start-oid oid
+    ref-ok bool = false
+    start-oid-opt: {
+        ok -> {
+            start-oid = start-oid-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> return
 
     ; BFS queue — stored as concatenated 40-char hex strings
@@ -303,22 +349,31 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
             visited-hex = visited-hex - cur-hex
 
             ; parse oid
-            cur, cur-ok = oid.oid-from-hex(cur-hex)
+            cur-opt = oid.oid-from-hex(cur-hex)
+            cur oid
+            cur-ok bool = false
+            cur-opt: {
+                ok -> {
+                    cur = cur-opt
+                    cur-ok = true
+                }
+                nil || err -> { }
+            }
             cur-ok -> {
 
                 ; read commit
                 t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
                 cok -> {
 
-                    output = output - 'commit ' - cur-hex - '\n'
+                    out = out - 'commit ' - cur-hex - '\n'
 
-                    output = output - 'Author: ' - an - ' <' - ae - '>\n'
+                    out = out - 'Author: ' - an - ' <' - ae - '>\n'
 
-                    output = output - 'Date:   ' - util.i64-to-str(at) - ' ' - az - '\n'
-                    output = output - '\n'
+                    out = out - 'Date:   ' - util.i64-to-str(at) - ' ' - az - '\n'
+                    out = out - '\n'
 
-                    output = output - '    ' - msg - '\n'
-                    output = output - '\n'
+                    out = out - '    ' - msg - '\n'
+                    out = out - '\n'
 
                     #{overflow=wrap}
                     count = count + 1
@@ -341,7 +396,7 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
             }
         }
     }
-    ok = true
+    output = out
 }
 
 ; revwalk-format-log-oneline: resolve ref, walk commits, format oneline log output
@@ -351,10 +406,18 @@ revwalk-format-log = (git-dir str, ref str, max-count i64) (output str, ok bool)
 ; Like revwalk-format-log but uses the --oneline format:
 ;   "<short-hash> <message-first-line>"
 ; Walks all parents using BFS with visited set.
-revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, ok bool) {
-    ok = false
-    output = ''
-    start-oid, ref-ok = resolve-ref(git-dir, ref)
+revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output ?str) {
+    out str = ''
+    start-oid-opt = resolve-ref(git-dir, ref)
+    start-oid oid
+    ref-ok bool = false
+    start-oid-opt: {
+        ok -> {
+            start-oid = start-oid-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> return
 
     ; BFS queue — stored as concatenated 40-char hex strings
@@ -403,7 +466,16 @@ revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, 
             visited-hex = visited-hex - cur-hex
 
             ; parse oid
-            cur, cur-ok = oid.oid-from-hex(cur-hex)
+            cur-opt = oid.oid-from-hex(cur-hex)
+            cur oid
+            cur-ok bool = false
+            cur-opt: {
+                ok -> {
+                    cur = cur-opt
+                    cur-ok = true
+                }
+                nil || err -> { }
+            }
             cur-ok -> {
 
                 ; read commit
@@ -419,7 +491,7 @@ revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, 
                     msg-nl >= 0 -> msg-end = msg-nl
                     msg-line = util.str-range(msg, 0, msg-end)
 
-                    output = output - short-hex - ' ' - msg-line - '\n'
+                    out = out - short-hex - ' ' - msg-line - '\n'
 
                     #{overflow=wrap}
                     count = count + 1
@@ -442,7 +514,7 @@ revwalk-format-log-oneline = (git-dir str, ref str, max-count i64) (output str, 
             }
         }
     }
-    ok = true
+    output = out
 }
 
 ; revwalk-all: walk commit history following all parents (breadth-first)
@@ -472,7 +544,16 @@ revwalk-all = (git-dir str, start-oid oid, max-count i64) (commit-hex str, count
         queue-n = queue-n - 1
 
         ; parse oid
-        cur, cur-ok = oid.oid-from-hex(cur-hex)
+        cur-opt = oid.oid-from-hex(cur-hex)
+        cur oid
+        cur-ok bool = false
+        cur-opt: {
+            ok -> {
+                cur = cur-opt
+                cur-ok = true
+            }
+            nil || err -> { }
+        }
         ! cur-ok -> break
 
         ; check if already visited
@@ -582,7 +663,16 @@ is-ancestor = (git-dir str, ancestor oid, descendant oid) (yes bool) {
 
             -> {
                 visited-hex = visited-hex - cur-hex
-                cur, cur-ok = oid.oid-from-hex(cur-hex)
+                cur-opt = oid.oid-from-hex(cur-hex)
+                cur oid
+                cur-ok bool = false
+                cur-opt: {
+                    ok -> {
+                        cur = cur-opt
+                        cur-ok = true
+                    }
+                    nil || err -> { }
+                }
                 cur-ok -> {
                     t, ph, an, ae, at, az, cn, ce, ct, cz, msg, cok = object.read-commit-full(git-dir, cur)
                     cok -> {

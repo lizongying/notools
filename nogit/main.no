@@ -122,7 +122,7 @@ print-usage = () {
 ; local helpers
 ; ═══════════════════════════════════════════════
 
-read-worktree-file = (work-tree str, path str) (content str, ok bool) {
+read-worktree-file = (work-tree str, path str) (content ?str) {
     sl = '/'
     full = work-tree - sl - path
     work-tree.len-bytes() > 0 -> {
@@ -131,7 +131,7 @@ read-worktree-file = (work-tree str, path str) (content str, ok bool) {
         last = work-tree[work-tree.len-bytes() - 1]
         last == 47 -> full = work-tree - path
     }
-    content, ok = util.read-file-str(full)
+    content = util.read-file-str(full)
 }
 
 ; read-object-unified: try loose first, then packed.
@@ -265,7 +265,16 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
 ; log-packed: manual commit walk for packed repos (fallback when revwalk fails)
 ; Walks first-parent chain using read-object-unified.
 log-packed = (git-dir str, oneline bool, max-count i64) {
-    start-oid, ref-ok = refs.read-ref(git-dir, 'HEAD')
+    start-oid-opt = refs.read-ref(git-dir, 'HEAD')
+    start-oid oid
+    ref-ok bool = false
+    start-oid-opt: {
+        ok -> {
+            start-oid = start-oid-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> return
     cur = start-oid
     count = 0
@@ -337,7 +346,16 @@ log-packed = (git-dir str, oneline bool, max-count i64) {
         #{overflow=wrap}
         count = count + 1
         parent-hex.len-bytes() == 40 -> {
-            cur, ref-ok = oid.oid-from-hex(parent-hex)
+            cur-opt = oid.oid-from-hex(parent-hex)
+            cur oid
+            ref-ok bool = false
+            cur-opt: {
+                ok -> {
+                    cur = cur-opt
+                    ref-ok = true
+                }
+                nil || err -> { }
+            }
             ! ref-ok -> break
         }
         parent-hex.len-bytes() == 0 -> break
@@ -345,7 +363,16 @@ log-packed = (git-dir str, oneline bool, max-count i64) {
 
             ; multiple parents — take first
             first-hex = util.str-range(parent-hex, 0, 40)
-            cur, ref-ok = oid.oid-from-hex(first-hex)
+            cur-opt = oid.oid-from-hex(first-hex)
+            cur oid
+            ref-ok bool = false
+            cur-opt: {
+                ok -> {
+                    cur = cur-opt
+                    ref-ok = true
+                }
+                nil || err -> { }
+            }
             ! ref-ok -> break
         }
     }
@@ -391,7 +418,16 @@ cmd-init = (argc i64) {
             }
         }
     }
-    git-dir, ok = repository.repo-init(full-path, bare)
+    git-dir-opt = repository.repo-init(full-path, bare)
+    git-dir str
+    ok bool = false
+    git-dir-opt: {
+        ok -> {
+            git-dir = git-dir-opt
+            ok = true
+        }
+        nil || err -> { }
+    }
     ! ok -> {
         print('fatal: could not initialize repository')
         return
@@ -517,10 +553,18 @@ add-file-or-dir = (git-dir str, work-tree str, full-path str, rel-path str) {
     }
     isf = fs.is-file(full-path)
     isf -> {
-        content, read-ok = util.read-file-str(full-path)
-        ! read-ok -> {
-            print('fatal: could not read {rel-path}')
-            return
+        content str
+        content-opt = util.read-file-str(full-path)
+        content-opt: {
+            ok -> content = it
+            nil -> {
+                print('fatal: could not read {rel-path}')
+                return
+            }
+            err -> {
+                print('fatal: could not read {rel-path}')
+                return
+            }
         }
         blob-oid = object.write-blob(git-dir, content)
         index-ok = index.index-add(git-dir, rel-path, blob-oid, 33188)
@@ -579,18 +623,45 @@ cmd-commit = (argc i64) {
     }
 
     ; Build a proper nested tree with subtrees for subdirectories
-    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-oid-opt = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-oid oid
+    tree-ok bool = false
+    tree-oid-opt: {
+        ok -> {
+            tree-oid = tree-oid-opt
+            tree-ok = true
+        }
+        nil || err -> { }
+    }
     ! tree-ok -> {
         print('fatal: could not build tree')
         return
     }
-    parent-oid, parent-ok = refs.read-ref(git-dir, 'HEAD')
+    parent-oid-opt = refs.read-ref(git-dir, 'HEAD')
+    parent-oid oid
+    parent-ok bool = false
+    parent-oid-opt: {
+        ok -> {
+            parent-oid = parent-oid-opt
+            parent-ok = true
+        }
+        nil || err -> { }
+    }
     parenthex = ''
     parent-ok -> parenthex = oid.oid-hex-str(parent-oid)
 
     ; Check for empty commit — if HEAD tree matches the new tree, nothing changed
     parent-ok -> {
-        head-tree-oid, ht-ok = revwalk.commit-tree-oid(git-dir, parent-oid)
+        head-tree-oid-opt = revwalk.commit-tree-oid(git-dir, parent-oid)
+        head-tree-oid oid
+        ht-ok bool = false
+        head-tree-oid-opt: {
+            ok -> {
+                head-tree-oid = head-tree-oid-opt
+                ht-ok = true
+            }
+            nil || err -> { }
+        }
         ht-ok -> {
             same-tree = oid.eq(head-tree-oid, tree-oid)
             same-tree -> {
@@ -711,7 +782,16 @@ cmd-log = (argc i64) {
         arg == '--oneline' -> oneline = true
     }
     oneline -> {
-        log-output, log-ok = revwalk.revwalk-format-log-oneline(git-dir, 'HEAD', max-count)
+        log-output-opt = revwalk.revwalk-format-log-oneline(git-dir, 'HEAD', max-count)
+        log-output str
+        log-ok bool = false
+        log-output-opt: {
+            ok -> {
+                log-output = log-output-opt
+                log-ok = true
+            }
+            nil || err -> { }
+        }
         ! log-ok -> {
             log-packed(git-dir, true, max-count)
             return
@@ -723,7 +803,16 @@ cmd-log = (argc i64) {
         print(log-output)
     }
     ! oneline -> {
-        log-output, log-ok = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
+        log-output-opt = revwalk.revwalk-format-log(git-dir, 'HEAD', max-count)
+        log-output str
+        log-ok bool = false
+        log-output-opt: {
+            ok -> {
+                log-output = log-output-opt
+                log-ok = true
+            }
+            nil || err -> { }
+        }
         ! log-ok -> {
             log-packed(git-dir, false, max-count)
             return
@@ -766,7 +855,16 @@ cmd-status = (argc i64) {
     }
 
     ; Check if we have a HEAD commit to compare against
-    head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+    head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+    head-oid oid
+    head-ok bool = false
+    head-oid-opt: {
+        ok -> {
+            head-oid = head-oid-opt
+            head-ok = true
+        }
+        nil || err -> { }
+    }
     has-head = head-ok
 
     ; If we have a HEAD, get the flat file list from the tree
@@ -774,7 +872,16 @@ cmd-status = (argc i64) {
     head-flat-oids = ''
     head-flat-count = 0
     has-head -> {
-        head-tree-oid, head-ok = revwalk.commit-tree-oid(git-dir, head-oid)
+        head-tree-oid-opt = revwalk.commit-tree-oid(git-dir, head-oid)
+        head-tree-oid oid
+        head-ok bool = false
+        head-tree-oid-opt: {
+            ok -> {
+                head-tree-oid = head-tree-oid-opt
+                head-ok = true
+            }
+            nil || err -> { }
+        }
         has-head = head-ok
         has-head -> {
             head-flat-names, head-flat-oids, head-flat-modes, head-flat-count, head-flat-ok = tree-to-flat-unified(git-dir, head-tree-oid, '')
@@ -881,8 +988,18 @@ cmd-status = (argc i64) {
         isf -> {
 
             ; Read work tree file and compare hash
-            w-content, w-ok = util.read-file-str(work-file)
-            w-ok -> {
+            w-content str = ''
+            w-have = false
+            w-content-opt = util.read-file-str(work-file)
+            w-content-opt: {
+                ok -> {
+                    w-content = it
+                    w-have = true
+                }
+                nil -> {}
+                err -> {}
+            }
+            w-have -> {
                 w-oid = oid.hash-object('blob', w-content)
                 w-hex = oid.oid-hex-str(w-oid)
                 w-matches = util.str-eq(w-hex, hx)
@@ -1085,7 +1202,16 @@ cmd-branch = (argc i64) {
     {
         argc >= 2 -> {
             name = os.arg(2)
-            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+            head-oid oid
+            head-ok bool = false
+            head-oid-opt: {
+                ok -> {
+                    head-oid = head-oid-opt
+                    head-ok = true
+                }
+                nil || err -> { }
+            }
             ! head-ok -> {
                 print('fatal: no HEAD ref')
                 return
@@ -1163,12 +1289,30 @@ cmd-checkout = (argc i64) {
 
     ; File checkout mode: restore specific files from HEAD/tree
     has-separator -> {
-        head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+        head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+        head-oid oid
+        head-ok bool = false
+        head-oid-opt: {
+            ok -> {
+                head-oid = head-oid-opt
+                head-ok = true
+            }
+            nil || err -> { }
+        }
         ! head-ok -> {
             print('fatal: no HEAD ref')
             return
         }
-        tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, head-oid)
+        tree-oid-opt = revwalk.commit-tree-oid(git-dir, head-oid)
+        tree-oid oid
+        tree-ok bool = false
+        tree-oid-opt: {
+            ok -> {
+                tree-oid = tree-oid-opt
+                tree-ok = true
+            }
+            nil || err -> { }
+        }
         ! tree-ok -> {
             print('fatal: could not read commit tree')
             return
@@ -1200,7 +1344,16 @@ cmd-checkout = (argc i64) {
                     ; read blob and restore
                     #{overflow=wrap}
                     hx = util.str-range(flat-hexoids, i2 * 40, i2 * 40 + 40)
-                    file-oid, oid-ok = oid.oid-from-hex(hx)
+                    file-oid-opt = oid.oid-from-hex(hx)
+                    file-oid oid
+                    oid-ok bool = false
+                    file-oid-opt: {
+                        ok -> {
+                            file-oid = file-oid-opt
+                            oid-ok = true
+                        }
+                        nil || err -> { }
+                    }
                     oid-ok -> {
                         b-kind, b-data, b-read-ok = object.read-loose(git-dir, file-oid)
                         b-read-ok -> {
@@ -1235,14 +1388,32 @@ cmd-checkout = (argc i64) {
     name = os.arg(2)
 
     ref-name = 'refs/heads/' - name
-    o, ref-ok = refs.read-ref(git-dir, ref-name)
+    o-opt = refs.read-ref(git-dir, ref-name)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> {
         print('error: pathspec {name} did not match any branch')
         return
     }
 
     ; Read the commit to get the tree oid
-    tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, o)
+    tree-oid-opt = revwalk.commit-tree-oid(git-dir, o)
+    tree-oid oid
+    tree-ok bool = false
+    tree-oid-opt: {
+        ok -> {
+            tree-oid = tree-oid-opt
+            tree-ok = true
+        }
+        nil || err -> { }
+    }
     tree-ok -> {
 
         ; Remove files that are in the work tree but not in the target tree
@@ -1316,7 +1487,16 @@ cmd-tag = (argc i64) {
                 }
             }
             tag-msg == '' -> tag-msg = 'tag {tag-name}'
-            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+            head-oid oid
+            head-ok bool = false
+            head-oid-opt: {
+                ok -> {
+                    head-oid = head-oid-opt
+                    head-ok = true
+                }
+                nil || err -> { }
+            }
             ! head-ok -> {
                 print('fatal: no HEAD ref')
                 return
@@ -1358,7 +1538,16 @@ cmd-tag = (argc i64) {
     {
         argc >= 2 -> {
             name = os.arg(2)
-            head-oid, head-ok = refs.read-ref(git-dir, 'HEAD')
+            head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+            head-oid oid
+            head-ok bool = false
+            head-oid-opt: {
+                ok -> {
+                    head-oid = head-oid-opt
+                    head-ok = true
+                }
+                nil || err -> { }
+            }
             ! head-ok -> {
                 print('fatal: no HEAD ref')
                 return
@@ -1408,7 +1597,16 @@ cmd-cat-file = (argc i64) {
     }
     opt = os.arg(2)
     ref = os.arg(3)
-    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    o-opt = revwalk.resolve-ref(git-dir, ref)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> {
         print('fatal: could not resolve {ref}')
         return
@@ -1464,13 +1662,20 @@ cmd-hash-object = (argc i64) {
         print('fatal: not a git repository')
         return
     }
-    content, read-ok = util.read-file-str(path)
-    {
-        ! read-ok -> {
+    content str
+    content-opt = util.read-file-str(path)
+    content-opt: {
+        ok -> content = it
+        nil -> {
             print('fatal: could not read {path}')
             return
         }
-
+        err -> {
+            print('fatal: could not read {path}')
+            return
+        }
+    }
+    {
         write -> {
             o = object.write-blob(git-dir, content)
             ch = oid.oid-hex-str(o)
@@ -1500,7 +1705,16 @@ cmd-ls-tree = (argc i64) {
         return
     }
     ref = os.arg(2)
-    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    o-opt = revwalk.resolve-ref(git-dir, ref)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> {
         print('fatal: could not resolve {ref}')
         return
@@ -1524,7 +1738,16 @@ cmd-ls-tree = (argc i64) {
             first-line = util.str-range(data, 0, first-line-end)
             first-line.starts-with('tree ') -> {
                 tree-hex = util.str-range(first-line, 5, first-line.len())
-                o, ref-ok = oid.oid-from-hex(tree-hex)
+                o-opt = oid.oid-from-hex(tree-hex)
+                o oid
+                ref-ok bool = false
+                o-opt: {
+                    ok -> {
+                        o = o-opt
+                        ref-ok = true
+                    }
+                    nil || err -> { }
+                }
                 ! ref-ok -> {
                     print('fatal: could not parse tree oid')
                     return
@@ -1636,7 +1859,16 @@ cmd-rev-parse = (argc i64) {
         return
     }
     ref = os.arg(2)
-    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    o-opt = revwalk.resolve-ref(git-dir, ref)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> {
         print('fatal: could not resolve {ref}')
         return
@@ -1662,7 +1894,16 @@ cmd-write-tree = (argc i64) {
     }
 
     ; Build a proper nested tree with subtrees for subdirectories
-    tree-oid, tree-ok = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-oid-opt = object.build-tree-from-flat(git-dir, names, hexoids, modes-str, count)
+    tree-oid oid
+    tree-ok bool = false
+    tree-oid-opt: {
+        ok -> {
+            tree-oid = tree-oid-opt
+            tree-ok = true
+        }
+        nil || err -> { }
+    }
     ! tree-ok -> {
         print('fatal: could not build tree')
         return
@@ -1687,10 +1928,28 @@ cmd-update-ref = (argc i64) {
     }
     ref = os.arg(2)
     val = os.arg(3)
-    o, ref-ok = revwalk.resolve-ref(git-dir, val)
+    o-opt = revwalk.resolve-ref(git-dir, val)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     {
         ! ref-ok -> {
-            o, ref-ok = oid.oid-from-hex(val)
+            o-opt = oid.oid-from-hex(val)
+            o oid
+            ref-ok bool = false
+            o-opt: {
+                ok -> {
+                    o = o-opt
+                    ref-ok = true
+                }
+                nil || err -> { }
+            }
             ! ref-ok -> {
                 print('fatal: could not resolve {val}')
                 return
@@ -1752,10 +2011,18 @@ cmd-reflog = (argc i64) {
         print('fatal: not a git repository')
         return
     }
-    content, read-ok = refs.read-reflog(git-dir, 'HEAD')
-    ! read-ok -> {
-        print('no reflog')
-        return
+    content str
+    content-opt = refs.read-reflog(git-dir, 'HEAD')
+    content-opt: {
+        ok -> content = it
+        nil -> {
+            print('no reflog')
+            return
+        }
+        err -> {
+            print('no reflog')
+            return
+        }
     }
     print(content)
 }
@@ -1775,7 +2042,16 @@ cmd-show = (argc i64) {
         return
     }
     ref = os.arg(2)
-    o, ref-ok = revwalk.resolve-ref(git-dir, ref)
+    o-opt = revwalk.resolve-ref(git-dir, ref)
+    o oid
+    ref-ok bool = false
+    o-opt: {
+        ok -> {
+            o = o-opt
+            ref-ok = true
+        }
+        nil || err -> { }
+    }
     ! ref-ok -> {
         print('fatal: could not resolve {ref}')
         return
@@ -1869,7 +2145,16 @@ cmd-reset = (argc i64) {
     }
 
     ; Resolve the target ref to an oid
-    target-oid, target-ok = revwalk.resolve-ref(git-dir, target)
+    target-oid-opt = revwalk.resolve-ref(git-dir, target)
+    target-oid oid
+    target-ok bool = false
+    target-oid-opt: {
+        ok -> {
+            target-oid = target-oid-opt
+            target-ok = true
+        }
+        nil || err -> { }
+    }
     ! target-ok -> {
         print('fatal: could not resolve {target}')
         return
@@ -1889,7 +2174,16 @@ cmd-reset = (argc i64) {
     }
 
     ; Read the target's tree and rebuild index + worktree
-    tree-oid, tree-ok = revwalk.commit-tree-oid(git-dir, target-oid)
+    tree-oid-opt = revwalk.commit-tree-oid(git-dir, target-oid)
+    tree-oid oid
+    tree-ok bool = false
+    tree-oid-opt: {
+        ok -> {
+            tree-oid = tree-oid-opt
+            tree-ok = true
+        }
+        nil || err -> { }
+    }
     tree-ok -> {
 
         ; Rebuild index from the tree

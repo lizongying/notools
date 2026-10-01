@@ -4,7 +4,7 @@
 ; Supports: version parsing, comparison, range matching (^, ~, >, <, =, >=, <=, *).
 ;
 ; API:
-;   parse(s str) (v semver, ok bool) — parse version string
+;   parse(s str) (v ?semver) — parse version string
 ;   compare(a semver, b semver) (r i64) — compare versions (-1, 0, 1)
 ;   satisfies(v semver, range-str str) (ok bool) — check if version satisfies range
 ;   max-satisfying(versions []str, range-str str) (best str) — find best matching version
@@ -26,17 +26,16 @@ semver {
 ; ═══════════════════════════════════════════════
 ; parse — parse a semver version string
 ; s str — version string (e.g. "1.2.3", "1.2.3-beta.1")
-; returns v semver — parsed version
-; returns ok bool — true if valid
+; returns v ?semver — parsed version (nil if invalid)
 ; ═══════════════════════════════════════════════
 
-parse = (s str) (v semver, ok bool) {
-    ok = false
-    v.major = 0
-    v.minor = 0
-    v.patch = 0
-    v.pre-release = ''
-    v.build-metadata = ''
+parse = (s str) (v ?semver) {
+    res semver
+    res.major = 0
+    res.minor = 0
+    res.patch = 0
+    res.pre-release = ''
+    res.build-metadata = ''
 
     ; strip leading 'v' or 'V'
     work = s
@@ -48,7 +47,7 @@ parse = (s str) (v semver, ok bool) {
     plus-pos >= 0 -> {
 
         #{overflow=wrap}
-        v.build-metadata = work.slice(plus-pos + 1, work.len-bytes())
+        res.build-metadata = work.slice(plus-pos + 1, work.len-bytes())
         work = work.slice(0, plus-pos)
     }
 
@@ -57,7 +56,7 @@ parse = (s str) (v semver, ok bool) {
     dash-pos >= 0 -> {
 
         #{overflow=wrap}
-        v.pre-release = work.slice(dash-pos + 1, work.len-bytes())
+        res.pre-release = work.slice(dash-pos + 1, work.len-bytes())
         work = work.slice(0, dash-pos)
     }
 
@@ -69,45 +68,33 @@ parse = (s str) (v semver, ok bool) {
     ; major
     major-val = parts[0].to-i64()
     major-val: {
-        ok -> v.major = it
+        ok -> res.major = it
 
         nil -> return
 
         err -> return
     }
-    ok = true
     parts.len() >= 2 -> {
         minor-val = parts[1].to-i64()
         minor-val: {
-            ok -> v.minor = it
+            ok -> res.minor = it
 
-            nil -> {
-                ok = false
-                return
-            }
+            nil -> return
 
-            err -> {
-                ok = false
-                return
-            }
+            err -> return
         }
     }
     parts.len() >= 3 -> {
         patch-val = parts[2].to-i64()
         patch-val: {
-            ok -> v.patch = it
+            ok -> res.patch = it
 
-            nil -> {
-                ok = false
-                return
-            }
+            nil -> return
 
-            err -> {
-                ok = false
-                return
-            }
+            err -> return
         }
     }
+    v = res
 }
 
 ; ═══════════════════════════════════════════════
@@ -309,7 +296,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; caret range: ^1.2.3 — compatible within major version
     r.starts-with('^') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len()))
+        range-ver-opt = parse(r.slice(1, r.len()))
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -338,7 +334,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; tilde range: ~1.2.3 — compatible within minor version
     r.starts-with('~') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len()))
+        range-ver-opt = parse(r.slice(1, r.len()))
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -362,7 +367,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; >= operator
     r.starts-with('>=') -> {
-        range-ver, parse-ok = parse(r.slice(2, r.len()).trim())
+        range-ver-opt = parse(r.slice(2, r.len()).trim())
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -373,7 +387,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; <= operator
     r.starts-with('<=') -> {
-        range-ver, parse-ok = parse(r.slice(2, r.len()).trim())
+        range-ver-opt = parse(r.slice(2, r.len()).trim())
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -384,7 +407,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; > operator
     r.starts-with('>') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len()).trim())
+        range-ver-opt = parse(r.slice(1, r.len()).trim())
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -395,7 +427,16 @@ satisfies = (v semver, range-str str) (ok bool) {
 
     ; < operator
     r.starts-with('<') -> {
-        range-ver, parse-ok = parse(r.slice(1, r.len()).trim())
+        range-ver-opt = parse(r.slice(1, r.len()).trim())
+        range-ver semver
+        parse-ok bool = false
+        range-ver-opt: {
+            ok -> {
+                range-ver = range-ver-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         ! parse-ok -> {
             ok = false
             return
@@ -410,7 +451,16 @@ satisfies = (v semver, range-str str) (ok bool) {
     }
 
     ; exact version match
-    range-ver, parse-ok = parse(r)
+    range-ver-opt = parse(r)
+    range-ver semver
+    parse-ok bool = false
+    range-ver-opt: {
+        ok -> {
+            range-ver = range-ver-opt
+            parse-ok = true
+        }
+        nil || err -> { }
+    }
     ! parse-ok -> {
         ok = false
         return
@@ -431,7 +481,16 @@ max-satisfying = (versions []str, range-str str) (best str) {
     best-set = false
     n = versions.len()
     i <- [0..n): {
-        v, parse-ok = parse(versions[i])
+        v-opt = parse(versions[i])
+        v semver
+        parse-ok bool = false
+        v-opt: {
+            ok -> {
+                v = v-opt
+                parse-ok = true
+            }
+            nil || err -> { }
+        }
         parse-ok -> {
             ok = satisfies(v, range-str)
             ok -> {

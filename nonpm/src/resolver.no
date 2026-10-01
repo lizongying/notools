@@ -8,8 +8,8 @@
 ; - Detects and resolves version conflicts (hoisting)
 ;
 ; API:
-;   resolve-project(cfg config, dir str) (graph dep-graph, ok bool) — resolve all deps
-;   resolve-pkg(cfg config, name str, range str) (ver str, ok bool) — resolve single package
+;   resolve-project(cfg config, dir str) (graph ?dep-graph) — resolve all deps
+;   resolve-pkg(cfg config, name str, range str) (ver ?str) — resolve single package
 ;   get-deps-from-pkgjson(dir str) (deps str, dev-deps str, ok bool) — read package.json
 ;   graph-to-list(graph dep-graph) (names str, versions str) — flatten graph to list
 
@@ -172,28 +172,27 @@ resolve-pkg = (cfg config, name str, range-str str) (ver ?str) {
 ; resolve-project — resolve all dependencies for a project
 ; cfg config — configuration
 ; dir str — project root directory
-; returns graph dep-graph — resolved dependency graph
-; returns ok bool — true if resolved
+; returns graph ?dep-graph — resolved dependency graph (nil if unresolved)
 ; ═══════════════════════════════════════════════
 
-resolve-project = (cfg config, dir str) (graph dep-graph, ok bool) {
-    ok = false
+resolve-project = (cfg config, dir str) (graph ?dep-graph) {
+    res dep-graph
     deps, dev-deps, peer-deps, pkg-ok = get-deps-from-pkgjson(dir)
     ! pkg-ok -> return
 
-    graph.node-count = 0
-    graph.root.name = ''
-    graph.root.version = ''
-    graph.root.range-str = ''
-    graph.root.depth = 0
-    graph.resolved-map = ''
+    res.node-count = 0
+    res.root.name = ''
+    res.root.version = ''
+    res.root.range-str = ''
+    res.root.depth = 0
+    res.resolved-map = ''
 
     ; parse and resolve production dependencies
     deps.len() > 0 -> {
         dep-obj = json.parse(deps)
         dep-obj: {
             ok -> {
-                resolve-deps-recursive(cfg, graph, it, false, false, 1)
+                resolve-deps-recursive(cfg, res, it, false, false, 1)
             }
 
             nil -> {
@@ -209,7 +208,7 @@ resolve-project = (cfg config, dir str) (graph dep-graph, ok bool) {
         dev-obj = json.parse(dev-deps)
         dev-obj: {
             ok -> {
-                resolve-deps-recursive(cfg, graph, it, true, false, 1)
+                resolve-deps-recursive(cfg, res, it, true, false, 1)
             }
 
             nil -> {
@@ -220,7 +219,7 @@ resolve-project = (cfg config, dir str) (graph dep-graph, ok bool) {
         }
     }
 
-    ok = true
+    graph = res
 }
 
 ; ═══════════════════════════════════════════════
@@ -345,7 +344,16 @@ is-resolved = (graph dep-graph, name str, range-str str) (ok bool) {
 
             #{overflow=wrap}
             ver = entry.slice(name.len-bytes() + 1, entry.len())
-            v, parse-ok = semver.parse(ver)
+            v-opt = semver.parse(ver)
+            v semver
+            parse-ok bool = false
+            v-opt: {
+                ok -> {
+                    v = v-opt
+                    parse-ok = true
+                }
+                nil || err -> { }
+            }
             parse-ok -> {
                 ok = semver.satisfies(v, range-str)
                 ok -> return
