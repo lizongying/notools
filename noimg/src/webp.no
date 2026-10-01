@@ -2711,6 +2711,155 @@ load = (path str) (img ?image) {
 ; Huffman prefix codes built from real histograms + entropy-coded pixels.
 ; path str: output path
 ; img image: image to save
+; webp-enc-write-subimage: encode a VP8L sub-image used for transforms
+; (e.g. the color-index palette). There is no 0x2F signature, no transform
+; chain and no meta-Huffman: only the 1-bit color-cache-used flag (=0)
+; followed by the 5 canonical Huffman trees and the green-first entropy-coded
+; pixels. This is exactly what webp-decode-argb-image expects for a
+; (allow-meta=false) sub-image. buf/cnt are threaded; out is the byte
+; accumulator; sub-w is the encoded width; npix is the pixel count; g/r/b/a
+; hold one component per pixel.
+webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g []i64, r []i64, b []i64, a []i64, has-alpha bool) (new-buf i64, new-cnt i64) {
+
+    ; color cache: not used
+    buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
+
+    ; build 5 single-group Huffman trees (green 280, red/blue/alpha 256, dist 40)
+    ts-g = 280
+    ts-c = 256
+    ts-d = 40
+    freq-g []i64 = with-len(ts-g)
+    freq-r []i64 = with-len(ts-c)
+    freq-b []i64 = with-len(ts-c)
+    freq-a []i64 = with-len(ts-c)
+    freq-d []i64 = with-len(ts-d)
+    i <- [0..npix): {
+        #{index-out=0}
+        #{overflow=wrap}
+        freq-g[g[i]] = freq-g[g[i]] + 1
+        #{index-out=0}
+        #{overflow=wrap}
+        freq-r[r[i]] = freq-r[r[i]] + 1
+        #{index-out=0}
+        #{overflow=wrap}
+        freq-b[b[i]] = freq-b[b[i]] + 1
+        #{index-out=0}
+        #{overflow=wrap}
+        freq-a[a[i]] = freq-a[a[i]] + 1
+    }
+
+    ; code lengths per tree (limit 15 bits per VP8L spec)
+    len-g []i64 = with-len(ts-g)
+    len-r []i64 = with-len(ts-c)
+    len-b []i64 = with-len(ts-c)
+    len-a []i64 = with-len(ts-c)
+    len-d []i64 = with-len(ts-d)
+    webp-enc-huff-lens(freq-g, 15, len-g)
+    webp-enc-huff-lens(freq-r, 15, len-r)
+    webp-enc-huff-lens(freq-b, 15, len-b)
+    webp-enc-huff-lens(freq-a, 15, len-a)
+    webp-enc-huff-lens(freq-d, 15, len-d)
+    codes-g []i64 = with-len(ts-g)
+    codes-r []i64 = with-len(ts-c)
+    codes-b []i64 = with-len(ts-c)
+    codes-a []i64 = with-len(ts-c)
+    webp-enc-canonical(len-g, codes-g)
+    webp-enc-canonical(len-r, codes-r)
+    webp-enc-canonical(len-b, codes-b)
+    webp-enc-canonical(len-a, codes-a)
+
+    ; distinct symbol counts (<=1 => decoder reads 0 bits for that channel)
+    nz-g = 0
+    i <- [0..ts-g): {
+        #{index-out=0}
+        {
+            len-g[i] > 0 -> {
+                #{overflow=wrap}
+                nz-g = nz-g + 1
+            }
+        }
+    }
+    nz-r = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-r[i] > 0 -> {
+                #{overflow=wrap}
+                nz-r = nz-r + 1
+            }
+        }
+    }
+    nz-b = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-b[i] > 0 -> {
+                #{overflow=wrap}
+                nz-b = nz-b + 1
+            }
+        }
+    }
+    nz-a = 0
+    i <- [0..ts-c): {
+        #{index-out=0}
+        {
+            len-a[i] > 0 -> {
+                #{overflow=wrap}
+                nz-a = nz-a + 1
+            }
+        }
+    }
+
+    ; the 5 code-length blocks
+    buf, cnt = webp-enc-write-tree(buf, cnt, out, len-g)
+    buf, cnt = webp-enc-write-tree(buf, cnt, out, len-r)
+    buf, cnt = webp-enc-write-tree(buf, cnt, out, len-b)
+    buf, cnt = webp-enc-write-tree(buf, cnt, out, len-a)
+    buf, cnt = webp-enc-write-tree(buf, cnt, out, len-d)
+
+    ; entropy-coded pixels: green, red, blue, alpha (single group, no LZ77)
+    i <- [0..npix): {
+        {
+            nz-g > 1 -> {
+                #{index-out=0}
+                gv = g[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                buf, cnt = webp-enc-write-code(buf, cnt, out, codes-g[gv], len-g[gv])
+            }
+        }
+        {
+            nz-r > 1 -> {
+                #{index-out=0}
+                rv = r[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                buf, cnt = webp-enc-write-code(buf, cnt, out, codes-r[rv], len-r[rv])
+            }
+        }
+        {
+            nz-b > 1 -> {
+                #{index-out=0}
+                bv = b[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                buf, cnt = webp-enc-write-code(buf, cnt, out, codes-b[bv], len-b[bv])
+            }
+        }
+        {
+            nz-a > 1 -> {
+                #{index-out=0}
+                av = a[i]
+                #{index-out=0}
+                #{overflow=wrap}
+                buf, cnt = webp-enc-write-code(buf, cnt, out, codes-a[av], len-a[av])
+            }
+        }
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
 ; returns ok bool
 save = (path str, img image) (ok bool) {
     w = img.width
@@ -2837,10 +2986,9 @@ save = (path str, img image) (ok bool) {
     ; color-index mode stores the full (true-color) palette and a pure index
     ; image (R=B=A=0), so subtract-green is not combined with it
     ci-mode -> sg-enabled = false
-    ; the encoder emits a plain (untransformed) ARGB image, so force raw
-    ; component planes regardless of the color-index / subtract-green heuristics
-    ci-mode = false
-    sg-enabled = false
+    ; honor the color-index / subtract-green heuristics: the transform chain
+    ; below actually emits whichever transform(s) were selected (instead of
+    ; forcing a plain ARGB image). CI and SG are mutually exclusive here.
 
     ; build the encoded component planes
     ; color-index mode: green = packed palette indices (one word per
@@ -2848,7 +2996,7 @@ save = (path str, img image) (ok bool) {
     ; the subtract-green residuals of the palette entries, alpha unused
     main-w = w
     #{overflow=wrap}
-    ppw = 8 >> ci-bits
+    ppw = 8 / ci-bits
     #{overflow=wrap}
     enc-n = npix / ppw
     enc-g []i64 = with-len(npix)
@@ -2881,16 +3029,17 @@ save = (path str, img image) (ok bool) {
                     #{overflow=wrap}
                     bit-pos = k * ci-bits
                     #{overflow=wrap}
-                    chunk = bit-pos / 8
-                    #{overflow=wrap}
-                    shift = (bit-pos - chunk * 8) * 8
+                    shift = bit-pos
                     #{overflow=wrap}
                     word = word | ((p & ((1 << ci-bits) - 1)) << shift)
                 }
+                ; all ci-ppw indices are packed into the green byte (the decoder
+                ; reads indices from the green channel only); r/b/a are unused in
+                ; color-index mode (the palette holds the real colors)
                 enc-g[i] = word & 255
-                enc-r[i] = (word >> 8) & 255
-                enc-b[i] = (word >> 16) & 255
-                enc-a[i] = (word >> 24) & 255
+                enc-r[i] = 0
+                enc-b[i] = 0
+                enc-a[i] = 0
             }
         }
 
@@ -2926,8 +3075,9 @@ save = (path str, img image) (ok bool) {
 
     ; ── build 5 single-group Huffman trees (VP8L): green(280) red(256)
     ;    blue(256) alpha(256) dist(40). The ARGB image always codes alpha
-    ;    (opaque input carries alpha=255). No transforms, color cache,
-    ;    meta-Huffman or LZ77. ──
+    ;    (opaque input carries alpha=255). No color cache, meta-Huffman or
+    ;    LZ77; the optional color-index / subtract-green transforms are written
+    ;    in the transform chain above. ──
     ts-g = 280
     ts-c = 256
     ts-d = 40
@@ -2936,7 +3086,7 @@ save = (path str, img image) (ok bool) {
     freq-b []i64 = with-len(ts-c)
     freq-a []i64 = with-len(ts-c)
     freq-d []i64 = with-len(ts-d)
-    i <- [0..npix): {
+    i <- [0..enc-n): {
         #{index-out=0}
         #{overflow=wrap}
         freq-g[enc-g[i]] = freq-g[enc-g[i]] + 1
@@ -3029,7 +3179,46 @@ save = (path str, img image) (ok bool) {
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, ab, 1)
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 3)
 
-    ; transform chain: none
+    ; ── transform chain ──
+    ; Per the VP8L spec the color-index transform (ttype 3) is stored FIRST
+    ; because it is applied LAST during decoding (the decoder expands the index
+    ; image first, then undoes subtract-green in reverse order). subtract-green
+    ; (ttype 2) follows. The chain is closed by a final used=0 bit.
+    ci-mode -> {
+        ; palette sub-image (pal-count x 1) stored as deltas: entry 0 absolute,
+        ; entry i = (previous + delta) mod 256 (libwebp ExpandColorMap).
+        pal-sub-g []i64 = with-len(pal-count)
+        pal-sub-r []i64 = with-len(pal-count)
+        pal-sub-b []i64 = with-len(pal-count)
+        pal-sub-a []i64 = with-len(pal-count)
+        pal-sub-g[0] = pal-g[0]
+        pal-sub-r[0] = pal-r[0]
+        pal-sub-b[0] = pal-b[0]
+        pal-sub-a[0] = pal-a[0]
+        j <- [1..pal-count): {
+            #{overflow=wrap}
+            pal-sub-g[j] = (pal-g[j] - pal-g[j - 1]) & 255
+            #{overflow=wrap}
+            pal-sub-r[j] = (pal-r[j] - pal-r[j - 1]) & 255
+            #{overflow=wrap}
+            pal-sub-b[j] = (pal-b[j] - pal-b[j - 1]) & 255
+            #{overflow=wrap}
+            pal-sub-a[j] = (pal-a[j] - pal-a[j - 1]) & 255
+        }
+        ; used=1 + ttype=3 (color-index)
+        bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
+        bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 3, 2)
+        ; psize-code = palette_size - 1
+        bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, pal-count - 1, 8)
+        ; palette VP8L sub-image
+        bit-buf, bit-cnt = webp-enc-write-subimage(bit-buf, bit-cnt, vp8l-out, pal-count, pal-count, pal-sub-g, pal-sub-r, pal-sub-b, pal-sub-a, true)
+    }
+    sg-enabled -> {
+        ; used=1 + ttype=2 (subtract-green), no extra data
+        bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 1, 1)
+        bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 2, 2)
+    }
+    ; end of transform chain
     bit-buf, bit-cnt = webp-enc-write-bits(bit-buf, bit-cnt, vp8l-out, 0, 1)
 
     ; color cache: not used
@@ -3046,7 +3235,7 @@ save = (path str, img image) (ok bool) {
     bit-buf, bit-cnt = webp-enc-write-tree(bit-buf, bit-cnt, vp8l-out, len-d)
 
     ; entropy-coded pixels: green, red, blue, alpha (single group, no LZ77)
-    i <- [0..npix): {
+    i <- [0..enc-n): {
         {
             nz-g > 1 -> {
                 #{index-out=0}

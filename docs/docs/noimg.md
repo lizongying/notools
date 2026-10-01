@@ -18,7 +18,7 @@ notools 倉庫內含一個**純 Nolang 實現的圖像處理工具庫**（`noimg
 | TIFF | `.tif` `.tiff` | ✅ | ✅ | Tagged Image File Format（僅未壓縮、8 位、單 strip） |
 | GIF | `.gif` | ✅ | ✅ | Graphics Interchange Format（LZW 解碼+隔行+透明；動畫多幀提取+disposal 合成；寫入用 median-cut 量化） |
 | JPEG | `.jpg` `.jpeg` | ✅ | ✅ | baseline JPEG 讀寫（DCT+Huffman 編碼/解碼+IDCT+YCbCr→RGB），不支持 progressive |
-| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解碼（Huffman+LZ77 距離+顏色快取+predictor 逆變換(14 模式)+顏色變換逆變換(定點乘)+subtract-green+顏色索引）；不支持 lossy VP8；寫入為 VP8L 容器（真實像素跨碼），但 **save 不寫 transform 頭（無 predictor/subtract-green/color-transform），與標準 WebP 解碼器不互通**——僅 noimg save→noimg load 可 round-trip |
+| WebP | `.webp` | ⚠️ | ⚠️ | VP8L lossless 解碼（Huffman+LZ77 距離+顏色快取+predictor 逆變換(14 模式)+顏色變換逆變換(定點乘)+subtract-green+顏色索引）；不支持 lossy VP8；寫入為 VP8L lossless 編碼：≤256 色自動啟用 color-index transform（palette 子圖以 delta 編碼、索引打包進 green 通道），並按 heuristic 啟用 subtract-green transform；5 組 canonical Huffman 熵編碼 ARGB 平面，無 LZ77/顏色快取/meta-Huffman；為標準 VP8L 容器，已通過 noimg 自身 save→load 像素精確 round-trip（CI 與 SG 雙路徑驗證），按 VP8L 規格應與 libwebp 互通（本機未安裝 dwebp 故未做 libwebp 端解碼實測） |
 
 ## CLI 命令
 
@@ -101,7 +101,7 @@ noimg 可作為 Nolang 庫使用，通過 `lib.no` 導出以下模組：
 | `png` | PNG 讀寫（zlib 壓縮、CRC32 校驗、5 種濾鏡、Adam7 隔行解碼，僅 8 位） |
 | `tiff` | TIFF 讀寫（僅未壓縮、8 位、單 strip） |
 | `jpeg` | JPEG 讀寫（baseline DCT+Huffman 跨碼/解碼+IDCT+YCbCr→RGB，不支持 progressive） |
-| `webp` | WebP VP8L lossless 解碼 |
+| `webp` | WebP VP8L lossless 解碼與編碼（編碼按圖像內容自動啟用 color-index / subtract-green transform，標準容器，已通過 round-trip 驗證） |
 | `colour` | 色彩空間轉換（RGB↔Gray、RGB↔HSV、RGB↔HSL、RGB↔YCbCr、RGB↔Lab、RGB↔CMYK） |
 | `resize` | 雙線性縮放、縮略圖、縮放、最近鄰/雙三次/面積平均 |
 | `rotate` | 旋轉（90/180/270/任意角度）、翻轉、轉置/反對角轉置 |
@@ -142,7 +142,7 @@ noimg/
 │   ├── tiff.no          ; TIFF
 │   ├── gif.no           ; GIF（LZW 編解碼）
 │   ├── jpeg.no          ; JPEG 讀寫
-│   ├── webp.no          ; WebP VP8L lossless 解碼
+│   ├── webp.no          ; WebP VP8L lossless 解碼與編碼（含 color-index / subtract-green transform 寫入）
 │   ├── colour.no        ; 色彩空間轉換
 │   ├── resize.no        ; 縮放
 │   ├── rotate.no        ; 旋轉與翻轉
@@ -163,7 +163,7 @@ noimg/
 
 ## 已知限制
 
-- WebP 寫入不寫 transform 頭，與標準 WebP 解碼器不互通（僅 noimg save → noimg load 可 round-trip）
+- WebP 寫入為 VP8L lossless：≤256 色自動啟用 color-index transform（palette 子圖 delta 編碼、索引打包進 green 通道），並按 heuristic 啟用 subtract-green transform；已通過 noimg 自身 save→load 像素精確 round-trip（CI 與 SG 雙路徑）驗證；按 VP8L 規格應與 libwebp 互通（本機無 dwebp，未做 libwebp 端解碼實測）
 - WebP 不支持 lossy VP8 格式
 - JPEG 不支持 progressive 格式
 - TIFF 僅支持未壓縮、8 位、單 strip 格式
