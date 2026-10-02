@@ -1,0 +1,77 @@
+; test-bmp.no — BMP sub-format decoder test
+; Loads each generated sub-format BMP (24/32/16-bit, 8/4/1-bit paletted,
+; RLE8/RLE4) and compares pixel-exact against the reference PPM.
+; Fixtures live in tests/bmp-assets/ (regenerate with: python3 tests/gen-bmp-assets.py).
+; Run from the noimg/ directory: no run tests/test-bmp.no
+
+# /noimg/src/bmp.load
+# /noimg/src/pnm.load
+# /noimg/src/image.get-pixel
+
+check-one = (bmp-path str, ref-path str) (ok bool) {
+    ok = false
+    bres = bmp.load(bmp-path)
+    bres: {
+        nil -> {}
+        err -> {}
+        ok -> {
+            rt = it
+            rres = pnm.load(ref-path)
+            rres: {
+                nil -> {}
+                err -> {}
+                ok -> {
+                    rf = it
+                    bad = false
+                    y <- [0..12): {
+                        x <- [0..16): {
+                            r0 = image.get-pixel(rt, x, y, 0)
+                            g0 = image.get-pixel(rt, x, y, 1)
+                            b0 = image.get-pixel(rt, x, y, 2)
+                            r1 = image.get-pixel(rf, x, y, 0)
+                            g1 = image.get-pixel(rf, x, y, 1)
+                            b1 = image.get-pixel(rf, x, y, 2)
+                            r0 != r1 || g0 != g1 || b0 != b1 -> {
+                                bad = true
+                                print('  first mismatch at x={x} y={y}: got ({r0},{g0},{b0}) want ({r1},{g1},{b1})')
+                            }
+                        }
+                    }
+                    bad != true -> {
+                        ok = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+main = () {
+    dir = 'tests/bmp-assets'
+    n-pass = 0
+    n-fail = 0
+    cases = ['f24', 'f32', 'f16', 'f8', 'f4', 'f1', 'rle8', 'rle4']
+    refs = ['reference24.ppm', 'reference24.ppm', 'reference16.ppm', 'reference24.ppm', 'reference24.ppm', 'reference1.ppm', 'reference24.ppm', 'reference24.ppm']
+    i <- [0..8): {
+        name = cases[i]
+        ref = refs[i]
+        r = check-one(dir + '/' + name + '.bmp', dir + '/' + ref)
+        r -> {
+            print('PASS: BMP decode {name}')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+
+        -> {
+            print('FAIL: BMP decode {name}')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+    }
+    print('')
+    print('--- Results: {n-pass} passed, {n-fail} failed ---')
+    {
+        n-fail == 0 -> print('ALL PASS')
+        -> os.exit(1)
+    }
+}

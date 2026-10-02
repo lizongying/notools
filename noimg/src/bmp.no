@@ -1,13 +1,16 @@
 ; bmp.no — BMP (Windows Bitmap) format read/write
-; Supports:
-;   24-bit BMP (BGR, no compression)
-;   32-bit BMP (BGRA, no compression)
+; Reads (decodes) the common BMP sub-formats:
+;   1/4/8-bit with palette (BI_RGB), RLE4 (compression 2), RLE8 (compression 1)
+;   16-bit (5-5-5 or 5-6-5 bitfields, BI_RGB or BI_BITFIELDS)
+;   24-bit (BGR), 32-bit (BGRA / BI_BITFIELDS with optional alpha)
+; Writes (encodes): 24-bit and 32-bit, uncompressed (BI_RGB).
 ;
 ; BMP file layout:
 ;   File header (14 bytes): 'BM', file-size, reserved, data-offset
-;   DIB header (40 bytes BITMAPINFOHEADER): header-size, width, height,
+;   DIB header (BITMAPINFOHEADER, 40 bytes): header-size, width, height,
 ;     planes, bpp, compression, image-size, x/y-ppm, colors-used, colors-important
-;   Pixel data (bottom-up, BGR, 4-byte aligned rows)
+;   (palette and/or bitfield masks depending on bpp/compression)
+;   Pixel data (bottom-up, BGR, 4-byte aligned rows; or RLE stream)
 
 ; bmp.load: load a BMP file
 ; path str: file path
@@ -25,6 +28,79 @@
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
+; ---- little-endian readers ----
+bmp-u32 = (d []byte, o i64) (v i64) {
+    #{overflow=wrap}
+    v = (d[o] & 255) | ((d[o + 1] & 255) << 8) | ((d[o + 2] & 255) << 16) | ((d[o + 3] & 255) << 24)
+}
+
+bmp-u16 = (d []byte, o i64) (v i64) {
+    #{overflow=wrap}
+    v = (d[o] & 255) | ((d[o + 1] & 255) << 8)
+}
+
+; extract an 8-bit channel value from a packed pixel `px` given a mask
+bmp-extract = (px i64, mask i64) (out i64) {
+    shift = 0
+    k <- [0..32): {
+        ((mask >> k) & 1) == 1 -> {
+            shift = k
+            break
+        }
+    }
+    bits = 0
+    i <- [shift..32): {
+        ((mask >> i) & 1) == 1 -> {
+            bits = bits + 1
+        }
+
+        -> break
+    }
+    #{overflow=wrap}
+    val = (px & mask) >> shift
+    bits == 8 -> {
+        out = val
+    }
+
+    -> {
+        #{overflow=wrap}
+        max = (1 << bits) - 1
+        #{overflow=wrap}
+        out = val * 255 / max
+    }
+}
+
+; palette index for a 1/4/8-bit pixel at column x in a bottom-up row
+; NOTE: Nolang chains pair each `cond -> {A}` with the following `-> {B}` as a
+; binary if-else. So the 8-bit branch must be lifted out as its own if, with the
+; 4-bit / 1-bit pair nested in its else — otherwise the trailing default (1-bit)
+; branch also runs and overwrites the 8-bit result.
+bmp-pal-idx = (d []byte, row-start i64, x i64, bpp i64) (idx i64) {
+    bpp == 8 -> {
+        idx = d[row-start + x] & 255
+    }
+
+    -> {
+        bpp == 4 -> {
+            byte = d[row-start + (x >> 1)] & 255
+            (x & 1) == 0 -> {
+                #{overflow=wrap}
+                idx = (byte >> 4) & 15
+            }
+
+            -> {
+                idx = byte & 15
+            }
+        }
+
+        -> {
+            byte = d[row-start + (x >> 3)] & 255
+            bit = 7 - (x & 7)
+            idx = (byte >> bit) & 1
+        }
+    }
+}
+
 load = (path str) (img ?image) {
     data = fs.read-file(path)
     data.len() < 54 -> {
@@ -40,99 +116,346 @@ load = (path str) (img ?image) {
         return
     }
 
-    ; Read DIB header offset
-    data-offset i64 = (data[10] & 255) | ((data[11] & 255) << 8) | ((data[12] & 255) << 16) | ((data[13] & 255) << 24)
+    data-offset = bmp-u32(data, 10)
+    hdr-size = bmp-u32(data, 14)
+    w = bmp-u32(data, 18)
+    h-raw = bmp-u32(data, 22)
+    bpp = bmp-u16(data, 28)
+    compression = bmp-u32(data, 30)
+    colors-used = bmp-u32(data, 46)
 
-    ; Read BITMAPINFOHEADER
-    hdr-size i64 = (data[14] & 255) | ((data[15] & 255) << 8) | ((data[16] & 255) << 16) | ((data[17] & 255) << 24)
-
-    ; Width (signed 32-bit, little-endian)
-    w i64 = (data[18] & 255) | ((data[19] & 255) << 8) | ((data[20] & 255) << 16) | ((data[21] & 255) << 24)
-
-    ; Height (signed 32-bit, little-endian)
-    h i64 = (data[22] & 255) | ((data[23] & 255) << 8) | ((data[24] & 255) << 16) | ((data[25] & 255) << 24)
-
-    ; Top-down if height is negative
+    ; Top-down if height is negative (high bit of u32 set)
     top-down = false
+    h = h-raw
     h > 2147483647 -> {
-
-        ; negative value in 32-bit — flip
         #{overflow=wrap}
         h = 4294967296 - h
         top-down = true
     }
-    bpp i64 = (data[28] & 255) | ((data[29] & 255) << 8)
-    compression i64 = (data[30] & 255) | ((data[31] & 255) << 8) | ((data[32] & 255) << 16) | ((data[33] & 255) << 24)
+
+    ; ---- validate ----
     {
-        compression != 0 -> {
-            img = nil
-            return
-        }
-
-        bpp != 24 && bpp != 32 -> {
-            img = nil
-            return
-        }
-
         w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
             img = nil
             return
         }
+
+        bpp != 1 && bpp != 4 && bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32 -> {
+            img = nil
+            return
+        }
+
+        (bpp == 24 || bpp == 32) && compression != 0 && compression != 3 -> {
+            img = nil
+            return
+        }
+
+        compression == 1 && bpp != 8 -> {
+            img = nil
+            return
+        }
+
+        compression == 2 && bpp != 4 -> {
+            img = nil
+            return
+        }
+
+        compression != 0 && compression != 1 && compression != 2 && compression != 3 -> {
+            img = nil
+            return
+        }
     }
+
+    ; ---- palette / bitfield mask setup ----
+    pal-off = 14 + hdr-size
+    pal-count = 0
+    bpp <= 8 -> {
+        colors-used > 0 -> {
+            pal-count = colors-used
+        }
+
+        -> {
+            #{overflow=wrap}
+            pal-count = 1 << bpp
+        }
+    }
+
+    r-mask = 0
+    g-mask = 0
+    b-mask = 0
+    a-mask = 0
+    bpp == 16 && compression == 0 -> {
+        ; BI_RGB 16-bit is 5-6-5: R=bits 11-15, G=bits 5-10, B=bits 0-4
+        r-mask = 63488
+        g-mask = 2016
+        b-mask = 31
+    }
+
+    bpp == 32 && compression == 0 -> {
+        r-mask = 16711680
+        g-mask = 65280
+        b-mask = 255
+    }
+
+    compression == 3 -> {
+        r-mask = bmp-u32(data, pal-off)
+        g-mask = bmp-u32(data, pal-off + 4)
+        b-mask = bmp-u32(data, pal-off + 8)
+        a-mask = bmp-u32(data, pal-off + 12)
+    }
+
+    ; ---- pixel data offset ----
+    pix-off = data-offset
+    min-off = pal-off
+    bpp <= 8 -> {
+        #{overflow=wrap}
+        min-off = min-off + pal-count * 4
+    }
+    compression == 3 -> {
+        #{overflow=wrap}
+        min-off = min-off + 12
+        a-mask != 0 -> {
+            min-off = min-off + 4
+        }
+    }
+    data-offset < min-off -> {
+        pix-off = min-off
+    }
+
     bands = 3
-    bpp == 32 -> bands = 4
+    bpp == 32 -> {
+        bands = 4
+    }
 
     #{overflow=wrap}
     _d []byte = with-len(w * h * bands)
     tmp = image.new-from-data(w, h, bands, _d)
 
-    ; Row size is padded to 4-byte boundary
-    #{overflow=wrap}
-    row-bytes = w * (bpp / 8)
-    row-padded = (row-bytes + 3) & ~3
-
-    ; row-padded aligned to 4
-    #{overflow=wrap}
-    pad = row-padded - row-bytes
-    y <- [0..h): {
-        src-y = y
-
-        #{overflow=wrap}
-        ! top-down -> src-y = h - 1 - y
-
-        #{overflow=wrap}
-        row-start = data-offset + src-y * row-padded
-        x <- [0..w): {
-
-            #{overflow=wrap}
-            b = data[row-start + x * (bpp / 8)] & 255
-
-            #{overflow=wrap}
-            g = data[row-start + x * (bpp / 8) + 1] & 255
-
-            #{overflow=wrap}
-            r = data[row-start + x * (bpp / 8) + 2] & 255
-
-            #{overflow=wrap}
-            dst = (y * w + x) * bands
-            tmp.data[dst] = r
-
-            #{overflow=wrap}
-            tmp.data[dst + 1] = g
-
-            #{overflow=wrap}
-            tmp.data[dst + 2] = b
-            bands == 4 -> {
-
+    ; ---- decode ----
+    compression == 1 || compression == 2 -> {
+        ; RLE decode into a flat palette-index buffer (decode-row order).
+        ; Per the BMP spec, runs never cross a scan line, so the cursor only
+        ; advances vertically on EOL (b1==0) / delta (b1==2); pixel runs just
+        ; increment cx. The EOL command moves to the start of the next row.
+        rle-idx []byte = with-len(w * h)
+        pos = pix-off
+        cx = 0
+        cy = 0
+        ; repeat until bitmap ends (b1==1) or buffer exhausted
+        rle-cap = w * h + 128
+        i <- [0..rle-cap): {
+            cy < h && pos + 1 < data.len() -> {
+                b0 = data[pos] & 255
+                b1 = data[pos + 1] & 255
                 #{overflow=wrap}
-                tmp.data[dst + 3] = data[row-start + x * 4 + 3] & 255
+                pos = pos + 2
+                b0 == 0 -> {
+                    b1 == 0 -> {
+                        ; end of line: move to start of next row
+                        cy = cy + 1
+                        cx = 0
+                    }
+
+                    b1 == 1 -> {
+                        ; end of bitmap
+                        cy = h
+                    }
+
+                    b1 == 2 -> {
+                        ; delta (skip pixels)
+                        dx = data[pos] & 255
+                        dy = data[pos + 1] & 255
+                        #{overflow=wrap}
+                        pos = pos + 2
+                        #{overflow=wrap}
+                        cx = cx + dx
+                        #{overflow=wrap}
+                        cy = cy + dy
+                    }
+
+                    b1 >= 3 -> {
+                        ; absolute (literal) run of b1 pixels (b1>=3 is the
+                        ; absolute-mode control code for both RLE4 and RLE8)
+                        compression == 1 -> {
+                            ; RLE8: one palette index per byte
+                            p <- [0..b1): {
+                                cx < w && cy < h -> {
+                                    rle-idx[cy * w + cx] = data[pos + p] & 255
+                                }
+                                #{overflow=wrap}
+                                cx = cx + 1
+                            }
+                            #{overflow=wrap}
+                            pos = pos + b1
+                            (b1 & 1) == 1 -> {
+                                pos = pos + 1
+                            }
+                        }
+
+                        -> {
+                            ; RLE4: two nibbles per byte (b1 = pixel count)
+                            p <- [0..b1): {
+                                byte = data[pos + (p >> 1)] & 255
+                                (p & 1) == 0 -> {
+                                    ; high nibble
+                                    cx < w && cy < h -> {
+                                        rle-idx[cy * w + cx] = (byte >> 4) & 15
+                                    }
+                                }
+
+                                -> {
+                                    ; low nibble
+                                    cx < w && cy < h -> {
+                                        rle-idx[cy * w + cx] = byte & 15
+                                    }
+                                }
+                                #{overflow=wrap}
+                                cx = cx + 1
+                            }
+                            ; bytes consumed = ceil(b1 / 2)
+                            #{overflow=wrap}
+                            pos = pos + ((b1 + 1) >> 1)
+                        }
+                    }
+                }
+
+                -> {
+                    ; encoded run: b0 copies of the value(s) in b1
+                    compression == 2 -> {
+                        ; RLE4: alternate high/low nibble of b1
+                        hi = (b1 >> 4) & 15
+                        lo = b1 & 15
+                        n <- [0..b0): {
+                            cx < w && cy < h -> {
+                                (n & 1) == 0 -> {
+                                    rle-idx[cy * w + cx] = hi
+                                }
+
+                                -> {
+                                    rle-idx[cy * w + cx] = lo
+                                }
+                            }
+                            #{overflow=wrap}
+                            cx = cx + 1
+                        }
+                    }
+
+                    -> {
+                        ; RLE8: b1 is the single palette index value
+                        n <- [0..b0): {
+                            cx < w && cy < h -> {
+                                rle-idx[cy * w + cx] = b1
+                            }
+                            #{overflow=wrap}
+                            cx = cx + 1
+                        }
+                    }
+                }
+            }
+
+            -> break
+        }
+
+        ; map RLE index buffer -> RGB(A) via palette (handle bottom-up)
+        y <- [0..h): {
+            src-y = y
+            ! top-down -> {
+                #{overflow=wrap}
+                src-y = h - 1 - y
+            }
+            x <- [0..w): {
+                #{overflow=wrap}
+                idx = rle-idx[src-y * w + x] & 255
+                #{overflow=wrap}
+                po = pal-off + idx * 4
+                r = data[po + 2] & 255
+                g = data[po + 1] & 255
+                b = data[po] & 255
+                #{overflow=wrap}
+                dst = (y * w + x) * bands
+                tmp.data[dst] = r
+                tmp.data[dst + 1] = g
+                tmp.data[dst + 2] = b
             }
         }
     }
+
+    -> {
+        ; uncompressed (BI_RGB / BI_BITFIELDS) decode
+        #{overflow=wrap}
+        row-bytes = (w * bpp + 7) / 8
+        row-padded = (row-bytes + 3) & ~3
+        y <- [0..h): {
+            src-y = y
+            ! top-down -> {
+                #{overflow=wrap}
+                src-y = h - 1 - y
+            }
+            #{overflow=wrap}
+            row-start = pix-off + src-y * row-padded
+            x <- [0..w): {
+                #{overflow=wrap}
+                p = row-start + x * (bpp / 8)
+                r = 0
+                g = 0
+                b = 0
+                a = 255
+                bpp == 24 -> {
+                    b = data[p] & 255
+                    g = data[p + 1] & 255
+                    r = data[p + 2] & 255
+                }
+
+                bpp == 32 && compression == 0 -> {
+                    b = data[p] & 255
+                    g = data[p + 1] & 255
+                    r = data[p + 2] & 255
+                    a = data[p + 3] & 255
+                }
+
+                bpp == 32 && compression == 3 -> {
+                    px = bmp-u32(data, p)
+                    r = bmp-extract(px, r-mask)
+                    g = bmp-extract(px, g-mask)
+                    b = bmp-extract(px, b-mask)
+                    a-mask != 0 -> {
+                        a = bmp-extract(px, a-mask)
+                    }
+                }
+
+                bpp == 16 -> {
+                    px = bmp-u16(data, p)
+                    r = bmp-extract(px, r-mask)
+                    g = bmp-extract(px, g-mask)
+                    b = bmp-extract(px, b-mask)
+                }
+
+                bpp <= 8 -> {
+                    #{overflow=wrap}
+                    idx = bmp-pal-idx(data, row-start, x, bpp) & 255
+                    #{overflow=wrap}
+                    po = pal-off + idx * 4
+                    b = data[po] & 255
+                    g = data[po + 1] & 255
+                    r = data[po + 2] & 255
+                }
+
+                #{overflow=wrap}
+                dst = (y * w + x) * bands
+                tmp.data[dst] = r
+                tmp.data[dst + 1] = g
+                tmp.data[dst + 2] = b
+                bands == 4 -> {
+                    tmp.data[dst + 3] = a
+                }
+            }
+        }
+    }
+
     img = tmp
 }
 
-; bmp.save: save an image as 24-bit BMP
+; bmp.save: save an image as 24-bit or 32-bit BMP (uncompressed, BI_RGB)
 ; path str: output path
 ; img image: image to save
 ; returns ok bool
