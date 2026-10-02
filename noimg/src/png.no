@@ -190,8 +190,8 @@ load = (path str) (img ?image) {
         color-type == 3 -> bytes-per-pixel = 1
     }
 
-    ; Decompress IDAT using zlib
-    raw = gzip.gzip-decompress(idat-data)
+    ; Decompress IDAT (zlib datastream per PNG spec; legacy gzip accepted)
+    raw = png-zlib-decompress(idat-data)
 
     ; Create output image — U16 if bit-depth == 16
     is-u16 = false
@@ -773,6 +773,70 @@ load = (path str) (img ?image) {
     img = tmp
 }
 
+; ── zlib wrapper (RFC 1950) ──
+; PNG spec requires IDAT to hold a zlib datastream: 2-byte header
+; (CMF=0x78, FLG=0x01 — check bits valid since 0x7801 % 31 == 0),
+; a raw DEFLATE stream (RFC 1951), and an Adler-32 checksum
+; of the uncompressed data (big-endian).
+
+; png-adler32: Adler-32 checksum of a byte buffer
+; data []byte: input
+; returns sum i64: Adler-32 value
+png-adler32 = (data []byte) (sum i64) {
+    a = 1
+    b = 0
+    i <- [0..data.len()): {
+        #{overflow=wrap}
+        a = (a + (data[i] & 255)) % 65521
+        #{overflow=wrap}
+        b = (b + a) % 65521
+    }
+    #{overflow=wrap}
+    sum = b * 65536 + a
+}
+
+; png-zlib-compress: wrap raw DEFLATE stored blocks in a zlib container
+; data []byte: uncompressed data
+; returns out []byte: zlib datastream
+png-zlib-compress = (data []byte) (out []byte) {
+    deflated = gzip.deflate-stored(data)
+    ad = png-adler32(data)
+    out = with-cap(2 + deflated.len() + 4)
+    out.push(120)  ; 0x78 CMF: deflate, 32K window
+    out.push(1)    ; 0x01 FLG: check bits valid, fastest level
+    i <- [0..deflated.len()): {
+        out.push(deflated[i])
+    }
+    out.push((ad >> 24) & 255)
+    out.push((ad >> 16) & 255)
+    out.push((ad >> 8) & 255)
+    out.push(ad & 255)
+}
+
+; png-zlib-decompress: decompress a zlib datastream (with gzip fallback for
+; files written by older noimg versions, which wrapped IDAT in gzip)
+; data []byte: zlib (or legacy gzip) datastream
+; returns out []byte: decompressed data
+png-zlib-decompress = (data []byte) (out []byte) {
+    is-gzip = false
+    data.len() >= 2 -> {
+        (data[0] & 255) == 31 && (data[1] & 255) == 139 -> {
+            is-gzip = true
+        }
+    }
+    {
+        is-gzip -> {
+            out = gzip.gzip-decompress(data)
+        }
+
+        -> {
+            data.len() > 6 -> {
+                out = gzip.inflate-decompress(data.slice(2, data.len() - 4), 0)
+            }
+        }
+    }
+}
+
 ; ── Save ──
 
 ; png.save: save an image as PNG (8-bit or 16-bit, color type auto-selected)
@@ -910,8 +974,8 @@ save = (path str, img image) (ok bool) {
         }
     }
 
-    ; Compress with zlib
-    compressed = gzip.gzip-compress(raw)
+    ; Compress with zlib (PNG spec: IDAT holds a zlib datastream)
+    compressed = png-zlib-compress(raw)
 
     ; Build PNG file
     #{overflow=wrap}
