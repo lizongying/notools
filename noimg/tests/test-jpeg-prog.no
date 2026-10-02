@@ -1,0 +1,187 @@
+; test-jpeg-prog.no — JPEG progressive (SOF2) decode validation
+; Decodes progressive JPEGs produced by Pillow and compares pixel output
+; against Pillow's own decode (ground-truth PPM). Exercises the full
+; multi-scan spectral-selection + successive-approximation path.
+; NOTE: jpeg.load / pnm.load return a plain ?image option; the explicit
+; variant match form is required (compiler bug #85).
+; Run: no run tests/test-jpeg-prog.no
+
+# /noimg/src/image.new
+# /noimg/src/image.get-pixel
+# /noimg/src/jpeg.load
+# /noimg/src/pnm.load
+
+; Compare a decoded image against a ground-truth PPM, returning MAE in per-mille
+; of 255 and a pass flag (mae < thr).
+check-prog = (dec image, ppm-path str, w i64, h i64, bands i64, thr i64) (res bool, mae i64) {
+    pp = pnm.load(ppm-path)
+    pp: {
+        nil -> {
+            res = false
+            mae = 9999
+        }
+
+        err -> {
+            res = false
+            mae = 9999
+        }
+
+        ok -> {
+            gt = it
+            sum = 0
+            yy <- [0..h): {
+                xx <- [0..w): {
+                    b <- [0..bands): {
+                        a = image.get-pixel(dec, xx, yy, b)
+                        v = image.get-pixel(gt, xx, yy, b)
+                        #{overflow=wrap}
+                        d = a - v
+                        d < 0 -> {
+                            #{overflow=wrap}
+                            d = 0 - d
+                        }
+                        #{overflow=wrap}
+                        sum = sum + d
+                    }
+                }
+            }
+            ; MAE in per-mille of 255: sum * 1000 / (w*h*bands*255)
+            #{overflow=wrap}
+            mae = sum * 1000 / (w * h * bands * 255)
+            res = mae < thr
+        }
+    }
+}
+
+main = () {
+    print('--- Testing JPEG progressive (SOF2) decode ---')
+    n-pass = 0
+    n-fail = 0
+
+    ; ---- harness sanity: baseline 4:4:4 must load without error ----
+    ; MAE-vs-Pillow is intentionally NOT checked here: the baseline decoder
+    ; path has a pre-existing reconstruction-quality caveat (unrelated to
+    ; progressive), so a strict MAE threshold is unrealistic for it.
+    b444 = jpeg.load('noimg/tests/jpeg_prog/base_444.jpg')
+    b444: {
+        nil -> {
+            print('FAIL: base_444 load nil')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        err -> {
+            print('FAIL: base_444 load err')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        ok -> {
+            print('PASS: baseline 4:4:4 loads (pre-existing quality caveat)')
+            #{overflow=wrap}
+            n-pass = n-pass + 1
+        }
+    }
+
+    ; ---- progressive 4:4:4 ----
+    p444 = jpeg.load('noimg/tests/jpeg_prog/prog_444.jpg')
+    p444: {
+        nil -> {
+            print('FAIL: prog_444 load nil')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        err -> {
+            print('FAIL: prog_444 load err')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        ok -> {
+            cok, cmae = check-prog(it, 'noimg/tests/jpeg_prog/prog_444_pillow.ppm', 64, 48, 3, 60)
+            cok -> {
+                print('PASS: progressive 4:4:4 mae-mille={cmae}')
+                #{overflow=wrap}
+                n-pass = n-pass + 1
+            }
+
+            -> {
+                print('FAIL: progressive 4:4:4 mae-mille={cmae}')
+                #{overflow=wrap}
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ---- progressive 4:2:0 ----
+    p420 = jpeg.load('noimg/tests/jpeg_prog/prog_420.jpg')
+    p420: {
+        nil -> {
+            print('FAIL: prog_420 load nil')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        err -> {
+            print('FAIL: prog_420 load err')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        ok -> {
+            cok, cmae = check-prog(it, 'noimg/tests/jpeg_prog/prog_420_pillow.ppm', 64, 48, 3, 60)
+            cok -> {
+                print('PASS: progressive 4:2:0 mae-mille={cmae}')
+                #{overflow=wrap}
+                n-pass = n-pass + 1
+            }
+
+            -> {
+                print('FAIL: progressive 4:2:0 mae-mille={cmae}')
+                #{overflow=wrap}
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    ; ---- progressive grayscale (1 component) ----
+    pg = jpeg.load('noimg/tests/jpeg_prog/prog_gray.jpg')
+    pg: {
+        nil -> {
+            print('FAIL: prog_gray load nil')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        err -> {
+            print('FAIL: prog_gray load err')
+            #{overflow=wrap}
+            n-fail = n-fail + 1
+        }
+
+        ok -> {
+            ; ground-truth PPM is 3-band RGB with R=G=B; compare our 1 band to band 0
+            cok, cmae = check-prog(it, 'noimg/tests/jpeg_prog/prog_gray_pillow.ppm', 64, 48, 1, 60)
+            cok -> {
+                print('PASS: progressive grayscale mae-mille={cmae}')
+                #{overflow=wrap}
+                n-pass = n-pass + 1
+            }
+
+            -> {
+                print('FAIL: progressive grayscale mae-mille={cmae}')
+                #{overflow=wrap}
+                n-fail = n-fail + 1
+            }
+        }
+    }
+
+    print('')
+    print('--- Results: {n-pass} passed, {n-fail} failed ---')
+    {
+        n-fail == 0 -> print('ALL PASS')
+
+        -> os.exit(1)
+    }
+}
