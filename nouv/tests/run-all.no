@@ -1,7 +1,11 @@
 ; run-all.no — Run all nouv tests
-; Usage: no run nouv/test/run-all.no
+; Usage: no run nouv/tests/run-all.no
 ;
-; This is the test runner that executes all test files in the test/ directory.
+; This is the test runner that executes all test files in the tests/ directory.
+;
+; The `no` compiler is located in this order:
+;   1. $NO_BIN   (absolute path to the `no` binary)
+;   2. `no` as found on $PATH
 
 main = () {
     print('╔══════════════════════════════════════════════╗')
@@ -10,20 +14,43 @@ main = () {
     print('╚══════════════════════════════════════════════╝')
     print('')
 
-    tests = 'test-version.no\ntest-pep508.no\ntest-wheel.no\ntest-toml.no\ntest-markers.no\ntest-cache.no\ntest-venv.no\ntest-python.no\ntest-installer.no\ntest-registry.no\ntest-registry-json.no\ntest-sdist.no'
+    ; ── locate the compiler ──────────────────────────────
+    no-bin = 'no'
+    env-bin = os.get-env('NO_BIN')
+    {
+        env-bin != '' -> no-bin = env-bin
+    }
+
+    probe = process {}
+    probe.start(no-bin, '--version')
+    probe.wait()
+    probe-code = probe.exit-code-of()
+    {
+        probe-code != 0 -> {
+            print('error: cannot execute the `no` compiler (tried "{no-bin}")')
+            print('')
+            print('Set NO_BIN=/absolute/path/to/no, or put `no` on PATH.')
+            os.exit(1)
+        }
+    }
+    print('compiler: {no-bin}')
+    print('')
+
+    ; ── test list ────────────────────────────────────────
+    tests = 'test-version.no\ntest-pep508.no\ntest-wheel.no\ntest-toml.no\ntest-markers.no\ntest-cache.no\ntest-venv.no\ntest-python.no\ntest-installer.no\ntest-registry.no\ntest-registry-json.no\ntest-sdist.no\n'
 
     total-pass = 0
     total-fail = 0
     n-tests = 0
+    failed-files = ''
 
     lines = tests.split('\n')
     n = lines.len()
     i = 0
     (i < n) {
-        test-file = lines[i]
 
-        #{overflow=wrap}
-        i = i + 1
+        #{index-out=0}
+        test-file = lines[i]
         test-file = test-file.trim()
         {
             test-file.len() > 0 -> {
@@ -34,33 +61,40 @@ main = () {
                 print('Running: {test-file}')
                 print('──────────────────────────────────────────────')
 
-                ; Run the test using process
+                ; tests live next to this runner, not in the cwd
+                #{overflow=wrap}
+                test-path = 'tests/' - test-file
+
                 p = process {}
                 #{overflow=wrap}
-                p.start('no', 'run ' - test-file)
+                p.start(no-bin, 'run ' - test-path)
                 p.wait()
 
                 exit-code = p.exit-code-of()
                 out, n2 = p.read-all()
 
-                ; Print test output
                 print(out)
 
                 {
                     exit-code == 0 -> {
 
-                        ; extract pass/fail from output
                         #{overflow=wrap}
                         total-pass = total-pass + 1
                     }
 
                     -> {
+
                         #{overflow=wrap}
                         total-fail = total-fail + 1
+                        #{overflow=wrap}
+                        failed-files = failed-files - '  ' - test-file - '\n'
                     }
                 }
             }
         }
+
+        #{overflow=wrap}
+        i = i + 1
     }
 
     print('')
@@ -74,7 +108,8 @@ main = () {
     {
         total-fail > 0 -> {
             print('')
-            print('Some tests failed. See output above.')
+            print('Failed suites:')
+            print(failed-files)
             os.exit(1)
         }
 

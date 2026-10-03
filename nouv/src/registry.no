@@ -4,6 +4,8 @@
 ; Supports the Simple API (PEP 503), JSON API, authentication, and retries.
 
 # /nouv/src/utils
+# /nouv/src/httpclient
+# /nouv/src/jsonx
 
 ;
 ; Authentication methods:
@@ -68,7 +70,22 @@ get-index-url = () (url str) {
 ;   sdist-url=<url>  sdist-hash=<sha256>  sdist-filename=<fn>
 ; ═══════════════════════════════════════════════
 
-; fetch-package-json — GET the raw JSON body for a package (nil on failure)
+; ═══════════════════════════════════════════════
+; network helpers — pure Nolang (no curl / python3 / external process)
+;
+; Constraints that shape this module:
+;   - The built-in http.get (src/std/net/http.no) caps responses at
+;     HTTP-MAX-RESPONSE (16 KB); PyPI JSON metadata is ~190 KB.
+;   - The std json module crashes at runtime in this compiler build
+;     (option-match `it` loses its type → silent crash on `.get`).
+; So we fetch with the raw tls module via httpclient (handles arbitrarily
+; large, multi-record bodies) and decode the needed fields with the
+; companion jsonx scanner — both pure Nolang.
+; ═══════════════════════════════════════════════
+
+; fetch-package-json — fetch PyPI JSON metadata and decode to the flat info
+; string the resolver consumes (nil on failure).  Pure Nolang: the tls-based
+; httpclient handles the ~190 KB multi-record response, jsonx does the decode.
 fetch-package-json = (name str) (body ?str) {
     body = nil
 
@@ -76,166 +93,41 @@ fetch-package-json = (name str) (body ?str) {
     #{overflow=wrap}
     url = base - name - '/json'
 
-    resp = http.get(url)
-    resp: {
-        nil -> return
-
-        err -> return
-
-        ok -> {
-            status = it.status-code
-            {
-                status >= 200 && status < 300 -> body = it.body
-            }
-        }
+    status, raw, ok = httpclient.http-get-bytes(url)
+    ok -> {
+        status == 200 -> body = jsonx.parse-package-json-native(raw)
     }
 }
 
-; parse-package-json — decode a PyPI JSON payload into the flat info string
+; str-to-bytes — copy a (small) string into a []byte.  str.byte is reliable for
+; small strings, so this is fine for the test-fixture wrappers below.  The real
+; fetch path uses http-get-bytes and never goes through here.
+str-to-bytes = (s str) (out []byte) {
+    n = s.len-bytes()
+    out = with-len(n)
+    j <- [0..n): out[j] = s.byte(j)
+}
+
+; parse-package-json — decode a PyPI JSON payload into the flat info string.
+; Delegates to the pure-Nolang jsonx scanner over []byte (str.byte/str.slice
+; drift on large strings in this compiler build, so the body must be []byte).
 parse-package-json = (s str) (info ?str) {
     info = nil
-    sb = ''
-
-    root-opt = json.parse(s)
-    root-opt: {
-        nil -> return
-
-        err -> return
-
-        ok -> {
-            root = it
-
-            ; ── info section ──
-            info-opt = root.get('info')
-            info-opt: {
-                nil -> {}
-
-                err -> {}
-
-                ok -> {
-                    meta = it
-                    ver, has-ver = meta.get-str('version')
-                    has-ver -> sb = sb - 'version=' - ver - '\n'
-
-                    pname, has-pname = meta.get-str('name')
-                    has-pname -> sb = sb - 'name=' - pname - '\n'
-
-                    rd-opt = meta.get('requires_dist')
-                    rd-opt: {
-                        nil -> {}
-
-                        err -> {}
-
-                        ok -> {
-                            arr = it
-                            rn = arr.arr-len()
-                            k = 0
-                            (k < rn) {
-                                elem = arr.arr-get(k)
-
-                                #{overflow=wrap}
-                                k = k + 1
-                                elem: {
-                                    nil -> {}
-
-                                    err -> {}
-
-                                    ok -> {
-                                        dep, dp-ok = it.str()
-                                        dp-ok -> sb = sb - 'requires_dist=' - dep - '\n'
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            ; ── urls section (wheel / sdist download metadata) ──
-            urls-opt = root.get('urls')
-            urls-opt: {
-                nil -> {}
-
-                err -> {}
-
-                ok -> {
-                    arr = it
-                    n = arr.arr-len()
-                    i = 0
-                    (i < n) {
-                        fel = arr.arr-get(i)
-
-                        #{overflow=wrap}
-                        i = i + 1
-                        fel: {
-                            nil -> {}
-
-                            err -> {}
-
-                            ok -> {
-                                file = it
-                                ptype, pt-ok = file.get-str('packagetype')
-                                pt-ok -> {
-                                    tag = ''
-                                    ptype == 'bdist_wheel' -> tag = 'wheel'
-                                    ptype == 'sdist' -> tag = 'sdist'
-
-                                    tag != '' -> {
-                                        url, u-ok = file.get-str('url')
-                                        u-ok -> sb = sb - tag - '-url=' - url - '\n'
-
-                                        fname, f-ok = file.get-str('filename')
-                                        f-ok -> sb = sb - tag - '-filename=' - fname - '\n'
-
-                                        dg-opt = file.get('digests')
-                                        dg-opt: {
-                                            nil -> {}
-
-                                            err -> {}
-
-                                            ok -> {
-                                                sha, sha-ok = it.get-str('sha256')
-                                                sha-ok -> sb = sb - tag - '-hash=' - sha - '\n'
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            info = sb
-        }
-    }
+    b = str-to-bytes(s)
+    flat = jsonx.parse-package-json-native(b)
+    flat != '' -> info = flat
 }
 
 ; parse-releases-json — decode the `releases` object keys into a
-; newline-separated version list
+; newline-separated version list (pure-Nolang via jsonx over []byte).
 parse-releases-json = (s str) (versions ?str) {
     versions = nil
 
-    root-opt = json.parse(s)
-    root-opt: {
-        nil -> return
-
-        err -> return
-
-        ok -> {
-            root = it
-            rel-opt = root.get('releases')
-            rel-opt: {
-                nil -> {}
-
-                err -> {}
-
-                ok -> {
-                    rel = it
-                    versions = rel.obj-keys-str()
-                }
-            }
-        }
+    b = str-to-bytes(s)
+    os, oe, ok = jsonx.json-get-object(b, 'releases')
+    ok -> {
+        keys = jsonx.json-get-object-keys(b, os, oe)
+        keys != '' -> versions = keys
     }
 }
 
@@ -266,13 +158,9 @@ get-info-field = (info str, key str) (val ?str) {
 }
 
 ; get-package-info — get package metadata via JSON API
+; (fetch-package-json now returns the flat info string directly)
 get-package-info = (name str) (info ?str) {
-    body-opt = fetch-package-json(name)
-    body-opt: {
-        ok -> info = parse-package-json(it)
-        nil -> {}
-        err -> {}
-    }
+    info = fetch-package-json(name)
 }
 
 ; get-package-versions — list all available versions (newline-separated)
@@ -312,35 +200,14 @@ get-package-url = (name str, ver str) (url ?str) {
     }
 }
 
-; download-package — download a package to a destination path
+; download-package — download a package to a destination path (pure Nolang)
 download-package = (name str, ver str, dest str) (ok bool) {
     ok = false
-
     url-opt = get-package-url(name, ver)
     url-opt: {
-        ok -> url = it
-        nil -> return
-        err -> return
-    }
-
-    resp = http.get(url)
-    resp: {
-        nil -> return
-
-        err -> return
-
-        ok -> {
-            status = it.status-code
-            body = it.body
-            status >= 200 && status < 300 -> {
-                fd = fs.open-write(dest)
-                fd > 0 -> {
-                    fs.write(fd, body, body.len-bytes())
-                    fs.close(fd)
-                    ok = true
-                }
-            }
-        }
+        ok -> ok = httpclient.http-download(it, dest)
+        nil -> {}
+        err -> {}
     }
 }
 
@@ -468,16 +335,8 @@ get-simple-index = (name str) (index ?str) {
     #{overflow=wrap}
     url = base - norm-name - '/'
 
-    resp = http.get(url)
-    resp: {
-        nil -> return
-
-        ok -> {
-            index = it.body
-        }
-
-        err -> return
-    }
+    status, idx, ok = httpclient.http-get(url)
+    ok -> index = idx
 }
 
 ; ═══════════════════════════════════════════════
@@ -505,17 +364,8 @@ get-simple-index = (name str) (index ?str) {
 search-packages = (query str) (results str) {
     results = ''
     base = 'https://pypi.org/search/?q=' - query
-    resp = http.get(base)
-    resp: {
-        nil -> return
-
-        ok -> {
-            body = it.body
-            results = extract-project-names(body)
-        }
-
-        err -> return
-    }
+    status, body, ok = httpclient.http-get(base)
+    ok -> results = extract-project-names(body)
 }
 
 ; ═══════════════════════════════════════════════
