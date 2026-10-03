@@ -13,6 +13,7 @@
 # /nouv/src/registry
 # /nouv/src/config
 # /nouv/src/utils
+# /nouv/src/markers
 
 ; ═══════════════════════════════════════════════
 ; resolve-all — resolve all dependencies from config
@@ -512,8 +513,29 @@ get-requires-dist = (info str, ver str) (deps str) {
             ; 'requires_dist=' 长度为 14，值从下标 14 开始
             utils.starts-with-str(line, 'requires_dist=') -> {
                 val = utils.slice-str(line, 14, line.len-bytes())
-                #{overflow=wrap}
-                deps = deps - val - '\n'
+
+                ; split the requirement from its environment marker (first ';')
+                semi = utils.index-str(val, ';')
+                req-part = val
+                marker = ''
+                {
+                    #{overflow=wrap}
+                    semi >= 0 -> {
+                        marker = utils.trim-str(utils.slice-str(val, semi + 1, val.len-bytes()))
+                        req-part = utils.trim-str(utils.slice-str(val, 0, semi))
+                    }
+                }
+
+                ; keep entries whose marker applies; empty marker always applies.
+                ; PyPI occasionally serves a contaminated requires_dist (another
+                ; package's extra-gated deps leak in); marker filtering drops those
+                ; because `extra == "..."` evaluates false with no requested extra.
+                keep = true
+                marker != '' -> keep = markers.evaluate(marker, '')
+                keep -> {
+                    #{overflow=wrap}
+                    deps = deps - req-part - '\n'
+                }
             }
         }
     }

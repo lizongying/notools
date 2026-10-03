@@ -98,13 +98,6 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
         }
         ok -> {}
     }
-    print('DBG sent req')
-    print('DBG host=')
-    print(host)
-    print('DBG path=')
-    print(path)
-    print('DBG reqlen=')
-    print(req.len-bytes())
 
     buf str = with-len(16640)
     result []byte = with-len(0)
@@ -117,21 +110,16 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
         #{overflow=wrap}
         iters = iters + 1
         n = tls-c.recv(buf, 16640)
-        print('DBG recv n=')
-        print(n)
-        n > 0 -> {
-            print('DBG head=')
-            print(utils.slice-str(buf, 0, n))
-        }
         n <= 0 -> break
-
-        chunk []byte = with-len(n)
-        j <- [0..n): {
-            #{index-out=0}
-            chunk[j] = buf.byte(j)
+        n > 0 -> {
+            chunk []byte = with-len(n)
+            j <- [0..n): {
+                #{index-out=0}
+                chunk[j] = buf.byte(j)
+            }
+            chunk.truncate(n)
+            result = bytes-concat(result, chunk)
         }
-        chunk.truncate(n)
-        result = bytes-concat(result, chunk)
 
         ; only re-scan once we plausibly have the full header line set
         header-end = find-crlfcrlf(result)
@@ -140,12 +128,6 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
             break
         }
     }
-    print('DBG p1 done iters=')
-    print(iters)
-    print(' header-end=')
-    print(header-end)
-    print(' cl=')
-    print(content-length)
 
     ; ── Phase 2: read exactly content-length body bytes (keep-alive safe) ──
     {
@@ -175,12 +157,6 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
             ok = true
         }
     }
-    print('DBG p2 done resultlen=')
-    print(result.len())
-    print(' end=')
-    print(end)
-    print(' ok=')
-    print(ok)
 
     tls-c.close()
 }
@@ -288,10 +264,12 @@ bytes-concat = (a []byte, b []byte) (out []byte) {
 ; ═══════════════════════════════════════════════
 
 ; find-crlfcrlf — index of the first `\r\n\r\n` (13,10,13,10) in b, else -1
+; ⚠️ 外層 (n >= 4) 必須是一次性 if（→），不是 while（{ }）——
+; 否則 n 不變、條件恆真，會變成無窮迴圈。
 find-crlfcrlf = (b []byte) (pos i64) {
     pos = -1
     n = b.len()
-    (n >= 4) {
+    (n >= 4) -> {
         i = 0
         (i <= n - 4) {
             {
@@ -403,11 +381,13 @@ parse-status-code = (b []byte, header-end i64) (code i64) {
 }
 
 ; slice-bytes — b[from..to) as a fresh []byte (ranges clamped safely)
+; ⚠️ 外層 (from < to) 必須是一次性 if（→），不是 while（{ }）——
+; from/to 在迴圈體內不變，否則會無窮迴圈。
 slice-bytes = (b []byte, from i64, to i64) (out []byte) {
     out = with-len(0)
     (from < 0) -> from = 0
     (to > b.len()) -> to = b.len()
-    (from < to) {
+    (from < to) -> {
         n = to - from
         out = with-len(n)
         i <- [0..n): {

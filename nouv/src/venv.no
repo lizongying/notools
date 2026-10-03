@@ -229,7 +229,54 @@ get-bin = (venv-path str) (bin-dir str) {
 ; ═══════════════════════════════════════════════
 
 get-site-packages = (venv-path str) (sp-dir str) {
-    sp-dir = venv-path - '/lib/python3.12/site-packages'
+    sp-dir = ''
+
+    ; derive the real interpreter version from pyvenv.cfg instead of
+    ; hardcoding python3.12 — the venv may have been created with any
+    ; Python version, and installing into the wrong lib dir makes the
+    ; environment non-importable.
+    cfg-opt = fs.read-str(venv-path - '/pyvenv.cfg')
+    cfg-opt: {
+        ok -> {
+            cfg = it
+            lines = utils.split-str(cfg, '\n')
+            n = lines.len()
+            i = 0
+            (i < n) {
+                #{index-out=0}
+                line = lines[i]
+                #{overflow=wrap}
+                i = i + 1
+                {
+                    utils.starts-with-str(line, 'version = ') -> {
+                        full = utils.slice-str(line, 10, line.len-bytes())
+                        dot1 = utils.index-str(full, '.')
+                        {
+                            dot1 >= 0 -> {
+                                major = utils.slice-str(full, 0, dot1)
+                                rest = utils.slice-str(full, dot1 + 1, full.len-bytes())
+                                dot2 = utils.index-str(rest, '.')
+                                minor = rest
+                                {
+                                    dot2 >= 0 -> minor = utils.slice-str(rest, 0, dot2)
+                                }
+                                sp-dir = venv-path - '/lib/python' - major - '.' - minor - '/site-packages'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        nil -> {
+        }
+        err -> {
+        }
+    }
+
+    ; fallback for venvs without a readable pyvenv.cfg
+    {
+        sp-dir == '' -> sp-dir = venv-path - '/lib/python3.12/site-packages'
+    }
 }
 
 ; ═══════════════════════════════════════════════
