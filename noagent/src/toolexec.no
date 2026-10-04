@@ -1,0 +1,155 @@
+; toolexec.no — dispatch a tool call to its side-effecting implementation
+;
+; The model hands us a function name plus a JSON-encoded arguments object. We
+; read scalar fields with jsonx, then perform the filesystem / process action
+; and return a plain-text result for the transcript. Approval and path
+; containment are enforced upstream by agent.no / approval.no.
+
+# /noagent/src/jsonx
+# /noagent/src/utils
+
+; ═══════════════════════════════════════════════
+; arg-str — read one string field out of an arguments JSON object
+; ═══════════════════════════════════════════════
+
+arg-str = (args-json str, key str) (val str) {
+    val = ''
+    doc = jsonx.parse(args-json)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> val = jsonx.get-str(it, key)
+    }
+}
+
+arg-path = (args-json str) (val str) {
+    val = arg-str(args-json, 'path')
+}
+
+arg-command = (args-json str) (val str) {
+    val = arg-str(args-json, 'command')
+}
+
+; ═══════════════════════════════════════════════
+; execute — run a tool by name, return its textual result
+; ═══════════════════════════════════════════════
+
+execute = (name str, args-json str) (result str) {
+    result = ''
+    {
+        name == 'read-file' -> result = exec-read(arg-path(args-json))
+        name == 'write-file' -> result = exec-write(arg-path(args-json), arg-str(args-json, 'content'))
+        name == 'edit-file' -> result = exec-edit(arg-path(args-json), arg-str(args-json, 'search'), arg-str(args-json, 'replace'))
+        name == 'list-dir' -> result = exec-list(arg-path(args-json))
+        name == 'run-shell' -> result = exec-shell(arg-command(args-json))
+        -> result = 'error: unknown tool ' - name
+    }
+}
+
+; ═══════════════════════════════════════════════
+; exec-read
+; ═══════════════════════════════════════════════
+
+exec-read = (path str) (out str) {
+    out = ''
+    path == '' -> {
+        out = 'error: missing path'
+        return
+    }
+    utils.file-exists(path) == false -> {
+        out = 'error: file not found: ' - path
+        return
+    }
+    out = utils.read-file-str(path)
+}
+
+; ═══════════════════════════════════════════════
+; exec-write
+; ═══════════════════════════════════════════════
+
+exec-write = (path str, content str) (out str) {
+    out = ''
+    path == '' -> {
+        out = 'error: missing path'
+        return
+    }
+    wrote = utils.write-file-str(path, content)
+    wrote == false -> {
+        out = 'error: write failed: ' - path
+        return
+    }
+    out = 'wrote ' - content.len-bytes().to-str() - ' bytes to ' - path
+}
+
+; ═══════════════════════════════════════════════
+; exec-edit — replace the first occurrence of `search` with `replace`
+; ═══════════════════════════════════════════════
+
+exec-edit = (path str, search str, replace str) (out str) {
+    out = ''
+    path == '' -> {
+        out = 'error: missing path'
+        return
+    }
+    search == '' -> {
+        out = 'error: empty search'
+        return
+    }
+    utils.file-exists(path) == false -> {
+        out = 'error: file not found: ' - path
+        return
+    }
+    content = utils.read-file-str(path)
+    content.contains(search) == false -> {
+        out = 'error: search text not found in ' - path
+        return
+    }
+    updated = content.replace-n(search, replace, 1)
+    wrote = utils.write-file-str(path, updated)
+    wrote == false -> {
+        out = 'error: write failed: ' - path
+        return
+    }
+    out = 'edited ' - path
+}
+
+; ═══════════════════════════════════════════════
+; exec-list
+; ═══════════════════════════════════════════════
+
+exec-list = (path str) (out str) {
+    out = ''
+    p = path
+    p == '' -> p = '.'
+    entries = fs.list-dir(p)
+    entries.len() <= 0 -> {
+        out = '(empty or not a directory): ' - p
+        return
+    }
+    out = utils.join-str(entries, '\n')
+}
+
+; ═══════════════════════════════════════════════
+; exec-shell — run via /bin/sh -c and return combined output + exit code.
+;
+; std process.cmd now captures stdout correctly and keeps `-c` semantics for
+; any shell program (basename sh/bash/zsh/dash/ksh/ash) — the old `exec 1>&2;`
+; workaround for the broken raw-arg concatenation is no longer needed.
+; merge-err=true interleaves stdout+stderr into `so` in write order.
+; ═══════════════════════════════════════════════
+
+exec-shell = (command str) (out str) {
+    out = ''
+    command == '' -> {
+        out = 'error: missing command'
+        return
+    }
+    so, se, code, launch-err = process.cmd('/bin/sh', ['-c', command], '', '', [], 0, true)
+    {
+        launch-err != '' -> out = 'error: ' - launch-err
+        -> {
+            out = so
+            out = out - 'exit: ' - code.to-str()
+        }
+    }
+}

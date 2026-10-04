@@ -1,0 +1,133 @@
+; approval.no — dangerous-operation gating and path-containment for noagent
+;
+; Two safety duties:
+;   1. confirm(): interactive (or auto) approval for run-shell / write-file /
+;      edit-file before they touch the system.
+;   2. within-cwd(): the target path of a write/edit must resolve to a location
+;      inside the current working directory; `..` escapes are rejected.
+
+# /noagent/src/utils
+
+; ═══════════════════════════════════════════════
+; requires-approval — tools that mutate the system need a yes before running
+; ═══════════════════════════════════════════════
+
+requires-approval = (name str) (yes bool) {
+    yes = false
+    {
+        name == 'run-shell' -> yes = true
+        name == 'write-file' -> yes = true
+        name == 'edit-file' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; needs-containment — tools whose path argument must stay inside cwd
+; ═══════════════════════════════════════════════
+
+needs-containment = (name str) (yes bool) {
+    yes = false
+    {
+        name == 'write-file' -> yes = true
+        name == 'edit-file' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; normalize — collapse . / .. / duplicate slashes, keeping the abs-vs-relative
+; decision in the leading slash. Pure lexical (no filesystem access).
+; Uses a pre-sized stack + an index cursor (never reassigns the slice var via
+; a function call, which would drop its []str element type and mis-lower push).
+; ═══════════════════════════════════════════════
+
+normalize = (p str) (out str) {
+    #{overflow=wrap}
+    abs-first = false
+    p.starts-with('/') -> abs-first = true
+    parts = utils.split-str(p, '/')
+    n = parts.len()
+    stack []str = with-len(n)
+    top = 0
+    i <- [0..n): {
+        #{index-out=0}
+        seg = parts[i]
+        {
+            seg == '' -> {}
+            seg == '.' -> {}
+            seg == '..' -> {
+                #{overflow=wrap}
+                top > 0 -> top = top - 1
+                top == 0 -> abs-first == false -> {
+                    stack[top] = '..'
+                    #{overflow=wrap}
+                    top = top + 1
+                }
+            }
+            -> {
+                stack[top] = seg
+                #{overflow=wrap}
+                top = top + 1
+            }
+        }
+    }
+    acc []str = with-len(0)
+    j <- [0..top): {
+        #{index-out=0}
+        acc.push(stack[j])
+    }
+    body = utils.join-str(acc, '/')
+    out = body
+    abs-first -> out = '/' - body
+    out == '' -> out = '.'
+}
+
+; ═══════════════════════════════════════════════
+; resolve-abs — turn a tool path argument into a normalized absolute path
+; ═══════════════════════════════════════════════
+
+resolve-abs = (p str) (out str) {
+    cwd = os.get-wd()
+    joined = p
+    p.starts-with('/') == false -> joined = cwd - '/' - p
+    out = normalize(joined)
+}
+
+; ═══════════════════════════════════════════════
+; within-cwd — does path `p` resolve inside the working directory?
+; ═══════════════════════════════════════════════
+
+within-cwd = (p str) (yes bool) {
+    yes = false
+    cwd = normalize(os.get-wd())
+    abs = resolve-abs(p)
+    abs == cwd -> yes = true
+    prefix = cwd
+    prefix.ends-with('/') == false -> prefix = cwd - '/'
+    abs.starts-with(prefix) -> yes = true
+}
+
+; ═══════════════════════════════════════════════
+; confirm — show the planned action and gate it. auto-approve skips the prompt.
+; ═══════════════════════════════════════════════
+
+confirm = (label str, detail str, auto bool) (granted bool) {
+    granted = true
+    auto -> return
+    print('')
+    print('[approval] ' - label - ': ' - detail)
+    io.out('allow? [y/N] ')
+    line = io.read-line()
+    line: {
+        ok -> {
+            t = utils.trim-str(it)
+            {
+                t == 'y' -> granted = true
+                t == 'Y' -> granted = true
+                t == 'yes' -> granted = true
+                -> granted = false
+            }
+        }
+        nil -> granted = false
+        err -> granted = false
+    }
+}

@@ -21,8 +21,9 @@
 ; returns tgz-path ?str — path to created tarball (nil=failed)
 ; ═══════════════════════════════════════════════
 
-pack = (dir str, dest str) (tgz-path ?str) {
+pack = (dir str, dest str) (tgz-path ?str, ok bool) {
     tgz-path = nil
+    ok = false
 
     ; read package.json for name and version
     pkg-path = dir - '/package.json'
@@ -65,6 +66,7 @@ pack = (dir str, dest str) (tgz-path ?str) {
                                 cmd = 'cd ' - dir - ' && tar czf ' - tgz-path - ' ' - exclude - ' .'
                                 code = process.process-system(cmd)
                                 code != 0 -> tgz-path = nil
+                                code == 0 -> ok = true
                             }
 
                             nil -> {
@@ -150,6 +152,14 @@ publish = (cfg config, dir str, token str) (ok bool) {
                                     process.process-system('rm -rf ' - tmp-dest)
                                     return
                                 }
+                                tgz-file str
+                                tgz-path: {
+                                    ok -> tgz-file = it
+
+                                    nil -> tgz-file = ''
+
+                                    err -> tgz-file = ''
+                                }
 
                                 ; construct publish URL
                                 safe-name = pkg-name
@@ -162,23 +172,45 @@ publish = (cfg config, dir str, token str) (ok bool) {
                                 #{overflow=wrap}
                                 pub-url = cfg.registry - safe-name
 
-                                ; upload via curl with auth
-                                #{overflow=wrap}
-                                curl-cmd = 'curl -s -X PUT -H "Authorization: Bearer ' - token - '" -H "Content-Type: application/octet-stream" --data-binary @' - tgz-path - ' ' - pub-url
-                                code = process.process-system(curl-cmd)
+                                ; upload via pure-Nolang HTTP PUT (no system curl)
+                                tgz-bytes = fs.read-file(tgz-file)
+                                tgz-bytes.len() == 0 -> {
+                                    print('error: failed to read tarball')
+                                    #{overflow=wrap}
+                                    process.process-system('rm -rf ' - tmp-dest)
+                                    return
+                                }
+                                body = tgz-bytes.to-bytes-str()
+                                req = http.request {
+                                    method: 'PUT'
+                                    url: pub-url
+                                    body: body
+                                }
+                                req.add-header('Authorization', 'Bearer ' - token)
+                                req.add-header('Content-Type', 'application/octet-stream')
+                                resp = http.do-req(req)
 
                                 ; cleanup
                                 #{overflow=wrap}
                                 process.process-system('rm -rf ' - tmp-dest)
 
-                                code == 0 -> {
-                                    #{overflow=wrap}
-                                    print('noNpm: published ' - pkg-name - '@' - pkg-ver)
-                                    ok = true
-                                }
+                                resp: {
+                                    ok -> {
+                                        sc = it.status-code
+                                        sc >= 200 && sc < 300 -> {
+                                            #{overflow=wrap}
+                                            print('noNpm: published ' - pkg-name - '@' - pkg-ver)
+                                            ok = true
+                                        }
 
-                                -> {
-                                    print('error: publish failed')
+                                        -> {
+                                            print('error: publish failed: status ' - sc.to-str())
+                                        }
+                                    }
+
+                                    -> {
+                                        print('error: publish failed')
+                                    }
                                 }
                             }
 

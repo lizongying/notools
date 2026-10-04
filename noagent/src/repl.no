@@ -1,0 +1,160 @@
+; repl.no — the interactive read-eval-print loop
+;
+; Dispatch design (forced by the current compiler build, 20318d7d):
+;   - The read loop is a `for k <- [0..LARGE)` range, NOT a `(cond) { }` while
+;     loop. While loops whose body nests a connective/conditional chain are
+;     miscompiled (arms silently dropped, the post-loop statement hoisted into
+;     the loop). A for-range with the same shape compiles and runs correctly.
+;   - The connective assigns ONLY a scalar `action` code — arm bodies must not
+;     reassign outer heap vectors/structs or mutate loop state, or the whole
+;     dispatch is dropped. Real state changes happen in flat `action == N -> { }`
+;     blocks placed AFTER the connective (those execute fully and persist).
+;   - Config is mutated field-by-field (cfg.model = ...); the config struct is
+;     never reassigned wholesale (a `c = f(c)` move corrupts its str fields).
+;   - Exit uses `return` from the enclosing function, not os.exit (os.exit is
+;     dropped inside a loop body here).
+
+# /noagent/src/config
+# /noagent/src/messages
+# /noagent/src/agent
+# /noagent/src/tools
+# /noagent/src/session
+# /noagent/src/utils
+
+; ═══════════════════════════════════════════════
+; helpers (defined before `start` so the module resolves them top-down)
+; ═══════════════════════════════════════════════
+
+; reseed — a fresh history containing just the system prompt (if any)
+reseed = (cfg config.config) (out []messages.message) {
+    out = messages.new-list()
+    cfg.system != '' -> out = messages.append(out, messages.make('system', cfg.system))
+}
+
+; after — the trimmed remainder of `text` following a known `/cmd ` prefix
+after = (text str, prefix str) (out str) {
+    out = utils.trim-str(utils.slice-str(text, prefix.len-bytes(), text.len-bytes()))
+}
+
+; help — list the interactive meta commands
+help = () {
+    print('commands:')
+    print('  /help                 show this help')
+    print('  /model [name]         show or set the model')
+    print('  /system [text]        show or set the system prompt (resets history)')
+    print('  /tools                show tool availability')
+    print('  /save <id>            save the conversation as a session')
+    print('  /load <id>            load a saved session')
+    print('  /clear                clear the conversation history')
+    print('  /exit (/quit)         leave the REPL')
+    print('anything else is sent to the model as a prompt')
+}
+
+; repl-save — handle `/save <id>` (reads history; does not mutate caller state)
+repl-save = (text str, history []messages.message) {
+    sid = after(text, '/save ')
+    saved = session.save(sid, history)
+    saved == false -> print('save failed: ' - sid)
+    saved -> print('saved session: ' - sid)
+}
+
+; repl-show-answer — echo a non-streaming answer. In streaming mode the
+; provider already echoed deltas, so only reprint when streaming is off.
+repl-show-answer = (cfg config.config, answer str) {
+    cfg.stream == false -> print(answer)
+}
+
+; ═══════════════════════════════════════════════
+; start — start the REPL. `version` is echoed in the banner.
+; ═══════════════════════════════════════════════
+
+start = (argc i64, version str) {
+    cfg, ignored = config.resolve(argc)
+    print('noagent ' - version - ' - interactive session')
+    print('model=' - cfg.model - '  provider=' - cfg.provider - '  stream=' - cfg.stream.to-str() - '  tools=' - (cfg.no-tools == false).to-str())
+    print('type /help for commands, /exit to quit')
+
+    history = reseed(cfg)
+    tools-json = ''
+    cfg.no-tools == false -> tools-json = tools.schema-list()
+
+    ; large bound acts as "loop until exit/EOF"; we `return` to leave early
+    k <- [0..1000000): {
+        io.out('noagent> ')
+        line = ''
+        eof = false
+        rl = io.read-line()
+        rl: {
+            ok -> line = it
+            nil -> eof = true
+            err -> eof = true
+        }
+        eof -> {
+            print('')
+            return
+        }
+        text = utils.trim-str(line)
+
+        ; connective assigns a scalar action code only (see file header)
+        slash = utils.starts-with-str(text, '/')
+        empty = text == ''
+        action = 0
+        {
+            text == '/exit' -> action = 1
+            text == '/quit' -> action = 1
+            text == '/help' -> action = 3
+            text == '/clear' -> action = 2
+            text == '/model' -> action = 8
+            text == '/system' -> action = 9
+            text == '/tools' -> action = 10
+            empty -> action = 12
+            slash -> action = 11
+            -> action = 0
+        }
+        utils.starts-with-str(text, '/model ') -> action = 4
+        utils.starts-with-str(text, '/system ') -> action = 5
+        utils.starts-with-str(text, '/save ') -> action = 6
+        utils.starts-with-str(text, '/load ') -> action = 7
+
+        ; flat blocks: these run fully and persist state into later iterations
+        action == 1 -> {
+            print('bye')
+            return
+        }
+        action == 2 -> {
+            history = reseed(cfg)
+            print('(history cleared)')
+        }
+        action == 3 -> help()
+        action == 4 -> {
+            cfg.model = after(text, '/model ')
+            print('model -> ' - cfg.model)
+        }
+        action == 5 -> {
+            cfg.system = after(text, '/system ')
+            history = reseed(cfg)
+            print('system prompt updated (history reset)')
+        }
+        action == 6 -> repl-save(text, history)
+        action == 7 -> {
+            loaded, lok = session.load(after(text, '/load '))
+            lok == false -> print('no such session')
+            lok -> {
+                history = loaded
+                print('loaded session (' - history.len().to-str() - ' msgs)')
+            }
+        }
+        action == 8 -> print('model: ' - cfg.model)
+        action == 9 -> print('system: ' - cfg.system)
+        action == 10 -> print('tools: ' - (cfg.no-tools == false).to-str() - '  (read-file, write-file, edit-file, list-dir, run-shell)')
+        action == 11 -> print('unknown command: ' - text - '  (try /help)')
+        action == 0 -> {
+            h2 = messages.append(history, messages.make('user', text))
+            grown, answer, ok2 = agent.run-turn(cfg, h2, tools-json)
+            history = grown
+            ok2 == false -> eprint(answer)
+            ok2 -> repl-show-answer(cfg, answer)
+        }
+    }
+}
+

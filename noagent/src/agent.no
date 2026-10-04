@@ -1,0 +1,134 @@
+; agent.no — the core autonomous loop: send messages + tools, execute any
+; tool_calls the model returns, feed results back, and stop at a final answer
+; (or when the bounded turn budget is exhausted).
+;
+; Convergence uses BOTH conditions (finish_reason and tool_calls presence) and
+; a max-turns cap, so a model that keeps requesting tools can never loop forever.
+
+# /noagent/src/config
+# /noagent/src/messages
+# /noagent/src/provider
+# /noagent/src/tools
+# /noagent/src/toolexec
+# /noagent/src/approval
+# /noagent/src/utils
+
+; ═══════════════════════════════════════════════
+; describe — human-readable summary of a pending tool call (for approval)
+; ═══════════════════════════════════════════════
+
+describe = (name str, args-json str) (out str) {
+    out = name
+    {
+        name == 'run-shell' -> out = toolexec.arg-command(args-json)
+        name == 'write-file' -> out = toolexec.arg-path(args-json)
+        name == 'edit-file' -> out = toolexec.arg-path(args-json)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; handle-call — gate + execute one tool call, return its textual result
+; ═══════════════════════════════════════════════
+
+handle-call = (auto bool, name str, args-json str) (result str) {
+    result = ''
+    tools.known(name) == false -> {
+        result = 'error: unknown tool ' - name
+        return
+    }
+
+    ; write/edit must stay inside the working directory
+    approval.needs-containment(name) -> {
+        p = toolexec.arg-path(args-json)
+        approval.within-cwd(p) == false -> {
+            result = 'error: path escapes working directory: ' - p
+            return
+        }
+    }
+
+    ; dangerous tools need explicit approval unless auto-approve is on
+    approval.requires-approval(name) -> {
+        granted = approval.confirm(name, describe(name, args-json), auto)
+        granted == false -> {
+            result = 'user denied this action'
+            return
+        }
+    }
+
+    result = toolexec.execute(name, args-json)
+}
+
+; ═══════════════════════════════════════════════
+; run-turn — drive the model<->tool loop over an EXISTING history whose last
+; entry is the fresh user message. Appends assistant turns and tool results,
+; returns the (grown) history plus the final answer.
+;
+; In streaming mode provider.complete already echoes content deltas (and a
+; trailing newline) to stdout, so callers must not reprint `answer` then.
+; ═══════════════════════════════════════════════
+
+run-turn = (cfg config.config, history []messages.message, tools-json str) (out []messages.message, answer str, ok bool) {
+    out = history
+    answer = ''
+    ok = false
+
+    turn = 0
+    (turn < cfg.max-turns) {
+        ; bound the context: drop the oldest droppable tool-turns (a
+        ; tool_calls assistant always stays paired with its tool results) so a
+        ; long loop can never overflow the model window. budget <= 0 disables it.
+        cfg.context-budget > 0 -> out = messages.trim-to-budget(out, cfg.context-budget)
+        resp, finish, comp-ok, errmsg = provider.complete(cfg, out, tools-json)
+        comp-ok == false -> {
+            answer = 'error: ' - errmsg
+            out = history
+            return
+        }
+
+        ; record the assistant turn (content + any tool_calls it requested)
+        out = messages.append(out, resp)
+
+        n = resp.tool-calls.len()
+        {
+            finish == 'tool_calls' -> n > 0 -> {
+                i <- [0..n): {
+                    #{index-out=0}
+                    call-id = resp.tool-calls[i].id
+                    call-name = resp.tool-calls[i].name
+                    call-args = resp.tool-calls[i].arguments
+                    eprint('[tool] ' - call-name - ' -> ' - describe(call-name, call-args))
+                    result = handle-call(cfg.auto-approve, call-name, call-args)
+                    eprint('[tool] ' - call-name - ' done')
+                    out = messages.append(out, messages.tool-message(call-id, result))
+                }
+            }
+            -> {
+                answer = resp.content
+                ok = true
+                return
+            }
+        }
+
+        turn = utils.next-i(turn)
+    }
+
+    answer = 'reached max turns (' - cfg.max-turns.to-str() - ') without a final answer'
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; loop — drive one full agent turn sequence from a user prompt.
+;   answer  the assistant's final text (or an error message when ok is false)
+;   ok      loop produced a final answer
+; ═══════════════════════════════════════════════
+
+loop = (cfg config.config, prompt str) (answer str, ok bool) {
+    history = messages.new-list()
+    cfg.system != '' -> history = messages.append(history, messages.make('system', cfg.system))
+    history = messages.append(history, messages.make('user', prompt))
+
+    tools-json = ''
+    cfg.no-tools == false -> tools-json = tools.schema-list()
+
+    grown, answer, ok = run-turn(cfg, history, tools-json)
+}

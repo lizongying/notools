@@ -1,0 +1,59 @@
+; tools.no — tool registry and OpenAI function schemas for noagent
+;
+; Each tool is exposed to the model as an OpenAI "function" object. The schema
+; array is assembled by hand (single-binary concat + jsonx.quoted) so it rides
+; the same safe path as the rest of the request body.
+
+# /noagent/src/jsonx
+
+; ═══════════════════════════════════════════════
+; known — is `name` one of our registered tools?
+; ═══════════════════════════════════════════════
+
+known = (name str) (yes bool) {
+    yes = false
+    {
+        name == 'read-file' -> yes = true
+        name == 'write-file' -> yes = true
+        name == 'edit-file' -> yes = true
+        name == 'list-dir' -> yes = true
+        name == 'run-shell' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; schema-one — wrap a name/description/parameters into one function object
+; params is a raw JSON object string (the "parameters" schema)
+; ═══════════════════════════════════════════════
+
+schema-one = (name str, desc str, params str) (out str) {
+    out = '{"type":"function","function":{"name":' - jsonx.quoted(name)
+    out = out - ',"description":' - jsonx.quoted(desc)
+    out = out - ',"parameters":' - params
+    out = out - '}}'
+}
+
+; simple single-string-property parameter schemas (kept on one line each)
+P-PATH = '{"type":"object","properties":{"path":{"type":"string","description":"file path, relative to the working directory"}},"required":["path"]}'
+P-WRITE = '{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}'
+P-EDIT = '{"type":"object","properties":{"path":{"type":"string"},"search":{"type":"string"},"replace":{"type":"string"}},"required":["path","search","replace"]}'
+P-DIR = '{"type":"object","properties":{"path":{"type":"string","description":"directory path, use . for the working directory"}},"required":["path"]}'
+P-SHELL = '{"type":"object","properties":{"command":{"type":"string","description":"shell command run via /bin/sh -c"}},"required":["command"]}'
+
+; ═══════════════════════════════════════════════
+; schema-list — the full "tools" array for the request body
+; ═══════════════════════════════════════════════
+
+schema-list = () (out str) {
+    out = '['
+    out = out - schema-one('read-file', 'Read a text file and return its contents.', P-PATH)
+    out = out - ','
+    out = out - schema-one('write-file', 'Create or overwrite a text file with the given content (must stay inside the working directory).', P-WRITE)
+    out = out - ','
+    out = out - schema-one('edit-file', 'Replace an exact substring in a file (must stay inside the working directory).', P-EDIT)
+    out = out - ','
+    out = out - schema-one('list-dir', 'List the entries of a directory.', P-DIR)
+    out = out - ','
+    out = out - schema-one('run-shell', 'Run a shell command and return its combined output and exit code.', P-SHELL)
+    out = out - ']'
+}

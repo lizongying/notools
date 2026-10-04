@@ -51,6 +51,35 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
     body = with-len(0)
     ok = false
 
+    ; retry on transient network failures (e.g. "connect failed: pypi.org"),
+    ; which PyPI / CDNs occasionally return, especially when every request
+    ; opens a fresh connection (Connection: close).  Permanent errors — bad
+    ; url, or a non-2xx status the caller decides on — are not retried.
+    attempts = 0
+    max-attempts = 4
+    (attempts < max-attempts) {
+        st, raw, good = fetch-once(url)
+        good -> {
+            status = st
+            body = raw
+            ok = true
+            attempts = max-attempts
+        }
+        -> {
+            #{overflow=wrap}
+            attempts = attempts + 1
+            good == false -> print('httpclient: transient failure, retrying ' - url)
+        }
+    }
+}
+
+; fetch-once — a single attempt at the full HTTPS GET (no retry).
+; Returns (status, body, ok); ok is false on any network / connect failure.
+fetch-once = (url str) (status i64, body []byte, ok bool) {
+    status = 0
+    body = with-len(0)
+    ok = false
+
     host, port, path, purl-ok = parse-url(url)
     purl-ok == false -> {
         print('httpclient: cannot parse url: ' - url)

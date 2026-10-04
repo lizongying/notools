@@ -1,0 +1,225 @@
+; main.no — noagent CLI entry point and command dispatcher
+;
+; noagent is a pure-Nolang autonomous LLM agent CLI: it calls an
+; OpenAI-compatible POST /v1/chat/completions over raw TLS, runs a
+; model <-> tool loop, streams SSE deltas, persists sessions, and gates
+; dangerous tools behind approval.
+;
+; Commands:
+;   noagent                     -> interactive REPL
+;   noagent run "<prompt>"      -> one autonomous agent tool loop
+;   noagent chat "<msg>"        -> single completion (no tools)
+;   noagent config show|set|path-> inspect / edit configuration
+;   noagent version             -> print version
+;   noagent help                -> print usage
+;
+; Global flags (parsed in later phases):
+;   --model --provider --base-url --api-key --stream/--no-stream
+;   --no-tools --max-turns N --yes/-y --resume <id> --session <id>
+;   --system "<text>" --temperature T --config <path>
+
+# /noagent/src/utils
+# /noagent/src/jsonx
+# /noagent/src/config
+# /noagent/src/httpclient
+# /noagent/src/messages
+# /noagent/src/provider
+# /noagent/src/agent
+# /noagent/src/repl
+# /noagent/src/tools
+# /noagent/src/session
+
+VERSION = '0.1.0'
+
+; ═══════════════════════════════════════════════
+; main entry
+; ═══════════════════════════════════════════════
+
+main = () {
+    #{overflow=wrap}
+    argc = os.args() - 1
+    argc < 1 -> {
+        cmd-repl(argc)
+        return
+    }
+    cmd = os.arg(1)
+
+    ; informational flags work even with no subcommand — let them fall through
+    ; to the dispatch below instead of opening the REPL
+    info-flag = false
+    cmd == '--version' -> info-flag = true
+    cmd == '-V' -> info-flag = true
+    cmd == '--help' -> info-flag = true
+    cmd == '-h' -> info-flag = true
+
+    ; a leading flag with no subcommand -> interactive REPL (flags still apply)
+    utils.starts-with-str(cmd, '-') -> info-flag == false -> {
+        cmd-repl(argc)
+        return
+    }
+
+    cmd: {
+        'run' -> cmd-run(argc)
+
+        'chat' -> cmd-chat(argc)
+
+        'config' -> cmd-config(argc)
+
+        'version' -> print-version()
+
+        '--version' -> print-version()
+
+        '-V' -> print-version()
+
+        'help' -> print-usage()
+
+        '--help' -> print-usage()
+
+        '-h' -> print-usage()
+
+        -> {
+            print('error: unknown command: ' - cmd)
+            print('')
+            print-usage()
+            os.exit(1)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; usage / version
+; ═══════════════════════════════════════════════
+
+print-usage = () {
+    print('noagent ' - VERSION - ' — pure Nolang autonomous LLM agent CLI')
+    print('')
+    print('USAGE:')
+    print('  noagent [command] [options]')
+    print('')
+    print('COMMANDS:')
+    print('  (none)              start interactive REPL')
+    print('  run "<prompt>"      run one autonomous agent tool loop')
+    print('  chat "<msg>"        single completion (no tools)')
+    print('  config <sub>        show | set <k> <v> | path')
+    print('  version             print version')
+    print('  help                print this help')
+    print('')
+    print('OPTIONS:')
+    print('  --model <name>        model id')
+    print('  --provider <name>     provider profile name')
+    print('  --base-url <url>      OpenAI-compatible base URL')
+    print('  --api-key <key>       API key (prefer env NOAGENT_API_KEY/OPENAI_API_KEY)')
+    print('  --stream              stream via SSE (default)')
+    print('  --no-stream           disable streaming')
+    print('  --no-tools            do not expose tools to the model')
+    print('  --max-turns N         cap agent tool-loop iterations (default 8)')
+    print('  --max-retries N       retry transient API failures (default 3)')
+    print('  --context-budget N    max content chars kept; drops oldest tool-turns (default 100000, 0=off)')
+    print('  --yes, -y             auto-approve dangerous tools')
+    print('  --resume <id>         resume a saved session')
+    print('  --session <id>        use/assign session id')
+    print('  --system "<text>"     set/override system prompt')
+    print('  --temperature T       sampling temperature')
+    print('  --config <path>       alternate config file')
+}
+
+print-version = () {
+    print('noagent ' - VERSION)
+}
+
+; ═══════════════════════════════════════════════
+; commands
+; ═══════════════════════════════════════════════
+
+cmd-chat = (argc i64) {
+    cfg, prompt = config.resolve(argc)
+    prompt == '' -> {
+        eprint('error: chat needs a message')
+        os.exit(1)
+    }
+
+    msgs = messages.new-list()
+    cfg.system != '' -> msgs.push(messages.make('system', cfg.system))
+    msgs.push(messages.make('user', prompt))
+
+    resp, finish, ok, errmsg = provider.complete(cfg, msgs, '')
+    ok == false -> {
+        eprint('error: ' - errmsg)
+        os.exit(1)
+    }
+    ; in streaming mode provider.complete already echoed the content live
+    cfg.stream == false -> print(resp.content)
+    finish != '' -> eprint('[' - finish - ']')
+}
+
+cmd-config = (argc i64) {
+    argc < 2 -> {
+        eprint('usage: noagent config show|path|set <k> <v>')
+        return
+    }
+    sub = os.arg(2)
+    cfg, ignored-rest = config.resolve(argc)
+    {
+        sub == 'show' -> print-config(cfg)
+        sub == 'path' -> print(cfg.config-path)
+        sub == 'set' -> cmd-config-set(argc, cfg)
+        -> eprint('unknown config subcommand: ' - sub)
+    }
+}
+
+; cmd-config-set — noagent config set <key> <value>
+cmd-config-set = (argc i64, cfg config.config) {
+    argc < 4 -> {
+        eprint('usage: noagent config set <key> <value>')
+        eprint('  keys: default-provider, base-url, model, api-key-env, stream')
+        return
+    }
+    key = os.arg(3)
+    value = os.arg(4)
+    done = config.set-value(cfg, key, value)
+    done == false -> {
+        eprint('error: config set failed')
+        os.exit(1)
+    }
+    print('set ' - key - ' = ' - value - ' in ' - cfg.config-path)
+}
+
+print-config = (cfg config.config) {
+    print('provider:     ' - cfg.provider)
+    print('base-url:     ' - cfg.base-url)
+    print('model:        ' - cfg.model)
+    print('stream:       ' - cfg.stream.to-str())
+    print('max-turns:    ' - cfg.max-turns.to-str())
+    print('max-retries:  ' - cfg.max-retries.to-str())
+    print('ctx-budget:   ' - cfg.context-budget.to-str())
+    print('temperature:  ' - cfg.temperature.to-str())
+    print('config-path:  ' - cfg.config-path)
+    print('api-key:      ' - redact-key(cfg.api-key))
+}
+
+; redact-key — show only a short hint whether a key is present
+redact-key = (k str) (out str) {
+    out = '(unset)'
+    k != '' -> out = '(set, ' - k.len-bytes().to-str() - ' bytes)'
+}
+
+cmd-run = (argc i64) {
+    cfg, prompt = config.resolve(argc)
+    prompt == '' -> {
+        eprint('error: run needs a prompt')
+        os.exit(1)
+    }
+    answer, ok = agent.loop(cfg, prompt)
+    {
+        ok == false -> {
+            eprint(answer)
+            os.exit(1)
+        }
+        -> print(answer)
+    }
+}
+
+cmd-repl = (argc i64) {
+    repl.start(argc, VERSION)
+}
+

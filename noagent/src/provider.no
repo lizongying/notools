@@ -1,0 +1,510 @@
+; provider.no — OpenAI-compatible chat/completions provider
+;
+; Responsibilities:
+;   - build-request   assemble the JSON body by hand (single-binary concat)
+;   - complete        POST via httpclient and return the parsed assistant turn
+;   - parse-response  PURE: turn a response body string into an assistant
+;                     message + finish_reason, so tests can feed fixtures with
+;                     no network (CI never connects out).
+;   - streaming       TRUE incremental SSE: httpclient.stream-next hands over
+;                     freshly-arrived bytes, stream-feed parses complete lines
+;                     as they land and renders content deltas live.
+
+# /noagent/src/config
+# /noagent/src/httpclient
+# /noagent/src/jsonx
+# /noagent/src/messages
+# /noagent/src/stream
+# /noagent/src/utils
+
+ACCEPT-JSON = 'application/json'
+ACCEPT-SSE = 'text/event-stream'
+BASE-RETRY-DELAY = 400    ; ms; doubled each retry (exponential backoff)
+
+; retryable — should a NON-streaming attempt be retried? true on transport
+; failure, 429 (rate-limit), or any 5xx (server error). PURE so it can be
+; unit-tested offline without any network.
+retryable = (status i64, transport-ok bool) (yes bool) {
+    yes = false
+    transport-ok == false -> yes = true
+    -> {
+        status == 429 -> yes = true
+        status >= 500 -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; build-request — messages-json is a serialized []message; tools-json is a
+; serialized []tool schema ('' when tools are disabled).
+; ═══════════════════════════════════════════════
+
+build-request = (cfg config.config, msgs-json str, tools-json str, stream bool) (body str) {
+    body = '{'
+    body = body - '"model":' - jsonx.quoted(cfg.model)
+    body = body - ',"messages":' - msgs-json
+    body = body - ',"temperature":' - cfg.temperature.to-str()
+    body = body - ',"stream":' - stream.to-str()
+    tools-json != '' -> {
+        body = body - ',"tools":' - tools-json
+    }
+    body = body - '}'
+}
+
+; ═══════════════════════════════════════════════
+; complete — send a non-streaming request, return the assistant turn.
+;   resp    assistant message (content + any tool_calls)
+;   finish  finish_reason (stop | length | tool_calls | '')
+;   ok      transport + parse succeeded
+;   errmsg  human-readable failure reason when ok is false
+; ═══════════════════════════════════════════════
+
+complete = (cfg config.config, msgs []messages.message, tools-json str) (resp messages.message, finish str, ok bool, errmsg str) {
+    ; dispatch: when streaming is requested, use the SSE path (which also
+    ; renders content deltas live to stdout)
+    cfg.stream -> {
+        resp, finish, ok, errmsg = complete-stream(cfg, msgs, tools-json)
+        return
+    }
+
+    finish = ''
+    ok = false
+    errmsg = ''
+
+    url = config.chat-url(cfg)
+    msgs-json = messages.serialize(msgs)
+    body = build-request(cfg, msgs-json, tools-json, false)
+
+    status = 0
+    resp-body = ''
+    posted = false
+    #{overflow=wrap}
+    tries = cfg.max-retries + 1
+    delay-ms = BASE-RETRY-DELAY
+    a <- [0..tries): {
+        status, resp-body, posted = httpclient.http-post(url, cfg.api-key, body, ACCEPT-JSON)
+        can-retry = retryable(status, posted)
+        can-retry == false -> break
+        a < cfg.max-retries -> {
+            eprint('noagent: transient failure (http ' - status.to-str() - '); retrying')
+            time.sleep-ms(delay-ms)
+            #{overflow=wrap}
+            delay-ms = delay-ms * 2
+        }
+    }
+
+    posted == false -> {
+        resp = messages.make('assistant', '')
+        errmsg = 'request failed'
+        return
+    }
+    {
+        status < 200 -> status >= 300 -> {
+            resp = messages.make('assistant', '')
+            errmsg = extract-api-error(resp-body)
+            status-text = 'http ' - status.to-str()
+            {
+                errmsg == '' -> errmsg = status-text
+                -> errmsg = status-text - ': ' - errmsg
+            }
+            return
+        }
+    }
+
+    resp, finish, ok, errmsg = parse-response(resp-body)
+}
+
+; ═══════════════════════════════════════════════
+; parse-response — PURE (body string -> assistant message + finish_reason).
+; Feasible for offline unit tests with recorded fixtures.
+; ═══════════════════════════════════════════════
+
+parse-response = (body str) (resp messages.message, finish str, ok bool, errmsg str) {
+    resp = messages.make('assistant', '')
+    finish = ''
+    ok = false
+    errmsg = ''
+
+    doc = jsonx.parse(body)
+    doc: {
+        err -> errmsg = 'invalid json: ' - it
+        nil -> errmsg = 'empty response'
+        ok -> {
+            root = it
+            choices = jsonx.get-child(root, 'choices')
+            choices: {
+                err -> errmsg = 'no choices'
+                nil -> errmsg = extract-api-error(body)
+                ok -> {
+                    arr = it
+                    arr.arr-len() <= 0 -> errmsg = 'empty choices'
+                    -> {
+                        c0 = arr.arr-get(0)
+                        c0: {
+                            err -> errmsg = 'no choice 0'
+                            nil -> errmsg = 'no choice 0'
+                            ok -> {
+                                choice = it
+                                finish = jsonx.get-str(choice, 'finish_reason')
+                                msg = jsonx.get-child(choice, 'message')
+                                msg: {
+                                    err -> errmsg = 'no message'
+                                    nil -> errmsg = 'no message'
+                                    ok -> resp = to-assistant(it)
+                                }
+                                ok = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; to-assistant — build a fresh assistant message from a response `message` json
+; object (content + tool_calls). We build from scratch instead of moving an
+; input message into the output: `out = r` (struct move) shares the caller's
+; str-field buffers and the compiler double-frees them at scope exit.
+; ═══════════════════════════════════════════════
+
+to-assistant = (msg json) (out messages.message) {
+    out = messages.make('assistant', '')
+    out.content = jsonx.get-str(msg, 'content')
+    calls = jsonx.get-child(msg, 'tool_calls')
+    calls: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            arr = it
+            n = arr.arr-len()
+            i <- [0..n): {
+                #{index-out=0}
+                e = arr.arr-get(i)
+                e: {
+                    err -> {}
+                    nil -> {}
+                    ok -> {
+                        tc messages.tool-call
+                        tc.id = jsonx.get-str(it, 'id')
+                        fn = jsonx.get-child(it, 'function')
+                        fn: {
+                            err -> {}
+                            nil -> {}
+                            ok -> {
+                                tc.name = jsonx.get-str(it, 'name')
+                                tc.arguments = jsonx.get-str(it, 'arguments')
+                            }
+                        }
+                        out.tool-calls.push(tc)
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-api-error — pull error.message out of an OpenAI error body ('' if none)
+; ═══════════════════════════════════════════════
+
+extract-api-error = (body str) (msg str) {
+    msg = ''
+    doc = jsonx.parse(body)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            e = jsonx.get-child(it, 'error')
+            e: {
+                err -> {}
+                nil -> {}
+                ok -> msg = jsonx.get-str(it, 'message')
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; incremental-stream state — module-level, ONE in-flight stream at a time
+; (single-threaded CLI); stream-reset runs before every feed cycle.
+;
+; ⚠️ These are mutated ONLY via operations Nolang persists across calls:
+;   - vec .push / .truncate (in-place)          — NOT `v = ...` reassignment
+;   - scalar / bool reassignment                — fine
+;   - vec index-store  g-ids[idx] = x           — fine
+; A bare OWNED (str/vec) module-global REASSIGNMENT (`g-content = g-content - d`)
+; silently writes a dead function-local temp; the global never updates — a
+; confirmed compiler gap (see hir2mir rebind gate `!isOwnedLocal(gv)`). So
+; content is accumulated as a fragment vec joined at pack time, not a str.
+; ═══════════════════════════════════════════════
+
+content-frags []str          ; content deltas, joined at pack
+finish-lst []str             ; finish_reasons seen (last non-empty wins)
+ids []str                    ; tool_call slot: ids
+names []str                  ; tool_call slot: names
+argss []str                  ; tool_call slot: stitched arguments
+part []byte                  ; partial-line byte buffer (no '\n' seen yet)
+raw-chunks []str             ; every received chunk (for non-2xx error extract)
+part-off = 0                 ; cursor into part for the un-processed suffix
+slots = 0                    ; number of allocated tool_call slots
+got-done = false             ; terminal `data: [DONE]` observed
+do-render = false            ; echo content deltas live to stdout
+
+; stream-reset — clear all incremental state before a new stream (in-place)
+stream-reset = () {
+    content-frags.truncate(0)
+    finish-lst.truncate(0)
+    ids.truncate(0)
+    names.truncate(0)
+    argss.truncate(0)
+    part.truncate(0)
+    raw-chunks.truncate(0)
+    part-off = 0
+    slots = 0
+    got-done = false
+    do-render = false
+}
+
+; saw-done — whether the current feed cycle observed the `data: [DONE]`
+; sentinel. An accessor because cross-module reads of a foreign module global
+; in an expression can trip a lowering failure; a function call is stable.
+saw-done = () (yes bool) {
+    yes = got-done
+}
+
+; ═══════════════════════════════════════════════
+; process-sse-line — fold ONE complete SSE line into the module state. Shared
+; by the live path (stream-feed) and the PURE path (aggregate-stream). Content
+; deltas echo to stdout when do-render is true.
+; ═══════════════════════════════════════════════
+
+process-sse-line = (line str) {
+    payload = stream.strip-data-prefix(line)
+    payload != '' -> {
+        stream.is-done(payload) -> got-done = true
+        -> {
+            d = stream.extract-content(payload)
+            d != '' -> {
+                content-frags.push(d)
+                do-render -> io.out(d)
+            }
+            f = stream.extract-finish(payload)
+            f != '' -> finish-lst.push(f)
+            tcs = stream.delta-tool-calls(payload)
+            tcs: {
+                err -> {}
+                nil -> {}
+                ok -> {
+                    arr = it
+                    m = arr.arr-len()
+                    j <- [0..m): {
+                        #{index-out=0}
+                        e = arr.arr-get(j)
+                        e: {
+                            err -> {}
+                            nil -> {}
+                            ok -> {
+                                idx = stream.tc-index(it)
+                                (idx >= slots) {
+                                    ids.push('')
+                                    names.push('')
+                                    argss.push('')
+                                    #{overflow=wrap}
+                                    slots = slots + 1
+                                }
+                                id = stream.tc-id(it)
+                                id != '' -> ids[idx] = id
+                                nm = stream.tc-name(it)
+                                nm != '' -> names[idx] = nm
+                                ag = stream.tc-args(it)
+                                #{overflow=wrap}
+                                ag != '' -> argss[idx] = argss[idx] - ag
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; find-nl-from — byte index of the first '\n' in part at/after `from` (-1 none).
+; ═══════════════════════════════════════════════
+
+find-nl-from = (from i64) (at i64) {
+    at = -1
+    i <- [from..part.len()): {
+        at < 0 -> part[i] == 10 -> at = i
+    }
+}
+
+; part-to-str — decode part[start..end) into a str via a fresh local buffer.
+part-to-str = (start i64, end i64) (s str) {
+    v []byte = with-len(0)
+    lo = start
+    (lo < 0) -> lo = 0
+    (lo > part.len()) -> lo = part.len()
+    hi = end
+    (hi > part.len()) -> hi = part.len()
+    (lo < hi) {
+        #{index-out=0}
+        v.push(part[lo])
+        #{overflow=wrap}
+        lo = lo + 1
+    }
+    s = v.to-str()
+}
+
+; ═══════════════════════════════════════════════
+; stream-feed — append freshly-arrived transport bytes and process every
+; complete line. part keeps a partial-line buffer so frames split across TLS
+; records are rejoined. byte 10 scanning is UTF-8 safe; strip-data-prefix
+; already trims '\r'.
+; ═══════════════════════════════════════════════
+
+stream-feed = (text str) {
+    raw-chunks.push(text)
+    b = text.to-bytes()
+    i <- [0..b.len()): {
+        #{index-out=0}
+        part.push(b[i])
+    }
+    nl = find-nl-from(part-off)
+    (nl >= 0) {
+        line = part-to-str(part-off, nl)
+        process-sse-line(line)
+        #{overflow=wrap}
+        part-off = nl + 1
+        nl = find-nl-from(part-off)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; stream-pack — fold the module state into an assistant message. Content is
+; joined from the fragment vec into a local before `resp.content = ...`.
+; ═══════════════════════════════════════════════
+
+stream-pack = () (resp messages.message, finish str) {
+    resp = messages.make('assistant', '')
+    content str = content-frags.join('')
+    resp.content = content
+    finish = ''
+    finish-lst.len() > 0 -> {
+        #{overflow=wrap}
+        last = finish-lst.len() - 1
+        #{index-out=0}
+        finish = finish-lst[last]
+    }
+    k <- [0..slots): {
+        #{index-out=0}
+        tc messages.tool-call
+        tc.id = ids[k]
+        tc.name = names[k]
+        tc.arguments = argss[k]
+        tc.id != '' -> resp.tool-calls.push(tc)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; complete-stream — send a stream:true request and reassemble the SSE body
+; into one assistant turn. Bytes are consumed incrementally via
+; httpclient.stream-next; content deltas render live as each frame parses.
+; The caller must NOT reprint resp.content in this mode.
+; ═══════════════════════════════════════════════
+
+complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (resp messages.message, finish str, ok bool, errmsg str) {
+    finish = ''
+    ok = false
+    errmsg = ''
+
+    url = config.chat-url(cfg)
+    msgs-json = messages.serialize(msgs)
+    body = build-request(cfg, msgs-json, tools-json, true)
+
+    status = 0
+    opened = false
+    #{overflow=wrap}
+    tries = cfg.max-retries + 1
+    delay-ms = BASE-RETRY-DELAY
+    a <- [0..tries): {
+        status, opened = httpclient.stream-open(url, cfg.api-key, body, ACCEPT-SSE)
+        opened -> break
+        a < cfg.max-retries -> {
+            eprint('noagent: connect failed; retrying')
+            time.sleep-ms(delay-ms)
+            #{overflow=wrap}
+            delay-ms = delay-ms * 2
+        }
+    }
+    opened == false -> {
+        resp = messages.make('assistant', '')
+        errmsg = 'request failed'
+        return
+    }
+
+    stream-reset()
+    do-render = true
+    stream-done = false
+    !! {
+        data, closed = httpclient.stream-next()
+        stream-feed(data)
+        got-done -> {
+            stream-done = true
+            break
+        }
+        closed -> {
+            stream-done = true
+            break
+        }
+    }
+
+    ; flush a trailing line that arrived without its final '\n'
+    part-off < part.len() -> process-sse-line(part-to-str(part-off, part.len()))
+    io.out('\n')
+    httpclient.stream-close()
+
+    stream-done == false -> {
+        resp = messages.make('assistant', '')
+        errmsg = 'stream interrupted'
+        return
+    }
+
+    {
+        status < 200 -> status >= 300 -> {
+            resp = messages.make('assistant', '')
+            errmsg = extract-api-error(raw-chunks.join(''))
+            status-text = 'http ' - status.to-str()
+            {
+                errmsg == '' -> errmsg = status-text
+                -> errmsg = status-text - ': ' - errmsg
+            }
+            return
+        }
+    }
+
+    resp, finish = stream-pack()
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; aggregate-stream — PURE: turn a full SSE response body into an assistant
+; message + finish_reason. When `render` is true, content deltas are echoed to
+; stdout as each frame is parsed. Reuses the incremental line parser so the
+; offline fixture tests exercise exactly the same code the live path runs.
+; This is the offline test seam: feed a recorded SSE fixture, no network.
+; ═══════════════════════════════════════════════
+
+aggregate-stream = (body str, render bool) (resp messages.message, finish str) {
+    stream-reset()
+    do-render = render
+    lines = utils.split-lines(body)
+    n = lines.len()
+    i <- [0..n): {
+        #{index-out=0}
+        process-sse-line(lines[i])
+    }
+    render -> io.out('\n')
+    resp, finish = stream-pack()
+}

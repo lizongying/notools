@@ -1,0 +1,141 @@
+; session.no — persist and restore conversation history
+;
+; A session is stored at ~/.noagent/sessions/<id>.json as:
+;   {"id":"<id>","messages":[ ...same shape the request uses... ]}
+; We reuse messages.serialize to emit the array (roles / content / tool_call_id
+; / tool_calls), and rebuild the list from JSON on load. No API keys or
+; provider config are ever written here — only the transcript.
+
+# /noagent/src/config
+# /noagent/src/jsonx
+# /noagent/src/messages
+# /noagent/src/utils
+
+SESSIONS-REL = '/.noagent/sessions'
+
+; ═══════════════════════════════════════════════
+; sessions-dir / session-path
+; ═══════════════════════════════════════════════
+
+sessions-dir = () (dir str) {
+    #{overflow=wrap}
+    dir = config.home-dir() - SESSIONS-REL
+}
+
+session-path = (id str) (path str) {
+    path = sessions-dir() - '/' - id - '.json'
+}
+
+; ═══════════════════════════════════════════════
+; save — write the transcript to sessions/<id>.json; true on success
+; ═══════════════════════════════════════════════
+
+save = (id str, msgs []messages.message) (ok bool) {
+    ok = false
+    id == '' -> return
+    path = session-path(id)
+    utils.ensure-parent-dir(path)
+    body = '{'
+    body = body - '"id":' - jsonx.quoted(id)
+    body = body - ',"messages":' - messages.serialize(msgs)
+    body = body - '}'
+    ok = utils.write-file-str(path, body)
+}
+
+; ═══════════════════════════════════════════════
+; exists — is a saved session present?
+; ═══════════════════════════════════════════════
+
+exists = (id str) (yes bool) {
+    yes = false
+    id != '' -> yes = utils.file-exists(session-path(id))
+}
+
+; ═══════════════════════════════════════════════
+; load — rebuild []message from sessions/<id>.json (nil list when absent/bad)
+; ═══════════════════════════════════════════════
+
+load = (id str) (msgs []messages.message, ok bool) {
+    msgs = messages.new-list()
+    ok = false
+    id == '' -> return
+    path = session-path(id)
+    utils.file-exists(path) == false -> return
+    text = utils.read-file-str(path)
+    text == '' -> return
+
+    doc = jsonx.parse(text)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            root = it
+            arr = jsonx.get-child(root, 'messages')
+            arr: {
+                err -> {}
+                nil -> {}
+                ok -> {
+                    msgs = messages-from-json(it)
+                    ok = true
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; messages-from-json — turn a serialized messages array back into []message
+; ═══════════════════════════════════════════════
+
+messages-from-json = (arr json) (out []messages.message) {
+    out = messages.new-list()
+    n = arr.arr-len()
+    i <- [0..n): {
+        #{index-out=0}
+        e = arr.arr-get(i)
+        e: {
+            err -> {}
+            nil -> {}
+            ok -> {
+                obj = it
+                role = jsonx.get-str(obj, 'role')
+                content = jsonx.get-str(obj, 'content')
+                m = messages.make(role, content)
+                m.tool-call-id = jsonx.get-str(obj, 'tool_call_id')
+                calls = jsonx.get-child(obj, 'tool_calls')
+                calls: {
+                    err -> {}
+                    nil -> {}
+                    ok -> {
+                        carr = it
+                        cn = carr.arr-len()
+                        j <- [0..cn): {
+                            #{index-out=0}
+                            ce = carr.arr-get(j)
+                            ce: {
+                                err -> {}
+                                nil -> {}
+                                ok -> {
+                                    eo = it
+                                    tc messages.tool-call
+                                    tc.id = jsonx.get-str(eo, 'id')
+                                    fn = jsonx.get-child(eo, 'function')
+                                    fn: {
+                                        err -> {}
+                                        nil -> {}
+                                        ok -> {
+                                            tc.name = jsonx.get-str(it, 'name')
+                                            tc.arguments = jsonx.get-str(it, 'arguments')
+                                        }
+                                    }
+                                    m.tool-calls.push(tc)
+                                }
+                            }
+                        }
+                    }
+                }
+                out.push(m)
+            }
+        }
+    }
+}

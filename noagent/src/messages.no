@@ -1,0 +1,231 @@
+; messages.no — conversation message model and JSON serialization
+;
+; A message mirrors the OpenAI /chat/completions message shape:
+;   - role: system | user | assistant | tool
+;   - content: text body
+;   - tool-call-id: set on a role=tool message (which call it answers)
+;   - tool-calls: set on an assistant message that requested tool use
+;
+; Serialization builds the request JSON by hand (single-binary concatenation +
+; jsonx.quoted), avoiding the std-json pool builder and long-concat crashes.
+
+# /noagent/src/jsonx
+
+tool-call {
+    id str
+    name str
+    arguments str
+}
+
+message {
+    role str
+    content str
+    tool-call-id str
+    tool-calls []tool-call
+}
+
+; ═══════════════════════════════════════════════
+; new-list — an empty []message (helper so callers avoid annotating the type)
+; ═══════════════════════════════════════════════
+
+new-list = () (out []messages.message) {
+    out = with-len(0)
+}
+
+; ═══════════════════════════════════════════════
+; make — construct a plain (role, content) message
+; ═══════════════════════════════════════════════
+
+make = (role str, content str) (m messages.message) {
+    m.role = role
+    m.content = content
+    m.tool-call-id = ''
+    m.tool-calls = with-len(0)
+}
+
+; ═══════════════════════════════════════════════
+; tool-message — a role=tool message answering a specific tool call
+; ═══════════════════════════════════════════════
+
+tool-message = (call-id str, content str) (m messages.message) {
+    m.role = 'tool'
+    m.content = content
+    m.tool-call-id = call-id
+    m.tool-calls = with-len(0)
+}
+
+; ═══════════════════════════════════════════════
+; with-call — an assistant message carrying one tool_call (content + the call).
+; A public constructor so callers/tests build a valid tool_calls turn whose
+; id matches the tool-message that must follow it.
+; ═══════════════════════════════════════════════
+
+with-call = (content str, id str, name str, args str) (m messages.message) {
+    m = messages.make('assistant', content)
+    tc tool-call
+    tc.id = id
+    tc.name = name
+    tc.arguments = args
+    m.tool-calls.push(tc)
+}
+
+; ═══════════════════════════════════════════════
+; serialize — []message -> JSON array string (the "messages" field value)
+; ═══════════════════════════════════════════════
+
+serialize = (msgs []messages.message) (out str) {
+    out = '['
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        m = msgs[i]
+        i > 0 -> out = out - ','
+        out = out - serialize-one(m)
+    }
+    out = out - ']'
+}
+
+; serialize-one — one message object as JSON
+serialize-one = (m messages.message) (out str) {
+    out = '{'
+    out = out - '"role":' - jsonx.quoted(m.role)
+    ; content is omitted (empty string) only for pure tool-call assistant turns
+    out = out - ',"content":' - jsonx.quoted(m.content)
+    m.role == 'tool' -> {
+        out = out - ',"tool_call_id":' - jsonx.quoted(m.tool-call-id)
+    }
+    m.tool-calls.len() > 0 -> {
+        out = out - ',"tool_calls":' - serialize-tool-calls(m.tool-calls)
+    }
+    out = out - '}'
+}
+
+serialize-tool-calls = (calls []tool-call) (out str) {
+    out = '['
+    n = calls.len()
+    i <- [0..n): {
+        #{index-out=0}
+        c = calls[i]
+        i > 0 -> out = out - ','
+        out = out - serialize-one-call(c)
+    }
+    out = out - ']'
+}
+
+serialize-one-call = (c tool-call) (out str) {
+    out = '{'
+    out = out - '"id":' - jsonx.quoted(c.id)
+    out = out - ',"type":"function"'
+    out = out - ',"function":{"name":' - jsonx.quoted(c.name)
+    out = out - ',"arguments":' - jsonx.quoted(c.arguments)
+    out = out - '}}'
+}
+
+; ═══════════════════════════════════════════════
+; count-chars — total content length (rough context budget proxy)
+; ═══════════════════════════════════════════════
+
+count-chars = (msgs []messages.message) (total i64) {
+    total = 0
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        #{overflow=wrap}
+        total = total + msgs[i].content.len-bytes()
+    }
+}
+
+; ═══════════════════════════════════════════════
+; append — return history with a new message added (keeps msgs read-only)
+; ═══════════════════════════════════════════════
+
+append = (msgs []messages.message, m messages.message) (out []messages.message) {
+    out = with-len(0)
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        out.push(msgs[i])
+    }
+    out.push(m)
+}
+
+; ═══════════════════════════════════════════════
+; chunk-size — size (in messages) of one DROPPABLE unit starting at index i.
+; An assistant message that requested tool_calls is a unit together with the
+; contiguous run of `tool` result messages that follow it: dropping a partial
+; unit would orphan a tool_call_id and the API rejects the request. Any other
+; message is a unit of 1. Uses a for-range + done-flag (no nested break).
+; ═══════════════════════════════════════════════
+
+chunk-size = (msgs []messages.message, i i64) (sz i64) {
+    n = msgs.len()
+    sz = 1
+    #{index-out=0}
+    is-asst-tc = msgs[i].role == 'assistant' && msgs[i].tool-calls.len() > 0
+    is-asst-tc -> {
+        #{overflow=wrap}
+        k0 = i + 1
+        cnt = 0
+        stop = false
+        j <- [k0..n): {
+            #{index-out=0}
+            is-tool = msgs[j].role == 'tool'
+            stop == false -> is-tool -> {
+                #{overflow=wrap}
+                cnt = cnt + 1
+            }
+            stop == false -> is-tool == false -> stop = true
+        }
+        #{overflow=wrap}
+        sz = cnt + 1
+    }
+}
+
+; remove-range — []message without the elements [from..to)
+remove-range = (msgs []messages.message, from i64, to i64) (out []messages.message) {
+    out = with-len(0)
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        i < from -> out.push(msgs[i])
+        i >= to -> out.push(msgs[i])
+    }
+}
+
+; ═══════════════════════════════════════════════
+; trim-to-budget — drop the OLDEST droppable CHUNK (see chunk-size) at a time
+; until total content chars <= budget. Never touches the leading system message
+; or the most recent unit, so a tool_calls turn always keeps its tool results.
+; Returns a fresh slice.
+; ═══════════════════════════════════════════════
+
+trim-to-budget = (msgs []messages.message, budget i64) (out []messages.message) {
+    out = with-len(0)
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        out.push(msgs[i])
+    }
+    (count-chars(out) > budget) {
+        cur-len = out.len()
+        start = 0
+        cur-len > 0 -> out[0].role == 'system' -> start = 1
+        sz = chunk-size(out, start)
+        ; the oldest droppable chunk already reaches the final turn → stop:
+        ; the head plus the most recent chunk are always preserved
+        #{overflow=wrap}
+        start + sz >= cur-len -> break
+        #{overflow=wrap}
+        out = remove-range(out, start, start + sz)
+    }
+}
+
+; remove-at — []message without the element at idx
+remove-at = (msgs []messages.message, idx i64) (out []messages.message) {
+    out = with-len(0)
+    n = msgs.len()
+    i <- [0..n): {
+        #{index-out=0}
+        i != idx -> out.push(msgs[i])
+    }
+}

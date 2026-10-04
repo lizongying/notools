@@ -1,0 +1,150 @@
+; stream.no — Server-Sent Events (SSE) parsing for streamed chat completions
+;
+; Every helper here is PURE: it operates on already-buffered SSE text or a
+; single `data:` JSON payload, so unit tests never touch the network. The
+; transport layer hands provider.no the full response text; we then walk it
+; line by line, surface content deltas, and reassemble tool_call fragments
+; back into one assistant message (see provider.aggregate-stream).
+;
+; OpenAI SSE shape (one `data:` line per event):
+;   data: {"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}
+;   data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",
+;           "function":{"name":"read-file","arguments":"{\"path"}}]},"finish_reason":null}]}
+;   data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+;   data: [DONE]
+
+# /noagent/src/jsonx
+# /noagent/src/utils
+
+; ═══════════════════════════════════════════════
+; strip-data-prefix — if `line` is an SSE data field, return its payload
+; (everything after "data:", whitespace-trimmed); '' for any other line.
+; ═══════════════════════════════════════════════
+
+strip-data-prefix = (line str) (out str) {
+    out = ''
+    l = line
+    #{overflow=wrap}
+    l.ends-with('\r') -> l = utils.slice-str(l, 0, l.len-bytes() - 1)
+    l.starts-with('data:') -> out = utils.trim-str(utils.slice-str(l, 5, l.len-bytes()))
+}
+
+; ═══════════════════════════════════════════════
+; is-done — the terminal `data: [DONE]` sentinel
+; ═══════════════════════════════════════════════
+
+is-done = (payload str) (yes bool) {
+    yes = payload == '[DONE]'
+}
+
+; ═══════════════════════════════════════════════
+; first-choice — choices[0] of a chunk payload as ?json (nil when absent)
+; ═══════════════════════════════════════════════
+
+first-choice = (payload str) (c ?json) {
+    c = nil
+    doc = jsonx.parse(payload)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            choices = jsonx.get-child(it, 'choices')
+            choices: {
+                err -> {}
+                nil -> {}
+                ok -> {
+                    arr = it
+                    arr.arr-len() > 0 -> c = arr.arr-get(0)
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; delta-of — choices[0].delta as ?json
+; ═══════════════════════════════════════════════
+
+delta-of = (payload str) (d ?json) {
+    d = nil
+    c = first-choice(payload)
+    c: {
+        err -> {}
+        nil -> {}
+        ok -> d = jsonx.get-child(it, 'delta')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-content — the content fragment carried by this chunk ('' if none)
+; ═══════════════════════════════════════════════
+
+extract-content = (payload str) (s str) {
+    s = ''
+    d = delta-of(payload)
+    d: {
+        err -> {}
+        nil -> {}
+        ok -> s = jsonx.get-str(it, 'content')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; extract-finish — choices[0].finish_reason ('' until the final chunk)
+; ═══════════════════════════════════════════════
+
+extract-finish = (payload str) (s str) {
+    s = ''
+    c = first-choice(payload)
+    c: {
+        err -> {}
+        nil -> {}
+        ok -> s = jsonx.get-str(it, 'finish_reason')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; delta-tool-calls — choices[0].delta.tool_calls array as ?json (nil if none)
+; ═══════════════════════════════════════════════
+
+delta-tool-calls = (payload str) (a ?json) {
+    a = nil
+    d = delta-of(payload)
+    d: {
+        err -> {}
+        nil -> {}
+        ok -> a = jsonx.get-child(it, 'tool_calls')
+    }
+}
+
+; ═══════════════════════════════════════════════
+; tool-call element accessors (operate on one element of the tool_calls array)
+; ═══════════════════════════════════════════════
+
+tc-index = (e json) (v i64) {
+    v = jsonx.get-i64(e, 'index', 0)
+}
+
+tc-id = (e json) (s str) {
+    s = jsonx.get-str(e, 'id')
+}
+
+tc-name = (e json) (s str) {
+    s = ''
+    fn = jsonx.get-child(e, 'function')
+    fn: {
+        err -> {}
+        nil -> {}
+        ok -> s = jsonx.get-str(it, 'name')
+    }
+}
+
+tc-args = (e json) (s str) {
+    s = ''
+    fn = jsonx.get-child(e, 'function')
+    fn: {
+        err -> {}
+        nil -> {}
+        ok -> s = jsonx.get-str(it, 'arguments')
+    }
+}

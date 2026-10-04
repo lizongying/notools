@@ -1,0 +1,665 @@
+; httpclient.no — minimal HTTPS/1.1 POST client over the pure-Nolang TLS module
+;
+; Why raw TLS instead of std net/http:
+;   - std http.get caps responses at HTTP-MAX-RESPONSE (16 KB); LLM chat
+;     completion bodies (long context in, long answer out) routinely exceed it.
+;   - we open one short-lived connection per request (Connection: close), so no
+;     keep-alive / connection-pool state to manage.
+;
+; Body framing is decoded purely on []byte (never str ops on the big buffer,
+; which trips a MIR codegen bug in this build). Three framing modes are
+; supported, in priority order:
+;   1. Content-Length: read exactly that many bytes.
+;   2. Transfer-Encoding: chunked: read to close, then de-chunk.
+;   3. neither: read to connection close; raw bytes are the body.
+
+# /noagent/src/utils
+
+USER-AGENT = 'noagent/0.1.0'
+RECV-CAP = 16640
+
+; ═══════════════════════════════════════════════
+; http-post — POST a JSON body, return (status, response-body, ok)
+;   url       full https URL (scheme://host[:port]/path)
+;   api-key   bearer token ('' to omit the Authorization header)
+;   body      request JSON (already serialized)
+;   accept    value for the Accept header (application/json / text/event-stream)
+;   keep-open when true, DO NOT drain-to-close: return as soon as the framing
+;             says the body is complete (used by callers that stream). When
+;             false, the whole body is returned buffered.
+; ═══════════════════════════════════════════════
+
+http-post = (url str, api-key str, body str, accept str) (status i64, resp str, ok bool) {
+    status = 0
+    resp = ''
+    ok = false
+
+    st, raw, good = http-post-bytes(url, api-key, body, accept)
+    good -> {
+        status = st
+        ok = true
+        resp = raw.to-str()
+    }
+}
+
+; ═══════════════════════════════════════════════
+; compose-request — assemble the raw HTTP/1.1 POST payload (shared by the
+; buffered and the streaming path). One binary concat per statement: long
+; chains mis-lower into an invalid `sub` in this compiler.
+; ═══════════════════════════════════════════════
+
+compose-request = (host str, path str, api-key str, body str, accept str) (req str) {
+    cr = number.char-to-str(13)
+    lf = number.char-to-str(10)
+    crlf = cr - lf
+
+    req = 'POST '
+    req = req - path
+    req = req - ' HTTP/1.1'
+    req = req - crlf
+    req = req - 'Host: '
+    req = req - host
+    req = req - crlf
+    req = req - 'User-Agent: '
+    req = req - USER-AGENT
+    req = req - crlf
+    api-key != '' -> {
+        req = req - 'Authorization: Bearer '
+        req = req - api-key
+        req = req - crlf
+    }
+    req = req - 'Content-Type: application/json'
+    req = req - crlf
+    req = req - 'Accept: '
+    req = req - accept
+    req = req - crlf
+    req = req - 'Connection: close'
+    req = req - crlf
+    req = req - 'Content-Length: '
+    req = req - body.len-bytes().to-str()
+    req = req - crlf
+    req = req - crlf
+    req = req - body
+}
+
+; ═══════════════════════════════════════════════
+; http-post-bytes — core POST: returns the response body as []byte.
+; ═══════════════════════════════════════════════
+
+http-post-bytes = (url str, api-key str, body str, accept str) (status i64, out []byte, ok bool) {
+    status = 0
+    out = with-len(0)
+    ok = false
+
+    host, port, path, purl-ok = parse-url(url)
+    purl-ok == false -> {
+        eprint('httpclient: cannot parse url: ' - url)
+        return
+    }
+
+    req = compose-request(host, path, api-key, body, accept)
+
+    tls-c tls.conn
+    tls-c.init()
+    connected = tls-c.connect(host, port)
+    connected == false -> {
+        eprint('httpclient: connect failed: ' - host)
+        return
+    }
+
+    w = tls-c.send(req)
+    w: {
+        nil -> {
+            tls-c.close()
+            return
+        }
+        err -> {
+            tls-c.close()
+            return
+        }
+        ok -> {}
+    }
+
+    buf str = with-len(RECV-CAP)
+    result []byte = with-len(0)
+    iters = 0
+    header-end = -1
+
+    ; ── Phase 1: read until the header/body separator (\r\n\r\n) ──
+    (iters < 40000) {
+        #{overflow=wrap}
+        iters = iters + 1
+        n = tls-c.recv(buf, RECV-CAP)
+        n <= 0 -> break
+        chunk = bytes-from-str(buf, n)
+        result = bytes-concat(result, chunk)
+        header-end = find-crlfcrlf(result)
+        header-end >= 0 -> break
+    }
+
+    header-end < 0 -> {
+        tls-c.close()
+        return
+    }
+
+    status = parse-status-code(result, header-end)
+    #{overflow=wrap}
+    body-start = header-end + 4
+    content-length = parse-content-length(result, header-end)
+    is-chunked = header-has(result, header-end, 'Transfer-Encoding: chunked')
+
+    ; ── Phase 2: obtain the full body ──
+    {
+        content-length >= 0 -> {
+            #{overflow=wrap}
+            end = body-start + content-length
+            (result.len() < end) {
+                n2 = tls-c.recv(buf, RECV-CAP)
+                n2 <= 0 -> break
+                chunk2 = bytes-from-str(buf, n2)
+                result = bytes-concat(result, chunk2)
+            }
+            result.len() < end -> end = result.len()
+            out = slice-bytes(result, body-start, end)
+        }
+        -> {
+            ; read to connection close (chunked or close-delimited)
+            (iters < 200000) {
+                #{overflow=wrap}
+                iters = iters + 1
+                n3 = tls-c.recv(buf, RECV-CAP)
+                n3 <= 0 -> break
+                chunk3 = bytes-from-str(buf, n3)
+                result = bytes-concat(result, chunk3)
+            }
+            tail = slice-bytes(result, body-start, result.len())
+            {
+                is-chunked -> out = dechunk(tail)
+                -> out = tail
+            }
+        }
+    }
+
+    tls-c.close()
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; bytes-from-str — first n bytes of a str buffer as a fresh []byte
+; ═══════════════════════════════════════════════
+
+bytes-from-str = (buf str, n i64) (out []byte) {
+    out = with-len(n)
+    j <- [0..n): {
+        #{index-out=0}
+        out[j] = buf.byte(j)
+    }
+    out.truncate(n)
+}
+
+; ═══════════════════════════════════════════════
+; dechunk — decode a Transfer-Encoding: chunked body ([]byte in, []byte out)
+; chunk format: HEXLEN CRLF DATA CRLF ... 0 CRLF CRLF
+
+; ═══════════════════════════════════════════════
+
+dechunk = (b []byte) (out []byte) {
+    out = with-len(0)
+    n = b.len()
+    i = 0
+    (i < n) {
+        size = 0
+        j = i
+        ; consume hex digits of the chunk size
+        (j < n) {
+            d = hexval(b[j])
+            {
+                d >= 0 -> {
+                    #{overflow=wrap}
+                    size = size * 16 + d
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+                -> break
+            }
+        }
+        ; skip the CRLF / LF that ends the size line
+        #{overflow=wrap}
+        j < n -> b[j] == 13 -> j = j + 1
+        #{overflow=wrap}
+        j < n -> b[j] == 10 -> j = j + 1
+        i = j
+        ; size 0 => terminal chunk
+        size <= 0 -> break
+        #{overflow=wrap}
+        data-end = i + size
+        chunk = slice-bytes(b, i, data-end)
+        out = bytes-concat(out, chunk)
+        i = data-end
+        ; skip the CRLF / LF that follows the chunk data
+        #{overflow=wrap}
+        i < n -> b[i] == 13 -> i = i + 1
+        #{overflow=wrap}
+        i < n -> b[i] == 10 -> i = i + 1
+    }
+    out
+}
+
+hexval = (c byte) (v i64) {
+    v = -1
+    {
+        #{overflow=wrap}
+        c >= 48 -> c <= 57 -> v = c - 48
+        #{overflow=wrap}
+        c >= 97 -> c <= 102 -> v = c - 97 + 10
+        #{overflow=wrap}
+        c >= 65 -> c <= 70 -> v = c - 65 + 10
+    }
+}
+
+; ═══════════════════════════════════════════════
+; parse-url — split https://host[:port]/path
+; ═══════════════════════════════════════════════
+
+parse-url = (url str) (host str, port i64, path str, ok bool) {
+    ok = false
+    host = ''
+    port = 443
+    path = '/'
+
+    {
+        url.starts-with('https://') -> {}
+        -> return
+    }
+
+    rest = utils.slice-str(url, 8, url.len-bytes())
+    slash = rest.index('/')
+    {
+        slash < 0 -> {
+            host = rest
+            path = '/'
+        }
+        -> {
+            host = utils.slice-str(rest, 0, slash)
+            path = utils.slice-str(rest, slash, rest.len-bytes())
+        }
+    }
+
+    colon = host.index(':')
+    colon >= 0 -> {
+        #{overflow=wrap}
+        port-str = utils.slice-str(host, colon + 1, host.len-bytes())
+        host = utils.slice-str(host, 0, colon)
+        port = atoi(port-str)
+    }
+
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; atoi — parse a non-negative decimal integer (stops at first non-digit)
+; ═══════════════════════════════════════════════
+
+atoi = (s str) (v i64) {
+    v = 0
+    n = s.len-bytes()
+    i = 0
+    (i < n) {
+        d = s.byte(i)
+        {
+            d >= 48 -> d <= 57 -> {
+                #{overflow=wrap}
+                v = v * 10 + (d - 48)
+            }
+            -> i = n
+        }
+        #{overflow=wrap}
+        i = i + 1
+    }
+}
+
+; ═══════════════════════════════════════════════
+; bytes-concat — append b to a, returning a fresh []byte
+; ═══════════════════════════════════════════════
+
+bytes-concat = (a []byte, b []byte) (out []byte) {
+    an = a.len()
+    bn = b.len()
+    #{overflow=wrap}
+    total-len = an + bn
+    out = with-len(total-len)
+    i <- [0..an): {
+        #{index-out=0}
+        out[i] = a[i]
+    }
+    i <- [0..bn): {
+        #{index-out=0, overflow=wrap}
+        out[an + i] = b[i]
+    }
+    out.truncate(total-len)
+}
+
+; ═══════════════════════════════════════════════
+; Pure-[]byte HTTP header parsing helpers
+; ═══════════════════════════════════════════════
+
+; find-crlfcrlf — index of the first \r\n\r\n (13,10,13,10), else -1
+; ⚠️ outer (n >= 4) must be a one-shot if (→), not while ({ }) — otherwise the
+; condition never changes and it loops forever.
+find-crlfcrlf = (b []byte) (pos i64) {
+    pos = -1
+    n = b.len()
+    (n >= 4) -> {
+        i = 0
+        #{overflow=wrap}
+        (i <= n - 4) {
+            {
+                #{overflow=wrap}
+                b[i] == 13 -> b[i + 1] == 10 -> b[i + 2] == 13 -> b[i + 3] == 10 -> {
+                    pos = i
+                    i = n
+                }
+                -> {}
+            }
+            #{overflow=wrap}
+            i = i + 1
+        }
+    }
+}
+
+; find-substr — first occurrence of pat in b[from..to), else -1
+find-substr = (b []byte, from i64, to i64, pat str) (pos i64) {
+    pos = -1
+    plen = pat.len-bytes()
+    (plen <= 0) -> return
+    (to - plen < from) -> return
+    i = from
+    #{overflow=wrap}
+    (i <= to - plen) {
+        match = true
+        k = 0
+        (k < plen) {
+            #{overflow=wrap}
+            b[i + k] == pat.byte(k) -> {
+                #{overflow=wrap}
+                k = k + 1
+            }
+            -> {
+                match = false
+                k = plen
+            }
+        }
+        match -> {
+            pos = i
+            i = to
+        }
+        -> {
+            #{overflow=wrap}
+            i = i + 1
+        }
+    }
+}
+
+; header-has — case-insensitive substring test within the header block
+header-has = (b []byte, header-end i64, pat str) (yes bool) {
+    yes = false
+    lower = to-lower-bytes(b, header-end)
+    pos = find-substr(lower, 0, lower.len(), pat.to-lower())
+    yes = pos >= 0
+}
+
+to-lower-bytes = (b []byte, n i64) (out []byte) {
+    out = with-len(n)
+    i <- [0..n): {
+        #{index-out=0}
+        c = b[i]
+        {
+            #{overflow=wrap}
+            c >= 65 -> c <= 90 -> out[i] = c + 32
+            -> out[i] = c
+        }
+    }
+    out.truncate(n)
+}
+
+; parse-content-length — value of `Content-Length:` in b[0..header-end]
+parse-content-length = (b []byte, header-end i64) (cl i64) {
+    cl = -1
+    lower = to-lower-bytes(b, header-end)
+    key = 'content-length:'
+    pos = find-substr(lower, 0, header-end, key)
+    pos >= 0 -> {
+        #{overflow=wrap}
+        start = pos + 15
+        (start < header-end) {
+            #{index-out=0}
+            b[start] == 32 -> {
+                #{overflow=wrap}
+                start = start + 1
+            }
+            -> break
+        }
+        val = 0
+        (start < header-end) {
+            #{index-out=0}
+            c = b[start]
+            {
+                c >= 48 -> c <= 57 -> {
+                    #{overflow=wrap}
+                    val = val * 10 + (c - 48)
+                    #{overflow=wrap}
+                    start = start + 1
+                }
+                -> break
+            }
+        }
+        cl = val
+    }
+}
+
+; parse-status-code — HTTP status code from the first response line
+parse-status-code = (b []byte, header-end i64) (code i64) {
+    code = 0
+    sp = -1
+    i = 0
+    (i < header-end) {
+        b[i] == 32 -> {
+            sp = i
+            i = header-end
+        }
+        -> {
+            #{overflow=wrap}
+            i = i + 1
+        }
+    }
+    sp >= 0 -> {
+        #{overflow=wrap}
+        j = sp + 1
+        (j < header-end) {
+            #{index-out=0}
+            c = b[j]
+            {
+                c >= 48 -> c <= 57 -> {
+                    #{overflow=wrap}
+                    code = code * 10 + (c - 48)
+                    #{overflow=wrap}
+                    j = j + 1
+                }
+                -> break
+            }
+        }
+    }
+}
+
+; slice-bytes — b[from..to) as a fresh []byte (ranges clamped safely)
+; ⚠️ outer (from < to) must be a one-shot if (→), not while ({ }).
+slice-bytes = (b []byte, from i64, to i64) (out []byte) {
+    out = with-len(0)
+    (from < 0) -> from = 0
+    (to > b.len()) -> to = b.len()
+    (from < to) -> {
+        #{overflow=wrap}
+        n = to - from
+        out = with-len(n)
+        i <- [0..n): {
+            #{index-out=0}
+            out[i] = b[from + i]
+        }
+        out.truncate(n)
+    }
+    out
+}
+
+; ═══════════════════════════════════════════════
+; Streaming API — true incremental SSE: the connection stays open after the
+; response header is parsed, and stream-next hands back freshly-arrived
+; (de-chunked) bytes as they are received, so the caller can render deltas
+; live instead of buffering until close.
+;
+; State lives in module-level globals: exactly ONE in-flight stream at a
+; time, which fits a single-threaded CLI agent. Never call concurrently.
+; ═══════════════════════════════════════════════
+
+G-live = false
+G-raw []byte
+G-emitted = 0
+G-content-length = -1
+G-is-chunked = false
+G-iters = 0
+G-conn tls.conn
+
+; push-raw — push src[from..to) into the module buffer G-raw.
+; ⚠️ Nolang does NOT persist an OWNED module-global REASSIGNMENT (`G-raw =
+; concat(...)` binds a dead function-local temp; the global keeps its old
+; value — confirmed compiler gap). Only in-place mutation persists, so we grow
+; G-raw exclusively via .push and reset it with .truncate(0); reads (len/index/
+; slice) observe the accumulated bytes correctly across calls.
+push-raw = (src []byte, from i64, to i64) {
+    (to > src.len()) -> to = src.len()
+    (from < 0) -> from = 0
+    i <- [from..to): {
+        #{index-out=0}
+        G-raw.push(src[i])
+    }
+}
+
+stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool) {
+    status = 0
+    ok = false
+
+    host, port, path, purl-ok = parse-url(url)
+    purl-ok == false -> {
+        eprint('httpclient: cannot parse url: ' - url)
+        return
+    }
+
+    req = compose-request(host, path, api-key, body, accept)
+
+    G-conn.init()
+    connected = G-conn.connect(host, port)
+    connected == false -> {
+        eprint('httpclient: connect failed: ' - host)
+        return
+    }
+
+    w = G-conn.send(req)
+    w: {
+        nil -> {
+            G-conn.close()
+            return
+        }
+        err -> {
+            G-conn.close()
+            return
+        }
+        ok -> {}
+    }
+
+    ; read until the header/body separator, buffering into a LOCAL []byte;
+    ; publish into globals only once the framing is known (avoids partial
+    ; state if the loop bails early)
+    buf str = with-len(RECV-CAP)
+    raw []byte = with-len(0)
+    iters = 0
+    header-end = -1
+    (iters < 40000) {
+        #{overflow=wrap}
+        iters = iters + 1
+        n = G-conn.recv(buf, RECV-CAP)
+        n <= 0 -> break
+        chunk = bytes-from-str(buf, n)
+        raw = bytes-concat(raw, chunk)
+        header-end = find-crlfcrlf(raw)
+        header-end >= 0 -> break
+    }
+
+    header-end < 0 -> {
+        eprint('httpclient: no response header (connection closed early)')
+        G-conn.close()
+        return
+    }
+
+    status = parse-status-code(raw, header-end)
+    G-content-length = parse-content-length(raw, header-end)
+    G-is-chunked = header-has(raw, header-end, 'Transfer-Encoding: chunked')
+    G-raw.truncate(0)
+    #{overflow=wrap}
+    body-start = header-end + 4
+    push-raw(raw, body-start, raw.len())
+    G-emitted = 0
+    G-iters = 0
+    G-live = true
+    ok = true
+}
+
+; stream-next — receive at most one TLS record and return the newly visible
+; body bytes as text. done=true when the peer closed the connection or the
+; framing says the body is complete. The caller keeps calling until done.
+stream-next = () (data str, done bool) {
+    data = ''
+    done = true
+    G-live == false -> return
+
+    #{overflow=wrap}
+    G-iters = G-iters + 1
+    G-iters > 200000 -> {
+        G-live = false
+        return
+    }
+
+    buf str = with-len(RECV-CAP)
+    n = G-conn.recv(buf, RECV-CAP)
+    n > 0 -> {
+        chunk = bytes-from-str(buf, n)
+        push-raw(chunk, 0, chunk.len())
+    }
+
+    {   ; decode the visible portion of the accumulated raw body
+        vis []byte = with-len(0)
+        {
+            G-is-chunked -> vis = dechunk(G-raw)
+            -> vis = slice-bytes(G-raw, 0, G-raw.len())
+        }
+        {   ; Content-Length mode clamps the visible window; other modes
+            ; expose everything decoded so far
+            G-content-length >= 0 -> vis.len() > G-content-length -> vis.truncate(G-content-length)
+        }
+        vis.len() > G-emitted -> {
+            fresh = slice-bytes(vis, G-emitted, vis.len())
+            #{overflow=wrap}
+            G-emitted = G-emitted + fresh.len()
+            data = fresh.to-str()
+        }
+    }
+
+    done = true
+    n > 0 -> {
+        done = false
+        G-content-length >= 0 -> G-emitted >= G-content-length -> done = true
+    }
+}
+
+stream-close = () {
+    G-live -> G-conn.close()
+    G-live = false
+}

@@ -12,6 +12,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 - 内含纯 Nolang 图像处理工具库（`noimg/` 子项目），支持 9 种格式读写与 55+ 种图像操作
 - 内含纯 Nolang Python 包管理器（`nouv/` 子项目），兼容 uv/pip 接口，管理 Python 项目生命周期
 - 内含纯 Nolang Node.js 包管理器（`nonpm/` 子项目），兼容 pnpm 接口，支持虚拟存储与隔离 node_modules
+- 内含纯 Nolang 自主 LLM 智能体 CLI（`noagent/` 子项目），OpenAI 兼容接口、工具调用、SSE 流式输出与会话持久化
 
 ## 安装
 
@@ -19,7 +20,7 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 
 直接从 [GitHub Releases](https://github.com/lizongying/notools/releases) 下载对应平台的已编译好二进制文件，无需安装编译器。
 
-五个独立工具各自构建，可按需下载：
+六个独立工具各自构建，可按需下载：
 
 | 工具 | 说明 |
 |------|------|
@@ -28,17 +29,18 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 | `noimg` | 纯 Nolang 图像处理工具库（9 种格式、55+ 种操作） |
 | `nouv` | 纯 Nolang Python 包管理器（兼容 uv/pip） |
 | `nonpm` | 纯 Nolang Node.js 包管理器（兼容 pnpm） |
+| `noagent` | 纯 Nolang 自主 LLM 智能体 CLI（OpenAI 兼容、工具调用、流式） |
 
 支持的平台：
 
-| 平台 | notools | nogit | noimg | nouv | nonpm |
-|------|---------|-------|-------|------|-------|
-| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` |
+| 平台 | notools | nogit | noimg | nouv | nonpm | noagent |
+|------|---------|-------|-------|------|-------|---------|
+| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` | `noagent-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` | `noagent-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` | `noagent-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` | `noagent-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` | `noagent-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` | `noagent-windows-arm64.exe` |
 
 ```bash
 # Linux amd64 示例 — 按需安装
@@ -61,13 +63,17 @@ chmod +x nouv && sudo mv nouv /usr/local/bin/
 # nonpm
 curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/latest/download/nonpm-linux-amd64
 chmod +x nonpm && sudo mv nonpm /usr/local/bin/
+
+# noagent
+curl -fsSL -o noagent https://github.com/lizongying/notools/releases/latest/download/noagent-linux-amd64
+chmod +x noagent && sudo mv noagent /usr/local/bin/
 ```
 
 下载后可使用同目录下的 `checksums-sha256.txt` 进行校验。
 
 ### 方式二：从源码构建
 
-五个子项目各自独立构建：
+六个子项目各自独立构建：
 
 ```bash
 # 克隆项目
@@ -93,6 +99,10 @@ cp nouv/dist/nouv /usr/local/bin/nouv
 # 构建 nonpm
 cd nonpm && no build && cd ..
 cp nonpm/dist/nonpm /usr/local/bin/nonpm
+
+# 构建 noagent
+cd noagent && no build && cd ..
+cp noagent/dist/noagent /usr/local/bin/noagent
 ```
 
 ## 工具列表
@@ -699,6 +709,55 @@ nonpm run build
 
 详细的命令列表、配置选项、模块架构等信息请参见 [`nonpm/README.md`](nonpm/README.md)。
 
+## noagent（纯 Nolang 自主 LLM 智能体 CLI）
+
+notools 仓库内含一个**纯 Nolang 实现的自主 LLM 智能体 CLI**（`noagent/` 目录），通过标准库 `net/tls` 走 HTTPS 调用 OpenAI 兼容的 `/v1/chat/completions`，实现「模型 ↔ 工具」多轮循环、SSE 流式增量显示、会话持久化与危险操作审批门控，不依赖任何外部运行环境。
+
+### 特性
+
+- **工具调用循环** — read-file / write-file / edit-file / list-dir / run-shell，模型返回 tool_calls 后自动执行并回填结果，有界迭代直到产出最终文本
+- **SSE 流式输出** — 边收边打印增量内容，兼容 `Transfer-Encoding: chunked` 与连接关闭定界两种承载
+- **多轮会话记忆** — 历史按字符预算裁剪上下文，会话可保存/恢复到 `~/.noagent/sessions/`
+- **多 provider 配置** — CLI flag > 环境变量 > `~/.noagent/config.json` > 内置默认，支持多 provider profile
+- **审批门控** — run-shell / write-file / edit-file 执行前需确认（`--yes` 跳过）；写/编辑路径收敛在 cwd 内，拒绝 `..` 路径逃逸
+- **纯标准库传输与 JSON** — raw-TLS HTTP 客户端 + 字节级 JSON 扫描器，规避 std `http.get` 16KB 上限与 std json 运行时脆弱性
+
+### 主要命令
+
+| 命令 | 说明 |
+|------|------|
+| `noagent` | 无参进入交互式 REPL |
+| `noagent run "<prompt>"` | 执行一次完整 agent 工具循环 |
+| `noagent chat "<msg>"` | 单次补全（不走工具循环） |
+| `noagent config show\|set <k> <v>\|path` | 查看 / 设置 / 打印配置路径 |
+| `noagent version` | 打印版本 |
+| `noagent help` | 打印帮助 |
+
+全局 flag：`--model` `--provider` `--base-url` `--api-key` `--stream/--no-stream` `--no-tools` `--max-turns N` `--yes/-y` `--resume <id>` `--session <id>` `--system "<text>"` `--temperature` `--config <path>`。
+
+REPL 元命令：`/help` `/model` `/tools` `/system` `/clear` `/save` `/load` `/exit`。
+
+### 配置与 API Key
+
+配置优先级：CLI flag > 环境变量（`NOAGENT_API_KEY`/`OPENAI_API_KEY`、`NOAGENT_BASE_URL`、`NOAGENT_MODEL`、`NOAGENT_PROVIDER`）> `~/.noagent/config.json` > 内置默认（base-url=`https://api.openai.com/v1`）。API key 只从环境变量或 flag 读取，绝不写入配置文件。
+
+### 构建与运行
+
+```bash
+cd noagent
+no build
+# 产物位于 noagent/dist/noagent
+
+# 示例：设置 API key 后跑一次 agent 工具循环
+export NOAGENT_API_KEY=sk-...
+noagent run "列出当前目录并统计文件数"
+
+# 示例：交互式 REPL
+noagent
+```
+
+详细的模块架构、工具与安全设计等信息请参见 [`noagent/README.md`](noagent/README.md)。
+
 ## 用法
 
 ```bash
@@ -769,6 +828,9 @@ notools/
 ├── nonpm/               # 纯 Nolang Node.js 包管理器（独立子项目）
 │   ├── main.no          # nonpm CLI 入口与命令分发
 │   └── src/             # 依赖解析/安装/锁文件/发布等模块
+├── noagent/             # 纯 Nolang 自主 LLM 智能体 CLI（独立子项目）
+│   ├── main.no          # noagent CLI 入口 + 子命令分发 + REPL
+│   └── src/             # config/httpclient/jsonx/messages/tools/toolexec/approval/provider/stream/agent/session 等模块
 └── package.jsonc        # 项目配置
 ```
 
@@ -776,7 +838,7 @@ notools/
 
 ### 构建
 
-五个子项目各自独立构建：
+六个子项目各自独立构建：
 
 ```bash
 # 构建 notools
@@ -808,6 +870,12 @@ cd nonpm
 no build
 cd ..
 # 产物位于 nonpm/dist/nonpm
+
+# 构建 noagent
+cd noagent
+no build
+cd ..
+# 产物位于 noagent/dist/noagent
 ```
 
 ### 测试

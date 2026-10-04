@@ -1,0 +1,379 @@
+; config.no — configuration model and resolution for noagent
+;
+; Precedence (highest wins):
+;   1. CLI flags   (already populated into the struct passed to finalize)
+;   2. Environment (NOAGENT_API_KEY, OPENAI_API_KEY, NOAGENT_BASE_URL,
+;      NOAGENT_MODEL, NOAGENT_PROVIDER)
+;   3. Config file (~/.noagent/config.json, or --config <path>) with a
+;      multi-provider profile layout:
+;        {
+;          "default-provider": "openai",
+;          "providers": {
+;            "openai":  { "base-url": "...", "model": "...",
+;                         "api-key-env": "OPENAI_API_KEY", "stream": true },
+;            "deepseek":{ "base-url": "https://api.deepseek.com/v1",
+;                         "model": "deepseek-chat", "api-key-env": "DEEPSEEK_API_KEY" }
+;          }
+;        }
+;   4. Built-in defaults
+;
+; The API key is NEVER written to any file; it is only ever read from env/flags.
+
+# /noagent/src/utils
+# /noagent/src/jsonx
+
+DEFAULT-BASE-URL = 'https://api.openai.com/v1'
+DEFAULT-MODEL = 'gpt-4o-mini'
+DEFAULT-MAX-TURNS = 8
+DEFAULT-MAX-RETRIES = 3
+DEFAULT-CONTEXT-BUDGET = 100000
+DEFAULT-TEMPERATURE = 1.0
+CONFIG-REL-DIR = '/.noagent'
+CONFIG-REL-FILE = '/config.json'
+
+; config — the fully resolved runtime configuration
+config {
+    provider str
+    base-url str
+    model str
+    api-key str
+    api-key-env str
+    stream bool
+    stream-set bool        ; a flag explicitly chose stream on/off
+    temperature f64
+    max-turns i64
+    max-retries i64
+    context-budget i64
+    system str
+    auto-approve bool
+    no-tools bool
+    config-path str
+}
+
+; ═══════════════════════════════════════════════
+; new-default — an empty config (every field at its zero value)
+; main fills flag-provided values, then finalize() overlays env/file/defaults
+; ═══════════════════════════════════════════════
+
+new-default = () (c config) {
+    c.provider = ''
+    c.base-url = ''
+    c.model = ''
+    c.api-key = ''
+    c.api-key-env = ''
+    c.stream = true
+    c.stream-set = false
+    c.temperature = DEFAULT-TEMPERATURE
+    c.max-turns = DEFAULT-MAX-TURNS
+    c.max-retries = DEFAULT-MAX-RETRIES
+    c.context-budget = DEFAULT-CONTEXT-BUDGET
+    c.system = ''
+    c.auto-approve = false
+    c.no-tools = false
+    c.config-path = ''
+}
+
+; ═══════════════════════════════════════════════
+; home-dir — best-effort user home (HOME, else USERPROFILE)
+; ═══════════════════════════════════════════════
+
+home-dir = () (dir str) {
+    dir = os.get-env('HOME')
+    dir == '' -> dir = os.get-env('USERPROFILE')
+}
+
+; ═══════════════════════════════════════════════
+; default-config-path — ~/.noagent/config.json
+; ═══════════════════════════════════════════════
+
+default-config-path = () (path str) {
+    home = home-dir()
+    path = home - CONFIG-REL-DIR - CONFIG-REL-FILE
+}
+
+; ═══════════════════════════════════════════════
+; resolve — build ONE fully-resolved config from argv + env + config file +
+; built-in defaults, and return the leftover positional text as `rest`.
+;
+; IMPORTANT (memory): the config struct is a SINGLE owner. We never copy an
+; input config into the output (`c = given`) — that move shares the caller's
+; str-field buffers and the compiler double-frees them at scope exit (a
+; trace/BPT trap). Instead every field is written directly from scalars here,
+; exactly like new-default(). All file lookups return scalars too.
+;
+; Precedence per field: CLI flag > env > config file > built-in default.
+; ═══════════════════════════════════════════════
+
+resolve = (argc i64) (cfg config, rest str) {
+    ; --- zero-init every field (literal writes, safe single owner) ---
+    cfg.provider = ''
+    cfg.base-url = ''
+    cfg.model = ''
+    cfg.api-key = ''
+    cfg.api-key-env = ''
+    cfg.stream = true
+    cfg.stream-set = false
+    cfg.temperature = DEFAULT-TEMPERATURE
+    cfg.max-turns = DEFAULT-MAX-TURNS
+    cfg.max-retries = DEFAULT-MAX-RETRIES
+    cfg.context-budget = DEFAULT-CONTEXT-BUDGET
+    cfg.system = ''
+    cfg.auto-approve = false
+    cfg.no-tools = false
+    cfg.config-path = ''
+
+    ; --- pass 1: CLI flags ---
+    rest = ''
+    i = 2
+    (i <= argc) {
+        a = os.arg(i)
+        {
+            a == '--model' -> {
+                i = utils.next-i(i)
+                cfg.model = os.arg(i)
+            }
+            a == '--provider' -> {
+                i = utils.next-i(i)
+                cfg.provider = os.arg(i)
+            }
+            a == '--base-url' -> {
+                i = utils.next-i(i)
+                cfg.base-url = os.arg(i)
+            }
+            a == '--api-key' -> {
+                i = utils.next-i(i)
+                cfg.api-key = os.arg(i)
+            }
+            a == '--config' -> {
+                i = utils.next-i(i)
+                cfg.config-path = os.arg(i)
+            }
+            a == '--system' -> {
+                i = utils.next-i(i)
+                cfg.system = os.arg(i)
+            }
+            a == '--temperature' -> {
+                i = utils.next-i(i)
+                cfg.temperature = utils.str-to-f64(os.arg(i), cfg.temperature)
+            }
+            a == '--max-turns' -> {
+                i = utils.next-i(i)
+                cfg.max-turns = utils.str-to-i64(os.arg(i))
+            }
+            a == '--max-retries' -> {
+                i = utils.next-i(i)
+                cfg.max-retries = utils.str-to-i64(os.arg(i))
+            }
+            a == '--context-budget' -> {
+                i = utils.next-i(i)
+                cfg.context-budget = utils.str-to-i64(os.arg(i))
+            }
+            a == '--stream' -> {
+                cfg.stream = true
+                cfg.stream-set = true
+            }
+            a == '--no-stream' -> {
+                cfg.stream = false
+                cfg.stream-set = true
+            }
+            a == '--no-tools' -> cfg.no-tools = true
+            a == '--yes' -> cfg.auto-approve = true
+            a == '-y' -> cfg.auto-approve = true
+            utils.starts-with-str(a, '-') -> eprint('noagent: ignoring unknown flag ' - a)
+            -> {
+                rest != '' -> rest = rest - ' '
+                rest = rest - a
+            }
+        }
+        i = utils.next-i(i)
+    }
+
+    ; --- config path ---
+    cfg.config-path == '' -> cfg.config-path = default-config-path()
+
+    ; --- pass 2: environment overlay (fill only empties) ---
+    cfg.provider == '' -> {
+        e1 = os.get-env('NOAGENT_PROVIDER')
+        e1 != '' -> cfg.provider = e1
+    }
+    cfg.model == '' -> {
+        e2 = os.get-env('NOAGENT_MODEL')
+        e2 != '' -> cfg.model = e2
+    }
+    cfg.base-url == '' -> {
+        e3 = os.get-env('NOAGENT_BASE_URL')
+        e3 != '' -> cfg.base-url = e3
+    }
+    e4 = os.get-env('NOAGENT_API_KEY')
+    e4 != '' -> cfg.api-key = e4
+
+    ; --- pass 3: config-file overlay (fill only empties) ---
+    cfg.provider == '' -> {
+        p1 = profile-str(cfg.config-path, '', 'default-provider')
+        p1 != '' -> cfg.provider = p1
+    }
+    cfg.base-url == '' -> {
+        p2 = profile-str(cfg.config-path, cfg.provider, 'base-url')
+        p2 != '' -> cfg.base-url = p2
+    }
+    cfg.model == '' -> {
+        p3 = profile-str(cfg.config-path, cfg.provider, 'model')
+        p3 != '' -> cfg.model = p3
+    }
+    cfg.api-key-env == '' -> {
+        p4 = profile-str(cfg.config-path, cfg.provider, 'api-key-env')
+        p4 != '' -> cfg.api-key-env = p4
+    }
+    sv, sfound = profile-bool(cfg.config-path, cfg.provider, 'stream')
+    sfound -> cfg.stream-set == false -> cfg.stream = sv
+
+    ; --- pass 4: built-in defaults (fill remaining blanks) ---
+    cfg.base-url == '' -> cfg.base-url = DEFAULT-BASE-URL
+    cfg.model == '' -> cfg.model = DEFAULT-MODEL
+    cfg.provider == '' -> cfg.provider = 'openai'
+    cfg.max-turns <= 0 -> cfg.max-turns = DEFAULT-MAX-TURNS
+    cfg.max-retries < 0 -> cfg.max-retries = DEFAULT-MAX-RETRIES
+    cfg.context-budget < 0 -> cfg.context-budget = DEFAULT-CONTEXT-BUDGET
+
+    ; --- api key resolution last (never persisted) ---
+    cfg.api-key == '' -> {
+        k1 = os.get-env('OPENAI_API_KEY')
+        k1 != '' -> cfg.api-key = k1
+    }
+    cfg.api-key == '' -> cfg.api-key-env != '' -> {
+        k2 = os.get-env(cfg.api-key-env)
+        k2 != '' -> cfg.api-key = k2
+    }
+}
+
+; ═══════════════════════════════════════════════
+; profile-str — read one string from the config file.
+; provider == '' → read root[key]; else read providers[provider][key].
+; ═══════════════════════════════════════════════
+
+profile-str = (path str, provider str, key str) (val str) {
+    val = ''
+    text = utils.read-file-str(path)
+    text == '' -> return
+    doc = jsonx.parse(text)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            root = it
+            {
+                provider == '' -> val = jsonx.get-str(root, key)
+                -> {
+                    providers = jsonx.get-child(root, 'providers')
+                    providers: {
+                        err -> {}
+                        nil -> {}
+                        ok -> {
+                            prof = jsonx.get-child(it, provider)
+                            prof: {
+                                err -> {}
+                                nil -> {}
+                                ok -> val = jsonx.get-str(it, key)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; profile-bool — read providers[provider][key] as a bool (found=false if absent)
+; ═══════════════════════════════════════════════
+
+profile-bool = (path str, provider str, key str) (val bool, found bool) {
+    val = false
+    found = false
+    text = utils.read-file-str(path)
+    text == '' -> return
+    doc = jsonx.parse(text)
+    doc: {
+        err -> {}
+        nil -> {}
+        ok -> {
+            providers = jsonx.get-child(it, 'providers')
+            providers: {
+                err -> {}
+                nil -> {}
+                ok -> {
+                    prof = jsonx.get-child(it, provider)
+                    prof: {
+                        err -> {}
+                        nil -> {}
+                        ok -> {
+                            val, found = it.get-bool(key)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; chat-url — base-url + /chat/completions (drops any trailing slash)
+; ═══════════════════════════════════════════════
+
+chat-url = (c config) (url str) {
+    base = c.base-url
+    base.ends-with('/') -> {
+        #{overflow=wrap}
+        base = utils.slice-str(base, 0, base.len-bytes() - 1)
+    }
+    url = base - '/chat/completions'
+}
+
+; ═══════════════════════════════════════════════
+; set-value — persist one configuration key to the config file.
+;
+; We rewrite a normalized multi-provider file seeded from the currently
+; resolved config, with the requested override applied under the active
+; provider. The API key is NEVER written (it lives only in env / flags).
+; Supported keys: default-provider | base-url | model | api-key-env | stream.
+; ═══════════════════════════════════════════════
+
+set-value = (c config, key str, value str) (ok bool) {
+    ok = false
+
+    provider = c.provider
+    provider == '' -> provider = 'openai'
+
+    base-url = c.base-url
+    model = c.model
+    api-key-env = c.api-key-env
+    stream = c.stream
+
+    {
+        key == 'default-provider' -> provider = value
+        key == 'base-url' -> base-url = value
+        key == 'model' -> model = value
+        key == 'api-key-env' -> api-key-env = value
+        key == 'stream' -> stream = value == 'true'
+        -> {
+            eprint('noagent: unknown config key: ' - key)
+            eprint('  supported: default-provider, base-url, model, api-key-env, stream')
+            return
+        }
+    }
+
+    body = '{'
+    body = body - '"default-provider":' - jsonx.quoted(provider)
+    body = body - ',"providers":{'
+    body = body - jsonx.quoted(provider) - ':{'
+    body = body - '"base-url":' - jsonx.quoted(base-url)
+    body = body - ',"model":' - jsonx.quoted(model)
+    api-key-env != '' -> body = body - ',"api-key-env":' - jsonx.quoted(api-key-env)
+    body = body - ',"stream":' - stream.to-str()
+    body = body - '}}}'
+
+    path = c.config-path
+    path == '' -> path = default-config-path()
+    utils.ensure-parent-dir(path)
+    ok = utils.write-file-str(path, body)
+}

@@ -1,0 +1,191 @@
+; utils.no — utility helpers for noagent
+;
+; Thin wrappers around the standard library that work around known Nolang
+; compiler quirks (parameter-slice length, string trim, etc.). Keep every
+; helper here so the rest of noagent uses one stable, tested surface.
+
+; ═══════════════════════════════════════════════
+; trim-str — trim whitespace (wrapper: s.trim() on a param yields len 0)
+; ═══════════════════════════════════════════════
+
+trim-str = (s str) (out str) {
+    out = s.trim() - ''
+}
+
+; ═══════════════════════════════════════════════
+; split-str — split by separator
+; ═══════════════════════════════════════════════
+
+split-str = (s str, sep str) (out []str) {
+    out = s.split(sep)
+}
+
+; ═══════════════════════════════════════════════
+; split-lines — split into lines
+; ═══════════════════════════════════════════════
+
+split-lines = (s str) (out []str) {
+    out = s.split('\n')
+}
+
+; ═══════════════════════════════════════════════
+; join-str — join a []str with a separator
+; ═══════════════════════════════════════════════
+
+join-str = (parts []str, sep str) (out str) {
+    out = parts.join(sep)
+}
+
+; ═══════════════════════════════════════════════
+; starts-with-str / ends-with-str / contains-str
+; ═══════════════════════════════════════════════
+
+starts-with-str = (s str, prefix str) (yes bool) {
+    yes = s.starts-with(prefix)
+}
+
+ends-with-str = (s str, suffix str) (yes bool) {
+    yes = s.ends-with(suffix)
+}
+
+contains-str = (s str, sub str) (yes bool) {
+    yes = s.contains(sub)
+}
+
+; ═══════════════════════════════════════════════
+; index-str — find index of substring (-1 when absent)
+; ═══════════════════════════════════════════════
+
+index-str = (s str, sub str) (idx i64) {
+    idx = s.index(sub)
+}
+
+; ═══════════════════════════════════════════════
+; index-from-str — find index of substring from a position
+; ═══════════════════════════════════════════════
+
+index-from-str = (s str, sub str, from i64) (idx i64) {
+    idx = s.index-from(sub, from)
+}
+
+; ═══════════════════════════════════════════════
+; slice-str — extract substring by [start,end)
+; ═══════════════════════════════════════════════
+
+slice-str = (s str, start i64, end i64) (out str) {
+    out = s.slice(start, end)
+}
+
+; ═══════════════════════════════════════════════
+; byte-len — number of bytes in a string
+; ═══════════════════════════════════════════════
+
+byte-len = (s str) (n i64) {
+    n = s.len-bytes()
+}
+
+; ═══════════════════════════════════════════════
+; cp-len — number of code points in a string
+; ═══════════════════════════════════════════════
+
+cp-len = (s str) (n i64) {
+    n = s.count()
+}
+
+; ═══════════════════════════════════════════════
+; str-to-i64 — parse an integer, 0 on failure
+; ═══════════════════════════════════════════════
+
+str-to-i64 = (s str) (v i64) {
+    v = 0
+    r = s.to-i64()
+    r: {
+        ok -> v = it
+        nil -> v = 0
+        err -> v = 0
+    }
+}
+
+; ═══════════════════════════════════════════════
+; str-to-f64 — parse a float, fallback on failure
+; ═══════════════════════════════════════════════
+
+str-to-f64 = (s str, def f64) (v f64) {
+    v = def
+    r = s.to-f64()
+    r: {
+        ok -> v = it
+        nil -> v = def
+        err -> v = def
+    }
+}
+
+; ═══════════════════════════════════════════════
+; read-file-str — read entire file, '' on any failure
+; Uses fs.read-file ([]byte). NOTE: the std fs.read-str / fs.write-str are
+; buggy in the current compiler build (read-str reports an existing file as
+; empty; write-str leaks its payload to stdout and leaves the file empty), so
+; noagent writes through fs.open-write/fs.write/fs.close and reads via
+; fs.read-file instead.
+; ═══════════════════════════════════════════════
+
+read-file-str = (path str) (content str) {
+    content = ''
+    bytes = fs.read-file(path)
+    bytes.len() > 0 -> content = bytes.to-str()
+}
+
+; ═══════════════════════════════════════════════
+; file-exists — does a path exist?
+; ═══════════════════════════════════════════════
+
+file-exists = (path str) (yes bool) {
+    yes = fs.exists(path)
+}
+
+; ═══════════════════════════════════════════════
+; write-file-str — write entire file (overwrite), return success
+; ═══════════════════════════════════════════════
+
+write-file-str = (path str, content str) (ok bool) {
+    ok = false
+    fd = fs.open-write(path)
+    written = fs.write(fd, content, content.len-bytes())
+    fs.close(fd)
+    written >= 0 -> ok = true
+    written < 0 -> eprint('write failed: ' - path)
+}
+
+; ═══════════════════════════════════════════════
+; ensure-parent-dir — mkdir every '/'-delimited ancestor of full-path.
+; Uses os.mkdir + fs.is-dir only (the path{} struct literal trips a codegen
+; crash in this build).
+; ═══════════════════════════════════════════════
+
+ensure-parent-dir = (full-path str) {
+    n = full-path.len-bytes()
+    i <- [1..n): {
+        #{index-out=0}
+        full-path[i] == '/' -> {
+            dir = slice-str(full-path, 0, i)
+            dir.len() > 0 -> fs.is-dir(dir) == false -> os.mkdir(dir, 511)
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; next-i — i + 1 as a plain assignment (keeps index math off the overflow rule)
+; ═══════════════════════════════════════════════
+
+next-i = (i i64) (n i64) {
+    #{overflow=wrap}
+    n = i + 1
+}
+
+; ═══════════════════════════════════════════════
+; read-line — read one line from stdin (nil at EOF)
+; ═══════════════════════════════════════════════
+
+read-line = (line ?str) {
+    line = io.read-line()
+}
