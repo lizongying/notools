@@ -30,12 +30,10 @@
 
 ; ---- little-endian readers ----
 bmp-u32 = (d []byte, o i64) (v i64) {
-    #{overflow=wrap}
     v = (d[o] & 255) | ((d[o + 1] & 255) << 8) | ((d[o + 2] & 255) << 16) | ((d[o + 3] & 255) << 24)
 }
 
 bmp-u16 = (d []byte, o i64) (v i64) {
-    #{overflow=wrap}
     v = (d[o] & 255) | ((d[o + 1] & 255) << 8)
 }
 
@@ -56,15 +54,16 @@ bmp-extract = (px i64, mask i64) (out i64) {
 
         -> break
     }
-    #{overflow=wrap}
     val = (px & mask) >> shift
     bits == 8 -> {
         out = val
     }
 
     -> {
+
         #{overflow=wrap}
         max = (1 << bits) - 1
+
         #{overflow=wrap}
         out = val * 255 / max
     }
@@ -84,7 +83,6 @@ bmp-pal-idx = (d []byte, row-start i64, x i64, bpp i64) (idx i64) {
         bpp == 4 -> {
             byte = d[row-start + (x >> 1)] & 255
             (x & 1) == 0 -> {
-                #{overflow=wrap}
                 idx = (byte >> 4) & 15
             }
 
@@ -128,6 +126,7 @@ load = (path str) (img ?image) {
     top-down = false
     h = h-raw
     h > 2147483647 -> {
+
         #{overflow=wrap}
         h = 4294967296 - h
         top-down = true
@@ -175,7 +174,6 @@ load = (path str) (img ?image) {
         }
 
         -> {
-            #{overflow=wrap}
             pal-count = 1 << bpp
         }
     }
@@ -185,6 +183,7 @@ load = (path str) (img ?image) {
     b-mask = 0
     a-mask = 0
     bpp == 16 && compression == 0 -> {
+
         ; BI_RGB 16-bit is 5-6-5: R=bits 11-15, G=bits 5-10, B=bits 0-4
         r-mask = 63488
         g-mask = 2016
@@ -208,10 +207,12 @@ load = (path str) (img ?image) {
     pix-off = data-offset
     min-off = pal-off
     bpp <= 8 -> {
+
         #{overflow=wrap}
         min-off = min-off + pal-count * 4
     }
     compression == 3 -> {
+
         #{overflow=wrap}
         min-off = min-off + 12
         a-mask != 0 -> {
@@ -233,6 +234,7 @@ load = (path str) (img ?image) {
 
     ; ---- decode ----
     compression == 1 || compression == 2 -> {
+
         ; RLE decode into a flat palette-index buffer (decode-row order).
         ; Per the BMP spec, runs never cross a scan line, so the cursor only
         ; advances vertically on EOL (b1==0) / delta (b1==2); pixel runs just
@@ -241,50 +243,62 @@ load = (path str) (img ?image) {
         pos = pix-off
         cx = 0
         cy = 0
+
         ; repeat until bitmap ends (b1==1) or buffer exhausted
         rle-cap = w * h + 128
         i <- [0..rle-cap): {
             cy < h && pos + 1 < data.len() -> {
                 b0 = data[pos] & 255
                 b1 = data[pos + 1] & 255
+
                 #{overflow=wrap}
                 pos = pos + 2
                 b0 == 0 -> {
                     b1 == 0 -> {
+
                         ; end of line: move to start of next row
                         cy = cy + 1
                         cx = 0
                     }
 
                     b1 == 1 -> {
+
                         ; end of bitmap
                         cy = h
                     }
 
                     b1 == 2 -> {
+
                         ; delta (skip pixels)
                         dx = data[pos] & 255
                         dy = data[pos + 1] & 255
+
                         #{overflow=wrap}
                         pos = pos + 2
+
                         #{overflow=wrap}
                         cx = cx + dx
+
                         #{overflow=wrap}
                         cy = cy + dy
                     }
 
                     b1 >= 3 -> {
+
                         ; absolute (literal) run of b1 pixels (b1>=3 is the
                         ; absolute-mode control code for both RLE4 and RLE8)
                         compression == 1 -> {
+
                             ; RLE8: one palette index per byte
                             p <- [0..b1): {
                                 cx < w && cy < h -> {
                                     rle-idx[cy * w + cx] = data[pos + p] & 255
                                 }
+
                                 #{overflow=wrap}
                                 cx = cx + 1
                             }
+
                             #{overflow=wrap}
                             pos = pos + b1
                             (b1 & 1) == 1 -> {
@@ -293,10 +307,12 @@ load = (path str) (img ?image) {
                         }
 
                         -> {
+
                             ; RLE4: two nibbles per byte (b1 = pixel count)
                             p <- [0..b1): {
                                 byte = data[pos + (p >> 1)] & 255
                                 (p & 1) == 0 -> {
+
                                     ; high nibble
                                     cx < w && cy < h -> {
                                         rle-idx[cy * w + cx] = (byte >> 4) & 15
@@ -304,14 +320,17 @@ load = (path str) (img ?image) {
                                 }
 
                                 -> {
+
                                     ; low nibble
                                     cx < w && cy < h -> {
                                         rle-idx[cy * w + cx] = byte & 15
                                     }
                                 }
+
                                 #{overflow=wrap}
                                 cx = cx + 1
                             }
+
                             ; bytes consumed = ceil(b1 / 2)
                             #{overflow=wrap}
                             pos = pos + ((b1 + 1) >> 1)
@@ -320,8 +339,10 @@ load = (path str) (img ?image) {
                 }
 
                 -> {
+
                     ; encoded run: b0 copies of the value(s) in b1
                     compression == 2 -> {
+
                         ; RLE4: alternate high/low nibble of b1
                         hi = (b1 >> 4) & 15
                         lo = b1 & 15
@@ -335,17 +356,20 @@ load = (path str) (img ?image) {
                                     rle-idx[cy * w + cx] = lo
                                 }
                             }
+
                             #{overflow=wrap}
                             cx = cx + 1
                         }
                     }
 
                     -> {
+
                         ; RLE8: b1 is the single palette index value
                         n <- [0..b0): {
                             cx < w && cy < h -> {
                                 rle-idx[cy * w + cx] = b1
                             }
+
                             #{overflow=wrap}
                             cx = cx + 1
                         }
@@ -360,17 +384,21 @@ load = (path str) (img ?image) {
         y <- [0..h): {
             src-y = y
             ! top-down -> {
+
                 #{overflow=wrap}
                 src-y = h - 1 - y
             }
             x <- [0..w): {
+
                 #{overflow=wrap}
                 idx = rle-idx[src-y * w + x] & 255
+
                 #{overflow=wrap}
                 po = pal-off + idx * 4
                 r = data[po + 2] & 255
                 g = data[po + 1] & 255
                 b = data[po] & 255
+
                 #{overflow=wrap}
                 dst = (y * w + x) * bands
                 tmp.data[dst] = r
@@ -381,6 +409,7 @@ load = (path str) (img ?image) {
     }
 
     -> {
+
         ; uncompressed (BI_RGB / BI_BITFIELDS) decode
         #{overflow=wrap}
         row-bytes = (w * bpp + 7) / 8
@@ -388,12 +417,15 @@ load = (path str) (img ?image) {
         y <- [0..h): {
             src-y = y
             ! top-down -> {
+
                 #{overflow=wrap}
                 src-y = h - 1 - y
             }
+
             #{overflow=wrap}
             row-start = pix-off + src-y * row-padded
             x <- [0..w): {
+
                 #{overflow=wrap}
                 p = row-start + x * (bpp / 8)
                 r = 0
@@ -431,8 +463,8 @@ load = (path str) (img ?image) {
                 }
 
                 bpp <= 8 -> {
-                    #{overflow=wrap}
                     idx = bmp-pal-idx(data, row-start, x, bpp) & 255
+
                     #{overflow=wrap}
                     po = pal-off + idx * 4
                     b = data[po] & 255
