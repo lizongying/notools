@@ -30,7 +30,7 @@ const FeatureList: FeatureItem[] = [
     title: translate({message: '多子项目'}),
     description: (
       <>
-        {translate({message: '内含 nogit（Git）、noimg（图像）、nouv（Python 包管理）、nonpm（Node.js 包管理）'})}
+        {translate({message: '内含 nogit（Git）、noimg（图像）、nouv（Python 包管理）、nonpm（Node.js 包管理）、noagent（LLM 智能体）'})}
       </>
     ),
   },

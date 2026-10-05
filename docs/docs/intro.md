@@ -12,7 +12,7 @@ notools 是一個使用 [Nolang](https://github.com/lizongying/nolang) 語言實
 - **單一可執行文件**：子命令分發，共 193 個命令
 - **支持 stdin 管道與文件輸入**：與傳統 Unix 工具無縫銜接
 - **友好的錯誤處理**：清晰的錯誤提示與退出碼
-- **多子項目**：內含 nogit、noimg、nouv、nonpm 四個獨立子項目
+- **多子項目**：內含 nogit、noimg、nouv、nonpm、noagent 五個獨立子項目
 
 ## 子項目一覽
 
@@ -23,6 +23,7 @@ notools 是一個使用 [Nolang](https://github.com/lizongying/nolang) 語言實
 | [noimg](/docs/noimg) | 純 Nolang 圖像處理工具庫（9 種格式、55+ 種操作） |
 | [nouv](/docs/nouv) | 純 Nolang Python 包管理器（兼容 uv/pip） |
 | [nonpm](/docs/nonpm) | 純 Nolang Node.js 包管理器（兼容 pnpm） |
+| [noagent](/docs/noagent) | 純 Nolang 自主 LLM 智能體 CLI（OpenAI 相容、工具呼叫、串流） |
 
 ## 快速開始
 
@@ -45,3 +46,4 @@ notools ls -l /tmp
 - **圖像處理**：使用 noimg 進行批量圖像轉換與處理
 - **Python 項目管理**：使用 nouv 管理 Python 項目依賴
 - **Node.js 項目管理**：使用 nonpm 管理 Node.js 項目依賴
+- **自主智能體**：使用 noagent 透過 OpenAI 相容接口驅動工具呼叫與會話式對話

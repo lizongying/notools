@@ -10,7 +10,7 @@ sidebar_position: 2
 
 直接從 [GitHub Releases](https://github.com/lizongying/notools/releases) 下載對應平台的已編譯好二進制文件，無需安裝編譯器。
 
-五個獨立工具各自構建，可按需下載：
+六個獨立工具各自構建，可按需下載：
 
 | 工具 | 說明 |
 |------|------|
@@ -19,17 +19,18 @@ sidebar_position: 2
 | `noimg` | 純 Nolang 圖像處理工具庫（9 種格式、55+ 種操作） |
 | `nouv` | 純 Nolang Python 包管理器（兼容 uv/pip） |
 | `nonpm` | 純 Nolang Node.js 包管理器（兼容 pnpm） |
+| `noagent` | 純 Nolang 自主 LLM 智能體 CLI（OpenAI 相容、工具呼叫、串流） |
 
 支持的平台：
 
-| 平台 | notools | nogit | noimg | nouv | nonpm |
-|------|---------|-------|-------|------|-------|
-| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` |
+| 平台 | notools | nogit | noimg | nouv | nonpm | noagent |
+|------|---------|-------|-------|------|-------|---------|
+| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` | `noagent-linux-amd64` |
+| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` | `noagent-linux-arm64` |
+| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` | `noagent-darwin-amd64` |
+| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` | `noagent-darwin-arm64` |
+| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` | `noagent-windows-amd64.exe` |
+| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` | `noagent-windows-arm64.exe` |
 
 ```bash
 # Linux amd64 示例 — 按需安裝
@@ -52,13 +53,17 @@ chmod +x nouv && sudo mv nouv /usr/local/bin/
 # nonpm
 curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/latest/download/nonpm-linux-amd64
 chmod +x nonpm && sudo mv nonpm /usr/local/bin/
+
+# noagent
+curl -fsSL -o noagent https://github.com/lizongying/notools/releases/latest/download/noagent-linux-amd64
+chmod +x noagent && sudo mv noagent /usr/local/bin/
 ```
 
 下載後可使用同目錄下的 `checksums-sha256.txt` 進行校驗。
 
 ### 方式二：從源碼構建
 
-五個子項目各自獨立構建：
+六個子項目各自獨立構建：
 
 ```bash
 # 克隆項目
@@ -84,6 +89,10 @@ cp nouv/dist/nouv /usr/local/bin/nouv
 # 構建 nonpm
 cd nonpm && no build && cd ..
 cp nonpm/dist/nonpm /usr/local/bin/nonpm
+
+# 構建 noagent
+cd noagent && no build && cd ..
+cp noagent/dist/noagent /usr/local/bin/noagent
 ```
 
 ## 使用方式

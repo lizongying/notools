@@ -733,7 +733,7 @@ notools 仓库内含一个**纯 Nolang 实现的自主 LLM 智能体 CLI**（`no
 | `noagent version` | 打印版本 |
 | `noagent help` | 打印帮助 |
 
-全局 flag：`--model` `--provider` `--base-url` `--api-key` `--stream/--no-stream` `--no-tools` `--max-turns N` `--yes/-y` `--resume <id>` `--session <id>` `--system "<text>"` `--temperature` `--config <path>`。
+全局 flag：`--model` `--provider` `--base-url` `--api-key` `--stream/--no-stream` `--no-tools` `--max-turns N` `--max-retries N` `--context-budget N` `--yes/-y` `--resume <id>` `--session <id>` `--system "<text>"` `--temperature` `--config <path>`。
 
 REPL 元命令：`/help` `/model` `/tools` `/system` `/clear` `/save` `/load` `/exit`。
 

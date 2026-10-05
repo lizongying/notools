@@ -49,8 +49,8 @@ no build
 --max-retries N       retry transient API failures — transport errors, HTTP 429/5xx — with exponential backoff (default 3)
 --context-budget N    cap message content kept in the loop; drops the oldest tool-turns (a tool_calls turn is always dropped whole with its results, never orphaned) (default 100000 chars, 0 = off)
 --yes, -y             auto-approve dangerous tools
---resume <id>         resume a saved session
---session <id>        use/assign session id
+--resume <id>         start `run`/REPL from the saved session <id> (errors if absent)
+--session <id>        persist the conversation to session <id>: `run` writes the grown history once, the REPL auto-saves after each turn (falls back to the --resume id when no --session is given)
 --system "<text>"     set/override system prompt
 --temperature T       sampling temperature
 --config <path>       alternate config file

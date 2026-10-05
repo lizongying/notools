@@ -78,6 +78,19 @@ start = (argc i64, version str) {
     tools-json = ''
     cfg.no-tools == false -> tools-json = tools.schema-list()
 
+    ; session id: --session wins, else fall back to a --resume target so a
+    ; resumed conversation keeps writing back to the same file
+    session-id = cfg.session
+    session-id == '' -> session-id = cfg.resume
+    cfg.resume != '' -> {
+        loaded, lok = session.load(cfg.resume)
+        lok == false -> print('warning: no such session: ' - cfg.resume)
+        lok -> {
+            history = loaded
+            print('resumed session: ' - cfg.resume - ' (' - loaded.len().to-str() - ' msgs)')
+        }
+    }
+
     ; large bound acts as "loop until exit/EOF"; we `return` to leave early
     k <- [0..1000000): {
         io.out('noagent> ')
@@ -163,6 +176,10 @@ start = (argc i64, version str) {
             h2 = messages.append(history, messages.make('user', text))
             grown, answer, ok2 = agent.run-turn(cfg, h2, tools-json)
             history = grown
+            session-id != '' -> {
+                saved = session.save(session-id, history)
+                saved == false -> eprint('warning: session save failed: ' - session-id)
+            }
             ok2 == false -> eprint(answer)
             ok2 -> repl-show-answer(cfg, answer)
         }

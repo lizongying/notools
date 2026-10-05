@@ -81,4 +81,13 @@ no run tests/test-object-blob.no
 - 全量跑完约 83 个文件需数分钟；串行全量时统一运行器偶发假失败，单独重跑可确认
 - 构造/运行需 LLVM 工具链在 `PATH` 中（见「构建」文档）
 
+## noagent 子项目测试
+
+noagent 是独立子项目，测试位于 `noagent/tests/`，**全部离线** —— provider/SSE 解析通过 fixture 字符串验证，绝不触网。由一个统一调度器串行跑全部模块：
+
+```bash
+cd noagent
+no run tests/run-all.no   # 依次跑 test-config/jsonx/messages/provider/stream/tools/toolexec/approval
+```
+
 > **注意**：`nogit/tests` 被仓库根 `.gitignore` 命中，但测试文件本身已被 git 跟踪。提交这些文件的改动时 `git add` 会被拒，需用 `git add -f`。

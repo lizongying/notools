@@ -8,7 +8,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: '子项目',
-      items: ['nogit', 'noimg', 'nouv', 'nonpm'],
+      items: ['nogit', 'noimg', 'nouv', 'nonpm', 'noagent'],
     },
     {
       type: 'category',

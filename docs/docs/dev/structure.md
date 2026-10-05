@@ -37,6 +37,9 @@ notools/
 ├── nonpm/               # 纯 Nolang Node.js 包管理器（独立子项目）
 │   ├── main.no          # nonpm CLI 入口与命令分发
 │   └── src/             # 依赖解析/安装/锁文件/发布等模块
+├── noagent/             # 纯 Nolang 自主 LLM 智能体 CLI（独立子项目）
+│   ├── main.no          # noagent CLI 入口 + 子命令分发 + REPL
+│   └── src/             # config/httpclient/jsonx/messages/tools/toolexec/approval/provider/stream/agent/session 等模块
 └── package.jsonc        # 项目配置
 ```
 

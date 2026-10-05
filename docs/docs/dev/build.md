@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # 构建
 
-五个子项目各自独立构建：
+六个子项目各自独立构建：
 
 ```bash
 # 构建 notools
@@ -36,6 +36,12 @@ cd nonpm
 no build
 cd ..
 # 产物位于 nonpm/dist/nonpm
+
+# 构建 noagent
+cd noagent
+no build
+cd ..
+# 产物位于 noagent/dist/noagent
 ```
 
 ## 工作区配置
@@ -49,6 +55,7 @@ cd ..
   "noimg": "./noimg",
   "nouv": "./nouv",
   "nonpm": "./nonpm",
+  "noagent": "./noagent",
 }
 ```
 

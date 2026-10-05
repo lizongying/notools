@@ -96,6 +96,10 @@ const config: Config = {
               label: 'nonpm',
               to: '/docs/nonpm',
             },
+            {
+              label: 'noagent',
+              to: '/docs/noagent',
+            },
           ],
         },
         {
