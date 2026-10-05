@@ -139,14 +139,38 @@ cmd-chat = (argc i64) {
         os.exit(1)
     }
 
+    ; resume: seed the context from a saved session when --resume <id> is given
+    resumed = false
     msgs = messages.new-list()
-    cfg.system != '' -> msgs.push(messages.make('system', cfg.system))
+    cfg.resume != '' -> {
+        loaded, lok = session.load(cfg.resume)
+        lok == false -> {
+            eprint('error: no such session: ' - cfg.resume)
+            os.exit(1)
+        }
+        msgs = loaded
+        resumed = true
+    }
+    ; a fresh (non-resumed) chat carries the configured system prompt
+    resumed == false -> {
+        cfg.system != '' -> msgs.push(messages.make('system', cfg.system))
+    }
     msgs.push(messages.make('user', prompt))
 
     resp, finish, ok, errmsg = provider.complete(cfg, msgs, '')
     ok == false -> {
         eprint('error: ' - errmsg)
         os.exit(1)
+    }
+
+    ; persist: write the seeded history plus this user/assistant exchange under
+    ; --session <id> (or back to the resumed id when none is given)
+    sid = cfg.session
+    sid == '' -> sid = cfg.resume
+    sid != '' -> {
+        msgs.push(resp)
+        saved = session.save(sid, msgs)
+        saved == false -> eprint('warning: session save failed: ' - sid)
     }
 
     ; in streaming mode provider.complete already echoed the content live

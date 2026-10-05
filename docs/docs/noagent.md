@@ -42,8 +42,8 @@ notools 倉庫內含一個**純 Nolang 實現的自主 LLM 智能體 CLI**（`no
 --max-retries N       重試暫時性 API 失敗（傳輸錯誤、HTTP 429/5xx），指數退避（預設 3）
 --context-budget N    保留於迴圈內之內容字元上限，丟棄最舊的 tool-turn（預設 100000，0 = 關閉）
 --yes, -y             自動批准危險工具
---resume <id>         以已儲存的會話 <id> 作為 `run`/REPL 的起點（不存在則報錯）
---session <id>        將對話持久化到會話 <id>：`run` 於迴圈結束後寫入一次，REPL 每輪後自動保存（未給 --session 時回退至 --resume 的 id）
+--resume <id>         以已儲存的會話 <id> 作為 `run`/`chat`/REPL 的起點（不存在則報錯）
+--session <id>        將對話持久化到會話 <id>：`run`/`chat` 於完成後寫入一次，REPL 每輪後自動保存（未給 --session 時回退至 --resume 的 id）
 --system "<text>"     設定/覆蓋系統提示
 --temperature T       取樣溫度
 --config <path>       另用配置文件
