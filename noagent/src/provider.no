@@ -19,7 +19,7 @@
 
 ACCEPT-JSON = 'application/json'
 ACCEPT-SSE = 'text/event-stream'
-BASE-RETRY-DELAY = 400    ; ms; doubled each retry (exponential backoff)
+BASE-RETRY-DELAY = 400; ms; doubled each retry (exponential backoff)
 
 ; retryable — should a NON-streaming attempt be retried? true on transport
 ; failure, 429 (rate-limit), or any 5xx (server error). PURE so it can be
@@ -27,6 +27,7 @@ BASE-RETRY-DELAY = 400    ; ms; doubled each retry (exponential backoff)
 retryable = (status i64, transport-ok bool) (yes bool) {
     yes = false
     transport-ok == false -> yes = true
+
     -> {
         status == 429 -> yes = true
         status >= 500 -> yes = true
@@ -59,6 +60,7 @@ build-request = (cfg config.config, msgs-json str, tools-json str, stream bool) 
 ; ═══════════════════════════════════════════════
 
 complete = (cfg config.config, msgs []messages.message, tools-json str) (resp messages.message, finish str, ok bool, errmsg str) {
+
     ; dispatch: when streaming is requested, use the SSE path (which also
     ; renders content deltas live to stdout)
     cfg.stream -> {
@@ -77,6 +79,7 @@ complete = (cfg config.config, msgs []messages.message, tools-json str) (resp me
     status = 0
     resp-body = ''
     posted = false
+
     #{overflow=wrap}
     tries = cfg.max-retries + 1
     delay-ms = BASE-RETRY-DELAY
@@ -87,6 +90,7 @@ complete = (cfg config.config, msgs []messages.message, tools-json str) (resp me
         a < cfg.max-retries -> {
             eprint('noagent: transient failure (http ' - status.to-str() - '); retrying')
             time.sleep-ms(delay-ms)
+
             #{overflow=wrap}
             delay-ms = delay-ms * 2
         }
@@ -104,6 +108,7 @@ complete = (cfg config.config, msgs []messages.message, tools-json str) (resp me
             status-text = 'http ' - status.to-str()
             {
                 errmsg == '' -> errmsg = status-text
+
                 -> errmsg = status-text - ': ' - errmsg
             }
             return
@@ -127,28 +132,37 @@ parse-response = (body str) (resp messages.message, finish str, ok bool, errmsg 
     doc = jsonx.parse(body)
     doc: {
         err -> errmsg = 'invalid json: ' - it
+
         nil -> errmsg = 'empty response'
+
         ok -> {
             root = it
             choices = jsonx.get-child(root, 'choices')
             choices: {
                 err -> errmsg = 'no choices'
+
                 nil -> errmsg = extract-api-error(body)
+
                 ok -> {
                     arr = it
                     arr.arr-len() <= 0 -> errmsg = 'empty choices'
+
                     -> {
                         c0 = arr.arr-get(0)
                         c0: {
                             err -> errmsg = 'no choice 0'
+
                             nil -> errmsg = 'no choice 0'
+
                             ok -> {
                                 choice = it
                                 finish = jsonx.get-str(choice, 'finish_reason')
                                 msg = jsonx.get-child(choice, 'message')
                                 msg: {
                                     err -> errmsg = 'no message'
+
                                     nil -> errmsg = 'no message'
+
                                     ok -> resp = to-assistant(it)
                                 }
                                 ok = true
@@ -173,24 +187,35 @@ to-assistant = (msg json) (out messages.message) {
     out.content = jsonx.get-str(msg, 'content')
     calls = jsonx.get-child(msg, 'tool_calls')
     calls: {
-        err -> {}
-        nil -> {}
+        err -> {
+        }
+
+        nil -> {
+        }
+
         ok -> {
             arr = it
             n = arr.arr-len()
             i <- [0..n): {
-                #{index-out=0}
                 e = arr.arr-get(i)
                 e: {
-                    err -> {}
-                    nil -> {}
+                    err -> {
+                    }
+
+                    nil -> {
+                    }
+
                     ok -> {
                         tc messages.tool-call
                         tc.id = jsonx.get-str(it, 'id')
                         fn = jsonx.get-child(it, 'function')
                         fn: {
-                            err -> {}
-                            nil -> {}
+                            err -> {
+                            }
+
+                            nil -> {
+                            }
+
                             ok -> {
                                 tc.name = jsonx.get-str(it, 'name')
                                 tc.arguments = jsonx.get-str(it, 'arguments')
@@ -212,13 +237,21 @@ extract-api-error = (body str) (msg str) {
     msg = ''
     doc = jsonx.parse(body)
     doc: {
-        err -> {}
-        nil -> {}
+        err -> {
+        }
+
+        nil -> {
+        }
+
         ok -> {
             e = jsonx.get-child(it, 'error')
             e: {
-                err -> {}
-                nil -> {}
+                err -> {
+                }
+
+                nil -> {
+                }
+
                 ok -> msg = jsonx.get-str(it, 'message')
             }
         }
@@ -239,17 +272,17 @@ extract-api-error = (body str) (msg str) {
 ; content is accumulated as a fragment vec joined at pack time, not a str.
 ; ═══════════════════════════════════════════════
 
-content-frags []str          ; content deltas, joined at pack
-finish-lst []str             ; finish_reasons seen (last non-empty wins)
-ids []str                    ; tool_call slot: ids
-names []str                  ; tool_call slot: names
-argss []str                  ; tool_call slot: stitched arguments
-part []byte                  ; partial-line byte buffer (no '\n' seen yet)
-raw-chunks []str             ; every received chunk (for non-2xx error extract)
-part-off = 0                 ; cursor into part for the un-processed suffix
-slots = 0                    ; number of allocated tool_call slots
-got-done = false             ; terminal `data: [DONE]` observed
-do-render = false            ; echo content deltas live to stdout
+content-frags []str; content deltas, joined at pack
+finish-lst []str; finish_reasons seen (last non-empty wins)
+ids []str; tool_call slot: ids
+names []str; tool_call slot: names
+argss []str; tool_call slot: stitched arguments
+part []byte; partial-line byte buffer (no '\n' seen yet)
+raw-chunks []str; every received chunk (for non-2xx error extract)
+part-off = 0; cursor into part for the un-processed suffix
+slots = 0; number of allocated tool_call slots
+got-done = false; terminal `data: [DONE]` observed
+do-render = false; echo content deltas live to stdout
 
 ; stream-reset — clear all incremental state before a new stream (in-place)
 stream-reset = () {
@@ -283,6 +316,7 @@ process-sse-line = (line str) {
     payload = stream.strip-data-prefix(line)
     payload != '' -> {
         stream.is-done(payload) -> got-done = true
+
         -> {
             d = stream.extract-content(payload)
             d != '' -> {
@@ -293,23 +327,31 @@ process-sse-line = (line str) {
             f != '' -> finish-lst.push(f)
             tcs = stream.delta-tool-calls(payload)
             tcs: {
-                err -> {}
-                nil -> {}
+                err -> {
+                }
+
+                nil -> {
+                }
+
                 ok -> {
                     arr = it
                     m = arr.arr-len()
                     j <- [0..m): {
-                        #{index-out=0}
                         e = arr.arr-get(j)
                         e: {
-                            err -> {}
-                            nil -> {}
+                            err -> {
+                            }
+
+                            nil -> {
+                            }
+
                             ok -> {
                                 idx = stream.tc-index(it)
                                 (idx >= slots) {
                                     ids.push('')
                                     names.push('')
                                     argss.push('')
+
                                     #{overflow=wrap}
                                     slots = slots + 1
                                 }
@@ -318,6 +360,7 @@ process-sse-line = (line str) {
                                 nm = stream.tc-name(it)
                                 nm != '' -> names[idx] = nm
                                 ag = stream.tc-args(it)
+
                                 #{overflow=wrap}
                                 ag != '' -> argss[idx] = argss[idx] - ag
                             }
@@ -349,8 +392,10 @@ part-to-str = (start i64, end i64) (s str) {
     hi = end
     (hi > part.len()) -> hi = part.len()
     (lo < hi) {
+
         #{index-out=0}
         v.push(part[lo])
+
         #{overflow=wrap}
         lo = lo + 1
     }
@@ -368,6 +413,7 @@ stream-feed = (text str) {
     raw-chunks.push(text)
     b = text.to-bytes()
     i <- [0..b.len()): {
+
         #{index-out=0}
         part.push(b[i])
     }
@@ -375,6 +421,7 @@ stream-feed = (text str) {
     (nl >= 0) {
         line = part-to-str(part-off, nl)
         process-sse-line(line)
+
         #{overflow=wrap}
         part-off = nl + 1
         nl = find-nl-from(part-off)
@@ -392,13 +439,14 @@ stream-pack = () (resp messages.message, finish str) {
     resp.content = content
     finish = ''
     finish-lst.len() > 0 -> {
+
         #{overflow=wrap}
         last = finish-lst.len() - 1
+
         #{index-out=0}
         finish = finish-lst[last]
     }
     k <- [0..slots): {
-        #{index-out=0}
         tc messages.tool-call
         tc.id = ids[k]
         tc.name = names[k]
@@ -425,6 +473,7 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
 
     status = 0
     opened = false
+
     #{overflow=wrap}
     tries = cfg.max-retries + 1
     delay-ms = BASE-RETRY-DELAY
@@ -434,6 +483,7 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
         a < cfg.max-retries -> {
             eprint('noagent: connect failed; retrying')
             time.sleep-ms(delay-ms)
+
             #{overflow=wrap}
             delay-ms = delay-ms * 2
         }
@@ -478,6 +528,7 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
             status-text = 'http ' - status.to-str()
             {
                 errmsg == '' -> errmsg = status-text
+
                 -> errmsg = status-text - ': ' - errmsg
             }
             return
@@ -502,6 +553,7 @@ aggregate-stream = (body str, render bool) (resp messages.message, finish str) {
     lines = utils.split-lines(body)
     n = lines.len()
     i <- [0..n): {
+
         #{index-out=0}
         process-sse-line(lines[i])
     }
