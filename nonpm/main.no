@@ -781,7 +781,10 @@ cmd-link = (argc i64) {
             p = path {
                 p: nm-dir
             }
-            p.exists() -> {
+            ; ensure node_modules exists before symlinking into it (was
+            ; previously inverted: make-dir only ran when the dir already
+            ; existed, so `link` on a fresh project left ln -s with no parent)
+            p.exists() == false -> {
                 p.make-dir()
             }
             pkg-path = full-target - '/package.json'
@@ -789,35 +792,60 @@ cmd-link = (argc i64) {
                 p: pkg-path
             }
             pp.exists() -> {
-                content = fs.read-file(pkg-path)
-                v = json.parse(content, content.len())
+                ; read as str (fs.read-file returns []byte and the old 2-arg
+                ; json.parse(content, len) form silently failed to expose the
+                ; "name" key); use the modern single-arg json.parse + .get/.str
+                ; idiom shared with registry.no / config.no
+                content str = ''
+                r = fs.read-str(pkg-path)
+                r: {
+                    ok -> content = it
+
+                    nil -> content = ''
+
+                    err -> content = ''
+                }
+                v = json.parse(content)
                 v: {
                     ok -> {
-                        name-val = json.get-key(it, 'name')
+                        name-val = it.get('name')
                         name-val: {
                             ok -> {
-                                pkg-name = it.str-val()
-                                link-path = nm-dir - '/' - pkg-name
-                                fs.is-file(link-path) -> fs.remove(link-path)
-                                cmd = 'ln -s ' - full-target - ' ' - link-path
-                                process.process-system(cmd)
-                                print('noNpm: linked ' - pkg-name - ' -> ' - full-target)
+                                pkg-name, found = it.str()
+                                found -> {
+                                    link-path = nm-dir - '/' - pkg-name
+                                    ; scoped packages (@scope/name) link under an @scope subdir
+                                    pkg-name.starts-with('@') -> {
+                                        slash-pos = pkg-name.index('/')
+                                        slash-pos >= 0 -> {
+                                            scope-dir = nm-dir - '/' - pkg-name.slice(0, slash-pos)
+                                            sp = path {
+                                                p: scope-dir
+                                            }
+                                            sp.make-dir()
+                                            #{overflow=wrap}
+                                            leaf = pkg-name.slice(slash-pos + 1, pkg-name.len())
+                                            link-path = scope-dir - '/' - leaf
+                                        }
+                                    }
+                                    ; -f replaces an existing/broken symlink instead of failing
+                                    cmd = 'ln -sf ' - full-target - ' ' - link-path
+                                    process.process-system(cmd)
+                                    print('noNpm: linked ' - pkg-name - ' -> ' - full-target)
+                                }
+
+                                found == false -> print('error: "name" is not a string in package.json')
                             }
 
-                            nil -> {
-                                print('error: no "name" field in package.json')
-                            }
+                            nil -> print('error: no "name" field in package.json')
 
-                            err -> {
-                            }
+                            err -> print('error: no "name" field in package.json')
                         }
                     }
 
-                    nil -> {
-                    }
+                    nil -> print('error: failed to parse ' - pkg-path)
 
-                    err -> {
-                    }
+                    err -> print('error: failed to parse ' - pkg-path)
                 }
             }
 

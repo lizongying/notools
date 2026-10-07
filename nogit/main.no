@@ -1766,9 +1766,77 @@ cmd-hash-object = (argc i64) {
 ; git ls-tree
 ; ═══════════════════════════════════════════════
 
+; octal-mode-str: format a tree entry mode as 6-digit octal (100644, 040000)
+; m i64: raw mode value
+; returns out str: zero-padded octal
+octal-mode-str = (m i64) (out str) {
+    out = ''
+    tmp []byte = with-cap(16)
+    m == 0 -> tmp.push(48)
+    m != 0 -> {
+        !! {
+
+            #{overflow=wrap}
+            tmp.push(48 + (m % 8))
+
+            #{overflow=wrap}
+            m = m / 8
+            m == 0 -> break
+        }
+    }
+    L = tmp.len()
+    j <- [0..L): {
+        cs str = with-len(1)
+
+        #{index-out=zero, overflow=wrap}
+        cs[0] = tmp[L - 1 - j]
+        out = out - cs
+    }
+    out.len-bytes() < 6 -> {
+
+        #{overflow=wrap}
+        pad-n = 6 - out.len-bytes()
+        j <- [0..pad-n): {
+            out = '0' - out
+        }
+    }
+}
+
+; ls-tree-recurse: print tree entries recursively (git ls-tree -r semantics).
+; Subtree entries are walked but not printed (no -t support).
+; git-dir str, tree-oid oid, prefix str (path prefix for entries in this subtree)
+ls-tree-recurse = (git-dir str, tree-oid oid, prefix str) {
+    kind str
+    raw str
+    read-ok bool
+    kind, raw, read-ok = read-object-unified(git-dir, tree-oid)
+    ! read-ok -> return
+    n = object.tree-count-raw(raw)
+    i <- [0..n): {
+        mode = object.tree-mode-raw(raw, i)
+        nm = object.tree-name-raw(raw, i)
+        entry-oid = object.tree-id-raw(raw, i)
+        full-path = nm
+        prefix.len-bytes() > 0 -> {
+            full-path = prefix - '/' - nm
+        }
+        mode == 16384 -> {
+            ls-tree-recurse(git-dir, entry-oid, full-path)
+        }
+
+        -> {
+            type-name = 'blob'
+            mode == 57344 -> type-name = 'commit'
+            mode-str = octal-mode-str(mode)
+            ch = oid.oid-hex-str(entry-oid)
+            print('{mode-str} {type-name} {ch}\t{full-path}')
+        }
+    }
+}
+
 cmd-ls-tree = (argc i64) {
     argc < 2 -> {
-        print('usage: git ls-tree <tree-ish>')
+        print('usage: git ls-tree [-r] <tree-ish>')
         return
     }
     git-dir, work-tree, repo-ok = repository.repo-discover-cwd()
@@ -1776,7 +1844,17 @@ cmd-ls-tree = (argc i64) {
         print('fatal: not a git repository')
         return
     }
+    recurse = false
+    arg2 = os.arg(2)
+    arg2 == '-r' -> {
+        recurse = true
+        argc < 3 -> {
+            print('usage: git ls-tree -r <tree-ish>')
+            return
+        }
+    }
     ref = os.arg(2)
+    recurse -> ref = os.arg(3)
     o-opt = revwalk.resolve-ref(git-dir, ref)
     o oid
     ref-ok = false
@@ -1801,6 +1879,8 @@ cmd-ls-tree = (argc i64) {
         print('fatal: object not found')
         return
     }
+    flat-root oid
+    flat-root-ok = false
     kind: {
         'commit' -> {
 
@@ -1828,6 +1908,8 @@ cmd-ls-tree = (argc i64) {
                     print('fatal: could not parse tree oid')
                     return
                 }
+                flat-root = o
+                flat-root-ok = true
                 kind, data, read-ok = object.read-loose(git-dir, o)
                 ! read-ok -> {
                     kind, data, read-ok = pack.read-packed-object(git-dir, o)
@@ -1844,12 +1926,23 @@ cmd-ls-tree = (argc i64) {
             }
         }
 
-        'tree' ->
+        'tree' -> {
+            flat-root = o
+            flat-root-ok = true
+        }
 
         -> {
             print('fatal: not a tree object')
             return
         }
+    }
+    recurse -> {
+        ! flat-root-ok -> {
+            print('fatal: could not resolve tree oid')
+            return
+        }
+        ls-tree-recurse(git-dir, flat-root, '')
+        return
     }
     n = object.tree-count-raw(data)
     i <- [0..n): {
@@ -1858,37 +1951,8 @@ cmd-ls-tree = (argc i64) {
         entry-oid = object.tree-id-raw(data, i)
         type-name = 'blob'
         mode == 16384 -> type-name = 'tree'
-        mode-str = ''
-        m = mode
-        m == 0 -> mode-str = '0'
-        m != 0 -> {
-            tmp []byte = with-cap(16)
-            !! {
-
-                #{overflow=wrap}
-                tmp.push(48 + (m % 8))
-
-                #{overflow=wrap}
-                m = m / 8
-                m == 0 -> break
-            }
-            L = tmp.len()
-            j <- [0..L): {
-                cs str = with-len(1)
-
-                #{overflow=wrap}
-                cs[0] = tmp[L - 1 - j]
-                mode-str = mode-str - cs
-            }
-        }
-        mode-str.len-bytes() < 6 -> {
-
-            #{overflow=wrap}
-            pad-n = 6 - mode-str.len-bytes()
-            j <- [0..pad-n): {
-                mode-str = '0' - mode-str
-            }
-        }
+        mode == 57344 -> type-name = 'commit'
+        mode-str = octal-mode-str(mode)
         ch = oid.oid-hex-str(entry-oid)
         print('{mode-str} {type-name} {ch}\t{nm}')
     }
