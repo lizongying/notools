@@ -20,6 +20,19 @@
 # /nonpm/src/config
 
 ; ═══════════════════════════════════════════════
+; encode-pkg — registry path-safe package name
+; The npm registry requires the '/' inside a scoped name ('@scope/name') to be
+; percent-encoded, otherwise it is read as an extra path segment (404).
+; pkg str — package name
+; returns out str — name with '/' -> '%2F' for scoped packages
+; ═══════════════════════════════════════════════
+
+encode-pkg = (pkg str) (out str) {
+    out = pkg
+    pkg.starts-with('@') -> out = utils.replace(pkg, '/', '%2F')
+}
+
+; ═══════════════════════════════════════════════
 ; fetch-metadata — fetch full package metadata from registry
 ; cfg config — configuration (contains registry URL)
 ; pkg str — package name
@@ -28,7 +41,7 @@
 
 fetch-metadata = (cfg config, pkg str) (meta ?json) {
     meta = nil
-    url = cfg.registry - pkg
+    url = cfg.registry - encode-pkg(pkg)
     resp = http.get(url)
     resp: {
         ok -> {
@@ -68,7 +81,7 @@ fetch-version = (cfg config, pkg str, ver str) (meta ?json) {
     ver == 'latest' -> version-path = 'latest'
     ver == '' -> version-path = 'latest'
 
-    url = cfg.registry - pkg - '/' - version-path
+    url = cfg.registry - encode-pkg(pkg) - '/' - version-path
     resp = http.get(url)
     resp: {
         ok -> {
@@ -416,32 +429,55 @@ login = (cfg config, username str, password str) (token ?str) {
 whoami = (cfg config, token str) (username ?str) {
     username = nil
     url = cfg.registry - '-/whoami'
-    resp = http.get(url)
+    ; send the auth token — /-/whoami is authenticated and returns the identity
+    ; tied to the token; without the header the registry reports the anonymous
+    ; user (or 401), which made `whoami` always wrong.
+    req = http.request {
+        method: 'GET'
+        url: url
+        body: ''
+    }
+    http.set-bearer-auth(req, token)
+    resp = http.do-req(req)
     resp: {
         ok -> {
             it.status-code != 200 -> {
                 username = nil
                 return
             }
-            v = json.parse(it.body)
+            ; npm's /-/whoami returns either {"username":"..."} JSON or a bare name
+            body = it.body
+            v = json.parse(body)
+            got = false
             v: {
                 ok -> {
                     un = it.get('username')
                     un: {
                         ok -> {
                             s, found = it.str()
-                            found -> username = s
+                            found -> {
+                                username = s
+                                got = true
+                            }
                         }
 
-                        nil -> username = nil
+                        nil -> {
+                        }
 
-                        err -> username = err('network error')
+                        err -> {
+                        }
                     }
                 }
 
-                nil -> username = nil
+                nil -> {
+                }
 
-                err -> username = err('network error')
+                err -> {
+                }
+            }
+            got == false -> {
+                t = body.trim()
+                t.len() > 0 -> username = t
             }
         }
 
