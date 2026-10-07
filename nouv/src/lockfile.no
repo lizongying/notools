@@ -52,6 +52,11 @@ generate = (dir str, resolved str, cfg str) (ok bool) {
     content = content - '[[project]]\n'
     content = content - 'name = "' - name - '"\n'
     content = content - 'version = "' - ver - '"\n'
+
+    ; record a hash of the input requirements so is-up-to-date can detect stale locks
+    deps-input = config.get-dependencies(cfg)
+    req-hash = sha256.sha256-hex(deps-input.to-bytes())
+    content = content - 'requires-hash = "' - req-hash - '"\n'
     content = content - '\n'
 
     ; packages
@@ -282,13 +287,20 @@ is-up-to-date = (dir str, cfg str) (yes bool) {
         ! lock-ok -> return
 
         -> {
-
-            ; compare resolved packages with lockfile
-            ; this is simplified - real impl would check hashes too
-            lock-packages = get-packages(lock)
-
-            ; check if all config deps are in lockfile
             deps = config.get-dependencies(cfg)
+
+            ; 1) hash check — recompute hash of current input requirements and
+            ; compare with the one recorded at lock time. A mismatch means the
+            ; project dependencies changed, so the lock is stale.
+            cur-hash = sha256.sha256-hex(deps.to-bytes())
+            stored-hash = get-requires-hash(lock)
+
+            ; legacy locks with no recorded hash skip this gate (structural check still runs)
+            {
+                stored-hash != '' && stored-hash != cur-hash -> return
+            }
+
+            ; 2) structural + version-constraint check
             dep-lines = deps.split('\n')
             dn = dep-lines.len()
             i = 0
@@ -302,8 +314,16 @@ is-up-to-date = (dir str, cfg str) (yes bool) {
                     dep.len() > 0 -> {
                         name, ver-spec, extras = dependency.parse-requirement(dep)
                         lock-ver = get-package-version(lock, name)
-                        {
-                            lock-ver == nil -> return
+                        lock-ver: {
+                            ok -> {
+
+                                ; locked version must satisfy the requirement's specifier
+                                ! dependency.version-satisfies(it, ver-spec) -> return
+                            }
+
+                            nil -> return
+
+                            err -> return
                         }
                     }
                 }
@@ -594,6 +614,33 @@ get-lockfile-version = (lock str) (ver str) {
             line.starts-with('version = ') -> {
                 val = line.slice(10, line.len())
                 ver = strip-quotes(val)
+                return
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-requires-hash — extract the recorded input-requirement hash from a lockfile
+; ═══════════════════════════════════════════════
+
+get-requires-hash = (lock str) (hash str) {
+    hash = ''
+    lines = lock.split('\n')
+    n = lines.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        line = line.trim()
+        {
+            line.starts-with('requires-hash = ') -> {
+                val = line.slice(16, line.len())
+                hash = strip-quotes(val)
                 return
             }
         }

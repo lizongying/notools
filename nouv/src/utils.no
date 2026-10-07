@@ -55,19 +55,213 @@ chmod = (path str, mode str) {
 }
 
 ; ═══════════════════════════════════════════════
-; rm-rf — remove directory recursively
+; rm-rf — remove directory recursively (pure Nolang; see remove-tree)
 ; ═══════════════════════════════════════════════
 
 rm-rf = (path str) {
-    process.process-system('rm -rf ' - path)
+    ok = utils.remove-tree(path)
 }
 
 ; ═══════════════════════════════════════════════
-; mkdir-p — create directory recursively
+; mkdir-p — create directory recursively (pure Nolang, no external `mkdir`)
+;
+; Walks each path prefix and creates every missing component via os.mkdir.
+; Idempotent: returns true when the target already exists as a directory.
+; Handles both absolute ('/a/b') and relative ('demo/src') paths, and the
+; '.' base used by `nouv init .`.
 ; ═══════════════════════════════════════════════
 
-mkdir-p = (path str) {
-    process.process-system('mkdir -p ' - path)
+mkdir-p = (dir str) (ok bool) {
+    ok = false
+    dir == '' -> {
+        return
+    }
+    fs.is-dir(dir) -> {
+        ok = true
+        return
+    }
+    parts = dir.split('/')
+    n = parts.len()
+    abs = parts[0] == ''
+    acc = ''
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        seg = parts[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        seg.len() > 0 -> {
+            acc == '' -> {
+                abs -> acc = '/' - seg
+
+                -> acc = seg
+            }
+
+            -> acc = acc - '/' - seg
+            ! fs.is-dir(acc) -> {
+                made = os.mkdir(acc, 511)
+            }
+        }
+    }
+    ok = fs.is-dir(dir)
+}
+
+; ═══════════════════════════════════════════════
+; pure-Nolang filesystem helpers (replace external find/ls/wc/rm)
+;
+; These avoid shelling out to Unix-only commands (find, ls, wc, rm, du),
+; which both breaks portability (no such tools on Windows) and injects the
+; path into a shell string (spaces/metacharacters corrupt the command).
+; All traversal uses fs.dir-entries/fs.walk, which filter '.'/'..' so a
+; recursive delete can never escape upward through the parent link.
+; ═══════════════════════════════════════════════
+
+; join-path — join dir and entry name with exactly one separator
+join-path = (dir str, name str) (out str) {
+    out = dir
+    {
+        dir.ends-with('/') -> out = dir - name
+
+        -> out = dir - '/' - name
+    }
+}
+
+; list-files — all regular file paths under dir (recursive). Replaces `find dir -type f`.
+list-files = (dir str) (paths []str) {
+    paths = fs.walk(dir)
+}
+
+; find-by-suffix — file paths under dir whose full path ends with suffix (e.g. '.whl')
+find-by-suffix = (dir str, suffix str) (paths []str) {
+    all = fs.walk(dir)
+    n = all.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        p = all[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        p.ends-with(suffix) -> paths.push(p)
+    }
+}
+
+; count-by-suffix — number of files under dir ending with suffix. Replaces `find ... | wc -l`.
+count-by-suffix = (dir str, suffix str) (c i64) {
+    m = utils.find-by-suffix(dir, suffix)
+    c = m.len()
+}
+
+; remove-files-by-suffix — delete matching files, return count removed. Replaces `find -name X -delete`.
+remove-files-by-suffix = (dir str, suffix str) (n i64) {
+    n = 0
+    victims = utils.find-by-suffix(dir, suffix)
+    k = victims.len()
+    i = 0
+    (i < k) {
+
+        #{index-out=0}
+        f = victims[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        gone = fs.remove(f)
+        gone -> {
+
+            #{overflow=wrap}
+            n = n + 1
+        }
+    }
+}
+
+; remove-older-than — delete files under dir older than max-age-days. Replaces `find -mtime +N -delete`.
+remove-older-than = (dir str, max-age-days i64) (n i64) {
+    n = 0
+
+    #{overflow=wrap}
+    cutoff = os.now() - (max-age-days * 86400)
+    all = fs.walk(dir)
+    k = all.len()
+    i = 0
+    (i < k) {
+
+        #{index-out=0}
+        f = all[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        mt, present = os.stat-mtime(f)
+        present && mt < cutoff -> {
+            gone = fs.remove(f)
+            gone -> {
+
+                #{overflow=wrap}
+                n = n + 1
+            }
+        }
+    }
+}
+
+; remove-empty-dirs — recursively prune empty directories under dir (deepest first).
+; Replaces `find dir -type d -empty -delete`.
+remove-empty-dirs = (dir str) (removed i64) {
+    removed = 0
+    entries = fs.dir-entries(dir)
+    k = entries.len()
+    i = 0
+    (i < k) {
+
+        #{index-out=0}
+        name = entries[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        child = utils.join-path(dir, name)
+        fs.is-dir(child) -> {
+            sub = utils.remove-empty-dirs(child)
+
+            #{overflow=wrap}
+            removed = removed + sub
+            kids = fs.dir-entries(child)
+            kids.len() == 0 -> {
+                gone = fs.rmdir(child)
+                gone -> {
+
+                    #{overflow=wrap}
+                    removed = removed + 1
+                }
+            }
+        }
+    }
+}
+
+; remove-tree — recursively delete everything under dir, then dir itself. Replaces `rm -rf`.
+remove-tree = (dir str) (ok bool) {
+    ok = false
+    ! fs.is-dir(dir) -> {
+        ok = fs.remove(dir)
+        return
+    }
+    files = fs.walk(dir)
+    k = files.len()
+    i = 0
+    (i < k) {
+
+        #{index-out=0}
+        f = files[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        gone = fs.remove(f)
+    }
+    utils.remove-empty-dirs(dir)
+    left = fs.dir-entries(dir)
+    {
+        left.len() == 0 -> ok = fs.rmdir(dir)
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -76,25 +270,34 @@ mkdir-p = (path str) {
 
 du-sk = (path str) (size-kb i64) {
     size-kb = 0
-    du-out = run-cmd-output('du -sk ' - path)
-    {
-        du-out.len-bytes() > 0 -> {
-            sp = du-out.index(' ')
-            {
-                sp > 0 -> {
-                    num-str = du-out.slice(0, sp)
-                    v = num-str.to-i64()
-                    v: {
-                        ok -> size-kb = it
+    total = 0
+    files = fs.walk(path)
+    n = files.len()
+    i = 0
+    (i < n) {
 
-                        nil -> size-kb = 0
+        #{index-out=0}
+        f = files[i]
 
-                        err -> size-kb = 0
-                    }
-                }
+        #{overflow=wrap}
+        i = i + 1
+        sz-opt = fs.stat-size(f)
+        sz-opt: {
+            ok -> {
+
+                #{overflow=wrap}
+                total = total + it
+            }
+
+            nil -> {
+            }
+
+            err -> {
             }
         }
     }
+    #{overflow=wrap}
+    size-kb = total / 1024
 }
 
 ; ═══════════════════════════════════════════════
@@ -102,29 +305,28 @@ du-sk = (path str) (size-kb i64) {
 ; ═══════════════════════════════════════════════
 
 count-files = (path str) (count i64) {
-    count = 0
-    ls-out = run-cmd-output('find ' - path - ' -type f | wc -l')
-    {
-        ls-out.len-bytes() > 0 -> {
-            trimmed = ls-out.trim()
-            v = trimmed.to-i64()
-            v: {
-                ok -> count = it
-
-                nil -> count = 0
-
-                err -> count = 0
-            }
-        }
-    }
+    paths = fs.walk(path)
+    count = paths.len()
 }
 
 ; ═══════════════════════════════════════════════
-; ls — list directory contents
+; ls — list directory contents (pure Nolang; newline-separated entry names)
 ; ═══════════════════════════════════════════════
 
 ls = (path str) (out str) {
-    out = run-cmd-output('ls ' - path)
+    out = ''
+    names = fs.dir-entries(path)
+    n = names.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        nm = names[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        out = out - nm - '\n'
+    }
 }
 
 ; ═══════════════════════════════════════════════
@@ -132,7 +334,25 @@ ls = (path str) (out str) {
 ; ═══════════════════════════════════════════════
 
 find-names = (path str, pattern str) (out str) {
-    out = run-cmd-output('find ' - path - ' -name "' - pattern - '"')
+    out = ''
+
+    ; support a simple leading-star glob (e.g. '*.py' => suffix match); pure fs walk
+    suffix = pattern
+    suffix.starts-with('*') -> suffix = pattern.slice(1, pattern.len())
+    all = fs.walk(path)
+    n = all.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        f = all[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        f.ends-with(suffix) -> {
+            out = out - f - '\n'
+        }
+    }
 }
 
 ; ═══════════════════════════════════════════════

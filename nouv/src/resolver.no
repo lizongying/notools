@@ -966,16 +966,17 @@ build-resolution-graph = (deps str) (graph ?str) {
 ; upgrade-package — resolve with upgrade for specific packages
 ; ═══════════════════════════════════════════════
 
-upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved ?str) {
+upgrade-package = (deps str, upgrade-pkgs str, locked str, cfg str) (resolved ?str) {
 
-    ; if upgrade-pkgs is empty, upgrade all
-    ; if upgrade-pkgs is not empty, only upgrade listed packages,
-    ; keeping others pinned to lockfile versions
+    ; upgrade-pkgs == ''  -> upgrade everything (fresh resolution, no pins)
+    ; upgrade-pkgs != ''  -> incremental: only the listed packages are free to move,
+    ;                        every other locked package is pinned to its ==version
+    ;                        via the constraints channel of resolve().
 
     {
         upgrade-pkgs == '' -> {
 
-            ; upgrade everything — just do fresh resolution
+            ; upgrade everything — fresh resolution
             resolved-opt = resolve(deps, '', '', '', cfg)
             resolved-opt: {
                 ok -> resolved = it
@@ -990,10 +991,9 @@ upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved ?str) {
 
         -> {
 
-            ; for each package in upgrade-pkgs, force upgrade
-            ; others stay as-is (from lockfile)
-            ; simplified: just do full resolution
-            resolved-opt = resolve(deps, '', '', '', cfg)
+            ; pin all non-upgraded locked packages, then resolve
+            constraints = build-pin-constraints(locked, upgrade-pkgs)
+            resolved-opt = resolve(deps, '', constraints, '', cfg)
             resolved-opt: {
                 ok -> resolved = it
 
@@ -1002,6 +1002,70 @@ upgrade-package = (deps str, upgrade-pkgs str, cfg str) (resolved ?str) {
 
                 err -> {
                 }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; build-pin-constraints — from locked (newline name==ver), emit newline constraints
+; pinning every package NOT listed in upgrade-pkgs to its ==version
+; ═══════════════════════════════════════════════
+
+build-pin-constraints = (locked str, upgrade-pkgs str) (constraints str) {
+    constraints = ''
+    lines = locked.split('\n')
+    n = lines.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        line = line.trim()
+        {
+            line.len() > 0 -> {
+                eq = line.index('==')
+                eq > 0 -> {
+                    pname = line.slice(0, eq).trim()
+
+                    #{overflow=wrap}
+                    pver = line.slice(eq + 2, line.len()).trim()
+                    {
+                        ! in-upgrade-list(upgrade-pkgs, pname) -> {
+                            constraints.len() > 0 -> constraints = constraints - '\n'
+                            constraints = constraints - pname - '==' - pver
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; in-upgrade-list — is name present in a newline-separated upgrade list?
+; ═══════════════════════════════════════════════
+
+in-upgrade-list = (upgrade-pkgs str, name str) (yes bool) {
+    yes = false
+    target = pep508.normalize-name(name)
+    toks = upgrade-pkgs.split('\n')
+    n = toks.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        t = toks[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        t = t.trim()
+        {
+            t.len() > 0 -> {
+                pep508.normalize-name(t) == target -> yes = true
             }
         }
     }

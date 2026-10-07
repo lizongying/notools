@@ -24,6 +24,9 @@
 parse = (content str) (out str) {
     out = ''
     current-table = ''
+
+    ; per-name occurrence counters for [[array-of-tables]] blocks ('name=count\n')
+    arr = ''
     lines = utils.split-str(content, '\n')
     n = lines.len()
     i = 0
@@ -59,9 +62,14 @@ parse = (content str) (out str) {
                         utils.starts-with-str(tname, '[') -> {
                             utils.ends-with-str(tname, ']') -> {
 
-                                ; array of tables [[xxx]] - skip for now
+                                ; array of tables [[xxx]] — assign an instance index so
+                                ; repeated blocks do not overwrite each other
                                 #{overflow=wrap}
-                                current-table = utils.slice-str(tname, 1, tname.len-bytes() - 1)
+                                nm = utils.slice-str(tname, 1, tname.len-bytes() - 1)
+                                nm = utils.trim-str(nm)
+                                idx i64
+                                idx, arr = next-arr-index(arr, nm)
+                                current-table = nm - '.' - idx.to-str()
                             }
                         }
 
@@ -147,6 +155,131 @@ parse = (content str) (out str) {
             }
         }
     }
+}
+
+; ═══════════════════════════════════════════════
+; next-arr-index — return the 0-based instance index for a [[array-of-tables]]
+; name and the updated counter accumulator
+; ═══════════════════════════════════════════════
+
+next-arr-index = (arr str, name str) (idx i64, out str) {
+    idx = 0
+    out = ''
+    found = false
+    lines = utils.split-str(arr, '\n')
+    n = lines.len()
+    i = 0
+    (i < n) {
+
+        #{index-out=0}
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        {
+            line == '' -> continue
+
+            utils.starts-with-str(line, name - '=') -> {
+                found = true
+                eq = utils.index-str(line, '=')
+
+                #{overflow=wrap}
+                vstr = utils.slice-str(line, eq + 1, line.len-bytes())
+                num = vstr.to-i64()
+                num: {
+                    ok -> idx = it
+
+                    nil -> idx = 0
+
+                    err -> idx = 0
+                }
+                out = out - name - '=' - (idx + 1).to-str() - '\n'
+            }
+
+            -> out = out - line - '\n'
+        }
+    }
+    ! found -> out = out - name - '=' - '1' - '\n'
+}
+
+; ═══════════════════════════════════════════════
+; is-all-digits — true if the string is a non-empty run of ASCII digits
+; ═══════════════════════════════════════════════
+
+is-all-digits = (s str) (yes bool) {
+    yes = false
+    s.len() == 0 -> return
+    n = s.len-bytes()
+    i = 0
+    all = true
+    (i < n) {
+        c = s[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        {
+            c < 48 || c > 57 -> {
+                all = false
+                break
+            }
+        }
+    }
+    yes = all
+}
+
+; ═══════════════════════════════════════════════
+; array-length — number of [[array-of-tables]] instances recorded for a table
+; ═══════════════════════════════════════════════
+
+array-length = (parsed str, table str) (n i64) {
+    n = 0
+    seen = ''
+    prefix = table - '.'
+    lines = utils.split-str(parsed, '\n')
+    ln = lines.len()
+    i = 0
+    (i < ln) {
+
+        #{index-out=0}
+        line = lines[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        {
+            utils.starts-with-str(line, prefix) -> {
+                eq = utils.index-str(line, '=')
+                eq > 0 -> {
+                    key = utils.slice-str(line, 0, eq)
+
+                    rest = utils.slice-str(key, prefix.len-bytes(), key.len-bytes())
+                    dot = utils.index-str(rest, '.')
+                    dot > 0 -> {
+                        idxstr = utils.slice-str(rest, 0, dot)
+                        {
+                            is-all-digits(idxstr) -> {
+                                mark = idxstr - '\n'
+                                ! seen.contains(mark) -> {
+                                    seen = seen - mark
+
+                                    #{overflow=wrap}
+                                    n = n + 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; get-array-value — read a field of the idx-th [[array-of-tables]] instance
+; ═══════════════════════════════════════════════
+
+get-array-value = (parsed str, table str, idx i64, key str) (val ?str) {
+    full = table - '.' - idx.to-str() - '.' - key
+    val = get-value(parsed, full)
 }
 
 ; ═══════════════════════════════════════════════
@@ -304,16 +437,48 @@ serialize = (parsed str) (out str) {
                         {
                             dot-pos >= 0 -> {
                                 section = utils.slice-str(key, 0, dot-pos)
-                                {
-                                    section != current-section -> {
-                                        out = out - '\n[' - section - ']\n'
-                                        current-section = section
-                                    }
-                                }
 
                                 ; sub-key
                                 #{overflow=wrap}
                                 sub-key = utils.slice-str(key, dot-pos + 1, key.len-bytes())
+
+                                ; array-of-tables? the section ends with a numeric instance segment
+                                sdot = utils.rindex-str(section, '.')
+                                is-arr = false
+                                base = ''
+                                {
+                                    sdot >= 0 -> {
+
+                                        #{overflow=wrap}
+                                        tail = utils.slice-str(section, sdot + 1, section.len-bytes())
+                                        {
+                                            is-all-digits(tail) -> {
+                                                is-arr = true
+                                                base = utils.slice-str(section, 0, sdot)
+                                            }
+                                        }
+                                    }
+                                }
+                                {
+                                    is-arr -> {
+                                        marker = base - '\x00' - section
+                                        {
+                                            marker != current-section -> {
+                                                out = out - '\n[[' - base - ']]\n'
+                                                current-section = marker
+                                            }
+                                        }
+                                    }
+
+                                    -> {
+                                        {
+                                            section != current-section -> {
+                                                out = out - '\n[' - section - ']\n'
+                                                current-section = section
+                                            }
+                                        }
+                                    }
+                                }
                                 out = out - sub-key - ' = ' - val - '\n'
                             }
 
@@ -402,6 +567,8 @@ make-array-value = (items str) (val str) {
     first = true
     i = 0
     (i < n) {
+
+        #{index-out=0}
         item = lines[i]
 
         #{overflow=wrap}

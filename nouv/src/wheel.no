@@ -6,6 +6,7 @@
 # /nouv/src/cache
 # /nouv/src/utils
 # /nouv/src/markers
+# std/archive/zip
 
 ; ═══════════════════════════════════════════════
 ; install — install a wheel file into a virtual environment
@@ -15,55 +16,76 @@ install = (venv-path str, wheel-path str, no-cache bool) (ok bool) {
     ok = false
 
     sp-dir = get-site-packages(venv-path)
-    p = path {
-        p: sp-dir
-    }
-    mk = p.make-dir()
 
-    ; create temp dir for extraction
-    tmp-dir = '/tmp/nouv-wheel-' - os.now-ms().to-str()
-    p2 = path {
-        p: tmp-dir
-    }
-    mk2 = p2.make-dir()
+    ; ensure site-packages exists
+    mk = utils.mkdir-p(sp-dir)
 
-    ; extract wheel using unzip
-    code = run-cmd('unzip -o -q ' - wheel-path - ' -d ' - tmp-dir)
-    {
-        code != 0 -> {
-            print('error: failed to extract wheel file: {wheel-path}')
-            run-cmd('rm -rf ' - tmp-dir)
+    ; read wheel bytes and parse as zip archive (pure Nolang, no unzip)
+    data = fs.read-bytes(wheel-path)
+    raw []byte
+    data: {
+        ok -> raw = it
+
+        nil -> {
+            print('error: failed to read wheel file: {wheel-path}')
+            return
+        }
+
+        err -> {
+            print('error: failed to read wheel file: {wheel-path}')
             return
         }
     }
 
-    ; find dist-info directory
+    archive = zip {
+        data: raw
+    }
+    n = archive.count()
+
+    ; extract each entry directly into site-packages
     dist-info-dir = ''
-    out = run-cmd-output('ls ' - tmp-dir)
-    lines = utils.split-str(out, '\n')
-    n = lines.len()
     i = 0
     (i < n) {
+        name = archive.name(i)
+        {
+            name.ends-with('/') -> {
+                made = utils.mkdir-p(sp-dir - '/' - name)
+            }
 
-        #{index-out=0}
-        line = lines[i]
+            -> {
+                dest = sp-dir - '/' - name
+
+                ; create parent directory if needed
+                slash = dest.last-index('/')
+                slash > 0 -> {
+                    parent = dest.slice(0, slash)
+                    made = utils.mkdir-p(parent)
+                }
+
+                ; track the top-level .dist-info directory
+                seg = name
+                sl = name.index('/')
+                sl > 0 -> seg = name.slice(0, sl)
+                seg.ends-with('.dist-info') -> {
+                    dist-info-dir = seg
+                }
+
+                content = archive.extract(i)
+                fd = fs.open-write(dest)
+                {
+                    fd > 0 -> {
+                        fs.write(fd, content, content.len())
+                        fs.close(fd)
+                        ok = true
+                    }
+
+                    -> print('error: failed to write {dest}')
+                }
+            }
+        }
 
         #{overflow=wrap}
         i = i + 1
-        line = utils.trim-str(line)
-        {
-            utils.ends-with-str(line, '.dist-info') -> {
-                dist-info-dir = line
-            }
-        }
-    }
-
-    ; copy all extracted files to site-packages
-    copy-code = run-cmd('cp -R ' - tmp-dir - '/* ' - sp-dir - '/')
-    {
-        copy-code == 0 -> ok = true
-
-        -> print('error: failed to copy wheel contents')
     }
 
     ; create entry point scripts
@@ -91,9 +113,6 @@ install = (venv-path str, wheel-path str, no-cache bool) (ok bool) {
             }
         }
     }
-
-    ; clean up
-    run-cmd('rm -rf ' - tmp-dir)
 }
 
 ; ═══════════════════════════════════════════════
@@ -261,52 +280,33 @@ parse-entry-points = (content str) (eps str) {
 get-entry-points = (wheel-path str) (eps ?str) {
     eps = nil
 
-    ; create temp dir for extraction
-    tmp-dir = '/tmp/nouv-ep-' - os.now-ms().to-str()
-    p = path {
-        p: tmp-dir
-    }
-    mk = p.make-dir()
+    ; read wheel bytes and parse as zip archive (pure Nolang, no unzip)
+    data = fs.read-bytes(wheel-path)
+    raw []byte
+    data: {
+        ok -> raw = it
 
-    ; extract wheel using unzip
-    code = run-cmd('unzip -o -q ' - wheel-path - ' -d ' - tmp-dir)
-    {
-        code != 0 -> {
-            run-cmd('rm -rf ' - tmp-dir)
-            return
-        }
+        nil -> return
+
+        err -> return
     }
 
-    ; find entry_points.txt
-    ep-out = run-cmd-output('find ' - tmp-dir - ' -name entry_points.txt')
-    ep-lines = utils.split-str(ep-out, '\n')
-    n = ep-lines.len()
+    archive = zip {
+        data: raw
+    }
+    n = archive.count()
     i = 0
     (i < n) {
-
-        #{index-out=0}
-        fpath = ep-lines[i]
+        name = archive.name(i)
+        name.ends-with('entry_points.txt') -> {
+            content = archive.extract(i)
+            ep-data = content.to-str()
+            eps = parse-entry-points(ep-data)
+        }
 
         #{overflow=wrap}
         i = i + 1
-        fpath = utils.trim-str(fpath)
-        {
-            fpath.len() > 0 -> {
-                read-result = fs.read-str(fpath)
-                read-result: {
-                    ok -> ep-data = it
-
-                    nil -> ep-data = ''
-
-                    err -> ep-data = ''
-                }
-                eps = parse-entry-points(ep-data)
-            }
-        }
     }
-
-    ; clean up
-    run-cmd('rm -rf ' - tmp-dir)
 }
 
 ; ═══════════════════════════════════════════════
@@ -613,8 +613,7 @@ build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pk
     record-content = ''
     dist-info-path = sp-dir - '/' - dist-info-dir
 
-    out = run-cmd-output('find ' - dist-info-path - ' -type f')
-    lines = utils.split-str(out, '\n')
+    lines = utils.list-files(dist-info-path)
     nl = lines.len()
     i = 0
     (i < nl) {
@@ -665,8 +664,7 @@ build-record-for-installation = (sp-dir str, dist-info-dir str, pkg-name str, pk
     pkg-exists = p2.exists()
     {
         pkg-exists -> {
-            out2 = run-cmd-output('find ' - pkg-dir - ' -type f')
-            pkg-lines = utils.split-str(out2, '\n')
+            pkg-lines = utils.list-files(pkg-dir)
             pln = pkg-lines.len()
             i = 0
             (i < pln) {

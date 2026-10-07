@@ -20,6 +20,44 @@
 # /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
+; http-timeout-ms — per-request wall-clock budget in milliseconds.
+;
+; The std tls conn reads via non-blocking recv + short sleeps, so SO_RCVTIMEO
+; (MSG_DONTWAIT) would be ignored; a single recv is already bounded (~2s) but
+; the outer header/body loops had no overall limit and could stall for minutes
+; on a slow/half-open server. We therefore enforce an absolute deadline based
+; on this budget.  Configurable via NOUV_HTTP_TIMEOUT (whole seconds);
+; default 30s.
+; ═══════════════════════════════════════════════
+
+http-timeout-ms = () (ms i64) {
+    ms = 30000
+    env = os.get-env('NOUV_HTTP_TIMEOUT')
+    env != '' -> {
+        secs = env.to-i64()
+        secs: {
+            ok -> {
+
+                #{overflow=wrap}
+                it > 0 -> ms = it * 1000
+            }
+
+            nil -> {
+            }
+
+            err -> {
+            }
+        }
+    }
+}
+
+; expired — true once the absolute deadline (ms since epoch) has passed
+expired = (deadline i64) (yes bool) {
+    yes = false
+    time.now-ms() >= deadline -> yes = true
+}
+
+; ═══════════════════════════════════════════════
 ; http-get — fetch a URL, return (status, body-string, ok)
 ; The body is the full response body (after the header/body separator).
 ; ═══════════════════════════════════════════════
@@ -57,8 +95,12 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
     ; url, or a non-2xx status the caller decides on — are not retried.
     attempts = 0
     max-attempts = 4
+    ; one shared wall-clock budget across all retry attempts
+
+    #{overflow=wrap}
+    deadline = time.now-ms() + http-timeout-ms()
     (attempts < max-attempts) {
-        st, raw, good = fetch-once(url)
+        st, raw, good = fetch-once(url, deadline)
         good -> {
             status = st
             body = raw
@@ -71,16 +113,25 @@ http-get-bytes = (url str) (status i64, body []byte, ok bool) {
             #{overflow=wrap}
             attempts = attempts + 1
             good == false -> print('httpclient: transient failure, retrying ' - url)
+            ; budget exhausted: stop retrying so a slow server cannot stretch
+            ; the total wait to attempts * timeout
+            expired(deadline) -> attempts = max-attempts
         }
     }
 }
 
 ; fetch-once — a single attempt at the full HTTPS GET (no retry).
+; deadline i64: absolute ms-since-epoch budget; exceeded -> abort with ok=false.
 ; Returns (status, body, ok); ok is false on any network / connect failure.
-fetch-once = (url str) (status i64, body []byte, ok bool) {
+fetch-once = (url str, deadline i64) (status i64, body []byte, ok bool) {
     status = 0
     body = with-len(0)
     ok = false
+
+    expired(deadline) -> {
+        print('httpclient: timeout before connect: ' - url)
+        return
+    }
 
     host, port, path, purl-ok = parse-url(url)
     purl-ok == false -> {
@@ -115,6 +166,12 @@ fetch-once = (url str) (status i64, body []byte, ok bool) {
         return
     }
 
+    expired(deadline) -> {
+        print('httpclient: timeout after connect: ' - host)
+        tls-c.close()
+        return
+    }
+
     w = tls-c.send(req)
     w: {
         nil -> {
@@ -139,6 +196,8 @@ fetch-once = (url str) (status i64, body []byte, ok bool) {
 
     ; ── Phase 1: read until the header/body separator (\r\n\r\n) is present ──
     (iters < 20000) {
+
+        expired(deadline) -> break
 
         #{overflow=wrap}
         iters = iters + 1
@@ -174,6 +233,7 @@ fetch-once = (url str) (status i64, body []byte, ok bool) {
 
             ; top up the buffer until we have the whole body
             (result.len() < end) {
+                expired(deadline) -> break
                 n2 = tls-c.recv(buf, 16640)
                 n2 <= 0 -> break
                 chunk2 []byte = with-len(n2)

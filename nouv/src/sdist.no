@@ -9,6 +9,7 @@
 # /nouv/src/wheel
 # /nouv/src/python
 # /nouv/src/utils
+# std/archive/zip
 
 ; ═══════════════════════════════════════════════
 ; get-build-system — get build system info from pyproject.toml
@@ -179,12 +180,13 @@ build-with-backend = (src-dir str, backend str, venv-path str) (wheel-path ?str)
 
         -> {
 
-            ; read build output from temp file to get wheel filename
-            out = run-cmd-output('ls ' - out-dir - '/*.whl')
-            wheel-name = utils.trim-str(out)
+            ; locate the built wheel in dist/
+            wheels = utils.find-by-suffix(out-dir, '.whl')
             {
-                wheel-name != '' -> {
-                    wheel-file = out-dir - '/' - wheel-name
+                wheels.len() > 0 -> {
+
+                    #{index-out=0}
+                    wheel-file = wheels[0]
                     wheel-path = wheel-file
                     p3 = path {
                         p: wheel-file
@@ -254,49 +256,111 @@ build-from-source = (src-dir str, venv-path str) (wheel-path ?str) {
 extract-sdist = (archive-path str, dest str) (ok bool) {
     ok = false
 
-    p = path {
-        p: dest
-    }
-    mk = p.make-dir()
+    mk = utils.mkdir-p(dest)
 
     {
-        utils.ends-with-str(archive-path, '.tar.gz') -> {
+        archive-path.ends-with('.tar.gz') || archive-path.ends-with('.tgz') -> ok = extract-tar-gz(archive-path, dest)
 
-            ; extract tar.gz using system tar
-            code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
-            {
-                code == 0 -> ok = true
+        archive-path.ends-with('.zip') -> ok = extract-zip-file(archive-path, dest)
 
-                -> print('error: failed to extract tar.gz')
+        -> print('error: unsupported archive format: {archive-path}')
+    }
+}
+
+; extract-tar-gz — pure Nolang extraction of a .tar.gz / .tgz into dest (std archive/tar)
+extract-tar-gz = (archive-path str, dest str) (ok bool) {
+    ok = true
+    file-data = fs.read-bytes(archive-path)
+    file-data: {
+        ok -> archive = tar.tar-open-gz(it)
+
+        nil -> archive = tar.tar-open-gz([])
+
+        err -> archive = tar.tar-open-gz([])
+    }
+    count = archive.count()
+    i <- [0..count): {
+        name = archive.name(i)
+        {
+            archive.is-dir(i) -> {
+                dir-path = dest - '/' - name
+                made = utils.mkdir-p(dir-path)
             }
-        }
 
-        utils.ends-with-str(archive-path, '.tgz') -> {
+            -> {
+                file-path = dest - '/' - name
+                slash-pos = utils.rindex-str(file-path, '/')
+                parent = utils.slice-str(file-path, 0, slash-pos)
+                {
+                    parent.len() > 0 -> {
+                        made = utils.mkdir-p(parent)
+                    }
+                }
+                content = archive.read(i)
+                wfd = fs.open-write(file-path)
+                {
+                    wfd > 0 -> {
+                        fs.write(wfd, content, content.len())
+                        fs.close(wfd)
+                    }
 
-            ; extract tgz using system tar
-            code = run-cmd('tar -xzf ' - archive-path - ' -C ' - dest)
-            {
-                code == 0 -> ok = true
-
-                -> print('error: failed to extract tgz')
+                    -> ok = false
+                }
             }
-        }
-
-        utils.ends-with-str(archive-path, '.zip') -> {
-
-            ; extract zip using system unzip
-            code = run-cmd('unzip -o ' - archive-path - ' -d ' - dest)
-            {
-                code == 0 -> ok = true
-
-                -> print('error: failed to extract zip')
-            }
-        }
-
-        -> {
-            print('error: unsupported archive format: {archive-path}')
         }
     }
+    ! ok -> print('error: failed to extract tar.gz')
+}
+
+; extract-zip-file — pure Nolang extraction of a .zip into dest (std archive/zip)
+extract-zip-file = (archive-path str, dest str) (ok bool) {
+    ok = true
+    file-data = fs.read-bytes(archive-path)
+    file-data: {
+        ok -> zarchive = zip {
+            data: it
+        }
+
+        nil -> zarchive = zip {
+            data: []
+        }
+
+        err -> zarchive = zip {
+            data: []
+        }
+    }
+    count = zarchive.count()
+    i <- [0..count): {
+        name = zarchive.name(i)
+        {
+            name.ends-with('/') -> {
+                dir-path = dest - '/' - name
+                made = utils.mkdir-p(dir-path)
+            }
+
+            -> {
+                file-path = dest - '/' - name
+                slash-pos = utils.rindex-str(file-path, '/')
+                parent = utils.slice-str(file-path, 0, slash-pos)
+                {
+                    parent.len() > 0 -> {
+                        made = utils.mkdir-p(parent)
+                    }
+                }
+                content = zarchive.extract(i)
+                wfd = fs.open-write(file-path)
+                {
+                    wfd > 0 -> {
+                        fs.write(wfd, content, content.len())
+                        fs.close(wfd)
+                    }
+
+                    -> ok = false
+                }
+            }
+        }
+    }
+    ! ok -> print('error: failed to extract zip')
 }
 
 ; ═══════════════════════════════════════════════
@@ -321,10 +385,11 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
 
     ; find the extracted source directory (usually a subdirectory)
     src-dir = tmp-dir
-    out = run-cmd-output('ls ' - tmp-dir)
-    lines = utils.split-str(out, '\n')
+    lines = fs.dir-entries(tmp-dir)
     {
         lines.len() == 1 -> {
+
+            #{index-out=0}
             subdir = utils.trim-str(lines[0])
             {
                 subdir != '' -> {
@@ -415,7 +480,8 @@ install-sdist = (archive-path str, venv-path str) (ok bool) {
     }
 
     ; clean up
-    run-cmd('rm -rf ' - tmp-dir - ' ' - build-venv)
+    tmp-dir != '' -> { utils.remove-tree(tmp-dir) }
+    build-venv != '' -> { utils.remove-tree(build-venv) }
 }
 
 ; ═══════════════════════════════════════════════

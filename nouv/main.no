@@ -80,7 +80,43 @@ count-resolved = (resolved str) (count i64) {
 ; main entry
 ; ═══════════════════════════════════════════════
 
+; is-global-value-flag — global options that consume a following operand, so
+; the command-dispatch scan must skip their value.
+is-global-value-flag = (t str) (yes bool) {
+    yes = t == '--index-url' || t == '--extra-index-url' || t == '--python'
+}
+
+; find-command — locate the command keyword even when global options appear
+; before it (e.g. `nouv --quiet version`). Returns the first non-flag token,
+; skipping the operand of a leading global value flag.
+find-command = () (cmd str) {
+    cmd = ''
+    n = os.args()
+    i = 1
+    (i < n) {
+        a = os.arg(i)
+        {
+            ! a.starts-with('-') -> {
+                cmd = a
+                return
+            }
+
+            is-global-value-flag(a) -> {
+
+                #{overflow=wrap}
+                i = i + 1
+            }
+        }
+
+        #{overflow=wrap}
+        i = i + 1
+    }
+}
+
 main = () {
+
+    ; lift command-line global options into the env before dispatch
+    settings.apply-global-flags()
 
     #{overflow=wrap}
     argc = os.args() - 1
@@ -88,7 +124,7 @@ main = () {
         print-usage()
         return
     }
-    cmd = os.arg(1)
+    cmd = find-command()
 
     cmd: {
         'init' -> cmd-init(argc)
@@ -320,13 +356,10 @@ cmd-init = (argc i64) {
         }
     }
 
-    ; create directory if needed
+    ; create directory if needed (recursive: nested init paths like a/b/c)
     {
         path != '.' -> {
-            p3 = path {
-                p: path
-            }
-            ok = p3.make-dir()
+            ok = utils.mkdir-p(path)
             ! ok -> {
                 print('error: failed to create directory {path}')
                 os.exit(1)
@@ -349,12 +382,9 @@ cmd-init = (argc i64) {
         os.exit(1)
     }
 
-    ; create src layout
+    ; create src layout (recursive: path/src/<name>)
     src-dir = path - '/src/' - name
-    p4 = path {
-        p: src-dir
-    }
-    ok2 = p4.make-dir()
+    ok2 = utils.mkdir-p(src-dir)
 
     ; create __init__.py
     init-file = src-dir - '/__init__.py'
@@ -1033,13 +1063,13 @@ cmd-publish = (argc i64) {
     }
 
     ; check for token
-    token = os.get-env('UV-PUBLISH-TOKEN')
+    token = os.get-env('UV_PUBLISH_TOKEN')
     {
         token == '' -> {
-            token = os.get-env('UV-INDEX-USERNAME')
+            token = os.get-env('UV_INDEX_USERNAME')
             {
                 token == '' -> {
-                    token = os.get-env('PYPI-TOKEN')
+                    token = os.get-env('PYPI_TOKEN')
                 }
             }
         }

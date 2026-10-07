@@ -193,6 +193,8 @@ nouv 兼容 uv 的环境变量命名（`UV_*`），同时支持 pip 的 `PIP_*` 
 | `src/dependency.no` | 依赖解析与版本约束 |
 | `src/resolver.no` | 回溯依赖解析器（PEP 508 + 环境标记） |
 | `src/registry.no` | PyPI 注册表 HTTP 客户端（Simple API / JSON API） |
+| `src/httpclient.no` | 纯 Nolang HTTPS/1.1 GET 客户端（基于 std tls，带超时预算） |
+| `src/jsonx.no` | 轻量 JSON 解析器（绕过 std json 运行时缺陷，供注册表 JSON API 使用） |
 | `src/installer.no` | 包安装与卸载（wheel/sdist） |
 | `src/venv.no` | 虚拟环境管理 |
 | `src/python.no` | Python 版本发现与安装 |
@@ -209,7 +211,7 @@ nouv 兼容 uv 的环境变量命名（`UV_*`），同时支持 pip 的 `PIP_*` 
 | `src/settings.no` | 全局设置与环境变量 |
 | `src/requirements.no` | requirements.txt 解析与生成 |
 | `src/workspace.no` | 工作区管理 |
-| `src/toml.no` | TOML 解析器 |
+| `src/ptoml.no` | 最小 TOML 解析/序列化器（读写 pyproject.toml，支持 `[[数组表]]`） |
 | `src/version.no` | 版本号解析与比较 |
 | `src/utils.no` | 通用工具函数 |
 
@@ -224,48 +226,63 @@ nouv/
 │   ├── cache.no         ; 全局缓存管理
 │   ├── config.no        ; pyproject.toml 配置
 │   ├── dependency.no    ; 依赖解析
+│   ├── httpclient.no    ; 纯 Nolang HTTPS 客户端
 │   ├── installer.no     ; 包安装/卸载
+│   ├── jsonx.no         ; 轻量 JSON 解析器
 │   ├── lockfile.no      ; uv.lock 锁文件
 │   ├── markers.no       ; 环境标记求值
 │   ├── pep508.no        ; PEP 508 解析器
+│   ├── ptoml.no         ; TOML 解析/序列化
 │   ├── python.no        ; Python 版本管理
 │   ├── registry.no      ; PyPI 注册表客户端
 │   ├── requirements.no  ; requirements.txt 处理
-│   ├── resolver.no     ; 回溯依赖解析器
+│   ├── resolver.no      ; 回溯依赖解析器
 │   ├── runner.no        ; 命令执行
 │   ├── sdist.no         ; 源码分发包
 │   ├── settings.no      ; 全局设置
 │   ├── sources.no       ; 多源依赖
-│   ├── toml.no          ; TOML 解析器
 │   ├── tool.no          ; 工具管理
 │   ├── utils.no         ; 通用工具
 │   ├── venv.no          ; 虚拟环境
 │   ├── version.no       ; 版本号工具
 │   ├── wheel.no         ; Wheel 格式处理
 │   └── workspace.no     ; 工作区管理
-├── test/
-│   ├── run-all.no            ; 统一测试运行器
+├── tests/
+│   ├── run-all.no            ; 统一测试运行器（串行执行下列套件）
+│   ├── test-version.no       ; 版本比较测试
+│   ├── test-pep508.no        ; PEP 508 解析测试
+│   ├── test-wheel.no         ; Wheel 测试
+│   ├── test-toml.no          ; TOML 解析测试（含 [[数组表]]）
+│   ├── test-markers.no       ; 环境标记测试
 │   ├── test-cache.no         ; 缓存测试
-│   ├── test-installer.no    ; 安装器测试
-│   ├── test-markers.no      ; 环境标记测试
-│   ├── test-pep508.no       ; PEP 508 解析测试
-│   ├── test-python.no       ; Python 管理测试
-│   ├── test-registry.no     ; 注册表测试
-│   ├── test-sdist.no        ; sdist 测试
-│   ├── test-toml.no         ; TOML 解析测试
-│   ├── test-venv.no         ; 虚拟环境测试
-│   ├── test-version.no      ; 版本比较测试
-│   └── test-wheel.no        ; Wheel 测试
+│   ├── test-venv.no          ; 虚拟环境测试
+│   ├── test-python.no        ; Python 管理测试
+│   ├── test-installer.no     ; 安装器测试
+│   ├── test-registry.no      ; 注册表测试
+│   ├── test-registry-json.no ; 注册表 JSON API 测试
+│   ├── test-sdist.no         ; sdist 测试
+│   ├── test-lockfile.no      ; 锁文件测试
+│   └── test-httpclient.no    ; HTTP 超时测试
 └── dist/                ; 构建产物
 ```
 
+## 测试
+
+```bash
+# 定位 no 编译器：优先 $NO_BIN，其次 PATH 上的 `no`
+NO_BIN=/absolute/path/to/no no run tests/run-all.no
+```
+
+`run-all.no` 会串行执行 `tests/` 下所有离线套件（当前 14 个）。单个套件也可直接 `no run tests/<file>.no`。
+
 ## 已知限制
 
-- 注册表的 JSON API 接口为 stub 实现（待 Nolang JSON 对象迭代 API 完善后补全）
 - `nouv self update` 尚未实现
-- sdist 构建安装（`install-from-source`）为简化实现
+- sdist 构建（`python -m build`）与从源码安装（`install-from-source`）为简化实现，仍需系统 `python3`/`pip`
 - 环境标记中 `python_version` 通过 `python3 -c` 获取，依赖系统 Python
 - Wheel 安装的 entry point 脚本为简化实现
+- 网络相关命令（`add`/`sync`/`lock`/`publish`、`python install`、`tool run`、sdist 下载）需要联网，回归仅在离线单元层面验证；HTTP 客户端带可配置超时预算（`NOUV_HTTP_TIMEOUT`，默认 30s）
+- 归档读写、目录遍历、文件查找等已改为纯 Nolang 实现（std `archive/tar`、`archive/zip`、`fs`），不再依赖外部 `tar`/`unzip`/`find`/`ls`/`uname`；仅 `tool.no` 的部分软链/路径操作仍调用系统 `ln`/`ls`
 
 ## 许可证
 
