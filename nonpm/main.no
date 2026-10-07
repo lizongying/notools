@@ -1022,7 +1022,45 @@ cmd-import = (argc i64) {
         }
     }
     resolve-ok -> {
-        lockfile.generate(cfg, dir, graph)
+        ; 直接在本函式內遍歷 graph.nodes（inline）建立 lockfile 內容，
+        ; 不可把 graph.nodes 當引數傳給其他函式（會觸發編譯器壞拷貝）。
+        lf-deps-sec = ''
+        lf-dev-sec = ''
+        lf-pkgs-sec = ''
+        lf-has-prod = false
+        lf-has-dev = false
+        n = graph.node-count
+        i <- [0..n): {
+            node = graph.nodes[i]
+            nm = node.name
+            vr = node.version
+            rs = node.resolved
+            ig = node.integrity
+            dp = node.depth
+            dv = node.is-dev
+            dp == 1 && dv == false -> {
+                lf-has-prod = true
+                lf-deps-sec = lf-deps-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+            }
+            dp == 1 && dv == true -> {
+                lf-has-dev = true
+                lf-dev-sec = lf-dev-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+            }
+            lf-pkgs-sec = lf-pkgs-sec - '  ' - nm - '@' - vr - ':\n'
+            rs != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - ', tarball: ' - rs - '}\n'
+            rs == '' && ig != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - '}\n'
+        }
+        lf-lock = 'lockfileVersion: 9.0\n\n'
+        lf-lock = lf-lock - 'dependencies:\n'
+        lf-has-prod -> lf-lock = lf-lock - lf-deps-sec
+        lf-has-prod == false -> lf-lock = lf-lock - '  {}\n'
+        lf-has-dev -> {
+            lf-lock = lf-lock - '\ndevDependencies:\n'
+            lf-lock = lf-lock - lf-dev-sec
+        }
+        lf-lock = lf-lock - '\npackages:\n'
+        lf-lock = lf-lock - lf-pkgs-sec
+        utils.write-file(dir - '/pnpm-lock.yaml', lf-lock)
     }
 
     -> {

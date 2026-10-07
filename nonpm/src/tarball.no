@@ -29,41 +29,147 @@ download = (url str, dest str) (ok bool) {
 ; returns ok bool — true on success
 ; ═══════════════════════════════════════════════
 
+; ═══════════════════════════════════════════════
+; ensure-parent — 遞迴建立路徑的所有上層目錄
+; p str — 完整路徑（檔案或目錄）
+; 返回 ok bool — true=成功（已存在或已建立）
+; ═══════════════════════════════════════════════
+
+ensure-parent = (p str) (ok bool) {
+    n = p.len-bytes()
+    i <- [0..n): {
+        c = p.byte(i)
+        c == 47 -> {
+            prefix = p.slice(0, i)
+            prefix.len-bytes() > 0 -> {
+                fs.is-dir(prefix) == false -> {
+                    d = path {
+                        p: prefix
+                    }
+                    d.make-dir()
+                }
+            }
+        }
+    }
+    ok = true
+}
+
+; ═══════════════════════════════════════════════
+; ensure-dir — 建立目錄（含所有上層）
+; p str — 目錄路徑
+; 返回 ok bool — true=成功
+; ═══════════════════════════════════════════════
+
+ensure-dir = (p str) (ok bool) {
+    fs.is-dir(p) -> {
+        ok = true
+        return
+    }
+    ensure-parent(p)
+    d = path {
+        p: p
+    }
+    ok = d.make-dir()
+}
+
+; ═══════════════════════════════════════════════
+; extract — 解壓 .tgz 到目錄（純 Nolang，不依賴外部 tar）
+; tgz-path str — .tgz 檔案路徑
+; dest-dir str — 目標目錄
+; 返回 ok bool — true=成功
+; ═══════════════════════════════════════════════
+
 extract = (tgz-path str, dest-dir str) (ok bool) {
     ok = false
 
-    ; npm tarballs contain a "package/" prefix directory
-    ; extract to temp, then move contents
-    tmp-dir = '/tmp/nonpm-extract-' - os.now-ms().to-str()
-    mkdir-cmd = 'mkdir -p ' - tmp-dir
-    process.process-system(mkdir-cmd)
-    cmd = 'tar xzf ' - tgz-path - ' -C ' - tmp-dir - ' 2>/dev/null'
-    code = process.process-system(cmd)
-    code == 0 -> {
+    ; 確保目標目錄存在
+    ensure-dir(dest-dir)
 
-        ; move package/* contents to dest-dir
-        pkg-dir = tmp-dir - '/package'
-        is-pkg = fs.is-dir(pkg-dir)
-        is-pkg -> {
-            mv-cmd = 'cp -r ' - pkg-dir - '/* ' - dest-dir - '/ 2>/dev/null'
-            process.process-system(mv-cmd)
-            process.process-system('rm -rf ' - tmp-dir)
-            ok = true
+    ; 讀取壓縮 tarball
+    bytes []byte
+    data = fs.read-bytes(tgz-path)
+    data: {
+        ok -> bytes = it
+        nil -> return
+        err -> return
+    }
+    bytes.len() == 0 -> return
+
+    ; gzip 解壓 + tar 解析
+    archive = tar.tar-open-gz(bytes)
+    n = archive.count()
+    i <- [0..n): {
+        e = archive.entry(i)
+        name = e.name()
+
+        ; npm tarball 帶頂層 "package/" 前綴，去掉它
+        name.starts-with('package/') -> name = name.slice(8, name.len-bytes())
+
+        e.is-dir() -> {
+            full = dest-dir - '/' - name
+            ensure-dir(full)
         }
 
-        -> {
-
-            ; no package/ prefix, copy directly
-            cp-cmd = 'cp -r ' - tmp-dir - '/* ' - dest-dir - '/ 2>/dev/null'
-            process.process-system(cp-cmd)
-            process.process-system('rm -rf ' - tmp-dir)
-            ok = true
+        e.is-file() -> {
+            full = dest-dir - '/' - name
+            ensure-parent(full)
+            content = e.read()
+            fs.write-bytes(full, content)
         }
     }
+    ok = true
+}
 
-    -> {
-        process.process-system('rm -rf ' - tmp-dir)
+; ═══════════════════════════════════════════════
+; pack-tarball — 將目錄打包為 .tgz（純 Nolang，不依賴外部 tar）
+; dir str — 要打包的根目錄
+; tgz-path str — 輸出 .tgz 路徑
+; 返回 ok bool — true=成功
+; 排除 node_modules / .git / .nonpm（與原 tar --exclude 一致）
+; ═══════════════════════════════════════════════
+
+pack-tarball = (dir str, tgz-path str) (ok bool) {
+    ok = false
+
+    ; 正規化：去掉結尾的 '/'
+    dir-len = dir.len-bytes()
+    #{overflow=wrap}
+    last-idx = dir-len - 1
+    has-sep = dir.byte(last-idx) == 47
+    has-sep -> {
+        #{overflow=wrap}
+        dir-len = dir-len - 1
     }
+
+    paths []str
+    paths = fs.walk(dir)
+    builder = tar-builder{}
+    n = paths.len()
+    i <- [0..n): {
+        fp = paths[i]
+        #{overflow=wrap}
+        rel = fp.slice(dir-len + 1, fp.len-bytes())
+
+        ; 跳過排除的頂層目錄
+        skip = false
+        rel.starts-with('node_modules/') -> skip = true
+        rel.starts-with('.git/') -> skip = true
+        rel.starts-with('.nonpm/') -> skip = true
+        skip == false -> {
+            content []byte
+            d = fs.read-bytes(fp)
+            d: {
+                ok -> content = it
+                nil -> content = with-len(0)
+                err -> content = with-len(0)
+            }
+            builder.add-file(rel, content)
+        }
+    }
+    arch = builder.finish()
+    gz = gzip.gzip-compress(arch.data)
+    fs.write-bytes(tgz-path, gz)
+    ok = true
 }
 
 ; ═══════════════════════════════════════════════

@@ -83,43 +83,58 @@ install = (cfg config, dir str) (ok bool) {
         print('noNpm: lockfile is up to date')
     }
 
-    ; download and extract each package
+    ; download + extract + link + 累積 lockfile 全部在「同一個」迴圈內完成。
+    ; NOTE: Nolang 編譯器對「含 slice 欄位的結構按值拷貝」(dep-node 含
+    ; deps []dep-node) 在第二次 slice 遍歷時會產生壞拷貝（字段被清零），因此
+    ; graph.nodes 只能在一次迴圈內讀取；lockfile 內容直接在此次迴圈累積，
+    ; 避免結尾再次遍歷 graph.nodes。
     n = graph.node-count
+    lf-lock = 'lockfileVersion: 9.0\n\n'
+    lf-deps-sec = ''
+    lf-dev-sec = ''
+    lf-pkgs-sec = ''
+    lf-has-prod = false
+    lf-has-dev = false
     i <- [0..n): {
         node = graph.nodes[i]
-        print('  ' - node.name - '@' - node.version)
+
+        ; 拷貝標量欄位到局部變數（node 是 struct-with-slice 的值拷貝，局部
+        ; 副本在當次迴圈內穩定）
+        nm = node.name
+        vr = node.version
+        rs = node.resolved
+        ig = node.integrity
+        dp = node.depth
+        dv = node.is-dev
+
+        print('  ' - nm - '@' - vr)
 
         ; download and extract to virtual store
-        pkg-store-path = linker.package-dir(virtual-store, node.name, node.version)
+        pkg-store-path = linker.package-dir(virtual-store, nm, vr)
         pkg-exists = fs.is-dir(pkg-store-path)
         ! pkg-exists -> {
-            dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path)
+            dl-ok = tarball.download-and-extract(rs, pkg-store-path)
             ! dl-ok -> {
-                print('error: failed to download ' - node.name)
+                print('error: failed to download ' - nm)
                 ok = false
                 return
             }
         }
-    }
-
-    ; create symlinks
-    i <- [0..n): {
-        node = graph.nodes[i]
 
         ; link to top-level node_modules
-        linker.link-package(virtual-store, node.name, node.version, nm-dir)
+        linker.link-package(virtual-store, nm, vr, nm-dir)
 
         ; create bin links
         bin-dir = nm-dir - '/.bin'
-        linker.create-bin-links(virtual-store, node.name, node.version, bin-dir)
+        linker.create-bin-links(virtual-store, nm, vr, bin-dir)
 
         ; link package dependencies
-        vmeta = registry.fetch-version(cfg, node.name, node.version)
+        vmeta = registry.fetch-version(cfg, nm, vr)
         vmeta: {
             ok -> {
                 deps = registry.get-deps(it)
                 deps.len() > 0 -> {
-                    linker.link-deps(virtual-store, node.name, node.version, deps)
+                    linker.link-deps(virtual-store, nm, vr, deps)
                 }
             }
 
@@ -129,10 +144,32 @@ install = (cfg config, dir str) (ok bool) {
             err -> {
             }
         }
+
+        ; ── lockfile 累積（graph.nodes 唯一可靠的一次遍歷內完成）──
+        dp == 1 && dv == false -> {
+            lf-has-prod = true
+            lf-deps-sec = lf-deps-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+        }
+        dp == 1 && dv == true -> {
+            lf-has-dev = true
+            lf-dev-sec = lf-dev-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+        }
+        lf-pkgs-sec = lf-pkgs-sec - '  ' - nm - '@' - vr - ':\n'
+        rs != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - ', tarball: ' - rs - '}\n'
+        rs == '' && ig != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - '}\n'
     }
 
-    ; generate lockfile
-    lockfile.generate(cfg, dir, graph)
+    ; 組裝並寫入 lockfile（不再遍歷 graph.nodes）
+    lf-lock = lf-lock - 'dependencies:\n'
+    lf-has-prod -> lf-lock = lf-lock - lf-deps-sec
+    lf-has-prod == false -> lf-lock = lf-lock - '  {}\n'
+    lf-has-dev -> {
+        lf-lock = lf-lock - '\ndevDependencies:\n'
+        lf-lock = lf-lock - lf-dev-sec
+    }
+    lf-lock = lf-lock - '\npackages:\n'
+    lf-lock = lf-lock - lf-pkgs-sec
+    utils.write-file(dir - '/pnpm-lock.yaml', lf-lock)
 
     print('noNpm: installation complete')
     ok = true
@@ -259,11 +296,7 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
         }
     }
 
-    ; install the package
-    install-ok = install-pkg(cfg, name, range-str, dir)
-    ! install-ok -> return
-
-    ; update package.json
+    ; update package.json first（so the subsequent re-resolve includes the new dep）
     pkg-path = dir - '/package.json'
     p = path {
         p: pkg-path
@@ -296,7 +329,13 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
         }
     }
 
-    ; regenerate lockfile（基于已更新的 cfg，重新解析全部依赖）
+    ; resolve full project graph and build lockfile content in ONE pass,
+    ; BEFORE any heavy op（install-pkg 的下载/解壓會觸發分配器狀態變化，
+    ; 導致之後再讀 graph.nodes 時 struct-with-slice 按值拷貝壞掉；故必須在
+    ; 重分配前的「第一次」遍歷內抓取值，之後再安裝、最後寫入）。
+    ; NOTE: 必須在「本函式內」直接遍歷 graph.nodes（inline），不可把
+    ; graph.nodes 當引數傳給另一個函式——Nolang 編譯器對「含 slice 欄位的
+    ; 結構 slice 作為函式引數傳遞」也會觸發壞拷貝。
     graph-opt = resolver.resolve-project(cfg, dir)
     graph dep-graph
     g-ok = false
@@ -309,7 +348,54 @@ add = (cfg config, name str, range-str str, dir str, dev bool) (ok bool) {
         -> {
         }
     }
-    g-ok -> lockfile.generate(cfg, dir, graph)
+    lf-ready = false
+    lf-lock = ''
+    g-ok -> {
+        lf-deps-sec = ''
+        lf-dev-sec = ''
+        lf-pkgs-sec = ''
+        lf-has-prod = false
+        lf-has-dev = false
+        n = graph.node-count
+        i <- [0..n): {
+            node = graph.nodes[i]
+            nm = node.name
+            vr = node.version
+            rs = node.resolved
+            ig = node.integrity
+            dp = node.depth
+            dv = node.is-dev
+            dp == 1 && dv == false -> {
+                lf-has-prod = true
+                lf-deps-sec = lf-deps-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+            }
+            dp == 1 && dv == true -> {
+                lf-has-dev = true
+                lf-dev-sec = lf-dev-sec - '  ' - nm - ':\n    version: ' - vr - '\n    resolved: ' - rs - '\n    integrity: ' - ig - '\n'
+            }
+            lf-pkgs-sec = lf-pkgs-sec - '  ' - nm - '@' - vr - ':\n'
+            rs != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - ', tarball: ' - rs - '}\n'
+            rs == '' && ig != '' -> lf-pkgs-sec = lf-pkgs-sec - '    resolution: {integrity: ' - ig - '}\n'
+        }
+        lf-lock = 'lockfileVersion: 9.0\n\n'
+        lf-lock = lf-lock - 'dependencies:\n'
+        lf-has-prod -> lf-lock = lf-lock - lf-deps-sec
+        lf-has-prod == false -> lf-lock = lf-lock - '  {}\n'
+        lf-has-dev -> {
+            lf-lock = lf-lock - '\ndevDependencies:\n'
+            lf-lock = lf-lock - lf-dev-sec
+        }
+        lf-lock = lf-lock - '\npackages:\n'
+        lf-lock = lf-lock - lf-pkgs-sec
+        lf-ready = true
+    }
+
+    ; install the package (heavy ops AFTER lockfile data capture)
+    install-ok = install-pkg(cfg, name, range-str, dir)
+    ! install-ok -> return
+
+    ; write lockfile（局部字串寫入，重分配後仍安全）
+    lf-ready -> utils.write-file(dir - '/pnpm-lock.yaml', lf-lock)
 
     ok = true
 }

@@ -29,7 +29,7 @@ for arg in "$@"; do
     *) TARGETS+=("$arg") ;;
   esac
 done
-[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm)
+[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm noagent)
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -390,6 +390,41 @@ if want nonpm; then
     fi
   fi
   suite_footer nonpm
+fi
+
+# ── noagent ────────────────────────────────────────────────────────
+if want noagent; then
+  PASS=0; FAIL=0
+  suite_header noagent
+  BIN="$ROOT/noagent/dist/noagent"
+  [ "$BUILD_FIRST" -eq 1 ] && do_build noagent
+  if [ ! -x "$BIN" ]; then
+    echo "  FAIL: binary missing: $BIN"; FAIL=$((FAIL+1))
+  else
+    VER="$(version_of noagent)"
+
+    echo "=== noagent version ==="
+    out=$("$BIN" version)
+    check "version" "$out" "noagent $VER"
+
+    echo "=== noagent help ==="
+    out=$("$BIN" help | head -1)
+    check "help" "$out" "noagent $VER — pure Nolang autonomous LLM agent CLI"
+
+    echo "=== noagent config show (defaults, no network) ==="
+    out=$("$BIN" config show 2>&1)
+    if echo "$out" | grep -q "provider:"; then
+      echo "  PASS: config show prints provider"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: config show unexpected: $out"; FAIL=$((FAIL+1))
+    fi
+    if echo "$out" | grep -q "base-url:"; then
+      echo "  PASS: config show prints base-url"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: config show missing base-url: $out"; FAIL=$((FAIL+1))
+    fi
+  fi
+  suite_footer noagent
 fi
 
 echo ""

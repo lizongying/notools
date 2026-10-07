@@ -6,7 +6,8 @@
 ; - The dependency tree structure
 ;
 ; API:
-;   generate(cfg config, dir str, graph dep-graph) (ok bool) — generate lockfile
+;   (lockfile 內容由各呼叫方 inline 建立，見 installer.install / installer.add /
+;    main.cmd-import；不提供共用 build 函式，原因見下方 NOTE)
 ;   check-valid(cfg config, dir str, graph dep-graph) (ok bool) — check if lockfile matches
 ;   read(dir str) (content ?str) — read lockfile content
 ;   get-pkg-version(content str, name str) (ver ?str) — get version from lockfile
@@ -15,85 +16,20 @@
 # /nonpm/src/config
 
 ; ═══════════════════════════════════════════════
-; generate — generate pnpm-lock.yaml from dependency graph
+; check-valid — check if existing lockfile matches the graph
 ; cfg config — configuration
 ; dir str — project root directory
 ; graph dep-graph — resolved dependency graph
+; returns ok bool — true if lockfile is valid
 ; returns ok bool — true on success
 ; ═══════════════════════════════════════════════
-
-generate = (cfg config, dir str, graph dep-graph) (ok bool) {
-    ok = false
-    lock-path = dir - '/pnpm-lock.yaml'
-    lock = 'lockfileVersion: 9.0\n\n'
-
-    ; v6 平铺格式：直接依赖列于 dependencies / devDependencies，供 list/outdated 读取
-    lock = lock - 'dependencies:\n'
-    has-prod = false
-    i <- [0..graph.node-count): {
-
-        #{index-out=0}
-        node = graph.nodes[i]
-        node.depth == 1 && node.is-dev == false -> has-prod = true
-    }
-    has-prod -> {
-        i <- [0..graph.node-count): {
-
-            #{index-out=0}
-            node = graph.nodes[i]
-            node.depth == 1 && node.is-dev == false -> {
-                lock = lock - '  ' - node.name - ':\n'
-                lock = lock - '    version: ' - node.version - '\n'
-                lock = lock - '    resolved: ' - node.resolved - '\n'
-                lock = lock - '    integrity: ' - node.integrity - '\n'
-            }
-        }
-    }
-    has-prod == false -> lock = lock - '  {}\n'
-
-    has-dev = false
-    i <- [0..graph.node-count): {
-
-        #{index-out=0}
-        node = graph.nodes[i]
-        node.depth == 1 && node.is-dev -> has-dev = true
-    }
-    has-dev -> {
-        lock = lock - '\ndevDependencies:\n'
-        i <- [0..graph.node-count): {
-
-            #{index-out=0}
-            node = graph.nodes[i]
-            node.depth == 1 && node.is-dev -> {
-                lock = lock - '  ' - node.name - ':\n'
-                lock = lock - '    version: ' - node.version - '\n'
-                lock = lock - '    resolved: ' - node.resolved - '\n'
-                lock = lock - '    integrity: ' - node.integrity - '\n'
-            }
-        }
-    }
-
-    ; packages：全部节点（含传递依赖）记录 resolution
-    lock = lock - '\npackages:\n'
-    j <- [0..graph.node-count): {
-
-        #{index-out=0}
-        node = graph.nodes[j]
-        key = '  ' - node.name - '@' - node.version - ':'
-        lock = lock - key - '\n'
-        {
-            node.resolved != '' -> {
-                lock = lock - '    resolution: {integrity: ' - node.integrity - ', tarball: ' - node.resolved - '}\n'
-            }
-
-            node.resolved == '' && node.integrity != '' -> {
-                lock = lock - '    resolution: {integrity: ' - node.integrity - '}\n'
-            }
-        }
-    }
-
-    ok = utils.write-file(lock-path, lock)
-}
+; NOTE: lockfile 內容建立（pnpm-lock.yaml）目前由各呼叫方「在本函式內直接
+; 遍歷 graph.nodes」完成（見 installer.install / installer.add / cmd-import），
+; 不提供共用 build 函式——因 Nolang 編譯器對「含 slice 欄位的結構
+; (dep-node 含 deps []dep-node) 按值拷貝」在第二次/重分配後遍歷、或作為函式
+; 引數傳遞時會產生壞拷貝（欄位被清零 → `signal: abort trap`）。故 lockfile
+; 內容必須在 graph 剛解析完、尚未發生重分配（下載/解壓等）之前，於同一個
+; 呼叫框架內 inline 建立。
 
 ; ═══════════════════════════════════════════════
 ; check-valid — check if existing lockfile matches the graph
