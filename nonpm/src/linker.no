@@ -135,11 +135,14 @@ link-to-node-modules = (store-dir str, name str, ver str, nm-dir str) (ok bool) 
 ; store-dir str — virtual store root
 ; name str — package name
 ; ver str — package version
-; deps str — JSON string of dependencies (name->version)
+; deps str — JSON string of dependencies (name->range)
+; resolved-map str — "name=version\n..." from the resolved graph, used to map a
+;   declared range to the CONCRETE version actually stored (a range like "^1.2"
+;   is not a directory name); empty means no graph info is available
 ; returns ok bool — true on success
 ; ═══════════════════════════════════════════════
 
-link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
+link-deps = (store-dir str, name str, ver str, deps str, resolved-map str) (ok bool) {
     ok = true
     deps.len-bytes() == 0 -> return
     dep-obj = json.parse(deps)
@@ -152,22 +155,29 @@ link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
                 dep-ver-val = it.get(dep-name)
                 dep-ver-val: {
                     ok -> {
-                        dep-ver = dep-ver-val.str()
-                        dep-ver.starts-with('^') -> dep-ver = dep-ver.slice(1, dep-ver.len())
-                        dep-ver.starts-with('~') -> dep-ver = dep-ver.slice(1, dep-ver.len())
-                        dep-ver.starts-with('=') -> dep-ver = dep-ver.slice(1, dep-ver.len())
-
-                        ; link into package's node_modules
-                        pkg-nm = package-dir(store-dir, name, ver) - '/node_modules'
-                        nm-exists = fs.is-dir(pkg-nm)
-                        ! nm-exists -> {
-                            p = path {
-                                p: pkg-nm
+                        dep-range, r-ok = dep-ver-val.str()
+                        r-ok -> {
+                            ; the concrete version must come from the resolved graph
+                            concrete = lookup-resolved(resolved-map, dep-name)
+                            concrete.len() == 0 -> {
+                                ; no graph entry: only trust an already-concrete spec
+                                cand = strip-range(dep-range)
+                                is-concrete-version(cand) -> concrete = cand
                             }
-                            p.make-dir()
+                            concrete.len() > 0 -> {
+                                ; link into package's node_modules
+                                pkg-nm = package-dir(store-dir, name, ver) - '/node_modules'
+                                nm-exists = fs.is-dir(pkg-nm)
+                                ! nm-exists -> {
+                                    p = path {
+                                        p: pkg-nm
+                                    }
+                                    p.make-dir()
+                                }
+                                link-ok = link-package(store-dir, dep-name, concrete, pkg-nm)
+                                ! link-ok -> ok = false
+                            }
                         }
-                        link-ok = link-package(store-dir, dep-name, dep-ver, pkg-nm)
-                        ! link-ok -> ok = false
                     }
 
                     nil -> {
@@ -185,6 +195,77 @@ link-deps = (store-dir str, name str, ver str, deps str) (ok bool) {
         err -> {
         }
     }
+}
+
+; ═══════════════════════════════════════════════
+; lookup-resolved — find a package's concrete version in the resolved map
+; resolved-map str — "name=version\n..."
+; name str — package name
+; returns ver str — concrete version ('' if not found)
+; ═══════════════════════════════════════════════
+
+lookup-resolved = (resolved-map str, name str) (ver str) {
+    ver = ''
+    resolved-map.len() == 0 -> return
+    prefix = name - '='
+    lines = resolved-map.split('\n')
+    n = lines.len()
+    i <- [0..n): {
+        #{index-out=zero}
+        line = lines[i]
+        line.starts-with(prefix) -> {
+            ver = line.slice(prefix.len(), line.len()).trim()
+            return
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; strip-range — drop leading comparator/caret/tilde chars from a range
+; v str — raw range spec (e.g. "^1.2.3", ">=1.0.0")
+; returns out str — leading-operator-free remainder
+; ═══════════════════════════════════════════════
+
+strip-range = (v str) (out str) {
+    t = v.trim()
+    i <- [0..4): {
+        t.len() > 0 -> {
+            c = t.byte(0)
+            isop = false
+            c == 94 -> isop = true
+            c == 126 -> isop = true
+            c == 61 -> isop = true
+            c == 62 -> isop = true
+            c == 60 -> isop = true
+            isop -> t = t.slice(1, t.len())
+        }
+    }
+    out = t
+}
+
+; ═══════════════════════════════════════════════
+; is-concrete-version — true if v looks like an exact version (no range syntax)
+; v str — candidate version string
+; returns ok bool — true if only [0-9A-Za-z.+-] present and non-empty
+; ═══════════════════════════════════════════════
+
+is-concrete-version = (v str) (ok bool) {
+    ok = false
+    v.len() == 0 -> return
+    n = v.len()
+    all = true
+    i <- [0..n): {
+        c = v.byte(i)
+        good = false
+        c >= 48 && c <= 57 -> good = true
+        c == 46 -> good = true
+        c == 45 -> good = true
+        c == 43 -> good = true
+        c >= 65 && c <= 90 -> good = true
+        c >= 97 && c <= 122 -> good = true
+        good == false -> all = false
+    }
+    ok = all
 }
 
 ; ═══════════════════════════════════════════════

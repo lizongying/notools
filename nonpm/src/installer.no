@@ -77,10 +77,21 @@ install = (cfg config, dir str) (ok bool) {
     }
     nmp.make-dir()
 
-    ; check if lockfile exists and is valid
-    lock-ok = lockfile.check-valid(cfg, dir, graph)
+    ; snapshot the resolved name=version map as a plain str BEFORE any heavy op
+    ; (safe to read: it is a str field, not the slice-bearing dep-node struct).
+    ; reused by lockfile validation and by per-package dependency linking.
+    rmap = graph.resolved-map
+
+    ; check if lockfile exists and matches the freshly resolved graph
+    lock-ok = lockfile.check-valid(cfg, dir, rmap)
     lock-ok -> {
         print('noNpm: lockfile is up to date')
+    }
+
+    ; --frozen-lockfile: never rewrite the lockfile; abort if it is out of sync
+    cfg.frozen-lockfile && ! lock-ok -> {
+        print('error: lockfile is out of date (--frozen-lockfile)')
+        return
     }
 
     ; download + extract + link + 累積 lockfile 全部在「同一個」迴圈內完成。
@@ -113,7 +124,7 @@ install = (cfg config, dir str) (ok bool) {
         pkg-store-path = linker.package-dir(virtual-store, nm, vr)
         pkg-exists = fs.is-dir(pkg-store-path)
         ! pkg-exists -> {
-            dl-ok = tarball.download-and-extract(rs, pkg-store-path)
+            dl-ok = tarball.download-and-extract(rs, pkg-store-path, ig)
             ! dl-ok -> {
                 print('error: failed to download ' - nm)
                 ok = false
@@ -122,7 +133,12 @@ install = (cfg config, dir str) (ok bool) {
         }
 
         ; link to top-level node_modules
-        linker.link-package(virtual-store, nm, vr, nm-dir)
+        ; isolated (default): only direct deps (depth 1) live at the top level;
+        ; transitive packages stay in the virtual store and are reached through
+        ; per-package node_modules links created by link-deps below.
+        ; hoisted / shamefully-hoist: every package is flattened to the top level.
+        link-top = dp == 1 || cfg.shamefully-hoist || cfg.node-linker == 'hoisted'
+        link-top -> linker.link-package(virtual-store, nm, vr, nm-dir)
 
         ; create bin links
         bin-dir = nm-dir - '/.bin'
@@ -134,7 +150,7 @@ install = (cfg config, dir str) (ok bool) {
             ok -> {
                 deps = registry.get-deps(it)
                 deps.len() > 0 -> {
-                    linker.link-deps(virtual-store, nm, vr, deps)
+                    linker.link-deps(virtual-store, nm, vr, deps, rmap)
                 }
             }
 
@@ -232,7 +248,7 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
             pkg-exists = fs.is-dir(pkg-store-path)
             ! pkg-exists -> {
                 print('noNpm: downloading ' - name - '@' - ver - '...')
-                dl-ok = tarball.download-and-extract(url, pkg-store-path)
+                dl-ok = tarball.download-and-extract(url, pkg-store-path, integrity)
                 ! dl-ok -> {
                     print('error: failed to download ' - name)
                     return
@@ -249,7 +265,7 @@ install-pkg = (cfg config, name str, range-str str, dir str) (ok bool) {
             ; link dependencies
             deps = registry.get-deps(it)
             deps.len() > 0 -> {
-                linker.link-deps(virtual-store, name, ver, deps)
+                linker.link-deps(virtual-store, name, ver, deps, '')
             }
 
             print('noNpm: installed ' - name - '@' - ver)
@@ -457,24 +473,60 @@ prune = (cfg config, dir str) (ok bool) {
     p = path {
         p: virtual-store
     }
-    p.exists() -> {
+    ! p.exists() -> {
+        print('noNpm: nothing to prune')
+        return
+    }
 
-        ; read lockfile to know which packages should exist
-        graph-opt = resolver.resolve-project(cfg, dir)
-        graph dep-graph
-        resolve-ok bool = false
-        graph-opt: {
-            ok -> {
-                graph = graph-opt
-                resolve-ok = true
-            }
-
-            -> {
-            }
+    ; resolve the current graph to learn which name@version SHOULD exist.
+    ; we only ever read graph.resolved-map (a plain str) so the struct-with-
+    ; slice copy bug cannot bite here.
+    graph-opt = resolver.resolve-project(cfg, dir)
+    rmap str = ''
+    resolve-ok bool = false
+    graph-opt: {
+        ok -> {
+            rmap = graph-opt.resolved-map
+            resolve-ok = true
         }
-        resolve-ok -> {
-            ; TODO: scan virtual store and remove packages not in graph
+
+        -> {
         }
     }
-    print('noNpm: pruned extraneous packages')
+    ! resolve-ok -> {
+        print('error: could not resolve graph for prune')
+        ok = false
+        return
+    }
+
+    ; haystack with a leading newline so each line is delimited on both sides
+    haystack = '\n' - rmap
+    entries = fs.dir-entries(virtual-store)
+    n = entries.len()
+    removed = 0
+    i <- [0..n): {
+        #{index-out=zero}
+        e = entries[i]
+        ; store entries look like "name@version" (scoped: "@scope+pkg@ver");
+        ; anything without '@' (e.g. .bin) is not a package entry → keep
+        at = e.rindex('@')
+        at < 0 -> continue
+        safe-name = e.slice(0, at)
+
+        #{overflow=wrap}
+        ver = e.slice(at + 1, e.len())
+        name = utils.replace(safe-name, '+', '/')
+        needle = '\n' - name - '=' - ver - '\n'
+        haystack.contains(needle) -> continue
+
+        ; extraneous entry → delete its store dir and any top-level symlink
+        target = virtual-store - '/' - e
+        process.process-system('rm -rf ' - target)
+        top-link = dir - '/node_modules' - '/' - name
+        fs.is-file(top-link) -> fs.remove(top-link)
+
+        #{overflow=wrap}
+        removed = removed + 1
+    }
+    print('noNpm: pruned ' - removed.to-str() - ' extraneous package(s)')
 }

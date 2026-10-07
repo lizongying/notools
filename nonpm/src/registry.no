@@ -33,6 +33,55 @@ encode-pkg = (pkg str) (out str) {
 }
 
 ; ═══════════════════════════════════════════════
+; fetch-json — GET a URL and parse JSON, retrying transient failures
+; cfg config — configuration (fetch-retries / fetch-retry-mintimeout)
+; url str — full request URL
+; returns meta ?json — parsed body (nil on 404 / terminal / exhausted retries)
+; 5xx responses and network errors are retried up to cfg.fetch-retries times;
+; 404 and 2xx are terminal (never retried).
+; ═══════════════════════════════════════════════
+
+fetch-json = (cfg config, url str) (meta ?json) {
+    meta = nil
+    #{overflow=wrap}
+    attempts = cfg.fetch-retries + 1
+    attempts < 1 -> attempts = 1
+    i <- [0..attempts): {
+        resp = http.get(url)
+        got = false
+        is-404 = false
+        retryable = false
+        parsed ?json = nil
+        resp: {
+            ok -> {
+                sc = it.status-code
+                sc == 404 -> is-404 = true
+                sc >= 200 && sc < 300 -> {
+                    parsed = json.parse(it.body)
+                    got = true
+                }
+                sc >= 500 -> retryable = true
+            }
+
+            err -> retryable = true
+
+            nil -> retryable = true
+        }
+        is-404 -> return
+        got -> {
+            meta = parsed
+            return
+        }
+        #{overflow=wrap}
+        retryable && i + 1 < attempts -> {
+            time.sleep-ms(cfg.fetch-retry-mintimeout)
+            continue
+        }
+        return
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; fetch-metadata — fetch full package metadata from registry
 ; cfg config — configuration (contains registry URL)
 ; pkg str — package name
@@ -41,30 +90,9 @@ encode-pkg = (pkg str) (out str) {
 
 fetch-metadata = (cfg config, pkg str) (meta ?json) {
     meta = nil
+    #{overflow=wrap}
     url = cfg.registry - encode-pkg(pkg)
-    resp = http.get(url)
-    resp: {
-        ok -> {
-            it.status-code != 200 -> {
-                it.status-code == 404 -> {
-                    meta = nil
-                    return
-                }
-                meta = nil
-                return
-            }
-            body = it.body
-            meta = json.parse(body)
-        }
-
-        nil -> {
-            return
-        }
-
-        err -> {
-            return
-        }
-    }
+    meta = fetch-json(cfg, url)
 }
 
 ; ═══════════════════════════════════════════════
@@ -81,30 +109,9 @@ fetch-version = (cfg config, pkg str, ver str) (meta ?json) {
     ver == 'latest' -> version-path = 'latest'
     ver == '' -> version-path = 'latest'
 
+    #{overflow=wrap}
     url = cfg.registry - encode-pkg(pkg) - '/' - version-path
-    resp = http.get(url)
-    resp: {
-        ok -> {
-            it.status-code != 200 -> {
-                it.status-code == 404 -> {
-                    meta = nil
-                    return
-                }
-                meta = nil
-                return
-            }
-            body = it.body
-            meta = json.parse(body)
-        }
-
-        nil -> {
-            return
-        }
-
-        err -> {
-            return
-        }
-    }
+    meta = fetch-json(cfg, url)
 }
 
 ; ═══════════════════════════════════════════════

@@ -189,37 +189,79 @@ parse-packages-field = (content str) (patterns str) {
 ; ═══════════════════════════════════════════════
 ; expand-pattern — expand a glob pattern and add matching dirs to paths
 ; base-dir str — workspace root
-; pattern str — glob pattern (e.g. "packages/*")
-; paths []str — array to append matches to
+; pattern str — glob pattern (e.g. "packages/*", "packages/**", "apps/a")
+; paths []str — array to append matches to (mutated in place)
+; NOTE: walks the pattern segment-by-segment instead of a fixed `-maxdepth 2`
+; find, which previously missed package.json at packages/<name>/ (depth 3).
+; '*' = one immediate directory level; '**' = all descendant directories.
 ; ═══════════════════════════════════════════════
 
 expand-pattern = (base-dir str, pattern str, paths []str) {
-    full-pattern = base-dir - '/' - pattern
+    pat = pattern.trim()
+    pat.len() == 0 -> return
 
-    ; use find to expand glob
-    cmd = 'find ' - base-dir - ' -maxdepth 2 -name package.json -not -path "*/node_modules/*" 2>/dev/null'
-    tmp = '/tmp/nonpm-ws-' - os.now-ms().to-str()
+    ; tolerate the common "packages/*/package.json" glob form
+    pat.ends-with('/package.json') -> {
 
-    process.process-system(cmd - ' > ' - tmp)
-    result = fs.read-str(tmp)
-    result: {
-        ok -> content = it
-
-        nil -> content = ''
-
-        err -> content = ''
+        #{overflow=wrap}
+        pat = pat.slice(0, pat.len() - 13)
     }
-    fs.remove(tmp)
-    lines = content.split('\n')
-    n = lines.len()
-    i <- [0..n): {
-        line = lines[i].trim()
-        line.len() > 0 -> {
+    segs = pat.split('/')
+    n = segs.len()
+    current []str
+    current.push(base-dir)
+    s <- [0..n): {
+        seg = segs[s].trim()
+        seg.len() == 0 -> continue
+        next []str
+        m = current.len()
+        k <- [0..m): {
+            #{index-out=zero}
+            cur = current[k]
+            seg == '*' -> {
+                entries = fs.dir-entries(cur)
+                e = entries.len()
+                q <- [0..e): {
+                    sub = cur - '/' - entries[q]
+                    fs.is-dir(sub) -> next.push(sub)
+                }
+            }
 
-            ; line is a path to package.json, extract directory
-            dir-path = utils.path-dir(line)
-            paths.push(dir-path)
+            seg == '**' -> {
+                collect-dirs(cur, next)
+            }
+
+            -> {
+                cand = cur - '/' - seg
+                fs.is-dir(cand) -> next.push(cand)
+            }
         }
+        current = next
+    }
+    d = current.len()
+    z <- [0..d): {
+        #{index-out=zero}
+        pd = current[z]
+        fs.is-file(pd - '/package.json') -> paths.push(pd)
+    }
+}
+
+; ═══════════════════════════════════════════════
+; collect-dirs — recursively collect a directory and all its descendants
+; dir str — starting directory
+; acc []str — output accumulator (mutated in place); skips node_modules
+; ═══════════════════════════════════════════════
+
+collect-dirs = (dir str, acc []str) {
+    acc.push(dir)
+    entries = fs.dir-entries(dir)
+    e = entries.len()
+    i <- [0..e): {
+        #{index-out=zero}
+        name = entries[i]
+        name == 'node_modules' -> continue
+        sub = dir - '/' - name
+        fs.is-dir(sub) -> collect-dirs(sub, acc)
     }
 }
 

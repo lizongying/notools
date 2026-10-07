@@ -49,6 +49,7 @@ config {
     dev bool
     optional bool
     peer bool
+    auth-token str
     config-file str
     raw str
 }
@@ -88,6 +89,7 @@ default-config = () (cfg config) {
     cfg.dev = true
     cfg.optional = true
     cfg.peer = true
+    cfg.auth-token = ''
     cfg.config-file = ''
     cfg.raw = ''
 }
@@ -309,9 +311,63 @@ apply-config = (cfg config, key str, val str) {
             val == 'false' -> cfg.prod = false
         }
 
+        'auth-token' -> cfg.auth-token = val
+
+        '_authToken' -> cfg.auth-token = val
+
         -> {
         }
     }
+}
+
+; ═══════════════════════════════════════════════
+; save-auth-token — persist a registry auth token to ~/.nonpm/config
+; token str — the bearer token to store (empty is ignored)
+; returns ok bool — true if written
+; Existing other config lines are preserved; a prior auth-token line is replaced.
+; ═══════════════════════════════════════════════
+
+save-auth-token = (token str) (ok bool) {
+    ok = false
+    token.len() == 0 -> return
+    home = os.get-env('HOME')
+    home.len() == 0 -> return
+    dir-path = home - '/.nonpm'
+    dp = path {
+        p: dir-path
+    }
+    dp.make-dir()
+    config-path = dir-path - '/config'
+    ; read existing config (if any) so we don't clobber other settings
+    existing str = ''
+    p = path {
+        p: config-path
+    }
+    p.exists() -> {
+        result = fs.read-str(config-path)
+        result: {
+            ok -> existing = it
+
+            nil -> existing = ''
+
+            err -> existing = ''
+        }
+    }
+    ; strip any previous auth-token line, then append the fresh one
+    out = ''
+    lines = existing.split('\n')
+    n = lines.len()
+    i <- [0..n): {
+        #{index-out=zero}
+        line = lines[i]
+        t = line.trim()
+        t.starts-with('auth-token') -> continue
+        t.starts-with('_authToken') -> continue
+        t.len() > 0 -> out = out - line - '\n'
+    }
+    out = out - 'auth-token=' - token - '\n'
+    fs.write-str(config-path, out)
+    ok = true
 }
 
 ; ═══════════════════════════════════════════════

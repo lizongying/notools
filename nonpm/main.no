@@ -101,6 +101,10 @@ main = () {
 
         'import' -> cmd-import(argc)
 
+        'workspace' -> cmd-workspace(argc)
+
+        'ws' -> cmd-workspace(argc)
+
         'cache' -> cmd-cache(argc)
 
         'self' -> cmd-self(argc)
@@ -147,6 +151,11 @@ print-usage = () {
     print('    remove <pkg> [pkg...]   Remove dependency')
     print('    update [pkg...]         Update dependencies')
     print('    prune                   Remove extraneous packages')
+    print('')
+    print('  Workspace:')
+    print('    workspace list          List workspace packages')
+    print('    workspace [install]     Install across all workspace packages')
+    print('    install -r              Recursive install across workspaces')
     print('')
     print('  Run:')
     print('    run <script> [args...]  Run a script defined in package.json')
@@ -207,6 +216,7 @@ print-version = () {
 cmd-install = (argc i64) {
     dir = os.get-wd()
     cfg = config.load-project(dir)
+    recursive = false
 
     ; parse global flags
     i <- [2..os.args()): {
@@ -241,6 +251,10 @@ cmd-install = (argc i64) {
 
             a == '--dev' -> cfg.dev = true
 
+            a == '-r' -> recursive = true
+
+            a == '--recursive' -> recursive = true
+
             a == '--shamefully-hoist' -> cfg.shamefully-hoist = true
 
             a.starts-with('--node-linker=') -> cfg.node-linker = a.slice(13, a.len())
@@ -252,8 +266,91 @@ cmd-install = (argc i64) {
             }
         }
     }
+    recursive -> {
+        install-recursive(cfg, dir)
+        return
+    }
     ok = installer.install(cfg, dir)
     ! ok -> os.exit(1)
+}
+
+; ═══════════════════════════════════════════════
+; install-recursive — run install in every discovered workspace package
+; cfg config — shared configuration
+; dir str — workspace root directory
+; ═══════════════════════════════════════════════
+
+install-recursive = (cfg config, dir str) {
+    paths-opt = workspace.discover(dir)
+    pkgs []str
+    got bool = false
+    paths-opt: {
+        ok -> {
+            pkgs = it
+            got = true
+        }
+
+        -> {
+        }
+    }
+    ! got -> {
+        print('noNpm: not a workspace (no packages found)')
+        os.exit(1)
+    }
+    n = pkgs.len()
+    n == 0 -> {
+        print('noNpm: workspace has no packages')
+        return
+    }
+    j <- [0..n): {
+        #{index-out=zero}
+        pd = pkgs[j]
+        print('noNpm: installing in ' - pd)
+        installer.install(cfg, pd)
+    }
+    print('noNpm: recursive install complete (' - n.to-str() - ' packages)')
+}
+
+; ═══════════════════════════════════════════════
+; command: workspace
+; ═══════════════════════════════════════════════
+
+cmd-workspace = (argc i64) {
+    dir = os.get-wd()
+    sub str = ''
+    argc >= 2 -> sub = os.arg(2)
+    paths-opt = workspace.discover(dir)
+    pkgs []str
+    got bool = false
+    paths-opt: {
+        ok -> {
+            pkgs = it
+            got = true
+        }
+
+        -> {
+        }
+    }
+    ! got -> {
+        print('noNpm: not a workspace root (no pnpm-workspace.yaml / workspaces field)')
+        return
+    }
+    sub == 'list' -> {
+        n = pkgs.len()
+        k <- [0..n): {
+            #{index-out=zero}
+            pd = pkgs[k]
+            name, ver, info-ok = workspace.get-package-info(pd)
+            info-ok -> print(name - '@' - ver - '  ' - pd)
+
+            -> print(pd)
+        }
+        return
+    }
+
+    ; default (and 'install'): recursive install
+    cfg = config.load-project(dir)
+    install-recursive(cfg, dir)
 }
 
 ; ═══════════════════════════════════════════════
@@ -767,6 +864,7 @@ cmd-publish = (argc i64) {
     token.len() == 0 -> {
         token = os.get-env('NONPM_TOKEN')
     }
+    token.len() == 0 -> token = cfg.auth-token
     token.len() == 0 -> {
         print('error: no auth token found')
         print('Set NPM_TOKEN environment variable or run "nonpm login"')
@@ -808,8 +906,10 @@ cmd-login = (argc i64) {
     token: {
         ok -> {
             print('Logged in as ' - username)
-            print('Token: ' - it)
-            print('Save this token as NPM_TOKEN environment variable')
+            saved = config.save-auth-token(it)
+            saved -> print('noNpm: token saved to ~/.nonpm/config')
+
+            -> print('warn: could not save token (set NPM_TOKEN manually)')
         }
 
         nil -> {
@@ -835,6 +935,7 @@ cmd-whoami = (argc i64) {
     token.len() == 0 -> {
         token = os.get-env('NONPM_TOKEN')
     }
+    token.len() == 0 -> token = cfg.auth-token
     token.len() == 0 -> {
         print('not logged in')
         os.exit(1)
@@ -990,7 +1091,7 @@ cmd-fetch = (argc i64) {
         pkg-exists = fs.is-dir(pkg-store-path)
         ! pkg-exists -> {
             print('noNpm: fetching ' - node.name - '@' - node.version - '...')
-            dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path)
+            dl-ok = tarball.download-and-extract(node.resolved, pkg-store-path, node.integrity)
             ! dl-ok -> {
                 print('error: failed to fetch ' - node.name)
             }
@@ -999,15 +1100,18 @@ cmd-fetch = (argc i64) {
     print('noNpm: fetched all packages to virtual store')
 }
 
-; ═══════════════════════════════════════════════
+; ╔═══════════════════════════════════════════════
 ; command: import
-; ═══════════════════════════════════════════════
+; Re-resolves package.json against the registry and writes a lockfile.
+; NOTE: this is resolve-based import (hits the registry); it does not yet scan
+; an existing node_modules/ entirely offline.
+; ╚═══════════════════════════════════════════════
 
 cmd-import = (argc i64) {
     dir = os.get-wd()
     print('noNpm: importing from existing node_modules...')
 
-    ; TODO: generate lockfile from existing node_modules
+    ; generate a lockfile from the resolved project graph
     cfg = config.load-project(dir)
     graph-opt = resolver.resolve-project(cfg, dir)
     graph dep-graph
@@ -1097,13 +1201,61 @@ cmd-cache = (argc i64) {
 
         'prune' -> {
             print('noNpm: pruning cache...')
+            home = os.get-env('HOME')
+            cache-dir = home - '/.nonpm/cache'
+            fs.is-dir(cache-dir) -> {
+                removed = prune-empty(cache-dir)
+                print('noNpm: pruned ' - removed.to-str() - ' empty/stale cache entrie(s)')
+            }
 
-            ; TODO: scan cache and remove old entries
-            print('noNpm: cache pruned')
+            -> {
+                print('noNpm: cache dir does not exist')
+            }
         }
 
         -> {
             print('unknown cache subcommand: {sub}')
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
+; prune-empty — recursively delete zero-byte files and empty directories
+; dir str — directory to clean (mutated on disk)
+; returns removed i64 — number of entries deleted
+; NOTE: deliberately AVOIDS mtime-based expiry — os.stat-mtime's unit is not
+; guaranteed here, and a wrong assumption could mass-delete a healthy cache.
+; Size (bytes) via fs.file-size is unambiguous, so only empty artifacts go.
+; ═══════════════════════════════════════════════
+
+prune-empty = (dir str) (removed i64) {
+    removed = 0
+    entries = fs.dir-entries(dir)
+    n = entries.len()
+    i <- [0..n): {
+        full = dir - '/' - entries[i]
+        fs.is-dir(full) -> {
+            #{overflow=wrap}
+            removed = removed + prune-empty(full)
+            after = fs.dir-entries(full)
+            after.len() == 0 -> fs.remove(full)
+        }
+
+        fs.is-file(full) -> {
+            sz = -1
+            sz-opt = fs.file-size(full)
+            sz-opt: {
+                ok -> sz = it
+
+                -> {
+                }
+            }
+            sz == 0 -> {
+                fs.remove(full)
+
+                #{overflow=wrap}
+                removed = removed + 1
+            }
         }
     }
 }

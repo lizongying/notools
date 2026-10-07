@@ -153,32 +153,52 @@ publish = (cfg config, dir str, token str) (ok bool) {
                                     err -> tgz-file = ''
                                 }
 
-                                ; construct publish URL
-                                safe-name = pkg-name
-                                safe-name.starts-with('@') -> {
-
-                                    ; scoped package
-                                    safe-name = utils.replace(safe-name, '/', '%2F')
-                                }
+                                ; construct publish URL (scoped '/' must be encoded)
+                                enc-name = pkg-name
+                                enc-name.starts-with('@') -> enc-name = utils.replace(enc-name, '/', '%2F')
 
                                 #{overflow=wrap}
-                                pub-url = cfg.registry - safe-name
+                                pub-url = cfg.registry - enc-name
 
-                                ; upload via pure-Nolang HTTP PUT (no system curl)
-                                tgz-bytes = fs.read-file(tgz-file)
-                                tgz-bytes.len() == 0 -> {
+                                ; npm publish = PUT a JSON packument to /{name}; the
+                                ; tarball rides along base64-encoded in "_attachments".
+                                ; (The previous raw application/octet-stream PUT is not
+                                ; a valid publish body and is rejected by registries.)
+                                tb []byte
+                                read = fs.read-bytes(tgz-file)
+                                read: {
+                                    ok -> tb = it
+
+                                    nil -> {
+                                    }
+
+                                    err -> {
+                                    }
+                                }
+                                tb.len() == 0 -> {
                                     print('error: failed to read tarball')
                                     process.process-system('rm -rf ' - tmp-dest)
                                     return
                                 }
-                                body = tgz-bytes.to-bytes-str()
+                                b64 = base64.encode-std(tb)
+
+                                ; attachment filename = "<name-with-dash>-<version>.tgz"
+                                tgz-base = utils.replace(pkg-name, '/', '-') - '-' - pkg-ver - '.tgz'
+
+                                ; embed the package.json object as the version metadata
+                                body = '{'
+                                body = body - '"name":"' - pkg-name - '",'
+                                body = body - '"versions":{"' - pkg-ver - '":' - content - '},'
+                                body = body - '"dist-tags":{"latest":"' - pkg-ver - '"},'
+                                body = body - '"_attachments":{"' - tgz-base - '":{"content_type":"application/octet-stream","data":"' - b64 - '","length":' - tb.len().to-str() - '}}}'
+
                                 req = http.request {
                                     method: 'PUT'
                                     url: pub-url
                                     body: body
                                 }
                                 req.add-header('Authorization', 'Bearer ' - token)
-                                req.add-header('Content-Type', 'application/octet-stream')
+                                req.add-header('Content-Type', 'application/json')
                                 resp = http.do-req(req)
 
                                 ; cleanup

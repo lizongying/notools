@@ -32,16 +32,56 @@
 ; 呼叫框架內 inline 建立。
 
 ; ═══════════════════════════════════════════════
-; check-valid — check if existing lockfile matches the graph
+; check-valid — check if existing lockfile matches the resolved graph
 ; cfg config — configuration
 ; dir str — project root directory
-; graph dep-graph — resolved dependency graph
-; returns ok bool — true if lockfile is valid
+; resolved-map str — "name=version\n..." from the freshly resolved graph (a
+;   plain str, safe to pass across the call boundary; we do NOT take the
+;   dep-graph struct here to avoid the struct-with-slice copy bug)
+; returns ok bool — true if every resolved node is present in the lockfile
 ; ═══════════════════════════════════════════════
 
-check-valid = (cfg config, dir str, graph dep-graph) (ok bool) {
+check-valid = (cfg config, dir str, resolved-map str) (ok bool) {
     ok = false
-    ; TODO: implement
+    lock-opt = read-lockfile(dir)
+    content str
+    have bool = false
+    lock-opt: {
+        ok -> {
+            content = it
+            have = true
+        }
+
+        -> {
+        }
+    }
+    ; no lockfile on disk → nothing is locked → not valid
+    ! have -> return
+    content.len() == 0 -> return
+    ; empty graph: valid as long as a lockfile exists
+    resolved-map.len() == 0 -> {
+        ok = true
+        return
+    }
+    ; every "name=ver" must appear as a packages: entry "name@ver:"
+    lines = resolved-map.split('\n')
+    n = lines.len()
+    i <- [0..n): {
+        line = lines[i].trim()
+        line.len() == 0 -> continue
+        eq = line.index('=')
+        eq < 0 -> continue
+
+        #{overflow=wrap}
+        name = line.slice(0, eq)
+        ver = line.slice(eq + 1, line.len()).trim()
+        marker = name - '@' - ver - ':'
+        content.index(marker) < 0 -> {
+            ok = false
+            return
+        }
+    }
+    ok = true
 }
 
 ; ═══════════════════════════════════════════════
