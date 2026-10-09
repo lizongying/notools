@@ -9,7 +9,7 @@
 - fix(nogit): use fs.dir-entries in remove-tree to prevent climbing .. and deleting parent trees
 - feat(nouv): implement the full registry JSON API with environment markers and Python version detection
 - feat(core): support large payloads in the HTTP client and JSON parser
-- refactor(notools): migrate to the v0.3.16 std API - qualify os.arg/os.args, convert math.floor/cos/sin to value methods, and unwrap ?i64 in pr option handling
+- refactor(notools): migrate to the vv0.3.17 std API - qualify os.arg/os.args, convert math.floor/cos/sin to value methods, and unwrap ?i64 in pr option handling
 - feat(notools): align the awk interpreter with BSD awk and port pr multicolumn layout (vertcol/horzcol/mulfile)
 - build(release): improve the release script and mirror HISTORY.md into the docs-site history pages
 
@@ -24,5 +24,5 @@
 - fix(noimg): unify data types and fix numeric precision in image calculations
 - fix(ci): check out repo in release job so history.sh can build the release body
 - docs(xargs): update comment describing the vec.push codegen fix
-- build(ci): bump nolang compiler to 0.3.16 and include HISTORY.md section in release body
+- build(ci): bump nolang compiler to v0.3.17 and include HISTORY.md section in release body
 - build(makefile): fix sync-skills writing to temp dir instead of project skills directory
