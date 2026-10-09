@@ -12,7 +12,7 @@
 - refactor(notools): migrate to the v0.3.17 std API - qualify os.arg/os.args, convert math.floor/cos/sin to value methods, and unwrap ?i64 in pr option handling
 - feat(notools): align the awk interpreter with BSD awk and port pr multicolumn layout (vertcol/horzcol/mulfile)
 - docs(docs): add the history changelog page to the docs-site sidebar
-- build(deps): pin the nolang compiler to v0.3.18 across the build matrix and package manifests to fix Windows cross-compile
+- build(deps): pin the nolang compiler to v0.3.19 across the build matrix and package manifests to fix Windows cross-compile
 - fix(ci): correct the build-nolang action ref double-v typo (vv0.3.17) that failed every build job at setup
 - build(release): improve the release script and mirror HISTORY.md into the docs-site history pages
 
@@ -27,5 +27,5 @@
 - fix(noimg): unify data types and fix numeric precision in image calculations
 - fix(ci): check out repo in release job so history.sh can build the release body
 - docs(xargs): update comment describing the vec.push codegen fix
-- build(ci): bump nolang compiler to v0.3.18 and include HISTORY.md section in release body
+- build(ci): bump nolang compiler to v0.3.19 and include HISTORY.md section in release body
 - build(makefile): fix sync-skills writing to temp dir instead of project skills directory

@@ -19,6 +19,6 @@ This page collects Nolang release records for each version, kept consistent with
 - refactor(notools): migrate to the v0.3.17 std API - qualify os.arg/os.args, convert math.floor/cos/sin to value methods, and unwrap ?i64 in pr option handling
 - feat(notools): align the awk interpreter with BSD awk and port pr multicolumn layout (vertcol/horzcol/mulfile)
 - docs(docs): add the history changelog page to the docs-site sidebar
-- build(deps): pin the nolang compiler to v0.3.18 across the build matrix and package manifests to fix Windows cross-compile
+- build(deps): pin the nolang compiler to v0.3.19 across the build matrix and package manifests to fix Windows cross-compile
 - fix(ci): correct the build-nolang action ref double-v typo (vv0.3.17) that failed every build job at setup
 - build(release): improve the release script and mirror HISTORY.md into the docs-site history pages
