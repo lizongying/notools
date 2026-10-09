@@ -11,6 +11,8 @@
 - feat(core): support large payloads in the HTTP client and JSON parser
 - refactor(notools): migrate to the vv0.3.17 std API - qualify os.arg/os.args, convert math.floor/cos/sin to value methods, and unwrap ?i64 in pr option handling
 - feat(notools): align the awk interpreter with BSD awk and port pr multicolumn layout (vertcol/horzcol/mulfile)
+- build(deps): pin the nolang compiler to v0.3.17 across the build matrix and package manifests to fix Windows cross-compile
+- docs(docs): add the history changelog page to the docs-site sidebar
 - build(release): improve the release script and mirror HISTORY.md into the docs-site history pages
 
 ## v0.1.32
