@@ -103,6 +103,10 @@ json-read-string-value = (b []byte, start i64) (value str) {
 
             #{overflow=wrap}
             i = i + 1
+
+            ; backslash landing on EOF: stop here (mirrors json-skip-string) so the
+            ; b[i] read below is always within n, not just defaulting via index-out
+            i >= n -> return
             e = b[i] #{index-out=0}
             {
                 e == 34 -> value = value - '"'
@@ -293,50 +297,48 @@ json-find-value-start-range = (b []byte, key str, start i64, end i64) (pos i64, 
         }
         match -> {
             k = i + tl #{overflow=wrap}
-            ch = b[k] #{index-out=0}
-            ch == 32 -> {
+
+            ; bounded whitespace scan: b[k] is read only under the `k < end` guard, so
+            ; no access can reach end-of-buffer even on truncated registry JSON.  The
+            ; index-out=0 belt stays solely because vet cannot itself derive
+            ; `k < end` => within b.len(); the real guard makes the fallback unreachable.
+            ws-done = false
+            (ws-done == false) {
                 k < end -> {
-                    k = k + 1 #{overflow=wrap}
+                    ch = b[k] #{index-out=0}
+                    {
+                        ch == 32 -> {
+                            k = k + 1 #{overflow=wrap}
+                        }
+
+                        ch == 10 -> {
+                            k = k + 1 #{overflow=wrap}
+                        }
+
+                        ch == 13 -> {
+                            k = k + 1 #{overflow=wrap}
+                        }
+
+                        ch == 9 -> {
+                            k = k + 1 #{overflow=wrap}
+                        }
+
+                        -> {
+                            ws-done = true
+                        }
+                    }
+                }
+
+                -> {
+                    ws-done = true
                 }
             }
-            ch == 10 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
+
+            ; only a real hit when a value byte actually exists within the range
+            k < end -> {
+                pos = k
+                found = true
             }
-            ch == 13 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            ch == 9 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            ch = b[k] #{index-out=0}
-            ch == 32 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            ch == 10 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            ch == 13 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            ch == 9 -> {
-                k < end -> {
-                    k = k + 1 #{overflow=wrap}
-                }
-            }
-            pos = k
-            found = true
             i = end
         }
 

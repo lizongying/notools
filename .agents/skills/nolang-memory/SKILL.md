@@ -853,6 +853,41 @@ Nolang 的 `#` 導入語句支援別名：
 
 這可用於解決跨模組變量名衝突。導入後可直接使用 `ALIAS` 訪問，無需模組前綴。
 
+## 13. Hybrid Ownership Model (MIR passes)
+
+The hybrid ownership model (design doc: `NOLANG-OWNERSHIP-MODEL.md`) introduces a tiered ownership inference layered on top of the existing single-ownership model. All new code lives in `src/mir/`:
+
+| Pass | File | Status | Purpose |
+|------|------|--------|---------|
+| **P1 Tier Lattice** | `src/mir/tier.go` | Framework (all values classified S) | S (statically unique) / C (first-write clone) / R (refcounted) lattice; monotone fixpoint over MIR ops. Currently returns S for all values (baseline equivalence). |
+| **P2 Alias Forward (first-write clone)** | `src/mir/alias_forward.go` | Active (codegen-affecting) | Defers unnecessary OpClone/OpMove deep copies to the alias's first write. If the alias is never written, the clone is eliminated entirely. Reduces redundant heap allocations for `b = a` where `b` is only read. |
+| **P3 Spawn Graph** | `src/mir/spawn_graph.go` | Report-only (no codegen effect) | Analyzes coroutine spawn edges: determines whether a `run`/`awy` boundary can be downgraded to static tier (S/C) vs requiring refcounted (R). Four-condition test: handle doesn't escape, every path awaits exactly once, callee doesn't spawn, boundary values unused after await. |
+
+### Key design facts (mirrored in docs/docs/lang/memory.md)
+
+- **RC only on coroutine spawn edges** — the only place where ownership might be ambiguous at runtime; all other flows remain static.
+- **`%task` grew from 24 to 32 bytes** — the 5th field stores the waiter pointer (replacing the 256-entry hash table, fixing address aliasing).
+- **Deep clone at spawn boundary** — heap-owning arguments (str, vec, struct with heap fields) are cloned at `run`; the wrapper frees the clone after the callee completes.
+- **Double await** — now a defined no-op with diagnostic to fd 2 (was SIGSEGV).
+- **Cancelled task** — no longer leaks argbuf.
+
+Regression: `tests/async-ownership.no`, `tests/async-handle-alias.no`, `src/mir/async_boundary_ownership_test.go`, `src/mir/async_rc_handle_test.go`, `src/mir/option_peel_ownership_test.go`.
+
+## 14. 借入參數存入結構字段（param-setfield clone，bufio 修復）
+
+**規則**：輸入參數是借入（borrowed）的——調用方持有所有权並在自身作用域結束時 drop（`analysis.go` checkDropCount 註釋）。因此當 `OpSetField` 以 `MovesArg`（`SetFieldConsumesRHS==true`，即 codegen 按位共享 RHS buffer，非白名單 `%vec`/map/`%option` 叶子）寫入一個**參數值**時，字段會與調用方的 buffer 別名， callee 返回後調用方 drop 該參數 → 字段懸掛（RULE 1 違反）。這正是 `bufio.reader.init` 第二個 read-byte 崩潰的根因。
+
+**修復機制**（全部在 lowering/codegen 層，不動 MovesArg 約定）：
+
+1. `hir2mir.go`：lowerer 以 `paramVals map[ValueID]bool` 追蹤 KParam 值；兩個 setfield 發射點（lowerStructLit、assign-KDot）在 `SetFieldConsumesRHS` 為 true 時調用 `cloneIfBorrowedParamSlice`，發射 `OpClone` 並置 `Inst.BufClone = true`。
+2. `codegen.go`：`vecBufClone` 是 BufClone 專用 helper——分配 `max(cap, len)*elem` 字節（memset 清零）、拷貝 `len*elem`、保留 `{len, cap}`。**必須用 max(cap,len)**：數組後端視圖（如 `set.init` 的 `[128]i64` backing）cap==0 但 len 個元素全部有效，按 cap 分配會造成堆溢出。
+3. `alias_forward.go`：`lowerDeadSourceCopiesToMoves` 不得把參數來源的 clone 降為 move（`isParamValue` 守衛；`defInst[src]` 對參數為 nil，是原有漏洞）。
+4. `analysis.go` insertDrops pass (B)：對 block 內定義、在某些出邊死亡的值，按邊放置 start-drop/release（修復 borrow retain 洩漏，如 `bufio read-byte` 邊界失敗臂缺 release）。
+
+**注意**：`vecDeepClone`（值列表 clone）會把 cap 鉗到 len 且對 len==0 返回 `{0,0,0}` — 對預分配 buffer（`with-cap(64)`）是致命的，任何把 slice 當「緩衝區」轉移的場景都該走 BufClone 路徑。
+
+回歸：`test/std/bufio.no`、`test/std/set.no`、`tests/mem-safety/`。
+
 ## See Also — Nolang References
 
 - [nolang-syntax](file://../nolang-syntax/SKILL.md) — Nolang syntax, grammar, types, operators, and language features

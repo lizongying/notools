@@ -1,6 +1,6 @@
 ---
 name: nolang-std
-description: Nolang 标准库参考。用于查找标准库模块 API、数据结构、加密/压缩/编码函数签名，以及编写或修改 .no 文件时确定应该使用哪些标准库函数。涵盖 fmt/math/str/vec/arr/number/byte/char/os/fs/io/path/bufio/time/log/json/types/option/sort/set/deque/heap/stack/regexp/process/net/database/encoding/archive/crypto/uuid/bigint/err 等全部模块。
+description: Nolang 标准库参考。用于查找标准库模块 API、数据结构、加密/压缩/编码函数签名，以及编写或修改 .no 文件时确定应该使用哪些标准库函数。涵盖 fmt/math/str/vec/arr/number/byte/char/os/fs/io/path/bufio/time/log/json/types/sort/set/deque/heap/stack/regexp/process/net/database/encoding/archive/crypto/uuid/bigint/err 等全部模块。
 ---
 
 # Nolang Standard Library Reference
@@ -22,10 +22,10 @@ Usage: `# std/xxx` (core modules do not need to be imported).
   - [option — Option Type](#option--option-type)
 - [Core Library](#core-library)
   - [fmt — Formatted Output](#fmt--formatted-output)
-  - [math — Math Functions](#math--math-functions)
+  - [math — Math Functions (function-form API)](#math--math-functions-function-form-api)
   - [char — Character Operations](#char--character-operations)
   - [str — String Operations](#str--string-operations)
-  - [number — Numeric Operations](#number--numeric-operations)
+  - [number — Numeric Operations (method-form API)](#number--numeric-operations-method-form-api)
   - [byte — Byte Operations](#byte--byte-operations)
   - [txt — Fixed-length Text Type](#txt--fixed-length-text-type)
   - [vec — Slice Operations](#vec--slice-operations)
@@ -65,9 +65,9 @@ Usage: `# std/xxx` (core modules do not need to be imported).
 - [Logging](#logging)
   - [log — Leveled Logging](#log--leveled-logging)
 - [Data Structures](#data-structures)
-  - [set — Set (Array-based)](#set--set-array-based)
+  - [set — Generic Set (Slice-field)](#set--generic-set-slice-field)
   - [deque — Double-ended Queue](#deque--double-ended-queue)
-  - [heap — Min Heap](#heap--min-heap)
+  - [heap — Generic Min Heap (Slice-field)](#heap--generic-min-heap-slice-field)
   - [stack — Stack](#stack--stack)
   - [map/linked-hash-map — Ordered Hash Map](#maplinked-hash-map--ordered-hash-map)
   - [map/hash-set — i64 Hash Set](#maphash-set--i64-hash-set)
@@ -213,21 +213,39 @@ io.err('err-no-newline')       // Low-level command, no newline (stderr)
 // Output via io.out/io.err syscalls, no libc printf dependency
 ```
 
-#### math — Math Functions
+#### math — Math Functions (function-form API)
 
-**Constants:** `math.PI`, `math.E`
+After the 2026-10 math/number split, ALL function-form numeric APIs live in std/math.no; ALL method-form APIs (`*.to-str`, f64/f32 sqrt/sin/exp…, integer sqrt/is-prime) live in std/number.no (see the number section below). Union types and their member methods: num → std/num.no, int → std/int.no, float → std/float.no.
 
-**Basic:** `math.abs`, `math.sqrt`
+**Constants:** `math.PI`, `math.E`, `math.LN10` (ln 10, companion of f64-to-str)
 
-**Trigonometric:** `math.sin`, `math.cos`, `math.tan`, `math.asin`, `math.acos`, `math.atan`, `math.atan2`, `math.degrees`, `math.radians`
+**Compare (num-generic variadic functions):** `math.max`, `math.min` (variadic generic `a ..num`; integers and floats share the same monomorphization path)
 
-**Hyperbolic:** `math.sinh`, `math.cosh`, `math.tanh`
+**Power/Root (functions):** `math.pow` (f64 power a^b, maps to libm pow), `math.hypot` (sqrt(x*x + y*y))
 
-**Rounding:** `math.ceil`, `math.floor`, `math.round`, `math.trunc`
+**Other functions:** `math.atan2`, `math.fmod` (float remainder), `math.clamp` (i64 saturating clamp)
 
-**Exponential/Logarithm:** `math.exp`, `math.log`, `math.log10`, `math.log2`, `math.pow`, `math.hypot`, `math.cbrt`
+**Integer math (int-generic functions):** `math.even`, `math.odd`, `math.gcd`, `math.lcm`, `math.div` (quotient), `math.mod` (modulo)
 
-**Others:** `math.fmod`, `math.max`, `math.min`
+**Type conversions (functions):** `math.i64-to-f64`, `math.f64-to-i64`, `math.f32-to-f64`, `math.f64-to-f32`
+
+**Number-to-string underlying (functions, deprecated; prefer the method form `v.to-str()`):** `math.i64-to-str`, `math.u64-to-str`, `math.char-to-str`, `math.f64-to-str`
+
+**Bit operations (functions):** `math.swap`, `math.arr-zero`, `math.rotate-left`, `math.rotate-right`, `math.store-le-u32`
+
+> Exception: the integer power `pow` (int-generic) collides in name with `math.pow` (f64); one module cannot hold two `pow`, so the integer power stays in std/number.no.
+
+#### number — Numeric Operations (method-form API)
+
+**Range constants:** i8.MIN / MAX … u64.MIN / MAX; `number.INF`
+
+**Integer power (function, the sole exception to the math.pow collision):** `r = number.pow(a, n)` (a^n, n ≥ 0, fast exponentiation O(log n), generic over all integer types)
+
+**Concrete-type to-str (methods):** `v.to-str()` — i8 / i16 / i32 / i64 / u8 / u16 / u32 / u64 / byte / f32 / f64 widths
+
+**Float methods (f64 and same-named f32):** trigonometric `x.sin()`, `x.cos()`, `x.tan()`, `x.asin()`, `x.acos()`, `x.atan()`; hyperbolic `x.sinh()`, `x.cosh()`, `x.tanh()`; rounding `x.ceil()`, `x.floor()`, `x.round()`, `x.trunc()`; exponential/logarithm `x.exp()`, `x.log()`, `x.log10()`, `x.log2()`; power/root `x.sqrt()`, `x.cbrt()`; degree/radian `x.degrees()`, `x.radians()`. All f64 methods have same-named f32 counterparts (f32 versions are implemented as pure .no widen→delegate→narrow: f32-to-f64, call the f64 method, f64-to-f32; f32 computes in double precision and narrows back).
+
+**Integer methods** (concrete widths i8/i16/i32/i64/u8/u16/u32/u64, declared in std/number.no after the 2026-10 math/number split): `n.sqrt()` (integer square root floor(√n), returns 0 for negatives), `n.is-prime()` (trial-division primality test). i128/u128 NOT provided — the runtime truncates 128-bit integers to 64 bits (print silently blank, loops trap). The former i8/u64 codegen gaps are FIXED in the compiler: i8 operands now sign-extend per declared type (codegen coerceIntSigned), and hir2mir routes `< <= > >=` plus `/ %` to unsigned ops (OpULt/OpULe/OpUGt/OpUGe/OpUDiv/OpUMod) when any operand — searched recursively through nested KInfix/KGrouped sub-expressions — has a declared unsigned raw type (u64/u32/u16/u8/byte), with a fallback that records the raw type from the lowered value for receiver bindings like `n T = .` whose annotation is lost after generic instantiation. Note: union-alias receiver methods (int/float/num) must be declared in the module that DEFINES the alias (std/int.no, std/float.no, std/num.no) — declaring `int.X` in another module breaks the prefix pipeline (double-prefixed `number.int.int.X`-style names, unknown callee at codegen), so integer methods must use concrete per-width forms. Bodies must give every intermediate variable an explicit concrete type (`lo i16 = 1`), otherwise literal-initialized vars infer i64 and narrow assignments to i16 outputs are rejected.
 
 #### char — Character Operations
 
@@ -314,43 +332,62 @@ cp = s.at(idx)                // Get character at index (method)
 
 > **Indexing cost:** `s[i]` is **O(i)** — it scans forward over UTF-8 to the i-th code point (O(1) only when the compiler can prove the string is pure ASCII). For byte-wise access use the escape hatch `s.byte(i)`, which is always **O(1)**. `for c <- s` walks code points in a single **O(n)** pass — prefer it over `s[i]` inside a loop, which degrades to **O(n²)** (and triggers a `no vet` / LSP warning).
 
-#### number — Numeric Operations
+#### num — num Union Type and num Methods
+
+`num = int | float` (defined in `src/std/num.no`). Methods on the `num` type live here; the generic functions max/min are in math:
 
 ```no
-number.max(a, b)                     // Maximum
-number.min(a, b)                     // Minimum
-r = num.clamp(lo, hi)         // Clamp to range (method)
-r = number.abs(a)                    // Absolute value (num generic)
-r = num.sign()                // Sign (-1/0/1, method)
-number.even(v)                       // Even/odd check
-number.odd(v)
-number.gcd(a, b)                     // Greatest common divisor
-number.lcm(a, b)                     // Least common multiple
-r = number.pow(a, n)                 // Integer power
-number.i64-to-f64(v)                 // Numeric conversion
-number.f64-to-i64(v)
-s = int.to-str()              // i64 to string (method)
-s = i8.to-str()                      // i8 to string (method)
-s = i16.to-str()                     // i16 to string (method)
-s = i32.to-str()                     // i32 to string (method)
-s = u8.to-str()                      // u8 to string (method)
-s = u16.to-str()                     // u16 to string (method)
-s = u32.to-str()                     // u32 to string (method)
-s = u64.to-str()                     // u64 to string (method)
-s = byte.to-str()                    // byte to string (method)
-s = char-to-str(c)                   // char to string
-s = f64.to-str()                     // f64 to string (method)
-s = f32.to-str()                     // f32 to string (method)
-q = number.div(a, b)                 // Integer division quotient
-r = number.mod(a, b)                 // Modulo
-number.swap(a, b)                    // Swap
-yes = float.is-nan()          // NaN check (method)
-yes = float.is-inf()          // Inf check (method)
+r = v.abs()                      // Absolute value (num method)
+r = v.clamp(lo, hi)              // Clamp to range (num method)
+r = v.sign()                     // Sign (-1/0/1, num method)
+```
+
+#### int — int Union Type and int Methods
+
+`int = i8 | i16 | i32 | i64 | i128 | u8 | u16 | u32 | u64 | u128` (defined in `src/std/int.no`). Methods on the `int` type live here:
+
+```no
+s = v.to-str()                   // Integer to string (int method)
+q = v.div(b)                     // Division quotient, returns option (int method)
+r = v.mod(b)                     // Modulo, returns option (int method)
+```
+
+#### float — float Union Type and float Methods
+
+`float = f32 | f64` (defined in `src/std/float.no`). Methods on the `float` type live here:
+
+```no
+q = v.div(b)                     // Float division (float method)
+yes = v.is-nan()                 // NaN check (float method)
+yes = v.is-inf()                 // Inf check (float method)
+```
+
+No `float.to-str` union method is defined (codegen fallback dispatches f64 receivers to the concrete `f64.to-str` in std/number.no).
+
+#### number — Usage Examples
+
+(Full API is in the two sections above: methods in "number — Numeric Operations (method-form API)", functions under "math". `x.to-str()` methods are on the value, e.g. `n.to-str()`.)
+
+```no
+math.even(v)                       // Even/odd check (function, math)
+math.odd(v)
+math.gcd(a, b)                     // Greatest common divisor (function, math)
+math.lcm(a, b)                     // Least common multiple (function, math)
+r = number.pow(a, n)                 // Integer power (exception, kept in number)
+math.i64-to-f64(v)                 // Numeric conversion (function, math)
+math.f64-to-i64(v)
+s = n.to-str()                       // to-str (method, number) — works on i8/i16/i32/i64/u8/u16/u32/u64/byte/f32/f64
+s = c.to-str()                       // char to string (method, preferred)
+s = math.char-to-str(c)            // char to string (deprecated function, use c.to-str())
+q = math.div(a, b)                 // Integer division quotient (function, math)
+r = math.mod(a, b)                 // Modulo (function, math)
+math.swap(a, b)                    // Swap (function, math)
 
 // Constants
-LN10                            // ln(10) ≈ 2.302585
+math.LN10                         // ln(10) ≈ 2.302585 (math)
+number.INF                        // floating-point infinity (number)
 
-// Range constants
+// Range constants (number)
 i8.MIN / MAX                  // -128 / 127
 i16.MIN / MAX                 // -32768 / 32767
 i32.MIN / MAX                 // -2147483648 / 2147483647
@@ -416,6 +453,8 @@ out = t.slice(start, end)   // Slice [start, end)
 r = t.compare(b txt)        // Lexicographic comparison (-1/0/1)
 b = t.at(idx i64)           // Safe index access
 ```
+
+> **`string` union alias (std/str.no):** `string = str | txt` mirrors `num = int | float` (std/num.no, with member aliases in std/int.no and std/float.no). Usable as function parameter/return type — the compiler monomorphizes per concrete argument type (`f__str` / `f__txt`). Same limitations as `num`: no union-typed variables, no member-method calls on the union parameter inside the body (use `len(s)` global or split concrete overloads), and never define alias methods colliding with member names (`string.len` would hijack `str.len`/`txt.len` and self-recurse).
 
 #### vec — Slice Operations
 
@@ -500,6 +539,9 @@ egid = os.getegid()                    // Effective group ID
 gids = os.getgroups()                  // Supplementary group IDs
 login = os.get-login()                 // Login user name
 hostid = os.get-host-id()              // Host ID (32-bit)
+uname = os.getpwuid-name(uid)          // Resolve UID to login name (empty if unknown)
+gname = os.getgrgid-name(gid)          // Resolve GID to group name (empty if unknown)
+gids, n = os.getgrouplist(user, basegid) // Full group list for user (getgrouplist)
 
 // File permissions and info
 ok = os.ch-mod(path, mode)             // Change file permissions
@@ -508,6 +550,12 @@ mode = os.stat-mode(path)              // Get file mode bits
 uid = os.stat-uid(path)                // Get file owner uid
 gid = os.stat-gid(path)                // Get file group gid
 mtime = os.stat-mtime(path)            // Get file modification time
+nlink = os.stat-nlink(path)            // Hard link count (st_nlink)
+ino = os.stat-ino(path)                // Inode number (st_ino)
+atime = os.stat-atime(path)            // Access time (Unix seconds, st_atime)
+ctime = os.stat-ctime(path)            // Inode change time (Unix seconds, st_ctime)
+blocks = os.stat-blocks(path)          // Allocated 512-byte block count (st_blocks)
+blksize = os.stat-blksize(path)        // Optimal I/O block size (st_blksize)
 
 // System configuration
 val = os.sysconf(name)                 // Query system config limit
@@ -651,6 +699,7 @@ ok = fs.is-dir(path)                // Check if directory
 sz = fs.stat-size(path)             // Get file size (returns ?i64)
 sz = fs.file-size(path)             // Same as stat-size (returns ?i64)
 sz = fs.fstat-size(fd)              // Get file size via fstat(fd), eliminates TOCTOU (returns ?i64)
+// Other stat fields available via os.stat-{nlink,ino,atime,ctime,blocks,blksize}
 ok = fs.lstat(path)                 // Get symlink info (does not follow link target)
 
 // note: file mode/owner/mtime getters live in the `os` package
@@ -1589,6 +1638,19 @@ t.stop()                              // Stop timer
 us = t.elapsed-us()                   // Elapsed microseconds
 ms = t.elapsed-ms()                   // Elapsed milliseconds
 s = t.elapsed-s()                     // Elapsed seconds
+
+// time struct (absolute point in time: Unix sec + nsec, UTC)
+t = time.unix-to-time(ts)             // Build time from Unix seconds (nsec=0)
+nt = time.now-time()                  // Current time point (from now-ns)
+ts = time.duration-time(start, end)   // Difference in seconds (end - start)
+ts = time.since-time(start)           // Seconds elapsed from start to now
+tp = time.parse-time(s)               // Parse date string (?time)
+sec = t.unix()                        // Unix seconds
+ms = t.unix-ms()                      // Unix milliseconds
+d = t.date()                          // Convert to date struct
+s = t.format()                        // Format as 'YYYY-MM-DD HH:MM:SS'
+t2 = t.add-seconds(n)                 // Return a new time shifted by n seconds
+diff = t.sub(other)                   // Seconds difference (t - other)
 ```
 
 ---
@@ -1612,22 +1674,61 @@ log.error(msg)
 log.fatal(msg, code)                   // Log and exit with status code
 ```
 
+Format bits (combine with `set-format`; default is `F-LEVEL` only):
+
+```no
+F-TIME  = 1                            // Timestamp YYYY-MM-DD HH:MM:SS (UTC)
+F-LEVEL = 2                            // [INFO] / [ERROR] level tag
+F-LOC   = 4                            // Call site [file:line:col]
+log.set-format(log.F-TIME | log.F-LEVEL | log.F-LOC)
+```
+
+Output target (default stderr fd=2). The API speaks `io.writer`, but the persisted
+state is a scalar fd (in std merged modules, struct globals do not retain writes —
+only scalar globals are mutable), so a writer is reconstructed from the fd at emit time:
+
+```no
+log.open-file(path)                    // Append-open a file and set as target; returns ?bool
+log.set-output-fd(fd)                  // Switch to a custom fd (caller opens/closes)
+log.set-writer(w io.writer)            // Switch to an io.writer (stores its fd)
+cur = log.get-output-fd()              // Current output-target fd
+w = log.get-writer()                   // Current output target as an io.writer
+```
+
+> The `F-LOC` "file:line:col" is auto-injected by the compiler at each call site
+> via the `#{track-caller}` function annotation: `debug/info/warn/error/fatal`
+> declare a trailing optional `loc str = ''` slot; when the caller omits it, the
+> MIR lowerer bakes a compile-time `"file:line:col"` string from the call node.
+> Passing `loc` explicitly overrides the injection (for wrapper forwarding).
+> Any user function may use `#{track-caller}` the same way.
+
 ---
 
 ### Data Structures
 
-#### set — Set (Array-based)
+#### set — Generic Set (Slice-field)
+
+`set` is a **generic** set. The `set` struct owns its element buffer as a `[]t` field plus state (`cap`/`size`); the element type `t` is inferred from the concrete `[N]E` / `[]E` buffer passed to the factory `set.init(data)`, and the compiler monomorphizes `set-E` (via `monomorphizeSliceStructs`). So `set` works for any element type with `==` semantics (`i64`/`u8`/`byte`/`str` …). Capacity is the buffer length.
 
 ```no
-new-n = set.add(s, n, val)           // Add element
-new-n = set.set-remove(s, n, val)        // Remove element
-ok = set.contains(s, n, val)         // Whether it contains
-new-an = set.union(a, an, b, bn)     // Union
-out, n = set.intersection(a, an, b, bn)// Intersection
-out, n = set.difference(a, an, b, bn)  // Difference
-v = set.to-vec(s, n)                 // Convert to slice
-sz = set.set-size(s, n)                   // Element count
-yes = set.set-empty(s, n)                    // Whether empty
+use std/set
+
+buf [128]i64 = [0, 0, 0, /* ... n elements ... */]
+s = set.init(buf)                   // s : set-i64, cap = n, size = 0
+new-n = s.add(val)                  // Add element (if absent); returns new size
+new-n = s.remove(val)               // Remove element (swap-last); returns new size
+yes = s.contains(val)               // Membership
+new-n = s.union(other, osize)       // Union: add other's elements into s (other []t, osize i64)
+cnt = s.intersection(other, osize, out) // Common elements written to out []t; returns count
+cnt = s.difference(other, osize, out)   // In s but not other, written to out []t; returns count
+v = s.to-vec()                      // -> []t of size s.size
+sz = s.size()                       // Element count
+yes = s.is-empty()                  // Whether empty
+
+// Generic str set — just supply a [n]str buffer
+sbuf [16]str = ['', '', /* ... */]
+ss = set.init(sbuf)
+ss.add('apple')
 ```
 
 #### deque — Double-ended Queue
@@ -1663,27 +1764,32 @@ yes = d.empty()                 // Whether empty
 d.clear()                      // Clear
 ```
 
-#### heap — Min Heap
+#### heap — Generic Min Heap (Slice-field)
 
-Binary min heap wrapped in the `heap` struct:
+`heap` is a **generic** binary min heap / priority queue. The `heap` struct owns its element buffer as a `[]t` field plus state (`cap`/`n`); the element type `t` is inferred from the concrete `[N]E` buffer passed to the factory `heap.init(data)`, and the compiler monomorphizes `heap-E` (via `monomorphizeSliceStructs`). So `heap` works for any element type with `<`/`>=` comparison semantics (`i64`/`u8`/`f64` …). Capacity is the buffer length. Minimum element pops first.
 
 ```no
-// Struct
-heap {
-    data []i64
-    n i64
-}
+use std/heap
 
-// Initialization
-h = heap.init(data)            // Build heap
+buf [128]i64 = [0, 0, 0, /* ... n elements ... */]
+h = heap.init(buf)                // h : heap-i64, cap = n, n = 0
+h.push(val)                       // Push element (ignored if full)
+val = h.pop()                     // Pop minimum (?t, nil = empty)
+val = h.peek()                    // Peek minimum without removing (?t, nil = empty)
+sz = h.size()                     // Element count
+yes = h.empty()                   // Whether empty
 
-// Methods
-h.push(val)                    // Push element
-val = h.pop()                  // Pop minimum element (?i64, nil=empty)
-val = h.peek()                 // Peek minimum element (?i64, nil=empty)
-sz = h.size()                  // Size
-yes = h.empty()                // Whether empty
+// Generic str is NOT supported (needs < / >= ordering); use i64/u8/f64 etc.
+// f64 heap — just supply an [n]f64 buffer
+fbuf [8]f64 = [0.0, 0.0, /* ... */]
+fh = heap.init(fbuf)
+fh.push(3.0)
+fh.push(1.5)
+smallest = fh.pop()               // -> ok(1.5)
 ```
+
+> Codegen caveat: writing into a **top-level global** `[n]f64` array via a generic method triggers a compiler bug (global emitted as `[N x i64]`). Reads are fine; keep f64 buffers **function-local** (stack alloca) until fixed.
+
 
 #### stack — Stack
 
@@ -1883,8 +1989,8 @@ m.put('key', val)
 result = m.get('key')   // ?V, nil=not found
 found = m.contains('key')
 m.remove('key')
-n = m.size()
-yes = m.empty()
+n = m.len()
+yes = m.is-empty()
 m.clear()
 
 // int-key map (K, V both generic)
@@ -1910,7 +2016,7 @@ m.put('key', val)
 result = m.get('key')   // ?V, nil=not found
 found = m.contains('key')
 m.remove('key')
-n = m.size()
+n = m.len()
 
 // int-key static map (K, V both generic)
 m2 = static-hashmap-int-tmpl{}
@@ -2803,13 +2909,13 @@ h = run worker-async(args)
 r = awy h
 
 // Cancel a background task (cooperative)
-async.async-cancel(h)                    // Set cancellation flag on task h
+async.cancel(h)                    // Set cancellation flag on task h
 
 // Cooperative self-cancellation check (call inside async functions)
-yes = async.async-cancelled()            // Returns true if current task has been cancelled
+yes = async.cancelled()            // Returns true if current task has been cancelled
 ```
 
-> **Note:** Cancellation is cooperative, not preemptive. Long blocking calls (e.g. network requests) cannot be force-interrupted. The task stops at the next cooperative checkpoint (`async-cancelled()` call or next event loop scheduling).
+> **Note:** Cancellation is cooperative, not preemptive. Long blocking calls (e.g. network requests) cannot be force-interrupted. The task stops at the next cooperative checkpoint (`cancelled()` call or next event loop scheduling).
 
 ### global — Global Built-in Functions
 
@@ -2875,7 +2981,6 @@ ext = magic.get-extension(path)                // Extract file extension
 | toml                | TOML parse/generate |
 | yaml                | YAML 1.2 parse/generate |
 | types               | Type definitions |
-| option              | Option type      |
 | sort                | Sort constants   |
 | set                 | Set              |
 | deque               | Double-ended queue (struct) |

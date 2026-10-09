@@ -27,6 +27,8 @@ description: Reference for Nolang programming language syntax. Use when working 
   - [Match (new style `x: { ... }`)](#match-new-style-x---)
   - [If/Else (new style `{ cond -> body }`)](#ifelse-new-style--cond---body-)
   - [Async / Await (`run` / `awy`)](#async--await-run--awy)
+  - [Coroutine Groups](#coroutine-groups)
+  - [Go keyword (colorless async)](#go-keyword-colorless-async)
   - [Multi-Assignment](#multi-assignment)
   - [Structs & Methods](#structs--methods)
     - [Struct field inline tags](#struct-field-inline-tags)
@@ -511,11 +513,14 @@ Type aliases create a new name for an existing type. Use the equals syntax `name
 int = i8 | i16 | i32 | i64 | i128 | u8 | u16 | u32 | u64 | u128
 float = f32 | f64
 num = int | float
+string = str | txt
 
 // Single type alias
 bytes = []byte
 buf = [16]u8
 ```
+
+`int`/`float`/`num` are defined in `std/number.no` and `string` in `std/str.no` — none are compiler keywords; they are ordinary std code using this alias syntax, monomorphized by `ValidateUnionTypes` + `FlattenUnion` + codegen clone.
 
 Union types can reference other union types, forming a hierarchy. They can be used for function parameters and return values; the compiler automatically performs monomorphization, generating a separate function version for each member type.
 
@@ -528,7 +533,17 @@ max = (a ..num) (r num) {
         a[i] > r -> r = a[i]
     }
 }
+
+// Parameter type is string union — accepts both str and txt arguments
+take = (s string) (n i64) {
+    n = len(s)
+}
 ```
+
+**Known union-body limitations (identical for `num` and `string`):**
+- Calling a member method on a union parameter inside the body (`s.len()`, `s.to-upper()`) is NOT supported (broken monomorphized callee qualification). Use global builtins (`len(s)` — byte count) or split into concrete-typed functions.
+- Union-typed variable declarations (`s string = 'x'`, `x num = 5`) are NOT supported.
+- Never define an alias method whose name collides with a member method (e.g. `string.len`): it takes over member calls like `a.len()` and re-dispatches to itself in its own body → infinite recursion / segfault. Member methods `str.*` / `txt.*` must be called as-is.
 
 **Detection rules** — The equals syntax is recognized as a type alias (not a variable assignment) in the following cases:
 
@@ -1274,7 +1289,9 @@ hashmap-str-tmpl.contains = (key str) (found bool) {
 
 ### Methods on Union Types
 
-Methods attached to a union type (e.g. `int`, `float`, `num`) use `type.method = () (results)` syntax.
+Methods attached to a union type (e.g. `int`, `float`, `num`, `string`) use `type.method = () (results)` syntax.
+
+> **Caution for `string`:** Only methods that do NOT collide with `str.*` or `txt.*` member names may be defined on `string` (e.g. `string.shout` is fine; `string.len` causes infinite recursion because it hijacks all `str.len`/`txt.len` dispatch). For methods that already exist as member methods, call them on the concrete receiver directly (`a.len()` where `a str`).
 
 The parser automatically adds a hidden `self` parameter with the receiver type, so you must **not** declare the receiver explicitly.
 
@@ -1287,6 +1304,7 @@ The parser automatically adds a hidden `self` parameter with the receiver type, 
 int = i8 | i16 | i32 | i64 | i128 | u8 | u16 | u32 | u64 | u128
 float = f32 | f64
 num = int | float
+string = str | txt
 
 // Single type alias
 bytes = []byte
@@ -1800,7 +1818,9 @@ func = (cmd str) {
 }
 ```
 
-### Async / Await (`run` / `awy`)
+### Async / Await (`run` / `awy`) — hand-written form deprecated, use coroutine groups
+
+> **Deprecated (hand-written primitives):** Writing `run` / `awy` / `cancel` / `cancelled` by hand is deprecated and not recommended for application code. Manual task-handle management is unsafe (an un-awaited task leaks its argument buffer; aliasing a handle and awaiting twice crashes; cooperative cancellation cannot force-interrupt a long-blocking call). Use **coroutine groups** (below) instead — simpler and it manages handles for you.
 
 Nolang uses `run` and `awy` for async concurrency. Async function names must end with `-async` (no `async` keyword).
 
@@ -1828,6 +1848,98 @@ r = awy run compute-async(5)   // r = 10
 ```
 
 > **Naming rule**: async function names must end with `-async` (e.g. `compute-async`, `fetch-data-async`). Do not use the `async` keyword.
+
+### Coroutine Groups
+
+A bare `{ ... }` block in statement position — see the rules below.
+
+A bare `{ ... }` block in **statement position** is a **coroutine group**. Every
+statement in it that directly calls an `-async` function is spawned by default
+(as if written `run`); the result is `awy`-ed where it is needed. You do not
+write `run` / `awy` yourself.
+
+```no
+hello-async = (i i64) (r i64) {
+    r = i
+}
+
+// No dependency — the two tasks run concurrently
+{
+    r1 = hello-async(1)
+    r2 = hello-async(2)
+}
+// lowers to: __ag0 = run hello-async(1)
+//            __ag1 = run hello-async(2)
+//            r1 = awy __ag0
+//            r2 = awy __ag1
+
+// Dependency — r2 reads r1, so it cannot overlap; degrades to await
+{
+    r1 = hello-async(1)
+    r2 = hello-async(r1)
+}
+// lowers to: __ag0 = run hello-async(1)
+//            r1 = awy __ag0
+//            __ag1 = run hello-async(r1)
+//            r2 = awy __ag1
+```
+
+Rules:
+
+- **Degradation.** When a later statement reads (or rebinds) a variable bound by
+  an earlier one, that earlier task is awaited right there and the group becomes
+  sequential. Dependencies are transitive.
+- **Barriers.** Any statement in the group that is not a direct `-async` call
+  (plain assignment, `print`, loop, `if`, …) is a barrier: every task still in
+  flight is awaited before it runs. This is what makes code inside a group read
+  a *value*, never an opaque handle.
+- **A function body is NOT a group.** Only a bare block in statement position
+  is. Function bodies, `if` arms and loop bodies are not — so
+  `f = hello-async(1)` at function-body level still just builds a future and is
+  never awaited.
+- **A discarded result is still awaited.** `{ side-async(5) }` spawns *and*
+  awaits: an un-awaited task leaks its argument buffer.
+
+#### Go keyword (colorless async) — recommended
+
+`go` is a **colorless** syntax built on top of coroutine groups: you write the
+uncolored name `worker` and the compiler automatically monomorphizes a
+`worker-async` variant, executing it on the underlying colored stackless
+coroutines. You never write the `-async` suffix and you never write `run` / `awy`.
+
+```no
+worker = (n i64) (r i64) {
+    #{overflow=wrap}
+    r = n + 1
+}
+main = () {
+    r1 i64
+    r2 i64
+    {
+        r1 = go worker(1)   ; auto-monomorphizes worker-async and spawns
+        r2 = go worker(2)   ; runs concurrently with r1
+    }
+    print(r1.to-str() + ' ' + r2.to-str())
+}
+```
+
+Rules:
+
+- **Monomorphization.** `go worker(1)` auto-generates `worker-async` (a clone
+  of `worker`'s body, renamed). If `worker` is also called synchronously, both
+  `worker` (sync) and `worker-async` (async) coexist.
+- **Transitivity.** If a function calls an async function internally (e.g.
+  `worker` contains `go child(...)`), then `worker` is also monomorphized into
+  `worker-async`; the async coloring propagates up the call chain.
+- **Statement-level `go` (outside a group).** When `go` appears outside a
+  coroutine group (e.g. `d = go worker(5)` at function-body level), the compiler
+  wraps it as `run worker-async(5)` + `awy` inline-await, so `d` receives the
+  result value, not a task handle.
+- **Underlying still colored stackless coroutines.** `go` is just sugar.
+  `{ r1 = go worker(1); r2 = go worker(2) }` lowers like a coroutine group — the
+  two `worker-async` tasks are spawned first, then `awy`-ed together.
+
+Diagnostic switch: `NOLANG_ASYNC_GO=0` disables monomorphization (diagnostic only).
 
 ### Multi-Assignment
 
@@ -2083,7 +2195,7 @@ drives match lowering and exhaustiveness checking.
 as a *builtin* enum: its variants (names, order, payload types) drive matching and
 exhaustiveness, but the underlying representation and construction come from the builtin
 runtime — no user-visible struct/union is generated. The `?t` option type is declared this
-way in `src/std/option.no`:
+way in `src/std/global.no`:
 
 ```no
 #{buildin}
@@ -2331,18 +2443,25 @@ safe-get = (arr []i64, i i64) (res ?i64) {
 }
 ```
 
-**2. `x = v[i] #{index-out=DEF}` — substitute a literal default on OOB.** The annotation trails the assignment on the same line (or sits on its own line above it). `DEF` **must be a literal** (not an expression), typed by the element:
-- integer/char containers (`i8`–`i128`, `u8`–`u128`, `byte`, `char`): int or char literal, e.g. `0`, `'x'`
-- float containers (`f32`, `f64`): float literal, e.g. `0.0`
-- bool containers (`bool`): `true` / `false`
-- str containers (`str`): string literal, e.g. `''`
+**2. `x = v[i] #{index-out=DEF}` — substitute a default on OOB (`zero` or a literal).** The annotation trails the assignment on the same line (or sits on its own line above it). `DEF` takes one of two forms:
+
+- **`zero`** — a keyword: regardless of the element type, always substitutes the **zero value of the current element type** (integer family / `byte` / `char` → `0`, `f32`/`f64` → `0.0`, `bool` → `false`, `str`/`txt` → `''`, container → empty container / zero-length array, struct → zero-valued struct). Use it when you want "out-of-range just reads as the type default" without naming a literal.
+- **a literal** (not an expression), typed by the element:
+  - integer/char containers (`i8`–`i128`, `u8`–`u128`, `byte`, `char`): int or char literal, e.g. `0`, `'x'`
+  - float containers (`f32`, `f64`): float literal, e.g. `0.0`
+  - bool containers (`bool`): `true` / `false`
+  - str containers (`str`): string literal, e.g. `''`
 
 ```no
 get-default = (arr []i64, i i64) (res i64) {
-    res = arr[i]  #{index-out=0}   // OOB → res = 0
+    res = arr[i]  #{index-out=zero}     // OOB → res = 0 (explicit literal)
+}
+
+get-zero = (arr []f64, i i64) (res f64) {
+    res = arr[i]  #{index-out=zero}  // OOB → res = 0.0 (zero value of the type)
 }
 ```
-The **prefix** form `#{index-out=0} res = arr[i]` is **not** accepted — it is a compile error. See
+The **prefix** form `#{index-out=zero} res = arr[i]` is **not** accepted — it is a compile error. See
 [Annotation placement](#annotation-placement-only-two-legal-positions): writing the annotation in
 front of the target on the same line is rejected by both the compiler and nolang-lsp.
 
@@ -3217,7 +3336,7 @@ A `#{...}` group may be written in **exactly two** places:
    declaration, match arm);
 2. **Trailing** — on the target's same line, *after* it.
 
-A **prefix** annotation (`#{index-out=0} res = arr[i]`) — one that appears on the same line *in
+A **prefix** annotation (`#{index-out=zero} res = arr[i]`) — one that appears on the same line *in
 front of* its target — is a **compile error**, reported identically by the compiler and by
 nolang-lsp. The rule is decided the same way everywhere: if code still follows the group's closing
 `}` on the same line, it is a prefix. A newline, a `;`/`//` line comment, a closing `}`, or another
