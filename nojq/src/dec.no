@@ -1,0 +1,846 @@
+; dec — decimal literal number model (decNumber-lite)
+;
+; jq 1.8 preserves JSON/language-literal numbers as exact decimals
+; (USE_DECNUM, src/jv.c jvp_literal_number_*). A literal is printed back
+; verbatim in decNumberToString form (uppercase E, preserved trailing
+; zeros — decNumberTrim is deliberately NOT applied), compares with exact
+; decimal arithmetic, and converts to double via a 17-digit HALF_EVEN
+; reduce followed by correctly-rounded binary conversion
+; (jvp_literal_number_to_double).
+;
+; Model: value = ± digits × 10^exp, where `digits` holds the coefficient
+; EXACTLY as parsed (leading zeros included — they carry quantum
+; information; a single '0' means zero).
+
+dec-num {
+    neg bool
+    digits str
+    exp i64
+    is-inf bool
+    is-nan bool
+}
+
+; decNumberFromString runs under jq's DEC_CONTEXT (jv.c tsd_dec_ctx_get:
+; DEC_INIT_BASE with digits=INT32_MAX-(DECDPUN-1)-(emax-emin-1)=147483648,
+; emax=999999999, emin=-999999999, clamp=0, round=HALF_EVEN).
+DEC-EMAX = 999999999
+
+; NB: DEC-ETINY must NOT be a top-level global: negative-valued global int
+; constants miscompile on this toolchain (reading them yields dangling
+; garbage and corrupts the following control flow; verified with both the
+; `-N` literal and `0 - N` forms). It is materialized as a LOCAL inside
+; dec-parse below, where negative locals are known to work.
+DEC-EXPCAP = 1999999998
+
+; bic-at: caseless match of w against s at j (s may continue past w)
+; s str, j i64: haystack and start offset; w str: lowercase needle
+; returns ok bool
+bic-at = (s str, j i64, w str) (ok bool) {
+    ok = true
+    lj i64 = w.len-bytes()
+
+    #{overflow=wrap}
+    j + lj > s.len-bytes() -> ok = false
+    ok -> {
+        k <- [0..lj): {
+
+            #{overflow=wrap}
+            a i64 = s.byte(j + k)
+            b i64 = w.byte(k)
+
+            #{overflow=wrap}
+            au i64 = a + 32
+
+            #{overflow=wrap}
+            bu i64 = b + 32
+            a >= 65 && a <= 90 -> a = au
+            b >= 65 && b <= 90 -> b = bu
+            a != b -> ok = false
+        }
+    }
+}
+
+; bic-tail: caseless match of w against s[j..], consuming to the end
+bic-tail = (s str, j i64, w str) (ok bool) {
+    ok = false
+
+    #{overflow=wrap}
+    j + w.len-bytes() == s.len-bytes() -> ok = bic-at(s, j, w)
+}
+
+; dec-valid: exact decNumberFromString grammar as accepted by jq's
+; jv_number_with_literal (rejects Conversion_syntax and NaN payloads):
+;   [+-] ( digits[.digits?] [.digits] [[eE][+-]digits] | inf | infinity |
+;          [sS]?nan zeros )   — caseless names, >=1 digit, no trailing junk
+; s str: candidate literal text
+; returns ok bool
+dec-valid = (s str) (ok bool) {
+    ok = false
+    nb i64 = s.len-bytes()
+    nb == 0 || nb > 999999999 -> return
+    i = 0
+    c0 i64 = s.byte(0)
+    c0 == 45 || c0 == 43 -> i = 1
+
+    ; scan the decimal part: digits with at most one dot
+    has = false
+    dot = false
+    j = i
+
+    #{overflow=wrap}
+    (j < nb && (s.byte(j) >= 48 && s.byte(j) <= 57 || s.byte(j) == 46 && ! dot)) {
+        c i64 = s.byte(j)
+        c == 46 -> dot = true
+        c != 46 -> has = true
+        j = j + 1
+    }
+    ! has -> {
+
+        ; no digits: only [sign]([s]nan zeros? | inf | infinity) parses
+        j < nb && ! dot -> {
+            k i64 = j
+            c i64 = s.byte(k)
+
+            #{overflow=wrap}
+            k1 i64 = k + 1
+            c == 115 || c == 83 -> k = k1
+            bic-at(s, k, 'nan') -> {
+
+                #{overflow=wrap}
+                p i64 = k + 3
+                (p < nb && s.byte(p) == 48) {
+
+                    #{overflow=wrap}
+                    p = p + 1
+                }
+                p == nb -> ok = true
+            }
+            ! ok -> bic-tail(s, j, 'infinity') -> ok = true
+            ! ok -> bic-tail(s, j, 'inf') -> ok = true
+        }
+    }
+    has -> {
+        j == nb -> ok = true
+        j < nb -> {
+            c i64 = s.byte(j)
+            c == 101 || c == 69 -> {
+
+                #{overflow=wrap}
+                p i64 = j + 1
+                p < nb -> {
+                    cp i64 = s.byte(p)
+
+                    #{overflow=wrap}
+                    p1 i64 = p + 1
+                    cp == 45 || cp == 43 -> p = p1
+                }
+                dc i64 = 0
+
+                #{overflow=wrap}
+                (p < nb && s.byte(p) >= 48 && s.byte(p) <= 57) {
+                    p = p + 1
+                    dc = dc + 1
+                }
+                dc >= 1 && p == nb -> ok = true
+            }
+        }
+    }
+}
+
+; dec-inc-str: decimal digit string + 1 (carry propagation)
+dec-inc-str = (t str) (out str) {
+    out = ''
+    carry = 1
+    n i64 = t.len-bytes()
+
+    #{overflow=wrap}
+    idx <- [0..n): {
+
+        #{overflow=wrap}
+        j i64 = n - 1 - idx
+        v i64 = t.byte(j) - 48 + carry
+        carry = v / 10
+        v = v - carry * 10
+        cd str = v.to-str()
+        out = cd - out
+    }
+    carry > 0 -> out = '1' - out
+}
+
+; dec-parse: parse a dec-valid literal into the exact decimal model,
+; applying decNumberFromString name handling and decFinalize bounds
+; (subnormals fold to the Etiny grid, overflow becomes infinity).
+; s str: text accepted by dec-valid
+; returns d dec-num
+dec-parse = (s str) (d dec-num) {
+    nb = s.len-bytes()
+    d.neg = false
+    d.digits = '0'
+    d.exp = 0
+    d.is-inf = false
+    d.is-nan = false
+    i = 0
+    nb > 0 -> {
+        s.byte(0) == 45 -> {
+            d.neg = true
+            i = 1
+        }
+        s.byte(0) == 43 -> i = 1
+    }
+
+    ; special names: [sign]([s]nan zeros? | inf | infinity)
+    special = false
+
+    #{overflow=wrap}
+    i < nb -> {
+        c0 i64 = s.byte(i)
+        c0 < 48 || c0 > 57 -> c0 != 46 -> {
+            k i64 = i
+
+            #{overflow=wrap}
+            k1 i64 = k + 1
+            c0 == 115 || c0 == 83 -> k = k1
+            bic-at(s, k, 'nan') -> {
+
+                #{overflow=wrap}
+                p i64 = k + 3
+                (p < nb && s.byte(p) == 48) {
+
+                    #{overflow=wrap}
+                    p = p + 1
+                }
+                p == nb -> {
+                    d.is-nan = true
+                    special = true
+                }
+            }
+            ! special -> {
+                inf bool = bic-tail(s, i, 'infinity') || bic-tail(s, i, 'inf')
+                inf -> {
+                    d.is-inf = true
+                    special = true
+                }
+            }
+        }
+    }
+    special -> return
+
+    ; integer part
+    int-part = ''
+
+    #{overflow=wrap}
+    (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
+        int-part = int-part - s[i..i]
+        i = i + 1
+    }
+
+    ; fraction
+    frac-part = ''
+
+    #{overflow=wrap}
+    i < nb -> {
+        s.byte(i) == 46 -> {
+            i = i + 1
+
+            #{overflow=wrap}
+            (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
+                frac-part = frac-part - s[i..i]
+                i = i + 1
+            }
+        }
+    }
+
+    ; exponent (decNumberFromString: strip insignificant zeros, then cap
+    ; 10+ digit exponents at DECNUMMAXE*2 when they may have wrapped int32)
+    e = 0
+
+    #{overflow=wrap}
+    i < nb -> {
+        c i64 = s.byte(i)
+        c == 101 || c == 69 -> {
+            i = i + 1
+            esign i64 = 1
+
+            #{overflow=wrap}
+            i < nb -> {
+                c2 i64 = s.byte(i)
+                c2 == 45 -> {
+                    esign = -1
+                    i = i + 1
+                }
+                c2 == 43 -> i = i + 1
+            }
+
+            #{overflow=wrap}
+            (i + 1 < nb && s.byte(i) == 48) {
+                i = i + 1
+            }
+            p0 i64 = i
+            ev i64 = 0
+            dc i64 = 0
+
+            #{overflow=wrap}
+            (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
+                c2 i64 = s.byte(i)
+                ev = ev * 10 + (c2 - 48)
+                i = i + 1
+
+                #{overflow=wrap}
+                dc = dc + 1
+            }
+            dc >= 10 -> {
+                dc > 10 || s.byte(p0) > 49 -> ev = DEC-EXPCAP
+            }
+            e = ev * esign
+        }
+    }
+
+    ; coefficient + quantum (decNumberFromString semantics)
+    all = int-part - frac-part
+    lead = 0
+    j = 0
+    nall i64 = all.len-bytes()
+
+    #{overflow=wrap}
+    (j < nall && all.byte(j) == 48) {
+        lead = j + 1
+        j = j + 1
+    }
+    keep = ''
+    i <- [lead..all.len-bytes()): {
+        keep = keep - all[i..i]
+    }
+
+    #{overflow=wrap}
+    d.exp = e - frac-part.len-bytes()
+    keep.empty() -> d.digits = '0'
+    ! keep.empty() -> d.digits = keep
+
+    ; decFinalize (clamp=0, HALF_EVEN): the zero keeps its quantum and is
+    ; clamped into [Etiny, Emax]; a non-zero value below Etiny folds onto
+    ; the Etiny grid, above the range becomes infinity.
+    dl i64 = d.digits.len-bytes()
+    etiny = 0 - 1147483646 #{overflow=wrap}
+    d.digits == '0' -> {
+        d.exp < etiny -> d.exp = etiny
+        d.exp > DEC-EMAX -> d.exp = DEC-EMAX
+    }
+
+    #{overflow=wrap}
+    d.digits != '0' -> d.exp < etiny -> {
+
+        #{overflow=wrap}
+        adjust i64 = etiny - d.exp
+        dl <= adjust -> {
+
+            ; whole coefficient dropped: rounds away from zero only when it
+            ; exceeds 5×10^(dl-1) (an exact half never rounds up: kept 0 is even)
+            f i64 = d.digits.byte(0)
+            up bool = false
+            f > 53 -> up = true
+            f == 53 -> {
+                anynz bool = false
+                k <- [1..dl): {
+                    d.digits.byte(k) != 48 -> anynz = true
+                }
+                anynz -> up = true
+            }
+            up -> d.digits = '1'
+            ! up -> d.digits = '0'
+            d.exp = etiny
+        }
+
+        #{overflow=wrap}
+        dl > adjust -> {
+
+            ; keep the top `want` digits, round away the dropped tail
+            want i64 = dl - adjust
+            head str = d.digits[0..want - 1]
+            f i64 = d.digits.byte(want)
+            up bool = false
+            f > 53 -> up = true
+
+            #{overflow=wrap}
+            f == 53 -> {
+                anynz bool = false
+                k <- [want + 1..dl): {
+                    d.digits.byte(k) != 48 -> anynz = true
+                }
+                anynz -> up = true
+                ! anynz -> {
+                    lsd i64 = head.byte(want - 1) - 48
+                    math.odd(lsd) -> up = true
+                }
+            }
+            up -> head = dec-inc-str(head)
+            d.digits = head
+            d.exp = etiny
+        }
+    }
+
+    #{overflow=wrap}
+    d.digits != '0' -> d.exp > DEC-EMAX - dl + 1 -> {
+        d.is-inf = true
+        d.digits = '0'
+        d.exp = 0
+    }
+}
+
+; dec-zero: is the coefficient zero?
+dec-zero = (d dec-num) (yes bool) {
+    yes = false
+    d.digits == '0' -> yes = true
+}
+
+; dec-to-str: decNumberToString rendering (jq literal numbers).
+; Rule (IBM to-string, decNumberTrim NOT applied): with raw exponent `es`,
+; digit count `dl` and adjusted exponent `adjust = es + dl - 1`, use
+; scientific when es > 0 or adjust < -6; otherwise plain. The exponent in
+; scientific form is written with a sign and NO zero padding.
+; d dec-num
+; returns out str
+dec-to-str = (d dec-num) (out str) {
+    out = ''
+    d.is-nan -> {
+        out = 'NaN'
+        return
+    }
+    d.is-inf -> {
+        out = 'Infinity'
+        d.neg -> out = '-Infinity'
+        return
+    }
+    dl i64 = d.digits.len-bytes()
+    es i64 = d.exp
+
+    #{overflow=wrap}
+    adjust = es + dl - 1
+    d.neg -> out = '-'
+    es > 0 || adjust < -6 -> {
+
+        ; scientific: D[0] [. D[1..]] E ±adjust
+        out = out - d.digits[0..0]
+        dl > 1 -> out = out - '.' - d.digits[1..dl - 1]
+        out = out - 'E'
+        ae i64 = adjust
+        adjust < 0 -> {
+
+            #{overflow=wrap}
+            ae = 0 - adjust
+            out = out - '-'
+        }
+        adjust >= 0 -> out = out - '+'
+        out = out - ae.to-str()
+        return
+    }
+
+    ; plain
+    es >= 0 -> {
+        out = out - d.digits
+        z <- [0..es): out = out - '0'
+        return
+    }
+    adjust >= 0 -> {
+
+        #{overflow=wrap}
+        p i64 = adjust + 1
+        out = out - d.digits[0..p - 1] - '.' - d.digits[p..dl - 1]
+        return
+    }
+
+    ; adjust < 0: 0.000<digits>
+    out = out - '0.'
+
+    #{overflow=wrap}
+    zc = 0 - adjust - 1
+    z <- [0..zc): out = out - '0'
+    out = out - d.digits
+}
+
+; dec-neg: sign flip preserving the coefficient exactly (jq `-literal`)
+; d dec-num
+; returns out dec-num
+dec-neg = (d dec-num) (out dec-num) {
+    out.neg = ! d.neg
+    out.digits = d.digits
+    out.exp = d.exp
+    out.is-inf = d.is-inf
+    out.is-nan = d.is-nan
+}
+
+; dec-round17: keep 17 significant digits, HALF_EVEN, adjusted exponent
+; preserved (decNumberReduce, decimal64 ctx with digits=17)
+; d dec-num
+; returns out dec-num
+dec-round17 = (d dec-num) (out dec-num) {
+    out.neg = d.neg
+    out.is-inf = d.is-inf
+    out.is-nan = d.is-nan
+    out.digits = d.digits
+    out.exp = d.exp
+    dl i64 = d.digits.len-bytes()
+    dl <= 17 -> return
+    keep = 17
+    head = ''
+    i <- [0..keep): {
+        head = head - d.digits[i..i]
+    }
+    rest = ''
+    i <- [keep..dl): {
+        rest = rest - d.digits[i..i]
+    }
+
+    ; round up iff rest > 5000.., or == 5000.. and last kept digit is odd
+    up = 0
+    r0 i64 = rest.byte(0)
+    r0 > 53 -> up = 1
+
+    #{overflow=wrap}
+    r0 == 53 -> {
+        allzero = true
+        i <- [1..rest.len-bytes()): {
+            rest.byte(i) != 48 -> {
+                allzero = false
+                i = rest.len-bytes()
+            }
+        }
+        allzero -> {
+            last str = head[keep - 1..keep - 1]
+            lv i64 = last.byte(0) - 48
+            math.odd(lv) -> up = 1
+        }
+        ! allzero -> up = 1
+    }
+
+    #{overflow=wrap}
+    up == 0 -> {
+        out.digits = head
+        out.exp = d.exp + (dl - keep)
+        return
+    }
+
+    ; head + 1 with decimal carry
+    res = ''
+    carry = 1
+
+    #{overflow=wrap}
+    i <- [0..keep): {
+        j i64 = keep - 1 - i
+        c i64 = head.byte(j) - 48
+        v = c + carry
+        carry = v / 10
+        v = v - carry * 10
+        cd str = v.to-str()
+        res = cd - res
+    }
+    carry > 0 -> res = '1' - res
+    out.digits = res
+
+    #{overflow=wrap}
+    out.exp = d.exp + (dl - keep)
+
+    #{overflow=wrap}
+    res.len-bytes() > keep -> {
+        out.exp = out.exp - 1
+    }
+}
+
+; dec-pow10: 10^n as a positive bigint (n >= 0). mul-i64 by 10 cannot
+; overflow a 32-bit limb pair, so linear multiplication is exact here.
+; n i64
+; returns b bigint
+dec-pow10 = (n i64) (b bigint) {
+    b = bigint.from-i64(1)
+    i <- [0..n): {
+        b = bigint.mul-i64(b, 10)
+    }
+}
+
+; dec-pow2: 2^n as a positive bigint (n >= 0)
+; n i64
+; returns b bigint
+dec-pow2 = (n i64) (b bigint) {
+    b = bigint.from-i64(1)
+    i <- [0..n): {
+        b = bigint.mul-i64(b, 2)
+    }
+}
+
+; dec-bitlen: number of significant bits of a non-negative bigint
+; b bigint
+; returns n i64
+dec-bitlen = (b bigint) (n i64) {
+    n = 0
+    b.is-zero() -> return
+
+    #{overflow=wrap}
+    top i64 = b.limbs[b.limbs.len() - 1] & 4294967295
+    top == 0 -> return
+    bl = 0
+    t2 = top
+
+    #{overflow=wrap}
+    t2 > 0 -> {
+        bl = 0
+        bits <- [0..32): {
+            t2 > 0 -> {
+
+                #{overflow=wrap}
+                bl = bl + 1
+                t2 = t2 >> 1
+            }
+        }
+    }
+
+    #{overflow=wrap}
+    n = (b.len - 1) * 32 + bl
+}
+
+; dec-cmp: exact decimal comparison (jvp_number_cmp literal branch)
+; returns r i64: -1 / 0 / 1
+dec-cmp = (a dec-num, b dec-num) (r i64) {
+    r = 0
+    az = 0
+    bz = 0
+    dec-zero(a) -> az = 1
+    dec-zero(b) -> bz = 1
+    az == 1 && bz == 1 -> return
+    az == 1 -> {
+        r = -1
+        b.neg -> r = 1
+        return
+    }
+    bz == 1 -> {
+        r = 1
+        a.neg -> r = -1
+        return
+    }
+    a.neg != b.neg -> {
+        r = 1
+        a.neg -> r = -1
+        return
+    }
+
+    ; same nonzero sign: compare absolute values
+    #{overflow=wrap}
+    da i64 = a.digits.len-bytes() + a.exp
+
+    #{overflow=wrap}
+    db i64 = b.digits.len-bytes() + b.exp
+    da > db -> r = 1
+    da < db -> r = -1
+    da == db -> {
+        ai bigint = bigint.from-str(a.digits)
+        bi bigint = bigint.from-str(b.digits)
+        ea = a.exp
+        eb = b.exp
+
+        #{overflow=wrap}
+        ea > eb -> {
+            p = dec-pow10(ea - eb)
+            ai = bigint.mul(ai, p)
+        }
+
+        #{overflow=wrap}
+        eb > ea -> {
+            p = dec-pow10(eb - ea)
+            bi = bigint.mul(bi, p)
+        }
+        r = ai.cmp(bi)
+    }
+
+    #{overflow=wrap}
+    a.neg -> r = 0 - r
+}
+
+; dec-to-f64: correctly-rounded f64 of a decimal literal after the 17-digit
+; HALF_EVEN reduce (the value of jvp_literal_number_to_double)
+; d dec-num
+; returns v f64
+dec-to-f64 = (d dec-num) (v f64) {
+    v = 0.0
+    d.is-nan -> {
+        v = 0.0 / 0.0
+        return
+    }
+    d.is-inf -> {
+        v = 1.0 / 0.0
+        d.neg -> v = 0.0 - v
+        return
+    }
+    dec-zero(d) -> {
+        v = 0.0
+        d.neg -> v = 0.0 - 0.0
+        return
+    }
+    r17 = dec-round17(d)
+    e i64 = r17.exp
+    rdl i64 = r17.digits.len-bytes()
+
+    ; decimal64 reduce bounds (emax=398, emin=-953): values that decFinalize
+    ; folds to the Etiny grid or pushes to overflow become 0.0 / ±inf under
+    ; jq's strtod step anyway — skip the astronomically large bigint build.
+    #{overflow=wrap}
+    e < 0 - 952 - rdl -> {
+        v = 0.0
+        d.neg -> v = 0.0 - v
+        return
+    }
+
+    #{overflow=wrap}
+    e > 399 - rdl -> {
+        v = 1.0 / 0.0
+        d.neg -> v = 0.0 - v
+        return
+    }
+    n bigint = bigint.from-str(r17.digits)
+    e >= 0 -> {
+        n = bigint.mul(n, dec-pow10(e))
+    }
+
+    #{overflow=wrap}
+    e < 0 -> {
+        n = bigint.mul(n, dec-pow2(1075))
+        e = e - 1075
+    }
+
+    ; value == n × 2^e now, n >= 1, e <= 0 in the fraction branch
+    v = dec-round64(n, e)
+    d.neg -> v = 0.0 - v
+}
+
+; dec-round64: correctly round n × 2^e to f64 (n >= 1)
+; n bigint, e i64
+; returns v f64
+dec-round64 = (n bigint, e i64) (v f64) {
+    v = 0.0
+    bits = dec-bitlen(n)
+
+    #{overflow=wrap}
+    ex = bits + e - 1
+
+    ; subnormal target: round to a multiple of 2^-1074
+    #{overflow=wrap}
+    sh = bits - 53
+    sh < 0 -> sh = 0
+    m bigint = bigint.shr(n, sh)
+
+    ; dropped bits: rr = n mod 2^sh; half = 2^(sh-1). sh == 0 → nothing was
+    ; dropped (rr = n) and rounding must be skipped entirely.
+    sh > 0 -> {
+        rr bigint = bigint.shr(n, sh)
+
+        #{overflow=wrap}
+        hs i64 = sh - 1
+        half bigint = dec-pow2(hs)
+        cmp-r i64 = rr.cmp(half)
+
+        #{overflow=wrap}
+        cmp-r > 0 -> {
+            m = bigint.add(m, bigint.from-i64(1))
+            bits = bits + 1
+        }
+
+        #{overflow=wrap}
+        cmp-r == 0 -> {
+            odd i64 = m.limbs[0] & 1
+            odd == 1 -> {
+                m = bigint.add(m, bigint.from-i64(1))
+                bits = bits + 1
+            }
+        }
+    }
+
+    #{overflow=wrap}
+    ex = bits + e - 1
+
+    ; re-check carry pushed exponent above range
+    ex > 1023 -> {
+        v = 1.0 / 0.0
+        return
+    }
+
+    ; subnormal: shift n directly to the 2^-1074 grid
+    #{overflow=wrap}
+    ex < -1064 -> {
+        sh2 = 0 - (e + 1074)
+        sh2 < 0 -> sh2 = 0
+        m2 bigint = bigint.shr(n, sh2)
+        sh2 > 0 -> {
+            r2 bigint = bigint.shr(n, sh2)
+
+            #{overflow=wrap}
+            hs2 i64 = sh2 - 1
+            half2 bigint = dec-pow2(hs2)
+            c2 i64 = r2.cmp(half2)
+            c2 > 0 -> m2 = bigint.add(m2, bigint.from-i64(1))
+            c2 == 0 -> {
+                odd2 i64 = m2.limbs[0] & 1
+                odd2 == 1 -> m2 = bigint.add(m2, bigint.from-i64(1))
+            }
+        }
+        v = bigint-to-f64(m2)
+        v = dec-ldexp-int(v, -1074)
+        return
+    }
+    v = bigint-to-f64(m)
+
+    #{overflow=wrap}
+    v = dec-ldexp-int(v, ex - 52)
+}
+
+; bigint-to-f64: exact conversion of a <=53-bit non-negative bigint
+; b bigint
+; returns v f64
+bigint-to-f64 = (b bigint) (v f64) {
+    lo = 0
+    lo = b.limbs[0] & 4294967295
+    hi = 0
+    b.limbs.len() > 1 -> hi = b.limbs[1] & 4294967295
+    v = math.i64-to-f64(lo)
+    b.limbs.len() > 1 -> {
+        v = v + math.i64-to-f64(hi) * 4503599627370496.0 * 4096.0
+    }
+}
+
+; dec-ldexp-int: v × 2^s by binary decomposition of s into exact f64
+; powers of two (|s| <= 1074; every intermediate is an exact pow2 scale)
+; v f64, s i64
+; returns out f64
+dec-ldexp-int = (v f64, s i64) (out f64) {
+    out = v
+    mag = 0
+    mag = s
+    s < 0 -> {
+
+        #{overflow=wrap}
+        mag = 0 - s
+    }
+
+    ; powers 2^(2^k) for k = 0..10 are exact in f64 (up to 2^1024 → inf
+    ; only at k=11, unused since mag <= 1074 < 2^11)
+    pw []f64 = []
+    pw = with-len(11)
+    pw[0] = 2.0
+
+    #{overflow=wrap}
+    k <- [1..11): {
+        pw[k] = pw[k - 1] * pw[k - 1]
+    }
+    bit = 0
+    bit = 0
+    acc = 0
+    acc = mag
+    idx = 0
+    idx = 0
+    idx <- [0..11): {
+        take i64 = 0
+        take = acc & 1
+        acc = acc >> 1
+        take == 1 -> {
+            s > 0 -> out = out * pw[idx]
+            s < 0 -> out = out / pw[idx]
+        }
+    }
+    s == 0 -> out = v
+}

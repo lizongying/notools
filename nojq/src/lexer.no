@@ -1,0 +1,632 @@
+; lexer.no — jq language tokenizer (port of jq's src/lexer.l)
+;
+; Reproduces flex's maximal-munch + rule-order semantics and the reentrant
+; state stack: comments, the delimiter states (PAREN/BRACKET/BRACE) that
+; validate matching closers, and the double-quoted-string states
+; (QQSTRING / QQINTERP) that implement \(...) interpolation.
+;
+; Token model: single-character operators/delimiters carry their ASCII code as
+; `kind` (exactly like jq's `return yytext[0]`); multi-char operators, keywords
+; and string pieces use distinct codes >= 256 (see TQ-*). `text` holds
+; IDENT/FIELD/BINDING/FORMAT names (dot/$ stripped) and the raw source of a
+; LITERAL / QQSTRING_TEXT run. `val` is the pool handle of the decoded jv for
+; LITERAL and QQSTRING_TEXT (-1 otherwise).
+;
+; true/false/null are NOT keywords — they lex as IDENT (jq's rules for them are
+; commented out; the parser special-cases them), so keyword lookup is exact-word
+; only.
+;
+; Scan state lives in module globals (_lx-*) so helpers mutate it in place —
+; the same idiom value.no uses for its pool — avoiding multi-return plumbing.
+
+# /nojq/src/value
+# /nojq/src/parse
+
+; ── token kinds ───────────────────────────────
+TQ-EOF = 0
+TQ-INVALID = 1
+
+TQ-IDENT = 256
+TQ-FIELD = 257
+TQ-BINDING = 258
+TQ-LITERAL = 259
+TQ-FORMAT = 260
+TQ-REC = 261
+TQ-NEQ = 262
+TQ-EQ = 263
+TQ-DEFINEDOR = 264
+TQ-SETPIPE = 265
+TQ-SETPLUS = 266
+TQ-SETMINUS = 267
+TQ-SETMULT = 268
+TQ-SETDIV = 269
+TQ-SETMOD = 270
+TQ-SETDEFINEDOR = 271
+TQ-LESSEQ = 272
+TQ-GREATEREQ = 273
+TQ-LOC = 274
+TQ-QQSTART = 275
+TQ-QQTEXT = 276
+TQ-QQEND = 277
+TQ-QQINTERPSTART = 278
+TQ-QQINTERPEND = 279
+
+; keywords
+TQ-AS = 300
+TQ-DEF = 301
+TQ-MODULE = 302
+TQ-IMPORT = 303
+TQ-INCLUDE = 304
+TQ-IF = 305
+TQ-THEN = 306
+TQ-ELSE = 307
+TQ-ELSEIF = 308
+TQ-REDUCE = 309
+TQ-FOREACH = 310
+TQ-END = 311
+TQ-AND = 312
+TQ-OR = 313
+TQ-TRY = 314
+TQ-CATCH = 315
+TQ-LABEL = 316
+TQ-BREAK = 317
+
+; ── lexer states ──────────────────────────────
+LS-INITIAL = 0
+LS-PAREN = 1
+LS-BRACKET = 2
+LS-BRACE = 3
+LS-QQSTRING = 4
+LS-QQINTERP = 5
+
+LEXER-MAX-TOKENS = 100000
+LEXER-MAX-DEPTH = 1000
+
+jq-token {
+    kind i64
+    text str
+    val i64
+    line i64
+    col i64
+}
+
+; ── scan state (globals) ──────────────────────
+; String/vec state lives inside a struct global: assigning a *bare* global str
+; or pushing/index-assigning a *bare* global vec is a codegen gap (the mutation
+; hits a local copy and is lost), whereas mutating a field of a struct global
+; persists — same idiom value.no uses for its pool. The i64 cursors below are
+; plain globals (integer assignment to a bare global does persist).
+lex-state {
+    input str
+    err str
+    toks []jq-token
+    stack []i64
+}
+_lv lex-state
+_lx-pos i64
+_lx-line i64
+_lx-col i64
+_lx-sp i64
+
+lx-char = (off i64) (c i64) {
+    c = -1
+    idx i64 = _lx-pos + off #{overflow=wrap}
+    idx >= 0 -> {
+        idx < _lv.input.count() -> c = _lv.input[idx]
+    }
+}
+
+lx-not-eof = () (e bool) {
+    e = _lx-pos < _lv.input.count()
+}
+
+; lx-bump: consume the current codepoint, advance pos/line/col.
+lx-bump = () {
+    c i64 = _lv.input[_lx-pos]
+    _lx-pos = _lx-pos + 1 #{overflow=wrap}
+    c == 10 -> {
+        _lx-line = _lx-line + 1 #{overflow=wrap}
+        _lx-col = 1
+    }
+    c != 10 -> {
+        _lx-col = _lx-col + 1 #{overflow=wrap}
+    }
+}
+
+lx-emit = (kind i64, text str, val i64) {
+    t jq-token
+    t.kind = kind
+    t.text = text
+    t.val = val
+    t.line = _lx-line
+    t.col = _lx-col
+    _lv.toks.push(t)
+    _lv.toks.len() > LEXER-MAX-TOKENS -> _lv.err = 'too many tokens'
+}
+
+lx-push-state = (st i64) {
+    _lx-sp < LEXER-MAX-DEPTH -> {
+        _lv.stack[_lx-sp] = st
+        _lx-sp = _lx-sp + 1 #{overflow=wrap}
+    }
+    _lx-sp >= LEXER-MAX-DEPTH -> _lv.err = 'expression nesting too deep'
+}
+
+lx-pop-state = () {
+    _lx-sp > 0 -> {
+        _lx-sp = _lx-sp - 1 #{overflow=wrap}
+    }
+}
+
+lx-top-state = () (st i64) {
+    st = LS-INITIAL
+    _lx-sp > 0 -> st = _lv.stack[_lx-sp - 1] #{overflow=wrap}
+}
+
+; ── character classes ─────────────────────────
+lex-digit = (c i64) (b bool) {
+    b = c >= 48 && c <= 57
+}
+
+lex-alpha = (c i64) (b bool) {
+    b = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+lex-alnum = (c i64) (b bool) {
+    b = lex-alpha(c) || lex-digit(c)
+}
+
+lex-hex = (c i64) (b bool) {
+    b = lex-digit(c) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
+}
+
+lex-ws = (c i64) (b bool) {
+    b = c == 32 || c == 9 || c == 13 || c == 10
+}
+
+lex-keyword = (w str) (kind i64) {
+    kind = 0
+    w == 'as' -> kind = TQ-AS
+    w == 'def' -> kind = TQ-DEF
+    w == 'module' -> kind = TQ-MODULE
+    w == 'import' -> kind = TQ-IMPORT
+    w == 'include' -> kind = TQ-INCLUDE
+    w == 'if' -> kind = TQ-IF
+    w == 'then' -> kind = TQ-THEN
+    w == 'else' -> kind = TQ-ELSE
+    w == 'elif' -> kind = TQ-ELSEIF
+    w == 'reduce' -> kind = TQ-REDUCE
+    w == 'foreach' -> kind = TQ-FOREACH
+    w == 'end' -> kind = TQ-END
+    w == 'and' -> kind = TQ-AND
+    w == 'or' -> kind = TQ-OR
+    w == 'try' -> kind = TQ-TRY
+    w == 'catch' -> kind = TQ-CATCH
+    w == 'label' -> kind = TQ-LABEL
+    w == 'break' -> kind = TQ-BREAK
+}
+
+; lx-skip-to: advance global pos up to index e (updating line/col).
+lx-skip-to = (e i64) {
+    (_lx-pos < e && lx-not-eof()) {
+        lx-bump()
+    }
+}
+
+; lx-read-one-word: consume [alpha_][alnum_]* at pos, return the text.
+lx-read-one-word = () (w str) {
+    w = ''
+    (lx-not-eof() && lex-alnum(lx-char(0))) {
+        c i64 = _lv.input[_lx-pos]
+        cd char = c
+        w = w - cd.to-str()
+        lx-bump()
+    }
+}
+
+; lx-read-ident: identifier (possibly module-qualified) or keyword.
+lx-read-ident = () {
+    w = lx-read-one-word()
+    q = w
+    (lx-char(0) == 58 && lx-char(1) == 58) {
+        lx-bump()
+        lx-bump()
+        w2 str = lx-read-one-word()
+        q = q - '::' - w2
+    }
+    kind = lex-keyword(q)
+    kind == 0 -> lx-emit(TQ-IDENT, q, -1)
+    kind != 0 -> lx-emit(kind, q, -1)
+}
+
+; lx-read-field: `.name` (dot already at pos). Consume dot, then the name.
+lx-read-field = () {
+    lx-bump()
+    w = lx-read-one-word()
+    lx-emit(TQ-FIELD, w, -1)
+}
+
+; lx-read-binding: `$name` / `$__loc__` (dollar already at pos).
+lx-read-binding = () {
+    lx-bump()
+    w = lx-read-one-word()
+    (lx-char(0) == 58 && lx-char(1) == 58) {
+        lx-bump()
+        lx-bump()
+        w2 str = lx-read-one-word()
+        w = w - '::' - w2
+    }
+    w == '__loc__' -> lx-emit(TQ-LOC, w, -1)
+    w != '__loc__' -> lx-emit(TQ-BINDING, w, -1)
+}
+
+; lx-read-format: `@name` (at already at pos).
+lx-read-format = () {
+    lx-bump()
+    w = ''
+    (lx-not-eof() && lex-alnum(lx-char(0))) {
+        c i64 = _lv.input[_lx-pos]
+        cd char = c
+        w = w - cd.to-str()
+        lx-bump()
+    }
+    w.empty() -> _lv.err = 'invalid format directive'
+    ! w.empty() -> lx-emit(TQ-FORMAT, w, -1)
+}
+
+; lx-read-number: scan a numeric literal at pos and emit LITERAL.
+lx-read-number = () {
+    n i64 = _lv.input.count()
+    e i64 = _lx-pos
+    first i64 = _lv.input[e]
+    first == 46 -> {
+        e = e + 1 #{overflow=wrap}
+        ms i64 = e
+        (e < n && lex-digit(_lv.input[e])) {
+            e = e + 1 #{overflow=wrap}
+        }
+        e == ms -> _lv.err = 'invalid numeric literal'
+    }
+    first != 46 -> {
+        (e < n && lex-digit(_lv.input[e])) {
+            e = e + 1 #{overflow=wrap}
+        }
+        f bool = e < n && _lv.input[e] == 46
+        f -> {
+            e = e + 1 #{overflow=wrap}
+            (e < n && lex-digit(_lv.input[e])) {
+                e = e + 1 #{overflow=wrap}
+            }
+        }
+    }
+    _lv.err.empty() -> {
+        ex bool = e < n && (_lv.input[e] == 101 || _lv.input[e] == 69)
+        ex -> {
+            se i64 = e
+            ee i64 = e
+            ee = ee + 1 #{overflow=wrap}
+            sgn bool = ee < n && (_lv.input[ee] == 43 || _lv.input[ee] == 45)
+            sgn -> {
+                ee = ee + 1 #{overflow=wrap}
+            }
+            dse i64 = ee
+            (ee < n && lex-digit(_lv.input[ee])) {
+                ee = ee + 1 #{overflow=wrap}
+            }
+            ee > dse -> e = ee
+            ee == dse -> e = se
+        }
+    }
+    _lv.err.empty() -> {
+        src str = _lv.input
+        last i64 = e - 1 #{overflow=wrap}
+        text str = src[_lx-pos..last]
+        v ?i64 = jv-parse(text)
+        val i64 = -1
+        bad bool = false
+        v: {
+            ok -> val = it
+
+            err -> bad = true
+
+            nil -> bad = true
+        }
+        bad -> _lv.err = 'invalid numeric literal'
+        ! bad -> {
+            lx-skip-to(e)
+            lx-emit(TQ-LITERAL, text, val)
+        }
+    }
+}
+
+; lx-handle-comment: consume a `#` comment to end of line (a trailing backslash
+; continues the comment onto the next line, per lexer.l's \\[\\|\r?\n] rule).
+lx-handle-comment = () {
+    lx-bump()
+    keep = true
+    (lx-not-eof() && keep) {
+        c i64 = _lv.input[_lx-pos]
+        c == 10 -> keep = false
+        c != 10 && c == 92 && (lx-char(1) == 10 || (lx-char(1) == 13 && lx-char(2) == 10)) -> {
+            lx-bump()
+            lx-char(0) == 13 -> lx-bump()
+            lx-bump()
+        }
+        c != 10 && ! (c == 92 && (lx-char(1) == 10 || (lx-char(1) == 13 && lx-char(2) == 10))) -> lx-bump()
+    }
+    lx-not-eof() && _lv.input[_lx-pos] == 10 -> lx-bump()
+}
+
+; lx-handle-closer: validate `]`/`}`/`)` against the current state.
+lx-handle-closer = (c i64) {
+    top = lx-top-state()
+    done = false
+    top == LS-BRACKET && c == 93 -> {
+        lx-pop-state()
+        lx-emit(93, ']', -1)
+        done = true
+    }
+    top == LS-PAREN && c == 41 -> {
+        lx-pop-state()
+        lx-emit(41, ')', -1)
+        done = true
+    }
+    top == LS-BRACE && c == 125 -> {
+        lx-pop-state()
+        lx-emit(125, '}', -1)
+        done = true
+    }
+    top == LS-QQINTERP && c == 41 -> {
+        lx-pop-state()
+        lx-emit(TQ-QQINTERPEND, ')', -1)
+        done = true
+    }
+    ! done && ! c == 41 -> {
+        lx-emit(TQ-INVALID, '?', -1)
+        _lv.err = 'syntax error'
+    }
+    ! done && c == 41 -> {
+        lx-emit(TQ-INVALID, ')', -1)
+        _lv.err = 'syntax error'
+    }
+    done -> lx-bump()
+}
+
+; lx-emit-single: a one-character operator/delimiter token (kind = ASCII).
+lx-emit-single = (c i64, s str) {
+    lx-emit(c, s, -1)
+    lx-bump()
+}
+
+; lx-open: `(`/`[`/`{` push their state and emit the char.
+lx-open = (c i64, s str, st i64) {
+    lx-emit(c, s, -1)
+    lx-bump()
+    lx-push-state(st)
+}
+
+; lx-dot: `.` / `..` / `.name` / `.123`.
+lx-dot = () {
+    nx = lx-char(1)
+    nx == 46 -> {
+        lx-emit(TQ-REC, '..', -1)
+        lx-bump()
+        lx-bump()
+    }
+    nx != 46 && lex-alpha(nx) -> lx-read-field()
+    nx != 46 && ! lex-alpha(nx) && lex-digit(nx) -> lx-read-number()
+    nx != 46 && ! lex-alpha(nx) && ! lex-digit(nx) -> lx-emit-single(46, '.')
+}
+
+; lx-string-run: consume one contiguous run of string text/escapes (raw kept
+; still-escaped), stopping before a `"` or a `\(`. Decoded via the JSON parser.
+lx-string-run = () {
+    raw = ''
+    src str = _lv.input
+    cont = true
+    (lx-not-eof() && cont) {
+        c i64 = _lv.input[_lx-pos]
+        c == 34 -> cont = false
+        c == 92 && lx-char(1) == 40 -> cont = false
+        cont && c != 34 && ! (c == 92 && lx-char(1) == 40) -> {
+            c == 92 -> {
+                bs char = 92
+                raw = raw - bs.to-str()
+                lx-bump()
+                c2 i64 = _lv.input[_lx-pos]
+                raw = raw - src[_lx-pos.._lx-pos]
+                lx-bump()
+                c2 == 117 -> {
+                    hx i64 = 0
+                    (hx < 4 && lx-not-eof() && lex-hex(lx-char(0))) {
+                        raw = raw - src[_lx-pos.._lx-pos]
+                        lx-bump()
+                        hx = hx + 1 #{overflow=wrap}
+                    }
+                }
+            }
+            c != 92 -> {
+                raw = raw - src[_lx-pos.._lx-pos]
+                lx-bump()
+            }
+        }
+    }
+    text = '"' - raw - '"'
+    v ?i64 = jv-parse(text)
+    val = -1
+    bad = false
+    v: {
+        ok -> val = it
+
+        err -> bad = true
+
+        nil -> bad = true
+    }
+    bad -> _lv.err = 'invalid string escape'
+    ! bad -> lx-emit(TQ-QQTEXT, raw, val)
+}
+
+; lx-qstring: tokens while inside a double-quoted string.
+; Guards in Nolang are evaluated sequentially (not else-if), so once a branch
+; has consumed input and advanced pos, a later guard that re-reads lookahead
+; could fire spuriously. A `matched` latch makes the three cases exclusive.
+lx-qstring = () {
+    c i64 = _lv.input[_lx-pos]
+    matched = false
+    c == 34 -> {
+        lx-bump()
+        lx-emit(TQ-QQEND, '"', -1)
+        lx-pop-state()
+        matched = true
+    }
+    ! matched && c == 92 && lx-char(1) == 40 -> {
+        lx-bump()
+        lx-bump()
+        lx-emit(TQ-QQINTERPSTART, '\\(', -1)
+        lx-push-state(LS-QQINTERP)
+        matched = true
+    }
+    ! matched -> lx-string-run()
+}
+
+; lx-normal: the ordinary (non-string-body) token rules, with lookahead captured
+; once so a consumed token cannot re-trigger a later guard on the same char.
+lx-normal = () {
+    c i64 = _lv.input[_lx-pos]
+    p1 = lx-char(1)
+    p2 = lx-char(2)
+    eq = p1 == 61
+    handled = lex-ws(c) || c == 35 || c == 46 || lex-digit(c) || c == 34 || c == 64 || c == 36 || lex-alpha(c) || c == 91 || c == 123 || c == 40 || c == 93 || c == 125 || c == 41 || c == 33 || c == 61 || c == 124 || c == 43 || c == 45 || c == 42 || c == 37 || c == 60 || c == 62 || c == 47 || c == 59 || c == 44 || c == 58 || c == 63
+
+    lex-ws(c) -> lx-bump()
+    c == 35 -> lx-handle-comment()
+    c == 46 -> lx-dot()
+    lex-digit(c) -> lx-read-number()
+    c == 34 -> {
+        lx-emit(TQ-QQSTART, '"', -1)
+        lx-bump()
+        lx-push-state(LS-QQSTRING)
+    }
+    c == 64 -> lx-read-format()
+    c == 36 && lex-alpha(p1) -> lx-read-binding()
+    c == 36 && ! lex-alpha(p1) -> lx-emit-single(36, '$')
+    lex-alpha(c) -> lx-read-ident()
+    c == 91 -> lx-open(91, '[', LS-BRACKET)
+    c == 123 -> lx-open(123, '{', LS-BRACE)
+    c == 40 -> lx-open(40, '(', LS-PAREN)
+    c == 93 || c == 125 || c == 41 -> lx-handle-closer(c)
+
+    c == 33 && eq -> {
+        lx-emit(TQ-NEQ, '!=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 33 && ! eq -> {
+        lx-emit(TQ-INVALID, '!', -1)
+        _lv.err = 'syntax error'
+    }
+    c == 61 && eq -> {
+        lx-emit(TQ-EQ, '==', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 61 && ! eq -> lx-emit-single(61, '=')
+    c == 124 && eq -> {
+        lx-emit(TQ-SETPIPE, '|=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 124 && ! eq -> lx-emit-single(124, '|')
+    c == 43 && eq -> {
+        lx-emit(TQ-SETPLUS, '+=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 43 && ! eq -> lx-emit-single(43, '+')
+    c == 45 && eq -> {
+        lx-emit(TQ-SETMINUS, '-=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 45 && ! eq -> lx-emit-single(45, '-')
+    c == 42 && eq -> {
+        lx-emit(TQ-SETMULT, '*=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 42 && ! eq -> lx-emit-single(42, '*')
+    c == 37 && eq -> {
+        lx-emit(TQ-SETMOD, '%=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 37 && ! eq -> lx-emit-single(37, '%')
+    c == 60 && eq -> {
+        lx-emit(TQ-LESSEQ, '<=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 60 && ! eq -> lx-emit-single(60, '<')
+    c == 62 && eq -> {
+        lx-emit(TQ-GREATEREQ, '>=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 62 && ! eq -> lx-emit-single(62, '>')
+
+    c == 47 && p1 == 47 && p2 == 61 -> {
+        lx-emit(TQ-SETDEFINEDOR, '//=', -1)
+        lx-bump()
+        lx-bump()
+        lx-bump()
+    }
+    c == 47 && p1 == 47 && p2 != 61 -> {
+        lx-emit(TQ-DEFINEDOR, '//', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 47 && p1 == 61 -> {
+        lx-emit(TQ-SETDIV, '/=', -1)
+        lx-bump()
+        lx-bump()
+    }
+    c == 47 && p1 != 47 && p1 != 61 -> lx-emit-single(47, '/')
+    c == 59 -> lx-emit-single(59, ';')
+    c == 44 -> lx-emit-single(44, ',')
+    c == 58 -> lx-emit-single(58, ':')
+    c == 63 -> lx-emit-single(63, '?')
+
+    ! handled -> {
+        lx-emit(TQ-INVALID, '?', -1)
+        _lv.err = 'invalid character'
+    }
+}
+
+; jq-lex: tokenize a jq program. Returns the token vector and an error string
+; ('' on success). The token stream always ends with a TQ-EOF token.
+jq-lex = (input str) (toks []jq-token, err str) {
+    _lv.input = input
+    _lx-pos = 0
+    _lx-line = 1
+    _lx-col = 1
+    tt []jq-token = with-len(0)
+    _lv.toks = tt
+    ts []i64 = with-len(LEXER-MAX-DEPTH)
+    _lv.stack = ts
+    _lx-sp = 0
+    _lv.err = ''
+    lx-push-state(LS-INITIAL)
+    (lx-not-eof() && _lv.err.empty()) {
+        top i64 = lx-top-state()
+        top == LS-QQSTRING -> lx-qstring()
+        top != LS-QQSTRING -> lx-normal()
+    }
+    _lv.err.empty() -> {
+        ls i64 = lx-top-state()
+        ls != LS-INITIAL && ls != LS-QQINTERP -> {}
+        ls == LS-QQSTRING -> _lv.err = 'unterminated string'
+    }
+    lx-emit(TQ-EOF, '', -1)
+    toks = _lv.toks
+    err = _lv.err
+}

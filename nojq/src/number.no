@@ -1,0 +1,421 @@
+#{c}
+_strtod = (s str, end **byte) (v f64)
+
+#{c}
+_ldexp = (x f64, n i64) (out f64)
+
+; f64-frexp-c: C frexp — the int* out-param does not reliably round-trip
+; through the nolang FFI, so it is NOT used. See jvp-f64-frexp.
+
+; f64-abs: absolute value (nolang has no builtin f64.abs)
+; x f64
+; returns a f64
+f64-abs = (x f64) (a f64) {
+    a = x
+    x < 0.0 -> a = 0.0 - x
+}
+
+; jvp-strtod: parse decimal numeric text into an f64
+; s str: valid numeric text
+; returns v f64
+jvp-strtod = (s str) (v f64) {
+    end = 0
+    v = _strtod(s, end)
+}
+
+; jvp-f64-frexp: split a positive finite x into V (an exact integer <= 2^53
+; held in an f64) and k such that x = V × 2^k. Implemented WITHOUT frexp by
+; using ldexp to find the exponent: frac = x × 2^-ex lands in [0.5, 1).
+; x f64: positive finite value
+; returns frac f64, ex i64  (x = frac × 2^ex, frac in [0.5, 1))
+jvp-f64-frexp = (x f64) (frac f64, ex i64) {
+
+    ; ex ranges over the double unbiased exponent [-1074, 1023].
+    ; Find ex = the unique e with ldexp(x, -e) in [0.5, 1), i.e.
+    ;   ldexp(x, -e) < 1.0  AND  ldexp(x, -(e+1)) >= 0.5.
+    ; Binary search over e.
+    lo = -1075
+    hi = 1025
+
+    #{overflow=wrap}
+    (hi - lo > 1) {
+        mid i64 = 0
+
+        #{overflow=wrap}
+        mid = (lo + hi) / 2
+        nsh i64 = 0
+
+        #{overflow=wrap}
+        nsh = 0 - mid
+        m f64 = _ldexp(x, nsh)
+        m < 1.0 -> hi = mid
+        m >= 1.0 -> lo = mid
+    }
+
+    #{overflow=wrap}
+    ex = lo + 1
+    sh = 0
+
+    #{overflow=wrap}
+    sh = 0 - ex
+    frac = _ldexp(x, sh)
+}
+
+; dbl-harvest: exact significant digits of |x| (leading digit first) plus
+; decpt — the position of the decimal point after the first `decpt` digits
+; (value = 0.digits × 10^decpt-style, i.e. digits × 10^(decpt-len)).
+; x f64: nonzero finite value
+; want i64: max digits to harvest
+; returns digs str, decpt i64
+dbl-harvest = (x f64, want i64) (digs str, decpt i64) {
+    digs = ''
+    decpt = 0
+    a = f64-abs(x)
+    frac = 0.0
+    ex = 0
+    frac, ex = jvp-f64-frexp(a)
+
+    ; a = frac × 2^ex with frac in [0.5, 1): V0 = frac × 2^53 is an exact
+    ; integral f64 <= 2^53, and a = V0 × 2^(ex-53)
+    v0 = _ldexp(frac, 53)
+    vi i64 = math.f64-to-i64(v0)
+    ns = vi.to-str()
+
+    ; strip the single factor of two shared by V0/2^53 normalisation so V
+    ; is odd (fewer doubling rounds); k tracks the removed factor
+    k = 0
+
+    #{overflow=wrap}
+    k = ex - 53
+
+    #{overflow=wrap}
+    math.even(vi) -> {
+        vi = vi / 2
+        ns = vi.to-str()
+        k = k + 1
+    }
+
+    ; scale V = ns by 2^k using exact decimal string arithmetic
+    work = ns
+    k >= 0 -> {
+        i <- [0..k): {
+            work = str-dbl(work)
+        }
+        decpt = work.len-bytes()
+    }
+    k < 0 -> {
+
+        #{overflow=wrap}
+        n = 0 - k
+        i <- [0..n): {
+            work = str-quint(work)
+        }
+
+        ; V × 2^k == V × 5^n × 10^-n: point moves left by n
+        #{overflow=wrap}
+        decpt = work.len-bytes() - n
+    }
+
+    ; harvest the first `want` digits (V is odd ⇒ no leading zeros)
+    wl i64 = work.len-bytes()
+    take = wl
+    take > want -> take = want
+    i <- [0..take): {
+        digs = digs - work[i..i]
+    }
+}
+
+; str-dbl: double a decimal digit string (exact)
+str-dbl = (s str) (out str) {
+    out = ''
+    carry = 0
+    n i64 = s.len-bytes()
+    i <- [0..n): {
+
+        #{overflow=wrap}
+        j = n - 1 - i
+        b i64 = s.byte(j)
+
+        #{overflow=wrap}
+        d i64 = b - 48
+
+        #{overflow=wrap}
+        v = d * 2 + carry
+
+        #{overflow=wrap}
+        carry = v / 10
+
+        #{overflow=wrap}
+        v = v - carry * 10
+        cd str = v.to-str()
+        out = cd - out
+    }
+    carry > 0 -> {
+        cs str = carry.to-str()
+        out = cs - out
+    }
+}
+
+; str-quint: multiply a decimal digit string by 5 (exact)
+str-quint = (s str) (out str) {
+    out = ''
+    carry = 0
+    n i64 = s.len-bytes()
+    i <- [0..n): {
+
+        #{overflow=wrap}
+        j = n - 1 - i
+        b i64 = s.byte(j)
+
+        #{overflow=wrap}
+        d i64 = b - 48
+
+        #{overflow=wrap}
+        v = d * 5 + carry
+
+        #{overflow=wrap}
+        carry = v / 10
+
+        #{overflow=wrap}
+        v = v - carry * 10
+        cd str = v.to-str()
+        out = cd - out
+    }
+    carry > 0 -> {
+        cs str = carry.to-str()
+        out = cs - out
+    }
+}
+
+; jvp-shortest: shortest round-trip digits + decpt for |x|. The exact
+; expansion (<= 17 significant digits suffice for any double) is trimmed,
+; then k = 1..min(nn,17) is probed: truncation first, then round-up.
+; x f64: nonzero finite value
+; returns digs str (no trailing zeros), decpt i64
+jvp-shortest = (x f64) (digs str, decpt i64) {
+    digs = ''
+    decpt = 0
+    all = ''
+    d0 = 0
+    all, d0 = dbl-harvest(f64-abs(x), 24)
+    decpt = d0
+
+    ; trim trailing zeros of the full expansion
+    nn i64 = all.len-bytes()
+
+    #{overflow=wrap}
+    (nn > 0 && all.byte(nn - 1) == 48) {
+        nn = nn - 1
+    }
+    nn == 0 -> {
+        digs = '0'
+        return
+    }
+
+    ; probe shortest round-tripping length
+    limit = nn
+    limit > 17 -> limit = 17
+    best = 0
+    chosen = ''
+
+    #{overflow=wrap}
+    kend = limit + 1
+    k = 0
+    k <- [1..kend): {
+        best == 0 -> {
+            back f64 = jvp-reassemble(all, k, decpt)
+            back == f64-abs(x) -> {
+                best = k
+                chosen = all[0..k - 1]
+            }
+            best == 0 -> {
+                back2 f64 = jvp-reassemble-rounded-up(all, k, decpt)
+                back2 == f64-abs(x) -> {
+                    best = k
+                    ns str = jvp-inc-prefix(all, k)
+
+                    ; 999...→1000... carry adds a digit: 0.ns × 10^(decpt+1)
+                    #{overflow=wrap}
+                    ns.len-bytes() > k -> decpt = decpt + 1
+                    chosen = ns
+                }
+            }
+        }
+    }
+    best == 0 -> {
+
+        ; should not happen (k = 17 always round-trips); use trimmed digits
+        best = nn
+        chosen = all[0..nn - 1]
+    }
+
+    ; strip trailing zeros of the chosen form (round-up may have added some)
+    cl i64 = chosen.len-bytes()
+
+    #{overflow=wrap}
+    (cl > 1 && chosen.byte(cl - 1) == 48) {
+        cl = cl - 1
+    }
+    chosen = chosen[0..cl - 1]
+    digs = chosen
+}
+
+; jvp-digits-e: digit string + 'e'-suffix for a k-digit prefix with point
+; at decpt: value = 0.digits × 10^decpt-style
+; prefix str: digits to encode (may be longer than k after a round-up carry)
+; k i64: probe digit count (exponent position anchor)
+; decpt i64: decimal point position
+; returns text str
+jvp-digits-e = (prefix str, k i64, decpt i64) (text str) {
+    text = prefix - 'e'
+
+    #{overflow=wrap}
+    e = decpt - k
+    e < 0 -> {
+        text = text - '-'
+
+        #{overflow=wrap}
+        e = 0 - e
+    }
+    text = text - e.to-str()
+}
+
+; jvp-reassemble: f64 of the first k digits (truncation) with point decpt
+; all str: full digit expansion
+; k i64: digits to keep
+; decpt i64: decimal point position
+; returns v f64
+jvp-reassemble = (all str, k i64, decpt i64) (v f64) {
+    text = jvp-digits-e(all[0..k - 1], k, decpt)
+    v = jvp-strtod(text)
+}
+
+; jvp-reassemble-rounded-up: f64 of the first k digits with the last one
+; incremented (handles the 999...→1000... carry via one extra digit)
+jvp-reassemble-rounded-up = (all str, k i64, decpt i64) (v f64) {
+    ns = jvp-inc-prefix(all, k)
+    text = jvp-digits-e(ns, k, decpt)
+    v = jvp-strtod(text)
+}
+
+; jvp-inc-prefix: decimal +1 on the first k digits (may grow a digit)
+; all str: digit string (len >= k)
+; k i64: digits to increment
+; returns out str
+jvp-inc-prefix = (all str, k i64) (out str) {
+    out = ''
+    carry = 1
+    i <- [0..k): {
+
+        #{overflow=wrap}
+        j = k - 1 - i
+        b i64 = all.byte(j)
+
+        #{overflow=wrap}
+        d i64 = b - 48
+
+        #{overflow=wrap}
+        v = d + carry
+
+        #{overflow=wrap}
+        carry = v / 10
+
+        #{overflow=wrap}
+        v = v - carry * 10
+        cd str = v.to-str()
+        out = cd - out
+    }
+    carry > 0 -> {
+        cs str = carry.to-str()
+        out = cs - out
+    }
+}
+
+; jvp-dtoa-fmt: render finite f64 in jq's %g style (native numbers)
+; v f64: finite value (NaN/Inf handled by the caller)
+; returns out str
+jvp-dtoa-fmt = (v f64) (out str) {
+    out = ''
+    neg = v < 0.0 || (v == 0.0 && 1.0 / v < 0.0)
+    a = f64-abs(v)
+    a == 0.0 -> {
+        out = '0'
+        neg -> out = '-0'
+        return
+    }
+    digs = ''
+    decpt = 0
+    digs, decpt = jvp-shortest(a)
+    nd i64 = digs.len-bytes()
+    mode-e = 0
+
+    #{overflow=wrap}
+    lim = nd + 15
+    decpt <= -4 -> mode-e = 1
+    decpt > lim -> mode-e = 1
+
+    #{overflow=wrap}
+    e = decpt - 1
+    mode-e == 1 -> {
+        out = digs[0..0]
+        nd > 1 -> out = out - '.' - digs[1..nd - 1]
+        out = out - 'e'
+        ae i64 = e
+        e < 0 -> {
+            out = out - '-'
+
+            #{overflow=wrap}
+            ae = 0 - e
+        }
+        e >= 0 -> out = out - '+'
+        es str = ae.to-str()
+        es.len-bytes() < 2 -> out = out - '0'
+        out = out - es
+    }
+    mode-e == 0 -> {
+        decpt <= 0 -> {
+            out = '0.'
+
+            #{overflow=wrap}
+            nz i64 = 0 - decpt
+            z <- [0..nz): out = out - '0'
+            out = out - digs
+        }
+        decpt > 0 -> {
+            i <- [0..nd): {
+                out = out - digs[i..i]
+
+                #{overflow=wrap}
+                r = decpt - i - 1
+
+                #{overflow=wrap}
+                r == 0 -> {
+                    i < nd - 1 -> out = out - '.'
+                }
+            }
+            decpt > nd -> {
+                z <- [nd..decpt): out = out - '0'
+            }
+        }
+    }
+    neg -> out = '-' - out
+}
+
+; jvp-is-nan / jvp-is-inf: predicates
+jvp-is-nan = (v f64) (yes bool) {
+    yes = v != v
+}
+
+jvp-is-inf = (v f64) (yes bool) {
+    yes = v.is-inf()
+}
+
+; jvp-dbl-max: largest finite double (jq clamps infinities to this on
+; output). Nolang literals do not support exponent notation, so build it
+; exactly: DBL_MAX = (1 − 2^−53) × 2^1024 = (2^53 − 1) × 2^971.
+; returns v f64
+jvp-dbl-max = () (v f64) {
+    he = _ldexp(1.0, -53)
+    frac = 1.0 - he
+    v = _ldexp(frac, 1024)
+}

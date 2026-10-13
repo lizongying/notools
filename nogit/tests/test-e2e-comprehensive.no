@@ -74,526 +74,524 @@ build-tree-from-index = (gd str) (tree-oid oid, ok bool) {
     ok = true
 }
 
-main = () {
-    print('--- Comprehensive E2E Test ---')
+print('--- Comprehensive E2E Test ---')
 
-    passed = 0
-    failed = 0
+passed = 0
+failed = 0
 
-    cwd = os.get-wd()
+cwd = os.get-wd()
 
-    test-dir = cwd - '/tests/tmp-e2e-comp'
-    util.remove-tree(test-dir)
+test-dir = cwd - '/tests/tmp-e2e-comp'
+util.remove-tree(test-dir)
 
-    git-dir = test-dir - '/.git'
+git-dir = test-dir - '/.git'
 
-    ; 1. git init
-    gd-opt = repository.repo-init(test-dir, false)
-    gd str
-    init-ok = false
-    gd-opt: {
-        ok -> {
-            gd = gd-opt
-            init-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        init-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: git init')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: git init')
-        }
+; 1. git init
+gd-opt = repository.repo-init(test-dir, false)
+gd str
+init-ok = false
+gd-opt: {
+    ok -> {
+        gd = gd-opt
+        init-ok = true
     }
 
-    ; 2. git config
-    config.config-set(git-dir, 'user', 'name', 'E2E Tester')
-    config.config-set(git-dir, 'user', 'email', 'e2e@test.com')
-    cfg-n = ''
-    cfg-n-opt = config.config-get(git-dir, 'user', 'name')
-    cfg-n-opt: {
-        ok -> cfg-n = it
-
-        nil -> {
-        }
-
-        err -> {
-        }
+    nil || err -> {
     }
-    {
-        cfg-n == 'E2E Tester' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: git config name')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: git config name')
-        }
-    }
-
-    ; 3. git add (first file)
-    blob1-oid = object.write-blob(git-dir, 'file1 content')
-    index.index-add(git-dir, 'file1.txt', blob1-oid, 33188)
-    jn, jh, jm, jc, jok = index.read-index(git-dir)
-    {
-        jc == 1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: git add file1')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: git add file1')
-        }
-    }
-
-    ; 4. git commit (initial)
-    tree-oid1, tree-ok1 = build-tree-from-index(git-dir)
-    {
-        tree-ok1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: write-tree from index')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: write-tree from index')
-        }
-    }
-
-    now = os.now()
-    commit1 = object.write-commit-full(git-dir, tree-oid1, '', 'E2E Tester', 'e2e@test.com', now, '+0000', 'E2E Tester', 'e2e@test.com', now, '+0000', 'initial commit')
-    refs.write-ref(git-dir, 'refs/heads/main', commit1)
-    refs.update-head(git-dir, 'refs/heads/main')
-    refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit1, 'E2E Tester', 'e2e@test.com', now, '+0000', 'commit (initial): initial commit')
-
-    ; verify HEAD resolves
-    head-oid-opt = refs.read-ref(git-dir, 'HEAD')
-    head-oid oid
-    head-ok = false
-    head-oid-opt: {
-        ok -> {
-            head-oid = head-oid-opt
-            head-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        head-oid.eq(commit1) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: HEAD = commit1')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: HEAD = commit1')
-        }
-    }
-
-    ; 5. git add (second file) + second commit
-    blob2-oid = object.write-blob(git-dir, 'file2 content')
-    index.index-add(git-dir, 'file2.txt', blob2-oid, 33188)
-    tree-oid2, tree-ok2 = build-tree-from-index(git-dir)
-
-    #{overflow=wrap}
-    commit2 = object.write-commit-full(git-dir, tree-oid2, oid.oid-hex-str(commit1), 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'second commit')
-    refs.write-ref(git-dir, 'refs/heads/main', commit2)
-
-    #{overflow=wrap}
-    refs.write-reflog(git-dir, 'HEAD', commit1, commit2, 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'commit: second commit')
-
-    ; 6. git log
-    log-output-opt = revwalk.revwalk-format-log(git-dir, 'HEAD', 0)
-    log-output str
-    log-ok = false
-    log-output-opt: {
-        ok -> {
-            log-output = log-output-opt
-            log-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        log-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: git log ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: git log ok')
-        }
-    }
-
-    ; log should have 2 commits
-    log-hex, log-count, log-walk-ok = revwalk.revwalk-first-parent(git-dir, commit2, 0)
-    {
-        log-count == 2 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: log has 2 commits')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: log has 2 commits')
-        }
-    }
-
-    ; 7. git branch
-    refs.create-branch(git-dir, 'feature', commit2)
-    bnames, bcount = refs.list-branches(git-dir)
-    {
-        bcount == 2 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: branch count = 2')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: branch count = 2')
-        }
-    }
-
-    ; 8. git checkout (switch branch)
-    refs.update-head(git-dir, 'refs/heads/feature')
-    branch, detached, cb-ok = refs.current-branch(git-dir)
-    {
-        branch == 'feature' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: checkout feature')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: checkout feature')
-        }
-    }
-
-    ; switch back to main
-    refs.update-head(git-dir, 'refs/heads/main')
-    branch2, detached2, cb-ok2 = refs.current-branch(git-dir)
-    {
-        branch2 == 'main' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: checkout main')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: checkout main')
-        }
-    }
-
-    ; 9. git tag
-    refs.create-tag(git-dir, 'v1.0', commit2)
-    tnames, tcount = refs.list-tags(git-dir)
-    {
-        tcount == 1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag count = 1')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag count = 1')
-        }
-    }
-
-    ; resolve tag
-    tag-oid-opt = revwalk.resolve-ref(git-dir, 'v1.0')
-    tag-oid oid
-    tag-ok = false
-    tag-oid-opt: {
-        ok -> {
-            tag-oid = tag-oid-opt
-            tag-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        tag-oid.eq(commit2) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: resolve tag = commit2')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: resolve tag = commit2')
-        }
-    }
-
-    ; 10. git rev-parse
-    rp-head-opt = revwalk.resolve-ref(git-dir, 'HEAD')
-    rp-head oid
-    rp-ok = false
-    rp-head-opt: {
-        ok -> {
-            rp-head = rp-head-opt
-            rp-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        rp-head.eq(commit2) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: rev-parse HEAD')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: rev-parse HEAD')
-        }
-    }
-
-    rp-main-opt = revwalk.resolve-ref(git-dir, 'main')
-    rp-main oid
-    rp-ok2 = false
-    rp-main-opt: {
-        ok -> {
-            rp-main = rp-main-opt
-            rp-ok2 = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        rp-main.eq(commit2) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: rev-parse main')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: rev-parse main')
-        }
-    }
-
-    ; 11. git ls-files
-    ls-names, ls-hexoids, ls-modes, ls-count, ls-ok = index.read-index(git-dir)
-    {
-        ls-count == 2 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: ls-files count = 2')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: ls-files count = 2')
-        }
-    }
-
-    ; 12. git cat-file
-    cf-k, cf-d, cf-ok = object.read-loose(git-dir, blob1-oid)
-    {
-        cf-k == 'blob' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: cat-file type')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: cat-file type')
-        }
-    }
-    {
-        cf-d == 'file1 content' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: cat-file content')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: cat-file content')
-        }
-    }
-
-    ; 13. is-ancestor
-    is-anc = revwalk.is-ancestor(git-dir, commit1, commit2)
-    {
-        is-anc -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 is ancestor of commit2')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 is ancestor of commit2')
-        }
-    }
-
-    ; 14. reflog
-    rl-content = ''
-    rl-ok2 = false
-    rl-opt = refs.read-reflog(git-dir, 'HEAD')
-    rl-opt: {
-        ok -> {
-            rl-content = it
-            rl-ok2 = true
-        }
-
-        nil -> {
-        }
-
-        err -> {
-        }
-    }
-    {
-        rl-ok2 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: reflog exists')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: reflog exists')
-        }
-    }
-    {
-        rl-content.len() > 0 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: reflog has content')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: reflog has content')
-        }
-    }
-
-    ; 15. repo-discover
-    d-gd, d-wt, d-ok = repository.repo-discover(test-dir)
-    {
-        d-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: repo-discover ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: repo-discover ok')
-        }
-    }
-    {
-        d-gd == git-dir -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: repo-discover git-dir')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: repo-discover git-dir')
-        }
-    }
-
-    tp = util.i64-to-str(passed)
-    tf = util.i64-to-str(failed)
-    print('')
-
-    print('Passed: ' - tp - ', Failed: ' - tf)
-    failed > 0 -> 1
-    0
 }
+{
+    init-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: git init')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: git init')
+    }
+}
+
+; 2. git config
+config.config-set(git-dir, 'user', 'name', 'E2E Tester')
+config.config-set(git-dir, 'user', 'email', 'e2e@test.com')
+cfg-n = ''
+cfg-n-opt = config.config-get(git-dir, 'user', 'name')
+cfg-n-opt: {
+    ok -> cfg-n = it
+
+    nil -> {
+    }
+
+    err -> {
+    }
+}
+{
+    cfg-n == 'E2E Tester' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: git config name')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: git config name')
+    }
+}
+
+; 3. git add (first file)
+blob1-oid = object.write-blob(git-dir, 'file1 content')
+index.index-add(git-dir, 'file1.txt', blob1-oid, 33188)
+jn, jh, jm, jc, jok = index.read-index(git-dir)
+{
+    jc == 1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: git add file1')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: git add file1')
+    }
+}
+
+; 4. git commit (initial)
+tree-oid1, tree-ok1 = build-tree-from-index(git-dir)
+{
+    tree-ok1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: write-tree from index')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: write-tree from index')
+    }
+}
+
+now = os.now()
+commit1 = object.write-commit-full(git-dir, tree-oid1, '', 'E2E Tester', 'e2e@test.com', now, '+0000', 'E2E Tester', 'e2e@test.com', now, '+0000', 'initial commit')
+refs.write-ref(git-dir, 'refs/heads/main', commit1)
+refs.update-head(git-dir, 'refs/heads/main')
+refs.write-reflog(git-dir, 'HEAD', oid.zero-oid(), commit1, 'E2E Tester', 'e2e@test.com', now, '+0000', 'commit (initial): initial commit')
+
+; verify HEAD resolves
+head-oid-opt = refs.read-ref(git-dir, 'HEAD')
+head-oid oid
+head-ok = false
+head-oid-opt: {
+    ok -> {
+        head-oid = head-oid-opt
+        head-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    head-oid.eq(commit1) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: HEAD = commit1')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: HEAD = commit1')
+    }
+}
+
+; 5. git add (second file) + second commit
+blob2-oid = object.write-blob(git-dir, 'file2 content')
+index.index-add(git-dir, 'file2.txt', blob2-oid, 33188)
+tree-oid2, tree-ok2 = build-tree-from-index(git-dir)
+
+#{overflow=wrap}
+commit2 = object.write-commit-full(git-dir, tree-oid2, oid.oid-hex-str(commit1), 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'second commit')
+refs.write-ref(git-dir, 'refs/heads/main', commit2)
+
+#{overflow=wrap}
+refs.write-reflog(git-dir, 'HEAD', commit1, commit2, 'E2E Tester', 'e2e@test.com', now + 100, '+0000', 'commit: second commit')
+
+; 6. git log
+log-output-opt = revwalk.revwalk-format-log(git-dir, 'HEAD', 0)
+log-output str
+log-ok = false
+log-output-opt: {
+    ok -> {
+        log-output = log-output-opt
+        log-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    log-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: git log ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: git log ok')
+    }
+}
+
+; log should have 2 commits
+log-hex, log-count, log-walk-ok = revwalk.revwalk-first-parent(git-dir, commit2, 0)
+{
+    log-count == 2 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: log has 2 commits')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: log has 2 commits')
+    }
+}
+
+; 7. git branch
+refs.create-branch(git-dir, 'feature', commit2)
+bnames, bcount = refs.list-branches(git-dir)
+{
+    bcount == 2 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: branch count = 2')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: branch count = 2')
+    }
+}
+
+; 8. git checkout (switch branch)
+refs.update-head(git-dir, 'refs/heads/feature')
+branch, detached, cb-ok = refs.current-branch(git-dir)
+{
+    branch == 'feature' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: checkout feature')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: checkout feature')
+    }
+}
+
+; switch back to main
+refs.update-head(git-dir, 'refs/heads/main')
+branch2, detached2, cb-ok2 = refs.current-branch(git-dir)
+{
+    branch2 == 'main' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: checkout main')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: checkout main')
+    }
+}
+
+; 9. git tag
+refs.create-tag(git-dir, 'v1.0', commit2)
+tnames, tcount = refs.list-tags(git-dir)
+{
+    tcount == 1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag count = 1')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag count = 1')
+    }
+}
+
+; resolve tag
+tag-oid-opt = revwalk.resolve-ref(git-dir, 'v1.0')
+tag-oid oid
+tag-ok = false
+tag-oid-opt: {
+    ok -> {
+        tag-oid = tag-oid-opt
+        tag-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    tag-oid.eq(commit2) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: resolve tag = commit2')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: resolve tag = commit2')
+    }
+}
+
+; 10. git rev-parse
+rp-head-opt = revwalk.resolve-ref(git-dir, 'HEAD')
+rp-head oid
+rp-ok = false
+rp-head-opt: {
+    ok -> {
+        rp-head = rp-head-opt
+        rp-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    rp-head.eq(commit2) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: rev-parse HEAD')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: rev-parse HEAD')
+    }
+}
+
+rp-main-opt = revwalk.resolve-ref(git-dir, 'main')
+rp-main oid
+rp-ok2 = false
+rp-main-opt: {
+    ok -> {
+        rp-main = rp-main-opt
+        rp-ok2 = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    rp-main.eq(commit2) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: rev-parse main')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: rev-parse main')
+    }
+}
+
+; 11. git ls-files
+ls-names, ls-hexoids, ls-modes, ls-count, ls-ok = index.read-index(git-dir)
+{
+    ls-count == 2 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: ls-files count = 2')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: ls-files count = 2')
+    }
+}
+
+; 12. git cat-file
+cf-k, cf-d, cf-ok = object.read-loose(git-dir, blob1-oid)
+{
+    cf-k == 'blob' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: cat-file type')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: cat-file type')
+    }
+}
+{
+    cf-d == 'file1 content' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: cat-file content')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: cat-file content')
+    }
+}
+
+; 13. is-ancestor
+is-anc = revwalk.is-ancestor(git-dir, commit1, commit2)
+{
+    is-anc -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 is ancestor of commit2')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 is ancestor of commit2')
+    }
+}
+
+; 14. reflog
+rl-content = ''
+rl-ok2 = false
+rl-opt = refs.read-reflog(git-dir, 'HEAD')
+rl-opt: {
+    ok -> {
+        rl-content = it
+        rl-ok2 = true
+    }
+
+    nil -> {
+    }
+
+    err -> {
+    }
+}
+{
+    rl-ok2 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: reflog exists')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: reflog exists')
+    }
+}
+{
+    rl-content.len() > 0 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: reflog has content')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: reflog has content')
+    }
+}
+
+; 15. repo-discover
+d-gd, d-wt, d-ok = repository.repo-discover(test-dir)
+{
+    d-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: repo-discover ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: repo-discover ok')
+    }
+}
+{
+    d-gd == git-dir -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: repo-discover git-dir')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: repo-discover git-dir')
+    }
+}
+
+tp = util.i64-to-str(passed)
+tf = util.i64-to-str(failed)
+print('')
+
+print('Passed: ' - tp - ', Failed: ' - tf)
+failed > 0 -> 1
+0

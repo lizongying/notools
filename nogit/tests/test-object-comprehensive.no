@@ -10,862 +10,860 @@
 # /nogit/src/object
 # /nogit/src/repository
 
-main = () {
-    print('--- Comprehensive Object Test ---')
+print('--- Comprehensive Object Test ---')
 
-    passed = 0
-    failed = 0
+passed = 0
+failed = 0
 
-    cwd = os.get-wd()
+cwd = os.get-wd()
 
-    test-dir = cwd - '/tests/tmp-obj-comp'
+test-dir = cwd - '/tests/tmp-obj-comp'
 
-    git-dir = test-dir - '/.git'
-    gd-opt = repository.repo-init(test-dir, false)
-    gd str
-    init-ok = false
-    gd-opt: {
-        ok -> {
-            gd = gd-opt
-            init-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        init-ok -> print('repo-init ok')
-
-        -> print('repo-init FAIL')
+git-dir = test-dir - '/.git'
+gd-opt = repository.repo-init(test-dir, false)
+gd str
+init-ok = false
+gd-opt: {
+    ok -> {
+        gd = gd-opt
+        init-ok = true
     }
 
-    ; 1. Blob round trips
-    blob-oid = object.write-blob(git-dir, 'hello world')
-    bk, bd, bok = object.read-loose(git-dir, blob-oid)
-    {
-        bok && bd == 'hello world' && bk == 'blob' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: blob round trip')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: blob round trip')
-        }
+    nil || err -> {
     }
-
-    ; empty blob
-    empty-oid = object.write-blob(git-dir, '')
-    ek, ed, eok = object.read-loose(git-dir, empty-oid)
-    {
-        eok && ed == '' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: empty blob round trip')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: empty blob round trip')
-        }
-    }
-
-    ; large blob (>65535 to test zlib multi-block)
-    big-content str = with-len(70000)
-    i <- [0..70000): {
-        big-content.set-byte(i, (i % 256) & 0xff)
-    }
-    big-oid = object.write-blob(git-dir, big-content)
-    big-k, big-d, big-ok = object.read-loose(git-dir, big-oid)
-    {
-        big-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: large blob read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: large blob read ok')
-        }
-    }
-    {
-        big-d.len-bytes() == 70000 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: large blob len')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: large blob len')
-        }
-    }
-    {
-        big-d.byte(0) == 0 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: large blob byte 0')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: large blob byte 0')
-        }
-    }
-    {
-        big-d.byte(69999) == (69999 % 256) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: large blob last byte')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: large blob last byte')
-        }
-    }
-
-    ; blob with binary data (all byte values)
-    bin-data str = with-len(256)
-    i <- [0..256): {
-        bin-data.set-byte(i, i & 0xff)
-    }
-    bin-oid = object.write-blob(git-dir, bin-data)
-    bin-k, bin-d, bin-ok = object.read-loose(git-dir, bin-oid)
-    {
-        bin-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: binary blob read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: binary blob read ok')
-        }
-    }
-    {
-        bin-d.len-bytes() == 256 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: binary blob len')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: binary blob len')
-        }
-    }
-    bin-ok-byte = true
-    i <- [0..256): {
-        bin-d.byte(i) != (i & 0xff) -> {
-            bin-ok-byte = false
-            break
-        }
-    }
-    {
-        bin-ok-byte -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: binary blob all bytes')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: binary blob all bytes')
-        }
-    }
-
-    ; nonexistent object
-    no-oid = oid.zero-oid()
-    nk, nd, nok = object.read-loose(git-dir, no-oid)
-    {
-        ! nok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: nonexistent object fails')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: nonexistent object fails')
-        }
-    }
-
-    ; 2. Tree operations
-    ba = object.write-blob(git-dir, 'a')
-    bb = object.write-blob(git-dir, 'b')
-    bc = object.write-blob(git-dir, 'c')
-
-    ; insert out of order — tree should keep sorted
-    traw = object.tree-add-raw('', 33188, 'c.txt', bc)
-    traw = object.tree-add-raw(traw, 33188, 'a.txt', ba)
-    traw = object.tree-add-raw(traw, 33188, 'b.txt', bb)
-    tree-oid = object.tree-write-raw(git-dir, traw)
-
-    tree-back-opt = object.tree-read-raw(git-dir, tree-oid)
-    tree-back str
-    tree-read-ok = false
-    tree-back-opt: {
-        ok -> {
-            tree-back = tree-back-opt
-            tree-read-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        tree-read-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree read ok')
-        }
-    }
-
-    tree-n = object.tree-count-raw(tree-back)
-    {
-        tree-n == 3 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree count = 3')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree count = 3')
-        }
-    }
-
-    ; entries should be sorted: a.txt, b.txt, c.txt
-    tn0 = object.tree-name-raw(tree-back, 0)
-    {
-        tn0 == 'a.txt' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree sorted entry 0')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree sorted entry 0')
-        }
-    }
-    tn1 = object.tree-name-raw(tree-back, 1)
-    {
-        tn1 == 'b.txt' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree sorted entry 1')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree sorted entry 1')
-        }
-    }
-    tn2 = object.tree-name-raw(tree-back, 2)
-    {
-        tn2 == 'c.txt' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree sorted entry 2')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree sorted entry 2')
-        }
-    }
-
-    ; verify ids
-    ti0 = object.tree-id-raw(tree-back, 0)
-    {
-        ti0.eq(ba) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree id 0 matches blob a')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree id 0 matches blob a')
-        }
-    }
-    ti2 = object.tree-id-raw(tree-back, 2)
-    {
-        ti2.eq(bc) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree id 2 matches blob c')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree id 2 matches blob c')
-        }
-    }
-
-    ; verify modes
-    tm0 = object.tree-mode-raw(tree-back, 0)
-    {
-        tm0 == 33188 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tree mode 0 = 33188')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tree mode 0 = 33188')
-        }
-    }
-
-    ; empty tree
-    et-oid = object.tree-write-raw(git-dir, '')
-    et-back-opt = object.tree-read-raw(git-dir, et-oid)
-    et-back str
-    et-ok = false
-    et-back-opt: {
-        ok -> {
-            et-back = et-back-opt
-            et-ok = true
-        }
-
-        nil || err -> {
-        }
-    }
-    {
-        et-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: empty tree read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: empty tree read ok')
-        }
-    }
-    et-n = object.tree-count-raw(et-back)
-    {
-        et-n == 0 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: empty tree count = 0')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: empty tree count = 0')
-        }
-    }
-
-    ; 3. Commit round trips
-    now = os.now()
-
-    ; initial commit (no parent)
-    c1 = object.write-commit-full(git-dir, tree-oid, '', 'Author', 'auth@test.com', now, '+0000', 'Committer', 'comm@test.com', now, '+0000', 'initial commit')
-    ct1, cph1, can1, cae1, cat1, caz1, ccn1, cce1, cct1, ccz1, cm1, cok1 = object.read-commit-full(git-dir, c1)
-    {
-        cok1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 read ok')
-        }
-    }
-    {
-        can1 == 'Author' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 author name')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 author name')
-        }
-    }
-    {
-        cae1 == 'auth@test.com' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 author email')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 author email')
-        }
-    }
-    {
-        ccn1 == 'Committer' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 committer name')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 committer name')
-        }
-    }
-    {
-        cce1 == 'comm@test.com' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 committer email')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 committer email')
-        }
-    }
-    {
-        cat1 == now -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 author time')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 author time')
-        }
-    }
-    {
-        cm1 == 'initial commit' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 message')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 message')
-        }
-    }
-    {
-        cph1 == '' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 no parent')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 no parent')
-        }
-    }
-    {
-        ct1.eq(tree-oid) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit1 tree oid')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit1 tree oid')
-        }
-    }
-
-    ; second commit with parent
-    c1-hex = oid.oid-hex-str(c1)
-
-    #{overflow=wrap}
-    c2 = object.write-commit-full(git-dir, tree-oid, c1-hex, 'Author2', 'auth2@test.com', now + 200, '+0900', 'Committer2', 'comm2@test.com', now + 200, '+0900', 'second commit')
-    ct2, cph2, can2, cae2, cat2, caz2, ccn2, cce2, cct2, ccz2, cm2, cok2 = object.read-commit-full(git-dir, c2)
-    {
-        cok2 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit2 read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit2 read ok')
-        }
-    }
-    {
-        cm2 == 'second commit' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit2 message')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit2 message')
-        }
-    }
-    {
-        cph2 == c1-hex -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit2 parent hex')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit2 parent hex')
-        }
-    }
-    {
-        caz2 == '+0900' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: commit2 timezone')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: commit2 timezone')
-        }
-    }
-
-    ; 4. Tag round trips
-    tag-oid = object.write-tag-full(git-dir, ba, 'blob', 'v2.0', 'Tagger', 'tag@test.com', now, '-0500', 'annotated tag message')
-    t-obj, t-type, t-tag, t-name, t-email, t-time, t-tz, t-msg, t-ok = object.read-tag-full(git-dir, tag-oid)
-    {
-        t-ok -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag read ok')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag read ok')
-        }
-    }
-    {
-        t-tag == 'v2.0' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag name')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag name')
-        }
-    }
-    {
-        t-type == 'blob' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag type')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag type')
-        }
-    }
-    {
-        t-msg == 'annotated tag message' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag message')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag message')
-        }
-    }
-    {
-        t-name == 'Tagger' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tagger name')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tagger name')
-        }
-    }
-    {
-        t-email == 'tag@test.com' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tagger email')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tagger email')
-        }
-    }
-    {
-        t-tz == '-0500' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tagger timezone')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tagger timezone')
-        }
-    }
-    {
-        t-obj.eq(ba) -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: tag object oid')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: tag object oid')
-        }
-    }
-
-    ; 5. Octal helpers
-    oct0 = object.i64-to-octal(0)
-    {
-        oct0 == '0' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: octal 0')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: octal 0')
-        }
-    }
-    oct-mode = object.i64-to-octal(33188)
-    {
-        oct-mode == '100644' -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: octal 33188 = 100644')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: octal 33188 = 100644')
-        }
-    }
-    oct-back = object.octal-to-i64('100644')
-    {
-        oct-back == 33188 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: octal-to-i64 100644')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: octal-to-i64 100644')
-        }
-    }
-
-    ; 6. name-cmp (tree sorting)
-    r1 = object.name-cmp('a', false, 'b', false)
-    {
-        r1 == -1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: name-cmp a < b')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: name-cmp a < b')
-        }
-    }
-    r2 = object.name-cmp('b', false, 'a', false)
-    {
-        r2 == 1 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: name-cmp b > a')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: name-cmp b > a')
-        }
-    }
-    r3 = object.name-cmp('a', false, 'a', false)
-    {
-        r3 == 0 -> {
-
-            #{overflow=wrap}
-            passed = passed + 1
-            print('PASS: name-cmp a == a')
-        }
-
-        -> {
-
-            #{overflow=wrap}
-            failed = failed + 1
-            print('FAIL: name-cmp a == a')
-        }
-    }
-
-    tp = util.i64-to-str(passed)
-    tf = util.i64-to-str(failed)
-    print('')
-
-    print('Passed: ' - tp - ', Failed: ' - tf)
-    failed > 0 -> 1
-    0
 }
+{
+    init-ok -> print('repo-init ok')
+
+    -> print('repo-init FAIL')
+}
+
+; 1. Blob round trips
+blob-oid = object.write-blob(git-dir, 'hello world')
+bk, bd, bok = object.read-loose(git-dir, blob-oid)
+{
+    bok && bd == 'hello world' && bk == 'blob' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: blob round trip')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: blob round trip')
+    }
+}
+
+; empty blob
+empty-oid = object.write-blob(git-dir, '')
+ek, ed, eok = object.read-loose(git-dir, empty-oid)
+{
+    eok && ed == '' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: empty blob round trip')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: empty blob round trip')
+    }
+}
+
+; large blob (>65535 to test zlib multi-block)
+big-content str = with-len(70000)
+i <- [0..70000): {
+    big-content.set-byte(i, (i % 256) & 0xff)
+}
+big-oid = object.write-blob(git-dir, big-content)
+big-k, big-d, big-ok = object.read-loose(git-dir, big-oid)
+{
+    big-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: large blob read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: large blob read ok')
+    }
+}
+{
+    big-d.len-bytes() == 70000 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: large blob len')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: large blob len')
+    }
+}
+{
+    big-d.byte(0) == 0 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: large blob byte 0')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: large blob byte 0')
+    }
+}
+{
+    big-d.byte(69999) == (69999 % 256) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: large blob last byte')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: large blob last byte')
+    }
+}
+
+; blob with binary data (all byte values)
+bin-data str = with-len(256)
+i <- [0..256): {
+    bin-data.set-byte(i, i & 0xff)
+}
+bin-oid = object.write-blob(git-dir, bin-data)
+bin-k, bin-d, bin-ok = object.read-loose(git-dir, bin-oid)
+{
+    bin-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: binary blob read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: binary blob read ok')
+    }
+}
+{
+    bin-d.len-bytes() == 256 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: binary blob len')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: binary blob len')
+    }
+}
+bin-ok-byte = true
+i <- [0..256): {
+    bin-d.byte(i) != (i & 0xff) -> {
+        bin-ok-byte = false
+        break
+    }
+}
+{
+    bin-ok-byte -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: binary blob all bytes')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: binary blob all bytes')
+    }
+}
+
+; nonexistent object
+no-oid = oid.zero-oid()
+nk, nd, nok = object.read-loose(git-dir, no-oid)
+{
+    ! nok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: nonexistent object fails')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: nonexistent object fails')
+    }
+}
+
+; 2. Tree operations
+ba = object.write-blob(git-dir, 'a')
+bb = object.write-blob(git-dir, 'b')
+bc = object.write-blob(git-dir, 'c')
+
+; insert out of order — tree should keep sorted
+traw = object.tree-add-raw('', 33188, 'c.txt', bc)
+traw = object.tree-add-raw(traw, 33188, 'a.txt', ba)
+traw = object.tree-add-raw(traw, 33188, 'b.txt', bb)
+tree-oid = object.tree-write-raw(git-dir, traw)
+
+tree-back-opt = object.tree-read-raw(git-dir, tree-oid)
+tree-back str
+tree-read-ok = false
+tree-back-opt: {
+    ok -> {
+        tree-back = tree-back-opt
+        tree-read-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    tree-read-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree read ok')
+    }
+}
+
+tree-n = object.tree-count-raw(tree-back)
+{
+    tree-n == 3 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree count = 3')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree count = 3')
+    }
+}
+
+; entries should be sorted: a.txt, b.txt, c.txt
+tn0 = object.tree-name-raw(tree-back, 0)
+{
+    tn0 == 'a.txt' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree sorted entry 0')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree sorted entry 0')
+    }
+}
+tn1 = object.tree-name-raw(tree-back, 1)
+{
+    tn1 == 'b.txt' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree sorted entry 1')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree sorted entry 1')
+    }
+}
+tn2 = object.tree-name-raw(tree-back, 2)
+{
+    tn2 == 'c.txt' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree sorted entry 2')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree sorted entry 2')
+    }
+}
+
+; verify ids
+ti0 = object.tree-id-raw(tree-back, 0)
+{
+    ti0.eq(ba) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree id 0 matches blob a')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree id 0 matches blob a')
+    }
+}
+ti2 = object.tree-id-raw(tree-back, 2)
+{
+    ti2.eq(bc) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree id 2 matches blob c')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree id 2 matches blob c')
+    }
+}
+
+; verify modes
+tm0 = object.tree-mode-raw(tree-back, 0)
+{
+    tm0 == 33188 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tree mode 0 = 33188')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tree mode 0 = 33188')
+    }
+}
+
+; empty tree
+et-oid = object.tree-write-raw(git-dir, '')
+et-back-opt = object.tree-read-raw(git-dir, et-oid)
+et-back str
+et-ok = false
+et-back-opt: {
+    ok -> {
+        et-back = et-back-opt
+        et-ok = true
+    }
+
+    nil || err -> {
+    }
+}
+{
+    et-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: empty tree read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: empty tree read ok')
+    }
+}
+et-n = object.tree-count-raw(et-back)
+{
+    et-n == 0 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: empty tree count = 0')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: empty tree count = 0')
+    }
+}
+
+; 3. Commit round trips
+now = os.now()
+
+; initial commit (no parent)
+c1 = object.write-commit-full(git-dir, tree-oid, '', 'Author', 'auth@test.com', now, '+0000', 'Committer', 'comm@test.com', now, '+0000', 'initial commit')
+ct1, cph1, can1, cae1, cat1, caz1, ccn1, cce1, cct1, ccz1, cm1, cok1 = object.read-commit-full(git-dir, c1)
+{
+    cok1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 read ok')
+    }
+}
+{
+    can1 == 'Author' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 author name')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 author name')
+    }
+}
+{
+    cae1 == 'auth@test.com' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 author email')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 author email')
+    }
+}
+{
+    ccn1 == 'Committer' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 committer name')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 committer name')
+    }
+}
+{
+    cce1 == 'comm@test.com' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 committer email')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 committer email')
+    }
+}
+{
+    cat1 == now -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 author time')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 author time')
+    }
+}
+{
+    cm1 == 'initial commit' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 message')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 message')
+    }
+}
+{
+    cph1 == '' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 no parent')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 no parent')
+    }
+}
+{
+    ct1.eq(tree-oid) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit1 tree oid')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit1 tree oid')
+    }
+}
+
+; second commit with parent
+c1-hex = oid.oid-hex-str(c1)
+
+#{overflow=wrap}
+c2 = object.write-commit-full(git-dir, tree-oid, c1-hex, 'Author2', 'auth2@test.com', now + 200, '+0900', 'Committer2', 'comm2@test.com', now + 200, '+0900', 'second commit')
+ct2, cph2, can2, cae2, cat2, caz2, ccn2, cce2, cct2, ccz2, cm2, cok2 = object.read-commit-full(git-dir, c2)
+{
+    cok2 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit2 read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit2 read ok')
+    }
+}
+{
+    cm2 == 'second commit' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit2 message')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit2 message')
+    }
+}
+{
+    cph2 == c1-hex -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit2 parent hex')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit2 parent hex')
+    }
+}
+{
+    caz2 == '+0900' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: commit2 timezone')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: commit2 timezone')
+    }
+}
+
+; 4. Tag round trips
+tag-oid = object.write-tag-full(git-dir, ba, 'blob', 'v2.0', 'Tagger', 'tag@test.com', now, '-0500', 'annotated tag message')
+t-obj, t-type, t-tag, t-name, t-email, t-time, t-tz, t-msg, t-ok = object.read-tag-full(git-dir, tag-oid)
+{
+    t-ok -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag read ok')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag read ok')
+    }
+}
+{
+    t-tag == 'v2.0' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag name')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag name')
+    }
+}
+{
+    t-type == 'blob' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag type')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag type')
+    }
+}
+{
+    t-msg == 'annotated tag message' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag message')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag message')
+    }
+}
+{
+    t-name == 'Tagger' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tagger name')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tagger name')
+    }
+}
+{
+    t-email == 'tag@test.com' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tagger email')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tagger email')
+    }
+}
+{
+    t-tz == '-0500' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tagger timezone')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tagger timezone')
+    }
+}
+{
+    t-obj.eq(ba) -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: tag object oid')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: tag object oid')
+    }
+}
+
+; 5. Octal helpers
+oct0 = object.i64-to-octal(0)
+{
+    oct0 == '0' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: octal 0')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: octal 0')
+    }
+}
+oct-mode = object.i64-to-octal(33188)
+{
+    oct-mode == '100644' -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: octal 33188 = 100644')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: octal 33188 = 100644')
+    }
+}
+oct-back = object.octal-to-i64('100644')
+{
+    oct-back == 33188 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: octal-to-i64 100644')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: octal-to-i64 100644')
+    }
+}
+
+; 6. name-cmp (tree sorting)
+r1 = object.name-cmp('a', false, 'b', false)
+{
+    r1 == -1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: name-cmp a < b')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: name-cmp a < b')
+    }
+}
+r2 = object.name-cmp('b', false, 'a', false)
+{
+    r2 == 1 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: name-cmp b > a')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: name-cmp b > a')
+    }
+}
+r3 = object.name-cmp('a', false, 'a', false)
+{
+    r3 == 0 -> {
+
+        #{overflow=wrap}
+        passed = passed + 1
+        print('PASS: name-cmp a == a')
+    }
+
+    -> {
+
+        #{overflow=wrap}
+        failed = failed + 1
+        print('FAIL: name-cmp a == a')
+    }
+}
+
+tp = util.i64-to-str(passed)
+tf = util.i64-to-str(failed)
+print('')
+
+print('Passed: ' - tp - ', Failed: ' - tf)
+failed > 0 -> 1
+0

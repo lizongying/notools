@@ -1,0 +1,225 @@
+; print.no — JSON output (jv_dump_term / jvp_dump_string port)
+;
+; Behavioural port of jq's src/jv_print.c for the non-colour paths: the same
+; escape rules, the same pretty/compact layout, indentation (spaces or tab),
+; key ordering (insertion order by default, sorted with -S), the same number
+; rendering (preserved decimal literal printed verbatim, else shortest
+; round-trip double with NaN→null and ±Inf clamped to DBL_MAX), and the same
+; "too deep" guard (MAX_PRINT_DEPTH = 10000).
+;
+; Colour (-C), refcount (-r debug) and the truncating debugger helper are not
+; part of the stdout data path jq tests exercise, so they are omitted here.
+
+# /nojq/src/value
+# /nojq/src/number
+
+; MAX_PRINT_DEPTH from jv_print.c
+JV-PRINT-DEPTH = 10000
+
+; jvp-hex4: 4 lowercase hex digits for a value in 0..0xFFFF (snprintf "%04x")
+; v i64: 16-bit code unit
+; returns s str: 4 chars
+jvp-hex4 = (v i64) (s str) {
+    DIGITS = '0123456789abcdef'
+    m = v
+    d0 = m & 15
+    m = m >> 4
+    d1 = m & 15
+    m = m >> 4
+    d2 = m & 15
+    m = m >> 4
+    d3 = m & 15
+    a str = DIGITS[d0]
+    b str = DIGITS[d1]
+    c str = DIGITS[d2]
+    e str = DIGITS[d3]
+    s = e - c - b - a
+}
+
+; jvp-unicode-escape: "\\uXXXX" (and a surrogate pair when c > 0xFFFF)
+jvp-unicode-escape = (c i64) (s str) {
+    s = ''
+    c <= 65535 -> {
+        h str = jvp-hex4(c)
+        s = '\\u' - h
+    }
+    c > 65535 -> {
+
+        #{overflow=wrap}
+        cc i64 = c - 65536
+        masked i64 = cc & 1047552
+        shifted i64 = masked >> 10
+
+        #{overflow=wrap}
+        hi i64 = 55296 + shifted
+        msk i64 = cc & 1023
+
+        #{overflow=wrap}
+        lo i64 = 56320 + msk
+        hs str = jvp-hex4(hi)
+        ls str = jvp-hex4(lo)
+        s = '\\u' - hs - '\\u' - ls
+    }
+}
+
+; jvp-esc-string: jvp_dump_string — the quoted, escaped rendering of a string
+; sv str: raw string value; ascii bool: JV_PRINT_ASCII (-a) escape non-ASCII
+; returns out str: includes surrounding double quotes
+jvp-esc-string = (sv str, ascii bool) (out str) {
+    out = '"'
+    s = sv
+    n i64 = s.count()
+    i <- [0..n): {
+        c i64 = s[i]
+        c >= 32 && c <= 126 -> {
+            c == 34 || c == 92 -> out = out - '\\'
+            cd char = c
+            out = out - cd.to-str()
+        }
+        c < 32 || c == 127 -> {
+            c == 8 -> out = out - '\\b'
+            c == 9 -> out = out - '\\t'
+            c == 10 -> out = out - '\\n'
+            c == 12 -> out = out - '\\f'
+            c == 13 -> out = out - '\\r'
+            c != 8 && c != 9 && c != 10 && c != 12 && c != 13 && c != 127 -> {
+                out = out - jvp-unicode-escape(c)
+            }
+            c == 127 -> out = out - '\\u007f'
+        }
+        c >= 128 -> {
+            ascii -> out = out - jvp-unicode-escape(c)
+            ! ascii -> {
+                cd char = c
+                out = out - cd.to-str()
+            }
+        }
+    }
+    out = out - '"'
+}
+
+; jvp-indent: put_indent — n levels of pretty indentation (tab or `width` spaces)
+jvp-indent = (n i64, tab bool, width i64) (s str) {
+    s = ''
+    unit = ' '
+    tab -> unit = '\t'
+    ! tab -> {
+        u str = ''
+        k <- [0..width): {
+            u = u - ' '
+        }
+        unit = u
+    }
+    j <- [0..n): {
+        s = s - unit
+    }
+}
+
+; jvp-number-dump: number rendering per jv_dump_term's JV_KIND_NUMBER branch
+jvp-number-dump = (x i64) (out str) {
+    lit str = jv-literal(x)
+    lit.empty() -> {
+        d f64 = jv-number-val(x)
+        d != d -> out = 'null'
+        d == d -> {
+            jvp-is-inf(d) -> {
+                dm f64 = jvp-dbl-max()
+                d > 0 -> out = jvp-dtoa-fmt(dm)
+                d < 0 -> out = '-' - jvp-dtoa-fmt(dm)
+            }
+            ! jvp-is-inf(d) -> out = jvp-dtoa-fmt(d)
+        }
+    }
+    ! lit.empty() -> out = lit
+}
+
+; jvp-obj-order: positions 0..n-1 in output order. jq dumps in insertion order
+; unless sorted (JV_PRINT_SORTED), in which case it iterates jv_keys (byte order).
+jvp-obj-order = (x i64, sorted bool) (order []i64) {
+    order = with-len(0)
+    n i64 = jv-arr-len(x)
+    i <- [0..n): {
+        order.push(i)
+    }
+    sorted -> {
+        a <- [1..n): {
+            j i64 = a
+            (j > 0) {
+
+                #{overflow=wrap}
+                prev i64 = j - 1
+                ka str = jv-key-str(x, order[prev])
+                kb str = jv-key-str(x, order[j])
+                swap bool = kb.compare(ka) < 0
+                swap -> {
+                    tmp i64 = order[prev]
+                    order[prev] = order[j]
+                    order[j] = tmp
+                    j = prev
+                }
+                ! swap -> j = 0
+            }
+        }
+    }
+}
+
+; jv-dump-term: jv_dump_term — render x at nesting depth `indent`.
+; returns out str (the JSON text, no trailing newline)
+jv-dump-term = (x i64, indent i64, pretty bool, ascii bool, sorted bool, tab bool, width i64) (out str) {
+    out = ''
+    indent > JV-PRINT-DEPTH -> out = '<skipped: too deep>'
+    indent <= JV-PRINT-DEPTH -> {
+
+        #{overflow=wrap}
+        ni i64 = indent + 1
+        k i64 = jv-kind(x)
+        k == JV-NULL -> out = 'null'
+        k == JV-FALSE -> out = 'false'
+        k == JV-TRUE -> out = 'true'
+        k == JV-NUMBER -> out = jvp-number-dump(x)
+        k == JV-STRING -> out = jvp-esc-string(jv-str-val(x), ascii)
+        k == JV-ARRAY -> {
+            n i64 = jv-arr-len(x)
+            n == 0 -> out = '[]'
+            n > 0 -> {
+                out = '['
+                i <- [0..n): {
+                    i != 0 -> out = out - ','
+                    pretty -> out = out - '\n' - jvp-indent(ni, tab, width)
+                    e i64 = jv-arr-get(x, i)
+                    out = out - jv-dump-term(e, ni, pretty, ascii, sorted, tab, width)
+                }
+                pretty -> out = out - '\n' - jvp-indent(indent, tab, width)
+                out = out - ']'
+            }
+        }
+        k == JV-OBJECT -> {
+            n i64 = jv-arr-len(x)
+            n == 0 -> out = '{}'
+            n > 0 -> {
+                order []i64 = jvp-obj-order(x, sorted)
+                out = '{'
+                i <- [0..n): {
+
+                    #{index-out=0}
+                    pos i64 = order[i]
+                    i != 0 -> out = out - ','
+                    pretty -> out = out - '\n' - jvp-indent(ni, tab, width)
+                    kid i64 = jv-key-idx(x, pos)
+                    out = out - jvp-esc-string(jv-str-val(kid), ascii)
+                    out = out - ':'
+                    pretty -> out = out - ' '
+                    v i64 = jv-val-idx(x, pos)
+                    out = out - jv-dump-term(v, ni, pretty, ascii, sorted, tab, width)
+                }
+                pretty -> out = out - '\n' - jvp-indent(indent, tab, width)
+                out = out - '}'
+            }
+        }
+    }
+}
+
+; jv-dump-string: jv_dump_string — render a whole value at top level.
+jv-dump-string = (x i64, pretty bool, ascii bool, sorted bool, tab bool, width i64) (s str) {
+    s = jv-dump-term(x, 0, pretty, ascii, sorted, tab, width)
+}

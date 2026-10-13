@@ -1,0 +1,1743 @@
+; parser.no — jq language parser (recursive-descent AST builder)
+;
+; Builds an abstract syntax tree from the token stream produced by lexer.no,
+; mirroring jq's src/parser.y grammar and its operator precedence table. jq's
+; own parser is fused with its bytecode compiler (it emits `block`s directly);
+; nojq instead produces a standalone AST that eval.no interprets with CPS
+; generator semantics. This keeps the front end verifiable in isolation.
+;
+; Coverage of THIS module: the full Query/Expr operator grammar (pipe, comma,
+; //, and/or, comparisons, + - * / %, assignments, unary minus), all postfix
+; accessors (.field, [index], [] iterate, [a:b] slice, ? optional), primary
+; terms (., .., literals, ( ), [ ] collect, { } construct, function calls,
+; $binding, $__loc__, @format strings with \(...) interpolation), and
+; if/then/elif/else and try[/catch], plus `def` chains and bare `as $x`
+; bindings (binder forms reduce / foreach / label / break / module /
+; import / include are still rejected with a clear "not yet" error).
+;
+; AST lives in a struct global (_ap) as parallel vecs (struct-of-arrays);
+; mutation of a struct-field vec persists (see lexer.no header note). Child
+; slots: left/right/c1/c2/c3. Variable-length lists (object entries, call
+; args, string parts) are A-CONS chains {head=left, tail=right}.
+
+# /nojq/src/lexer
+# /nojq/src/value
+
+; ── AST node kinds ────────────────────────────
+A-EMPTY = 0; end of a CONS list
+A-CONS = 1; left=head node, right=tail (A-CONS or A-EMPTY)
+A-IDENTITY = 2; .
+A-REC = 3; ..
+A-LIT = 4; val = jv handle; op=1 marks a string chunk
+A-VAR = 5; text = name ($x)
+A-LOC = 6; $__loc__
+A-FIELD = 7; .name        parent=left, text=name
+A-FIELDSTR = 8; ."expr"      parent=left, right=key-node
+A-INDEX = 9; a[b]         parent=left, right=index
+A-ITERATE = 10; a[]          parent=left
+A-SLICE = 11; a[s:e]       parent=left, right=start(-1 none), c1=end(-1 none)
+A-OPTPOST = 12; a?           child=left
+A-PIPE = 13; a|b          left,right
+A-COMMA = 14; a,b          left,right
+A-BINOP = 15; op=BIN-*, left,right
+A-AND = 16; left,right
+A-OR = 17; left,right
+A-DEFOR = 18; a//b         left,right
+A-ASSIGN = 19; op=ASG-*, left,right
+A-NEGATE = 20; -a           left
+A-ARRAY = 21; [q] collect  left=query
+A-OBJECT = 22; {entries}    left=CONS of A-ENTRY
+A-ENTRY = 23; op=EK-*, left=key-node|-1, right=value, text=key-literal
+A-CALL = 24; f(a;b)       text=name, left=CONS args (A-EMPTY if none)
+A-STR = 25; "..."        left=CONS of parts (A-LIT | A-INTERP)
+A-INTERP = 26; \(q)         left=query, text=format-name
+A-FORMAT = 27; @f expr      text=fmt, left=expr
+A-IF = 28; if c t e     left=cond, right=then, c1=else|-1
+A-TRY = 29; try a catch b left=body, right=catch|-1
+A-AS = 30; E as $x | F  left=E, right=F, text=var name
+A-REDUCE = 31; reduce E as $x (init; update)  left=E right=init c1=update text=var
+A-FOREACH = 32; foreach E as $x (init; update; extract)  c2=extract (-1 absent)
+A-LABEL = 33; label $x | E  right=E, text=tag
+A-BREAK = 34; break $x  text=tag
+A-STATE = 35; implicit foreach/update state var (rewritten from '.')
+
+; ── binary op codes (A-BINOP) ─────────────────
+BIN-PLUS = 1
+BIN-MINUS = 2
+BIN-MUL = 3
+BIN-DIV = 4
+BIN-MOD = 5
+BIN-EQ = 6
+BIN-NEQ = 7
+BIN-LT = 8
+BIN-GT = 9
+BIN-LE = 10
+BIN-GE = 11
+
+; ── assignment op codes (A-ASSIGN) ────────────
+ASG-ASSIGN = 1
+ASG-PIPE = 2
+ASG-PLUS = 3
+ASG-MINUS = 4
+ASG-MUL = 5
+ASG-DIV = 6
+ASG-MOD = 7
+ASG-DEFOR = 8
+
+; ── object entry key kinds (A-ENTRY op) ───────
+EK-IDENT = 1; a: v     (text = literal name)
+EK-STRING = 2; "a": v   (left=key-node)
+EK-VAR = 3; $a: v or $a
+EK-EXPR = 4; (e): v   (left=key-node)
+EK-SHORTHAND = 5; a        (value = .a)
+
+; STATE-N: sentinel substitution text for A-STATE markers. Lexer-produced
+; variable names always describe $name bindings, so this can never collide.
+STATE-N = '#state'
+
+; ── parse state ───────────────────────────────
+; parse-state: token cursor + error slot + the $__loc__ file label.
+; All MUTABLE parser state lives in struct globals: bare global str/vec
+; mutations are a known Nolang codegen gap (they may not persist).
+parse-state {
+    toks []jq-token
+    err str
+    srcname str
+    labels []str
+    lblid []i64
+    lblctr i64
+    bms []i64
+}
+_ps parse-state
+_p i64
+
+; ── AST pool (parallel vecs) ──────────────────
+ast-pool {
+    kind []i64
+    op []i64
+    left []i64
+    right []i64
+    c1 []i64
+    c2 []i64
+    c3 []i64
+    text []str
+    val []i64
+}
+_ap ast-pool
+
+ap-reset = () {
+    _ps.err = ''
+    _p = 0
+    k []i64 = with-len(0)
+    _ap.kind = k
+    o []i64 = with-len(0)
+    _ap.op = o
+    l []i64 = with-len(0)
+    _ap.left = l
+    r []i64 = with-len(0)
+    _ap.right = r
+    c []i64 = with-len(0)
+    _ap.c1 = c
+    d []i64 = with-len(0)
+    _ap.c2 = d
+    e []i64 = with-len(0)
+    _ap.c3 = e
+    t []str = with-len(0)
+    _ap.text = t
+    v []i64 = with-len(0)
+    _ap.val = v
+    dn []str = with-len(0)
+    _defs.name = dn
+    da []i64 = with-len(0)
+    _defs.arity = da
+    dps []str = with-len(0)
+    _defs.params = dps
+    ds []i64 = with-len(0)
+    _defscope.items = ds
+    dv []i64 = with-len(0)
+    _defs.paramval = dv
+    dp []i64 = with-len(0)
+    _defs.pstart = dp
+    dq []i64 = with-len(0)
+    _defs.pcount = dq
+    db []i64 = with-len(0)
+    _defs.body = db
+    lb []str = with-len(0)
+    _ps.labels = lb
+    li []i64 = with-len(0)
+    _ps.lblid = li
+    _ps.lblctr = 0
+    bs []i64 = with-len(0)
+    _ps.bms = bs
+    _ps.srcname = '<top-level>'
+}
+
+; mk: append a fresh node of the given kind, default children to -1.
+mk = (kind i64) (idx i64) {
+    idx = _ap.kind.len()
+    _ap.kind.push(kind)
+    _ap.op.push(0)
+    _ap.left.push(-1)
+    _ap.right.push(-1)
+    _ap.c1.push(-1)
+    _ap.c2.push(-1)
+    _ap.c3.push(-1)
+    _ap.text.push('')
+    _ap.val.push(-1)
+}
+
+; node accessors (bounds-safe reads into the pool; index-out defaults apply
+; so out-of-range reads never surface an unhandled option).
+nkind = (i i64) (k i64) {
+    k = _ap.kind[i] #{index-out=0}
+}
+
+nop = (i i64) (k i64) {
+    k = _ap.op[i] #{index-out=0}
+}
+
+ax-c2 = (i i64) (k i64) {
+    k = _ap.c2[i] #{index-out=0}
+}
+
+; ── token cursor helpers ──────────────────────
+p-eof = () (e bool) {
+    e = _p >= _ps.toks.len()
+    ! e -> e = _ps.toks[_p].kind == TQ-EOF
+}
+
+p-kind = () (k i64) {
+    k = TQ-EOF
+    ! p-eof() -> k = _ps.toks[_p].kind
+}
+
+p-peek = (off i64) (k i64) {
+    k = TQ-EOF
+    i i64 = _p + off #{overflow=wrap}
+    i >= 0 -> {
+        i < _ps.toks.len() -> k = _ps.toks[i].kind
+    }
+}
+
+p-text = () (s str) {
+    s = ''
+    ! p-eof() -> s = _ps.toks[_p].text
+}
+
+p-val = () (v i64) {
+    v = -1
+    ! p-eof() -> v = _ps.toks[_p].val
+}
+
+p-line = () (l i64) {
+    l = 1
+    ! p-eof() -> l = _ps.toks[_p].line
+}
+
+p-advance = () {
+    _p = _p + 1 #{overflow=wrap}
+}
+
+p-error = (msg str) {
+    _ps.err.empty() -> _ps.err = msg
+}
+
+p-eat = (want i64) (ok bool) {
+    ok = false
+    p-kind() == want -> {
+        p-advance()
+        ok = true
+    }
+}
+
+p-expect = (want i64, msg str) (ok bool) {
+    ok = p-eat(want)
+    ! ok -> p-error(msg)
+}
+
+; ── CONS list: build a forward chain from a source-ordered item vec ──
+cons-from = (items []i64) (idx i64) {
+    tail = A-EMPTY
+    n = items.len()
+    i = n - 1 #{overflow=wrap}
+    (i >= 0) {
+        head i64 = items[i] #{index-out=0}
+        c i64 = mk(A-CONS)
+        _ap.left[c] = head
+        _ap.right[c] = tail
+        tail = c
+        i = i - 1 #{overflow=wrap}
+    }
+    idx = tail
+}
+
+; ── operator table (scratch; Nolang guards are sequential) ──
+_bi-bp i64
+_bi-assoc i64
+_bi-opkind i64
+_bi-op i64
+
+; _dictmode: true while parsing a dictionary (object) VALUE.
+; jq has TWO subgrammars: a full Query lets `|` bind looser than `,`
+; (so `a, b | c` == `a, (b|c)`), but a DictExpr value EXCLUDES top-level
+; comma while still allowing `|`. Precedence climbing can't express that
+; with bp alone, so we force comma to bp 0 (non-binding) inside dictmode.
+; Nested (...) / [..] / \(..) go through parse-query, which lifts the guard.
+_dictmode bool
+
+; ── function definitions (def) ────────────────
+; Defs live in a parallel pool (_defs); the parser keeps a scope stack
+; (_defscope) and resolves every A-CALL to its def record at parse time,
+; storing the record index in the node's c1 field (-1 = not user-defined,
+; fall back to builtins at eval). Parameter names are flattened into
+; _defparams/_defparamval (val=1 for $value params, 0 for filter params).
+def-entry {
+    name []str
+    arity []i64
+    pstart []i64
+    pcount []i64
+    body []i64
+    params []str
+    paramval []i64
+}
+_defs def-entry
+
+; def-scope: parse-time stack of visible def record indices.
+def-scope {
+    items []i64
+}
+_defscope def-scope
+
+new-def = (name str, params []str, vals []i64) (di i64) {
+    di = _defs.name.len()
+    _defs.name.push(name)
+    _defs.arity.push(params.len())
+    _defs.pstart.push(_defs.params.len())
+    _defs.pcount.push(params.len())
+    _defs.body.push(-1)
+    i <- [0..params.len()): {
+        _defs.params.push(params[i])
+        _defs.paramval.push(vals[i])
+    }
+}
+
+; def-lookup: innermost scope match on name+arity (later defs shadow earlier).
+def-lookup = (name str, argc i64) (di i64) {
+    di = -1
+    i i64 = _defscope.items.len() - 1 #{overflow=wrap}
+    (di < 0 && i >= 0) {
+        d i64 = _defscope.items[i] #{index-out=0}
+        _defs.name[d] == name && _defs.arity[d] == argc -> di = d
+        i = i - 1 #{overflow=wrap}
+    }
+}
+
+; count-cons: number of items in an A-CONS chain (A-CALL argc; the tail
+; sentinel A-EMPTY is node 0 / -1 and any non-CONS kind stops the walk).
+count-cons = (n i64) (c i64) {
+    c = 0
+    i = n
+    (ax-kind(i) == A-CONS) {
+        c = c + 1 #{overflow=wrap}
+        i = ax-right(i)
+    }
+}
+
+def-params = (di i64) (names []str) {
+    names = with-len(0)
+    st i64 = _defs.pstart[di]
+    n i64 = _defs.pcount[di]
+    i <- [0..n): {
+        names.push(_defs.params[st + i]) #{overflow=wrap}
+    }
+}
+
+def-paramval = (di i64) (vals []i64) {
+    vals = with-len(0)
+    st i64 = _defs.pstart[di]
+    n i64 = _defs.pcount[di]
+    i <- [0..n): {
+        vals.push(_defs.paramval[st + i]) #{overflow=wrap}
+    }
+}
+
+def-body = (di i64) (b i64) {
+    b = _defs.body[di]
+}
+
+bi-run = (k i64) {
+    _bi-bp = 0
+    _bi-assoc = 0
+    _bi-opkind = 0
+    _bi-op = 0
+
+    ; '|' (pipe) — bp 1, right assoc
+    k == 124 -> {
+        _bi-bp = 1
+        _bi-assoc = 1
+    }
+
+    ; ',' (comma) — bp 3, left assoc
+    k == 44 -> {
+        _bi-bp = 3
+        _bi-assoc = 0
+    }
+
+    ; '//' (defined-or) — bp 5, right assoc
+    k == TQ-DEFINEDOR -> {
+        _bi-bp = 5
+        _bi-assoc = 1
+        _bi-opkind = 3
+    }
+
+    ; assignments — bp 7, right assoc
+    k == 61 -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-ASSIGN
+    }
+    k == TQ-SETPIPE -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-PIPE
+    }
+    k == TQ-SETPLUS -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-PLUS
+    }
+    k == TQ-SETMINUS -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-MINUS
+    }
+    k == TQ-SETMULT -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-MUL
+    }
+    k == TQ-SETDIV -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-DIV
+    }
+    k == TQ-SETMOD -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-MOD
+    }
+    k == TQ-SETDEFINEDOR -> {
+        _bi-bp = 7
+        _bi-assoc = 1
+        _bi-opkind = 4
+        _bi-op = ASG-DEFOR
+    }
+
+    ; 'or' — bp 9, 'and' — bp 11
+    k == TQ-OR -> {
+        _bi-bp = 9
+        _bi-assoc = 0
+        _bi-opkind = 2
+        _bi-op = 0
+    }
+    k == TQ-AND -> {
+        _bi-bp = 11
+        _bi-assoc = 0
+        _bi-opkind = 2
+        _bi-op = 1
+    }
+
+    ; comparisons — bp 13, nonassoc (treated left)
+    k == TQ-EQ -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-EQ
+    }
+    k == TQ-NEQ -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-NEQ
+    }
+    k == 60 -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-LT
+    }
+    k == 62 -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-GT
+    }
+    k == TQ-LESSEQ -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-LE
+    }
+    k == TQ-GREATEREQ -> {
+        _bi-bp = 13
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-GE
+    }
+
+    ; additive + - — bp 15, left assoc
+    k == 43 -> {
+        _bi-bp = 15
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-PLUS
+    }
+    k == 45 -> {
+        _bi-bp = 15
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-MINUS
+    }
+
+    ; multiplicative * / % — bp 17, left assoc
+    k == 42 -> {
+        _bi-bp = 17
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-MUL
+    }
+    k == 47 -> {
+        _bi-bp = 17
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-DIV
+    }
+    k == 37 -> {
+        _bi-bp = 17
+        _bi-assoc = 0
+        _bi-opkind = 1
+        _bi-op = BIN-MOD
+    }
+}
+
+; ── grammar ───────────────────────────────────
+parse-query = () (node i64) {
+    saved bool = _dictmode
+    _dictmode = false
+    bms-push(0)
+    node = parse-expr(1)
+    bms-pop()
+    _dictmode = saved
+}
+
+parse-expr = (minbp i64) (node i64) {
+    k0 = p-kind()
+    k0 == TQ-REDUCE || k0 == TQ-FOREACH -> node = parse-binder-exp()
+    k0 != TQ-REDUCE && k0 != TQ-FOREACH -> node = parse-term()
+
+    ; inside a reduce/foreach stream, a trailing `as` belongs to the binder:
+    ; suppress the Term-level binding wherever that stream's parse recurses
+    cont = true
+    (cont && _ps.err.empty() && ! p-eof()) {
+        k i64 = p-kind()
+        bi-run(k)
+        _dictmode && k == 44 -> _bi-bp = 0
+        too-low bool = _bi-bp == 0 || _bi-bp < minbp
+        too-low -> cont = false
+        ! too-low -> {
+
+            ; capture the operator now: the recursive parse-expr below calls
+            ; bi-run itself and would clobber the _bi-* scratch globals.
+            opkind i64 = _bi-opkind
+            op i64 = _bi-op
+            next-min i64 = _bi-bp + 1 #{overflow=wrap}
+            _bi-assoc == 1 -> next-min = _bi-bp
+            p-advance()
+            rhs i64 = parse-expr(next-min)
+            node = combine(opkind, op, k, node, rhs)
+        }
+    }
+}
+
+combine = (opkind i64, op i64, k i64, a i64, b i64) (node i64) {
+    node = a
+    k == 124 -> {
+        node = mk(A-PIPE)
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    k == 44 -> {
+        node = mk(A-COMMA)
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    opkind == 3 -> {
+        node = mk(A-DEFOR)
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    opkind == 4 -> {
+        node = mk(A-ASSIGN)
+        _ap.op[node] = op
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    opkind == 2 && op == 0 -> {
+        node = mk(A-OR)
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    opkind == 2 && op == 1 -> {
+        node = mk(A-AND)
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+    opkind == 1 -> {
+        node = mk(A-BINOP)
+        _ap.op[node] = op
+        _ap.left[node] = a
+        _ap.right[node] = b
+    }
+}
+
+; parse-term: a primary followed by zero or more postfix accessors.
+; parse-binder-exp: reduce/foreach at Exp level (jq parser.y:660-668).
+; Field map: left=E stream, right=init, c1=update, c2=extract (foreach/3
+; only; -1 otherwise), text=iterated $var name (sans '$'). Only single-name
+; patterns are supported (destructuring patterns are a later slice).
+parse-binder-exp = () (node i64) {
+    isfc = p-kind() == TQ-FOREACH
+    p-advance()
+
+    ; jq parses the iterated stream as a bare Term: a Term-level trailing
+    ; `as $x | F` binding must not steal the binder's own `as`. Push a
+    ; suppression frame for the stream's top level; parse-query (parens and
+    ; brackets) pushes a 0 frame so nested `as` binds normally, and a nested
+    ; binder pushes its own frame -- the stack keeps them all straight.
+    bms-push(1)
+    e = parse-expr(0)
+    bms-pop()
+
+    ; a parenthesized stream may itself be an `as` binding ((1,2) as $y | $y)
+    ; and still be a legal reduce stream; the frame above guarantees the
+    ; binder's OWN `as` was not eaten by a top-level term, so just require it.
+    ashere = p-kind() == TQ-AS
+    ! ashere -> p-error('expected as')
+    ashere -> p-advance()
+    vname = ''
+    ka = p-kind()
+    _ps.err.empty() && ka == TQ-BINDING -> {
+        vname = p-text()
+        p-advance()
+    }
+    _ps.err.empty() && ka != TQ-BINDING -> p-error('only $name patterns supported')
+    _ps.err.empty() && p-expect(40, 'expected (') -> {
+        bms-push(0)
+        init i64 = parse-expr(0)
+        upd i64 = -1
+        _ps.err.empty() && p-expect(59, 'expected ;') -> upd = parse-expr(0)
+        ex i64 = -1
+        _ps.err.empty() && isfc && p-kind() == 59 -> {
+            p-advance()
+            ex = parse-expr(0)
+        }
+        _ps.err.empty() && p-expect(41, 'expected )') -> {
+            node = mk(A-FOREACH)
+            isfc == false -> node = mk(A-REDUCE)
+            _ap.left[node] = e
+            _ap.right[node] = init
+            _ap.c1[node] = upd
+            _ap.c2[node] = ex
+            _ap.text[node] = vname
+
+            ; '.' inside update/extract denotes the fold state, not the
+            ; outer input: rewrite those subtrees' identity nodes to A-STATE.
+            upd >= 0 -> mark-state-nodes(upd)
+            ex >= 0 -> mark-state-nodes(ex)
+        }
+        bms-pop()
+    }
+}
+
+; mark-state-nodes: turn every plain '.' in a reduce/foreach update (or
+; foreach extract) subtree into an A-STATE marker bound at eval time.
+; Recursion stops at binding nodes whose sub-expressions rebind '.' (the
+; left-hand stream of as/reduce/foreach) and at inner binders whose own
+; state marker shadows this one.
+mark-state-nodes = (node i64) {
+    node < 0 -> return
+    k = ax-kind(node)
+    k == A-IDENTITY -> _ap.kind[node] = A-STATE
+    k == A-AS -> {
+        mark-state-nodes(ax-right(node))
+        return
+    }
+    k == A-REDUCE || k == A-FOREACH -> {
+        u i64 = ax-c1(node)
+        u >= 0 -> mark-state-nodes(u)
+        x i64 = ax-c2(node)
+        x >= 0 -> mark-state-nodes(x)
+        return
+    }
+    l = ax-left(node)
+    l >= 0 -> mark-state-nodes(l)
+    r = ax-right(node)
+    r >= 0 -> mark-state-nodes(r)
+    c = ax-c1(node)
+    c >= 0 -> mark-state-nodes(c)
+}
+
+; pop-label: drop the innermost active label (tag + id together). Copy-truncate
+; instead of vec.remove — the toolchain's remove lowering emits invalid LLVM —
+; and in a standalone function to dodge the while/guard cascade false-error bug.
+pop-label = () {
+    n i64 = _ps.labels.len()
+    n == 0 -> return
+    kept []str = with-len(0)
+    keepi []i64 = with-len(0)
+    i <- [0..n - 1): {
+        kept.push(_ps.labels[i]) #{index-out=''}
+        keepi.push(_ps.lblid[i]) #{index-out=0}
+    }
+    _ps.labels = kept
+    _ps.lblid = keepi
+}
+
+; ── term-`as` suppression stack ───────────────
+; jq's grammar forbids a Term-level trailing `as $x | F` binding only at the
+; immediate top level of a reduce/foreach iterated stream; everywhere else
+; (inside parens/brackets, or nested sub-expressions) it is legal. A reduce
+; pushes 1 for the duration of its stream parse; parse-query (paren/bracket
+; units) pushes 0 so inner `as` binds normally. parse-term reads the live
+; top of the struct-field vec each time -- reading a fresh heap value dodges
+; the struct-global-local read-back aliasing bug (a captured `save` local
+; would reflect mutations made by the recursive descent).
+bms-push = (v i64) {
+    _ps.bms.push(v)
+}
+
+bms-pop = () {
+    n i64 = _ps.bms.len()
+    n == 0 -> return
+    kept []i64 = with-len(0)
+    i <- [0..n - 1): {
+        kept.push(_ps.bms[i]) #{index-out=0}
+    }
+    _ps.bms = kept
+}
+
+bm-top = () (v i64) {
+    v = 0
+    n i64 = _ps.bms.len()
+    n > 0 -> {
+        ln i64 = n - 1 #{overflow=wrap}
+        v = _ps.bms[ln] #{index-out=0}
+    }
+}
+
+; parse-postfix is itself a loop, so it is called exactly once here.
+; A trailing `as $x | Exp` (bare-variable binding) attaches at Term level,
+; matching jq's grammar rule `Exp: Term "as" PATS '|' Exp`.
+parse-term = () (node i64) {
+    node = parse-primary()
+    node >= 0 && _ps.err.empty() -> node = parse-postfix(node)
+    node >= 0 && _ps.err.empty() && p-kind() == TQ-AS && bm-top() == 0 -> {
+        p-advance()
+        ka i64 = p-kind()
+        ka == TQ-BINDING -> {
+            vname str = p-text()
+            p-advance()
+            p-expect(124, 'expected |')
+            rhs i64 = parse-expr(1)
+            n i64 = mk(A-AS)
+            _ap.left[n] = node
+            _ap.right[n] = rhs
+            _ap.text[n] = vname
+            node = n
+        }
+        ka != TQ-BINDING -> p-error('only $name patterns supported')
+    }
+}
+
+parse-postfix = (node i64) (cur i64) {
+    cur = node
+    cont = true
+    (cont && _ps.err.empty() && ! p-eof()) {
+        k i64 = p-kind()
+        step bool = true
+        k == TQ-FIELD -> {
+            n i64 = mk(A-FIELD)
+            _ap.left[n] = cur
+            _ap.text[n] = p-text()
+            p-advance()
+            cur = n
+        }
+        k == 46 && p-peek(1) == TQ-LITERAL -> {
+            p-advance()
+            key i64 = mk(A-LIT)
+            _ap.val[key] = p-val()
+            p-advance()
+            n i64 = mk(A-FIELDSTR)
+            _ap.left[n] = cur
+            _ap.right[n] = key
+            cur = n
+        }
+        k == 46 && p-peek(1) == 91 -> {
+            p-advance()
+            cur = parse-bracket(cur)
+        }
+        k == 91 -> cur = parse-bracket(cur)
+        k == 63 -> {
+            p-advance()
+            n i64 = mk(A-OPTPOST)
+            _ap.left[n] = cur
+            cur = n
+        }
+        step = k == TQ-FIELD || k == 91 || k == 63 || (k == 46 && (p-peek(1) == TQ-LITERAL || p-peek(1) == 91))
+        ! step -> cont = false
+    }
+}
+
+; parse-bracket: '[' ... ']' index / iterate / slice on `parent` ('[' at cursor).
+; Every dispatch snapshots p-kind() into a local bool first: Nolang guards run
+; sequentially, so a branch that advances the cursor must not let a later
+; `!=`-style guard re-read the (now moved) token and fire spuriously.
+parse-bracket = (parent i64) (node i64) {
+    p-advance(); consume '['
+    node = -1
+    iterate = p-kind() == 93
+    iterate -> {
+        p-advance()
+        node = mk(A-ITERATE)
+        _ap.left[node] = parent
+    }
+    ! iterate -> {
+        start-none bool = p-kind() == 58
+        start-none -> {; [:e]
+            p-advance()
+            end i64 = parse-query()
+            p-expect(93, 'expected ]')
+            node = mk(A-SLICE)
+            _ap.left[node] = parent
+            _ap.c1[node] = end
+        }
+        ! start-none -> {
+            a i64 = parse-query()
+            colon bool = p-kind() == 58
+            ! colon -> {; [idx]
+                p-expect(93, 'expected ]')
+                node = mk(A-INDEX)
+                _ap.left[node] = parent
+                _ap.right[node] = a
+            }
+            colon -> {; [s:...]
+                p-advance()
+                end-none bool = p-kind() == 93
+                end-none -> {
+                    p-advance()
+                    node = mk(A-SLICE)
+                    _ap.left[node] = parent
+                    _ap.right[node] = a
+                }
+                ! end-none -> {
+                    b i64 = parse-query()
+                    p-expect(93, 'expected ]')
+                    node = mk(A-SLICE)
+                    _ap.left[node] = parent
+                    _ap.right[node] = a
+                    _ap.c1[node] = b
+                }
+            }
+        }
+    }
+}
+
+; parse-primary: the non-postfix term productions.
+parse-primary = () (node i64) {
+    node = -1
+
+    ; a fresh primary starts a new term unit: a trailing `as $x | F` binding
+    ; is legal again inside parens/units nested in a reduce stream
+    k = p-kind()
+    done = false
+    k == 46 -> {
+        p-advance()
+        node = mk(A-IDENTITY)
+        done = true
+    }
+    k == TQ-REC -> {
+        p-advance()
+        node = mk(A-REC)
+        done = true
+    }
+    k == TQ-LABEL -> {
+        p-advance()
+        kb i64 = p-kind()
+        kb == TQ-BINDING -> {
+            node = mk(A-LABEL)
+            _ap.text[node] = p-text()
+
+            ; assign a compile-time label ordinal (source order) matching jq's
+            ; {"__jq":N} caught-break value; break resolves to this id.
+            _ap.val[node] = _ps.lblctr
+            _ps.lblctr = _ps.lblctr + 1 #{overflow=wrap}
+            p-advance()
+            p-expect(124, 'expected |')
+            _ps.labels.push(ax-text(node))
+            _ps.lblid.push(ax-val(node))
+            _ap.right[node] = parse-expr(1)
+            pop-label()
+        }
+        kb != TQ-BINDING -> p-error('label requires a $name binding')
+        done = true
+    }
+    k == TQ-BREAK -> {
+        p-advance()
+        kb i64 = p-kind()
+        kb == TQ-BINDING -> {
+
+            ; jq resolves break against lexically enclosing labels at compile
+            ; time: `break $o` outside any `label $o` is a compile error. The
+            ; innermost same-named label wins (shadowing) and its ordinal is
+            ; stored so the runtime catch (A-LABEL / A-TRY) can identify it.
+            found bool = false
+            theid i64 = -1
+            btag str = p-text()
+            i <- [0.._ps.labels.len()): {
+                _ps.labels[i] == btag -> {
+                    found = true
+                    theid = _ps.lblid[i] #{index-out=0}
+                }
+            }
+            _ps.err.empty() && ! found -> p-error('$*label-' - btag - ' is not defined')
+            _ps.err.empty() -> {
+                node = mk(A-BREAK)
+                _ap.text[node] = btag
+                _ap.val[node] = theid
+                p-advance()
+            }
+        }
+        kb != TQ-BINDING -> p-error('break requires a label name')
+        done = true
+    }
+    k == TQ-FIELD -> {
+        node = mk(A-FIELD)
+        _ap.text[node] = p-text()
+        p-advance()
+        done = true
+    }
+    k == TQ-LITERAL -> {
+        node = mk(A-LIT)
+        _ap.val[node] = p-val()
+        p-advance()
+        done = true
+    }
+    k == TQ-BINDING -> {
+        node = mk(A-VAR)
+        _ap.text[node] = p-text()
+        p-advance()
+        done = true
+    }
+    k == TQ-LOC -> {
+        ln i64 = p-line()
+        p-advance()
+        node = mk(A-LOC)
+
+        ; jq 1.8 expands $__loc__ at parse time to {"file":F,"line":L}
+        obj i64 = jv-object()
+        jv-obj-insert(obj, 'file', jv-string(_ps.srcname))
+        jv-obj-insert(obj, 'line', jv-number(math.i64-to-f64(ln)))
+        _ap.val[node] = obj
+        done = true
+    }
+    k == TQ-DEF -> {
+
+        ; `def f(params): body; ... more-defs Exp` — jq's FuncDefs Exp rule:
+        ; a def chain prefixes a whole Exp (binds looser than '|'), and the
+        ; defs stay visible only inside that following Exp.
+        mark i64 = _defscope.items.len()
+        (p-kind() == TQ-DEF) {
+            p-advance()
+            fname str = ''
+
+            ; snapshot p-kind(): guards evaluate sequentially against the
+            ; LIVE cursor, and the first arm advances it
+            kn i64 = p-kind()
+            kn == TQ-IDENT -> {
+                fname = p-text()
+                p-advance()
+            }
+            kn != TQ-IDENT -> p-error('expected function name')
+            params []str = with-len(0)
+            vals []i64 = with-len(0)
+            p-kind() == 40 -> {
+                p-advance()
+                p-kind() != 41 -> {
+                    loop bool = true
+                    (loop && _ps.err.empty()) {
+                        pk i64 = p-kind()
+                        pk == TQ-BINDING -> {
+                            params.push(p-text())
+                            vals.push(1)
+                            p-advance()
+                        }
+                        pk == TQ-IDENT -> {
+                            params.push(p-text())
+                            vals.push(0)
+                            p-advance()
+                        }
+                        pk != TQ-BINDING && pk != TQ-IDENT -> {
+                            p-error('expected parameter')
+                            loop = false
+                        }
+                        loop -> {
+                            sep bool = p-eat(59)
+                            ! sep -> loop = false
+                        }
+                    }
+                }
+                p-expect(41, 'expected )')
+            }
+            p-expect(58, 'expected :')
+            di i64 = new-def(fname, params, vals)
+            _defscope.items.push(di); visible to its own body (recursion)
+            b i64 = parse-expr(1)
+            _defs.body[di] = b
+            p-expect(59, 'expected ;')
+        }
+        node = parse-expr(1)
+
+        ; pop the def scope back to `mark` (copy-truncate: the toolchain's
+        ; vec.remove lowering currently emits invalid LLVM for index vars)
+        kept []i64 = with-len(mark)
+        i <- [0..mark): {
+            kept[i] = _defscope.items[i] #{index-out=0}
+        }
+        _defscope.items = kept
+        done = true
+    }
+    k == 45 -> {; unary minus '-'
+        p-advance()
+        t i64 = parse-term()
+        node = mk(A-NEGATE)
+        _ap.left[node] = t
+        done = true
+    }
+    k == 40 -> {; '(' query ')'
+        p-advance()
+        node = parse-query()
+        p-expect(41, 'expected )')
+        done = true
+    }
+    k == 91 -> {; '[' collect ']' or '[]'
+        p-advance()
+        p-kind() == 93 -> {
+            p-advance()
+            node = mk(A-LIT)
+            _ap.val[node] = jv-array()
+        }
+        p-kind() != 93 -> {
+            q i64 = parse-query()
+            p-expect(93, 'expected ]')
+            node = mk(A-ARRAY)
+            _ap.left[node] = q
+        }
+        done = true
+    }
+    k == 123 -> {; '{' object '}'
+        p-advance()
+        node = parse-object()
+        done = true
+    }
+    k == TQ-QQSTART -> {
+        node = parse-string-body('')
+        done = true
+    }
+    k == TQ-FORMAT -> {
+        f str = p-text()
+        p-advance()
+        nk i64 = p-kind()
+        nk == TQ-QQSTART -> node = parse-string-body(f)
+        nk != TQ-QQSTART -> {
+
+            ; bare @format: jq applies the format to the implicit input,
+            ; equivalent to @format "\(.)" — one interpolation of `.`.
+            idn i64 = mk(A-IDENTITY)
+            ip i64 = mk(A-INTERP)
+            _ap.left[ip] = idn
+            _ap.text[ip] = f
+            body []i64 = with-len(1)
+            body[0] = ip
+            node = mk(A-STR)
+            _ap.left[node] = cons-from(body)
+        }
+        done = true
+    }
+    k == TQ-IF -> {
+        p-advance()
+        node = parse-if()
+        done = true
+    }
+    k == TQ-TRY -> {
+        p-advance()
+        node = parse-try()
+        done = true
+    }
+    k == TQ-IDENT -> {
+        name str = p-text()
+        p-advance()
+        node = mk(A-CALL)
+        _ap.text[node] = name
+
+        ; true/false/null are IDENT (lexed so); collapse to literals here
+        name == 'true' -> {
+            node = mk(A-LIT)
+            _ap.val[node] = jv-true()
+        }
+        name == 'false' -> {
+            node = mk(A-LIT)
+            _ap.val[node] = jv-false()
+        }
+        name == 'null' -> {
+            node = mk(A-LIT)
+            _ap.val[node] = jv-null()
+        }
+        p-kind() == 40 -> {
+            p-advance()
+            _ap.left[node] = parse-args()
+            p-expect(41, 'expected )')
+        }
+
+        ; resolve against in-scope defs; eval prefers the def over a builtin
+        ax-kind(node) == A-CALL -> {
+            argc i64 = 0
+            ax-left(node) >= 0 -> argc = count-cons(ax-left(node))
+            _ap.c1[node] = def-lookup(name, argc)
+        }
+        done = true
+    }
+    ! done -> {
+        bad-kw(k)
+        p-advance()
+    }
+}
+
+parse-if = () (node i64) {
+    cond = parse-query()
+    p-expect(TQ-THEN, 'expected then')
+    then = parse-query()
+    el = -1
+    p-kind() == TQ-ELSEIF -> {
+        p-advance()
+        el = parse-if-elif()
+    }
+    p-kind() == TQ-ELSE -> {
+        p-advance()
+        el = parse-query()
+        p-expect(TQ-END, 'expected end')
+    }
+    p-kind() == TQ-END -> {
+        p-advance()
+    }
+    node = mk(A-IF)
+    _ap.left[node] = cond
+    _ap.right[node] = then
+    _ap.c1[node] = el
+}
+
+; parse-if-elif: body of an `elif` already-consumed; builds nested if..else.
+parse-if-elif = () (node i64) {
+    cond = parse-query()
+    p-expect(TQ-THEN, 'expected then')
+    then = parse-query()
+    el = -1
+    p-kind() == TQ-ELSEIF -> {
+        p-advance()
+        el = parse-if-elif()
+    }
+    p-kind() == TQ-ELSE -> {
+        p-advance()
+        el = parse-query()
+        p-expect(TQ-END, 'expected end')
+    }
+    p-kind() == TQ-END -> {
+        p-advance()
+    }
+    node = mk(A-IF)
+    _ap.left[node] = cond
+    _ap.right[node] = then
+    _ap.c1[node] = el
+}
+
+parse-try = () (node i64) {
+    body = parse-term()
+    ca = -1
+    p-kind() == TQ-CATCH -> {
+        p-advance()
+        ca = parse-term()
+    }
+    node = mk(A-TRY)
+    _ap.left[node] = body
+    _ap.right[node] = ca
+}
+
+parse-args = () (idx i64) {
+    items []i64 = with-len(0)
+    cont = true
+    (cont && _ps.err.empty()) {
+        q i64 = parse-query()
+        items.push(q)
+        more bool = p-eat(59)
+        ! more -> cont = false
+    }
+    idx = cons-from(items)
+}
+
+; parse-string-body: parse a QQSTRING at the cursor (QQSTART or already-past
+; FORMAT), with optional format prefix `fmt`.
+parse-string-body = (fmt str) (node i64) {
+    p-eat(TQ-QQSTART)
+    parts []i64 = with-len(0)
+    cont = true
+    (cont && _ps.err.empty() && ! p-eof()) {
+        k i64 = p-kind()
+        k == TQ-QQEND -> {
+            p-advance()
+            cont = false
+        }
+        k == TQ-QQTEXT -> {
+            n i64 = mk(A-LIT)
+            _ap.val[n] = p-val()
+            _ap.op[n] = 1
+            p-advance()
+            parts.push(n)
+        }
+        k == TQ-QQINTERPSTART -> {
+            p-advance()
+            q i64 = parse-query()
+            p-expect(TQ-QQINTERPEND, 'expected )')
+            n i64 = mk(A-INTERP)
+            _ap.left[n] = q
+            _ap.text[n] = fmt
+            parts.push(n)
+        }
+        ! (k == TQ-QQEND || k == TQ-QQTEXT || k == TQ-QQINTERPSTART) -> {
+            p-error('unterminated string')
+            cont = false
+        }
+    }
+    node = string-assemble(parts, fmt)
+}
+
+string-assemble = (parts []i64, fmt str) (node i64) {
+    n = parts.len()
+    p0 = parts[0] #{index-out=0}
+    only-lit = false
+    n == 1 -> only-lit = nkind(p0) == A-LIT && nop(p0) == 1
+    node = -1
+    n == 0 -> {
+        node = mk(A-LIT)
+        _ap.val[node] = jv-string('')
+    }
+    only-lit -> node = p0
+    n != 0 && ! only-lit -> {
+        node = mk(A-STR)
+        _ap.left[node] = cons-from(parts)
+    }
+    ! fmt.empty() && node >= 0 -> {
+        f i64 = mk(A-FORMAT)
+        _ap.text[f] = fmt
+        _ap.left[f] = node
+        node = f
+    }
+}
+
+parse-object = () (node i64) {
+    entries []i64 = with-len(0)
+    seen-close = p-eat(125)
+    ! seen-close -> {
+        cont bool = true
+        (cont && _ps.err.empty() && ! p-eof()) {
+            e i64 = parse-entry()
+            entries.push(e)
+            more bool = p-eat(44)
+            ! more -> cont = false
+        }
+        p-expect(125, 'expected }')
+    }
+    node = mk(A-OBJECT)
+    _ap.left[node] = cons-from(entries)
+}
+
+parse-entry = () (node i64) {
+    k = p-kind()
+    node = -1
+    done = false
+    k == TQ-IDENT -> {
+        name str = p-text()
+        p-advance()
+        node = mk(A-ENTRY)
+        _ap.text[node] = name
+        has-colon bool = p-kind() == 58
+        has-colon -> {
+            p-advance()
+            _ap.op[node] = EK-IDENT
+            _ap.right[node] = parse-dictexpr()
+        }
+        ! has-colon -> {
+            _ap.op[node] = EK-SHORTHAND
+            v i64 = mk(A-FIELD)
+            _ap.text[v] = name
+            _ap.right[node] = v
+        }
+        done = true
+    }
+    k == TQ-BINDING -> {
+        name str = p-text()
+        p-advance()
+        node = mk(A-ENTRY)
+        _ap.op[node] = EK-VAR
+        _ap.text[node] = name
+        has-colon bool = p-kind() == 58
+        has-colon -> {
+            p-advance()
+            _ap.right[node] = parse-dictexpr()
+        }
+        ! has-colon -> {
+            v i64 = mk(A-VAR)
+            _ap.text[v] = name
+            _ap.right[node] = v
+        }
+        done = true
+    }
+    k == TQ-QQSTART || k == TQ-FORMAT -> {
+        f str = ''
+        k == TQ-FORMAT -> {
+            f = p-text()
+            p-advance()
+        }
+        keynode i64 = parse-string-body(f)
+        node = mk(A-ENTRY)
+        _ap.op[node] = EK-STRING
+        _ap.left[node] = keynode
+        has-colon bool = p-kind() == 58
+        has-colon -> {
+            p-advance()
+            _ap.right[node] = parse-dictexpr()
+        }
+        ! has-colon -> {
+            _ap.op[node] = EK-SHORTHAND
+            v i64 = mk(A-IDENTITY)
+            idx i64 = mk(A-INDEX)
+            _ap.left[idx] = v
+            _ap.right[idx] = keynode
+            _ap.right[node] = idx
+        }
+        done = true
+    }
+    k == 40 -> {
+        p-advance()
+        ke i64 = parse-query()
+        p-expect(41, 'expected )')
+        p-expect(58, 'expected :')
+        node = mk(A-ENTRY)
+        _ap.op[node] = EK-EXPR
+        _ap.left[node] = ke
+        _ap.right[node] = parse-dictexpr()
+        done = true
+    }
+    ! done -> {
+        p-error('invalid object key')
+        node = mk(A-ENTRY)
+        _ap.op[node] = EK-IDENT
+    }
+}
+
+parse-dictexpr = () (node i64) {
+    saved bool = _dictmode
+    _dictmode = true
+    node = parse-expr(1)
+    _dictmode = saved
+}
+
+bad-kw = (k i64) {
+    k == TQ-DEF || k == TQ-AS -> p-error('syntax error')
+    k == TQ-MODULE -> p-error('module not yet supported')
+    k == TQ-IMPORT -> p-error('import not yet supported')
+    k == TQ-INCLUDE -> p-error('include not yet supported')
+    ! is-binder(k) -> p-error('syntax error')
+}
+
+is-binder = (k i64) (b bool) {
+    b = k == TQ-DEF || k == TQ-AS || k == TQ-REDUCE || k == TQ-FOREACH || k == TQ-LABEL || k == TQ-BREAK || k == TQ-MODULE || k == TQ-IMPORT || k == TQ-INCLUDE
+}
+
+; ── public API ────────────────────────────────
+; jq-parse-program: lex+parse a jq program, returning the AST root node index
+; (-1 on error) and an error message ('' on success).
+; BI-DEFS: jq-syntax builtin prelude (mirrors jq src/builtin.jq). Prepended
+; to every program so these names resolve through our own def/label/foreach/
+; break evaluator (exact fidelity, incl. value-param eager binding and the
+; subtract/negative errors). Kept on ONE line: __loc__ reports only the line
+; number, and zero newlines here keep user line numbers unchanged. Order is
+; dependency-first (isempty/nth reference first/skip).
+BI-DEFS = 'def first(g): label $out | g | ., break $out; def isempty(g): first((g|false), true); def limit($n; expr): if $n > 0 then label $out | foreach expr as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end) elif $n == 0 then empty else error("limit doesn\'t support negative count") end; def skip($n; expr): if $n > 0 then foreach expr as $item ($n; . - 1; if . < 0 then $item else empty end) elif $n == 0 then expr else error("skip doesn\'t support negative count") end; def nth($n; g): if $n < 0 then error("nth doesn\'t support negative indices") else first(skip($n; g)) end; def first: .[0]; def last: .[-1]; '
+
+jq-parse-program = (prog str) (root i64, err str) {
+    ap-reset()
+    pre = BI-DEFS
+    src = pre - prog
+    prog.empty() -> src = ''
+    toks, le = jq-lex(src)
+    _ps.toks = toks
+    root = -1
+    ! le.empty() -> _ps.err = le
+    le.empty() -> {
+        root = parse-query()
+        _ps.err.empty() && ! p-eof() -> {
+            is-binder(p-kind()) -> bad-kw(p-kind())
+            ! is-binder(p-kind()) -> p-error('unexpected trailing tokens')
+        }
+    }
+    err = _ps.err
+    ! err.empty() -> root = -1
+}
+
+; ── AST dumper (for structural tests) ─────────
+; Reads a pool slot by index (all calls here are bounds-checked to i>=0).
+ax-kind = (i i64) (k i64) {
+    k = _ap.kind[i] #{index-out=0}
+}
+
+ax-op = (i i64) (k i64) {
+    k = _ap.op[i] #{index-out=0}
+}
+
+ax-left = (i i64) (k i64) {
+    k = _ap.left[i] #{index-out=0}
+}
+
+ax-right = (i i64) (k i64) {
+    k = _ap.right[i] #{index-out=0}
+}
+
+ax-c1 = (i i64) (k i64) {
+    k = _ap.c1[i] #{index-out=0}
+}
+
+ax-text = (i i64) (s str) {
+    s = _ap.text[i] #{index-out=''}
+}
+
+ax-val = (i i64) (k i64) {
+    k = _ap.val[i] #{index-out=0}
+}
+
+; sc: sexp of a possibly-absent (=-1) child slot.
+sc = (i i64) (s str) {
+    s = '-'
+    i >= 0 -> s = ast-sexp(i)
+}
+
+bin-name = (op i64) (s str) {
+    s = '?bin'
+    op == BIN-PLUS -> s = 'plus'
+    op == BIN-MINUS -> s = 'minus'
+    op == BIN-MUL -> s = 'mul'
+    op == BIN-DIV -> s = 'div'
+    op == BIN-MOD -> s = 'mod'
+    op == BIN-EQ -> s = 'eq'
+    op == BIN-NEQ -> s = 'neq'
+    op == BIN-LT -> s = 'lt'
+    op == BIN-GT -> s = 'gt'
+    op == BIN-LE -> s = 'le'
+    op == BIN-GE -> s = 'ge'
+}
+
+asg-name = (op i64) (s str) {
+    s = '?asg'
+    op == ASG-ASSIGN -> s = 'assign'
+    op == ASG-PIPE -> s = 'update'
+    op == ASG-PLUS -> s = 'addmod'
+    op == ASG-MINUS -> s = 'submod'
+    op == ASG-MUL -> s = 'mulmod'
+    op == ASG-DIV -> s = 'divmod'
+    op == ASG-MOD -> s = 'modmod'
+    op == ASG-DEFOR -> s = 'defaultmod'
+}
+
+; ast-list: flatten a CONS chain into comma-separated child sexps.
+ast-list = (i i64) (s str) {
+    s = ''
+    cur = i
+    first = true
+    (cur != A-EMPTY && cur >= 0 && ax-kind(cur) == A-CONS) {
+        head i64 = ax-left(cur)
+        was bool = first
+        was -> s = sc(head)
+        ! was -> s = s - ', ' - sc(head)
+        first = false
+        cur = ax-right(cur)
+    }
+}
+
+ast-sexp = (i i64) (s str) {
+    s = '?'
+    i < 0 -> {}
+    i >= 0 -> {
+        k i64 = ax-kind(i)
+        s = '?'
+        k == A-EMPTY -> s = 'nil'
+        k == A-IDENTITY -> s = '.'
+        k == A-REC -> s = '..'
+        k == A-LOC -> s = '$__loc__'
+        k == A-NEGATE -> s = '(neg ' - sc(ax-left(i)) - ')'
+        k == A-ARRAY -> s = '(collect ' - sc(ax-left(i)) - ')'
+        k == A-ITERATE -> s = '(iter ' - sc(ax-left(i)) - ')'
+        k == A-OPTPOST -> s = '(opt ' - sc(ax-left(i)) - ')'
+        k == A-PIPE -> s = '(pipe ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-COMMA -> s = '(comma ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-AND -> s = '(and ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-OR -> s = '(or ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-DEFOR -> s = '(defor ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-VAR -> s = '$' - ax-text(i)
+        k == A-FIELD -> {
+            nm str = ax-text(i)
+            p i64 = ax-left(i)
+            p < 0 -> s = '.' - nm
+            p >= 0 -> s = '(field ' - sc(p) - ' ' - nm - ')'
+        }
+        k == A-FIELDSTR -> s = '(fieldstr ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-INDEX -> s = '(index ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-SLICE -> s = '(slice ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ' ' - sc(ax-c1(i)) - ')'
+        k == A-LIT -> {
+            o i64 = ax-op(i)
+            o == 1 -> s = 'SLIT'
+            o != 1 -> s = 'LIT'
+        }
+        k == A-BINOP -> s = '(' - bin-name(ax-op(i)) - ' ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-ASSIGN -> s = '(' - asg-name(ax-op(i)) - ' ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-CALL -> s = '(call ' - ax-text(i) - ' [' - ast-list(ax-left(i)) - '])'
+        k == A-STR -> s = '(str [' - ast-list(ax-left(i)) - '])'
+        k == A-INTERP -> s = '(interp ' - sc(ax-left(i)) - ' ' - ax-text(i) - ')'
+        k == A-FORMAT -> s = '(fmt ' - ax-text(i) - ' ' - sc(ax-left(i)) - ')'
+        k == A-IF -> s = '(if ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ' ' - sc(ax-c1(i)) - ')'
+        k == A-TRY -> s = '(try ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-AS -> s = '(as ' - sc(ax-left(i)) - ' $' - ax-text(i) - ' ' - sc(ax-right(i)) - ')'
+        k == A-REDUCE -> s = '(reduce ' - sc(ax-left(i)) - ' $' - ax-text(i) - ' ' - sc(ax-right(i)) - ' ' - sc(ax-c1(i)) - ')'
+        k == A-FOREACH -> s = '(foreach ' - sc(ax-left(i)) - ' $' - ax-text(i) - ' ' - sc(ax-right(i)) - ' ' - sc(ax-c1(i)) - ' ' - sc(ax-c2(i)) - ')'
+        k == A-LABEL -> s = '(label $' - ax-text(i) - ' ' - sc(ax-right(i)) - ')'
+        k == A-BREAK -> s = '(break $' - ax-text(i) - ')'
+        k == A-STATE -> s = '.'
+        k == A-CONS -> s = '(cons ' - sc(ax-left(i)) - ' ' - sc(ax-right(i)) - ')'
+        k == A-OBJECT -> s = '(obj [' - ast-list(ax-left(i)) - '])'
+        k == A-ENTRY -> {
+            o i64 = ax-op(i)
+            key str = '-'
+            o == EK-IDENT -> key = ax-text(i)
+            o == EK-SHORTHAND -> key = ax-text(i)
+            o == EK-VAR -> key = '$' - ax-text(i)
+            o == EK-STRING -> key = sc(ax-left(i))
+            o == EK-EXPR -> key = sc(ax-left(i))
+            s = '(entry ' - key - ' ' - sc(ax-right(i)) - ')'
+        }
+    }
+}
+
+; jq-dump: parse and render the AST root as a canonical s-expression.
+jq-dump = (prog str) (s str, err str) {
+    root, msg = jq-parse-program(prog)
+    err = msg
+    s = ''
+    ! err.empty() -> s = ''
+    err.empty() -> s = sc(root)
+}
+
+; ── AST substitution (def calls / as bindings) ──────
+; jq instantiates a callee's body at every reference site when it compiles
+; a call. We mirror that by deep-copying the AST at eval time and replacing:
+;   A-VAR(text == name)                      -> replacement node (shared)
+;   A-CALL(text == name, argc 0, no def)     -> replacement (filter param)
+;   A-CALL c1 def records are cloned through a per-subst old->new map so
+;     nested defs capture the same bindings (closure semantics) and
+;     recursion terminates; a nested def's own params shadow outer bindings
+;   A-AS right-hand side is left alone when it rebinds the substituted name
+subst-state {
+    names []str
+    nodes []i64
+    old []i64
+    new []i64
+}
+_sb subst-state
+
+sb-find = (s str) (i i64) {
+    i = -1
+    j <- [0.._sb.names.len()): {
+        _sb.names[j] == s -> i = j
+    }
+}
+
+def-has-param = (di i64, s str) (t bool) {
+    t = false
+    st i64 = _defs.pstart[di]
+    n i64 = _defs.pcount[di]
+    i <- [0..n): {
+        _defs.params[st + i] == s -> t = true #{overflow=wrap}
+    }
+}
+
+clone-node = (src i64) (idx i64) {
+    idx = mk(ax-kind(src))
+    _ap.op[idx] = ax-op(src)
+    _ap.left[idx] = ax-left(src)
+    _ap.right[idx] = ax-right(src)
+    _ap.c1[idx] = ax-c1(src)
+    _ap.text[idx] = ax-text(src)
+    _ap.val[idx] = ax-val(src)
+}
+
+; ast-lit: append a fresh A-LIT node carrying a runtime value handle.
+ast-lit = (v i64) (idx i64) {
+    idx = mk(A-LIT)
+    _ap.val[idx] = v
+}
+
+subst = (node i64, names []str, nodes []i64) (new i64) {
+    _sb.names = names
+    _sb.nodes = nodes
+    o []i64 = with-len(0)
+    _sb.old = o
+    nn []i64 = with-len(0)
+    _sb.new = nn
+    new = subst-rec(node)
+}
+
+subst-def = (di i64) (ndi i64) {
+    ndi = -1
+    j <- [0.._sb.old.len()): {
+        _sb.old[j] == di -> ndi = _sb.new[j]
+    }
+    ndi < 0 -> {
+        ndi = _defs.name.len()
+        _defs.name.push(_defs.name[di])
+        _defs.arity.push(_defs.arity[di])
+        _defs.pstart.push(_defs.params.len())
+        _defs.pcount.push(_defs.pcount[di])
+        _defs.body.push(-1)
+        st i64 = _defs.pstart[di]
+        i <- [0.._defs.pcount[di]): {
+            _defs.params.push(_defs.params[st + i]) #{overflow=wrap}
+            _defs.paramval.push(_defs.paramval[st + i]) #{overflow=wrap}
+        }
+        _sb.old.push(di)
+        _sb.new.push(ndi)
+
+        ; drop bindings the nested def's own parameters shadow
+        sn []str = with-len(0)
+        sr []i64 = with-len(0)
+        k <- [0.._sb.names.len()): {
+            ! def-has-param(di, _sb.names[k]) -> {
+                sn.push(_sb.names[k])
+                sr.push(_sb.nodes[k])
+            }
+        }
+        savedN []str = _sb.names
+        savedR []i64 = _sb.nodes
+        _sb.names = sn
+        _sb.nodes = sr
+        _defs.body[ndi] = subst-rec(_defs.body[di])
+        _sb.names = savedN
+        _sb.nodes = savedR
+    }
+}
+
+subst-rec = (node i64) (new i64) {
+    new = -1
+    node < 0 -> new = -1
+    node >= 0 -> {
+        k i64 = ax-kind(node)
+        done bool = false
+        k == A-VAR -> {
+            bi i64 = sb-find(ax-text(node))
+            bi >= 0 -> {
+                new = _sb.nodes[bi]
+                done = true
+            }
+        }
+        k == A-STATE && ! done -> {
+            bi i64 = sb-find(STATE-N)
+            bi >= 0 -> {
+                new = _sb.nodes[bi]
+                done = true
+            }
+        }
+        k == A-CALL && ! done -> {
+            di i64 = ax-c1(node)
+            argc i64 = 0
+            ax-left(node) >= 0 -> argc = count-cons(ax-left(node))
+            bi i64 = -1
+            di < 0 && argc == 0 -> bi = sb-find(ax-text(node))
+            bi >= 0 -> {
+                new = _sb.nodes[bi]
+                done = true
+            }
+            ! done -> {
+                c i64 = clone-node(node)
+                al i64 = ax-left(node)
+                al >= 0 -> al = subst-rec(al)
+                _ap.left[c] = al
+                di >= 0 -> _ap.c1[c] = subst-def(di)
+                new = c
+                done = true
+            }
+        }
+        k == A-AS && ! done -> {
+            c i64 = clone-node(node)
+            _ap.left[c] = subst-rec(ax-left(node))
+            shadow i64 = sb-find(ax-text(node))
+            shadow >= 0 -> _ap.right[c] = ax-right(node)
+            shadow < 0 -> _ap.right[c] = subst-rec(ax-right(node))
+            new = c
+            done = true
+        }
+        (k == A-REDUCE || k == A-FOREACH) && ! done -> {
+
+            ; the iterated var shadows outer bindings inside update/extract,
+            ; while E and init still see them (jq-verified scoping)
+            c i64 = clone-node(node)
+            _ap.left[c] = subst-rec(ax-left(node))
+            _ap.right[c] = subst-rec(ax-right(node))
+            shadow i64 = sb-find(ax-text(node))
+            shadow < 0 -> {
+                u i64 = ax-c1(node)
+                u >= 0 -> u = subst-rec(u)
+                _ap.c1[c] = u
+                x i64 = ax-c2(node)
+                x >= 0 -> x = subst-rec(x)
+                _ap.c2[c] = x
+            }
+            new = c
+            done = true
+        }
+        ! done -> {
+            c i64 = clone-node(node)
+            l i64 = ax-left(node)
+            l >= 0 -> l = subst-rec(l)
+            _ap.left[c] = l
+            r i64 = ax-right(node)
+            r >= 0 -> r = subst-rec(r)
+            _ap.right[c] = r
+            cv i64 = ax-c1(node)
+            cv >= 0 -> cv = subst-rec(cv)
+            _ap.c1[c] = cv
+            new = c
+        }
+    }
+}

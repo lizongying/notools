@@ -1,0 +1,1959 @@
+; eval — jq AST evaluator (multi-output stream semantics)
+;
+; Mirrors jq's src/execute.c + src/jv.c runtime behavior for the value-only
+; subset of the language: streams of outputs (no paths yet), error values as
+; first-class thrown handles, and jq's exact operator/type-error messages.
+; Every ev* function returns outputs in a freshly-built []i64 vec; a throw is
+; carried alongside as (threw, errv) — partial outputs emitted before the
+; error stay committed, matching jqVMP's streaming/TRY semantics (verified
+; against jq 1.8.2: `[try (1,error,2)]` -> [1]).
+;
+; Cross-product iteration orders replicate the reference exactly:
+;   binop:        RHS outer,  LHS inner      ((1,2)*(3,4) -> 3,6,4,8)
+;   index keys:   keys outer, parents inner  (.[][(0,1)]  -> 10,30,20,40)
+;   object build: first entry outer; key outer within an entry
+;   interp string: LAST part outer            ("\(1,2)-\(3,4)" -> 1-3,2-3,1-4,2-4)
+
+# /nojq/src/parser
+# /nojq/src/value
+# /nojq/src/print
+# /nojq/src/parse
+
+; ── numeric guard constants ───────────────────
+; EV-IPBIG = 2^53: beyond this, consecutive f64 integers are not distinct,
+; so i64 truncation is meaningless; floor/ceil/round are identities above it.
+; EV-DBIG  = 2^512: beyond this, sqrt(x) == x in f64 (newton seed diverges).
+EV-IPBIG = 9007199254740992.0
+EV-DBIG = 13407807929942597099574024998205846127479365820592393377723561443721764030073546976801874298166903427690031858186486050853753882811946569946433649006084096.0
+
+; ── builtin dispatch codes ────────────────────
+BI-EMPTY = 1
+BI-ERROR = 2
+BI-LENGTH = 3
+BI-KEYS = 4
+BI-KEYS-UNSORTED = 5
+BI-VALUES = 6
+BI-TYPE = 7
+BI-TOSTRING = 8
+BI-TOJSON = 9
+BI-TONUMBER = 10
+BI-NOT = 11
+BI-ADD = 12
+BI-SORT = 13
+BI-FLOOR = 14
+BI-CEIL = 15
+BI-ROUND = 16
+BI-SQRT = 17
+BI-FABS = 18
+BI-EXPLODE = 19
+BI-IMPLODE = 20
+BI-SELECT = 21
+BI-MAP = 22
+BI-HAS = 23
+BI-SPLIT = 24
+BI-MAX = 25
+BI-MIN = 26
+
+; ── small render helpers ──────────────────────
+ev-dump = (x i64) (s str) {
+    s = jv-dump-term(x, -1, false, false, false, false, 0)
+}
+
+; ev-kindname: jq's type-error kind label (true/false share "boolean")
+ev-kindname = (x i64) (s str) {
+    k i64 = jv-kind(x)
+    s = 'null'
+    k == JV-FALSE -> s = 'boolean'
+    k == JV-TRUE -> s = 'boolean'
+    k == JV-NUMBER -> s = 'number'
+    k == JV-STRING -> s = 'string'
+    k == JV-ARRAY -> s = 'array'
+    k == JV-OBJECT -> s = 'object'
+}
+
+; ev-desc: `number (1)` / `string ("a")` — the value label in every message
+ev-desc = (x i64) (s str) {
+    s = ev-kindname(x) - ' (' - ev-dump(x) - ')'
+}
+
+ev-msg = (s str) (x i64) {
+    x = jv-string(s)
+}
+
+; str-of: raw string payload of a JV-STRING carrier
+str-of = (x i64) (s str) {
+    s = ''
+    k i64 = jv-kind(x)
+    k == JV-STRING -> s = jv-str-val(x)
+}
+
+; ev-break-value: the value a try/catch sees when it catches a break:
+; jq's internal {"__jq": id} object (id = the target label's ordinal).
+; BI-DEFS (parser.no prelude) is parsed before every program and contains
+; exactly two `label` nodes, so parse-time ordinals are shifted by 2 from
+; the user-program-relative numbering reference jq reports. Subtract it at
+; materialization only — internal label<->break matching keeps raw ids.
+; If BI-DEFS ever gains/loses a label, update BI-LBLBASE to match.
+BI-LBLBASE = 2
+
+ev-break-value = (id i64) (obj i64) {
+    obj = jv-object()
+    jv-obj-insert(obj, '__jq', jv-number-i64(id))
+}
+
+ev-truthy = (x i64) (t bool) {
+    k i64 = jv-kind(x)
+    t = true
+    k == JV-NULL -> t = false
+    k == JV-FALSE -> t = false
+}
+
+ev-is-int = (x f64) (t bool) {
+    n i64 = math.f64-to-i64(x)
+    t = math.i64-to-f64(n) == x
+}
+
+; ev-str-range: codepoints [st..en) of s (nolang str slices are
+; two-closed-interval, so build char by char)
+ev-str-range = (s str, st i64, en i64) (r str) {
+    r = ''
+    i <- [st..en): {
+        r = r - s[i..i]
+    }
+}
+
+; ev-split: literal split (jq 1.8 `split/1` and `/` on strings)
+ev-split = (s str, d str) (arr i64) {
+    arr = jv-array()
+    n i64 = s.count()
+    dn i64 = d.count()
+    piece = ''
+    dn == 0 -> {
+        c <- [0..n): {
+            jv-arr-push(arr, jv-string(s[c..c]))
+        }
+    }
+    dn > 0 -> {
+        i i64 = 0
+        (i < n) {
+            head str = ''
+            i + dn <= n -> head = s[i..i + dn - 1] #{overflow=wrap}
+            head == d -> {
+                jv-arr-push(arr, jv-string(piece))
+                piece = ''
+                i = i + dn #{overflow=wrap}
+            }
+            head != d -> {
+                piece = piece - s[i..i]
+                i = i + 1 #{overflow=wrap}
+            }
+        }
+        jv-arr-push(arr, jv-string(piece))
+    }
+}
+
+; ev-str-of: stringification for interpolation / tostring
+ev-str-of = (x i64) (s str) {
+    s = ''
+    jv-kind(x) == JV-STRING -> s = jv-str-val(x)
+    jv-kind(x) != JV-STRING -> s = ev-dump(x)
+}
+
+; ── CONS list helpers ─────────────────────────
+ev-cons-vec = (head i64) (v []i64) {
+    v = with-len(0)
+    n = head
+    (n >= 0) {
+        ax-kind(n) == A-CONS -> {
+            v.push(ax-left(n))
+            n = ax-right(n)
+        }
+        ax-kind(n) != A-CONS -> n = -1
+    }
+}
+
+; single-value subexpression (slice bounds, has/split arg): 0 or >1 outputs
+; are errors (jq: "Index name must be a single value")
+ev-single = (q i64, in i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    o, t, e = ev(q, in)
+    t -> err = e
+    ! t && o.len() == 1 -> v = o[0]
+    ! t && o.len() != 1 -> err = ev-msg('Index name must be a single value')
+}
+
+; ── operators (jq f_add / f_subtract / f_multiply / f_divide / f_mod) ──
+; null is the additive identity ONLY for + (verified vs jq 1.8.2: `null-1`,
+; `null*1`, `null/1`, `null%1` all raise type errors).
+ev-arith-msg = (a i64, b i64, verb str) (e i64) {
+    e = ev-msg(ev-desc(a) - ' and ' - ev-desc(b) - ' cannot be ' - verb)
+}
+
+op-add = (a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    ka i64 = jv-kind(a)
+    kb i64 = jv-kind(b)
+    ka == JV-NULL -> v = b
+    ka != JV-NULL && kb == JV-NULL -> v = a
+    ka == JV-NUMBER && kb == JV-NUMBER -> v = jv-number(jv-number-val(a) + jv-number-val(b)) #{overflow=wrap}
+    ka == JV-STRING && kb == JV-STRING -> v = jv-string(jv-str-val(a) - jv-str-val(b)) #{overflow=wrap}
+    ka == JV-ARRAY && kb == JV-ARRAY -> {
+        arr i64 = jv-array()
+        i <- [0..jv-arr-len(a)): {
+            jv-arr-push(arr, jv-val-idx(a, i))
+        }
+        j <- [0..jv-arr-len(b)): {
+            jv-arr-push(arr, jv-val-idx(b, j))
+        }
+        v = arr
+    }
+    ka == JV-OBJECT && kb == JV-OBJECT -> {
+        obj i64 = jv-copy(a)
+        m <- [0..jv-arr-len(b)): {
+            jv-obj-insert(obj, jv-key-str(b, m), jv-val-idx(b, m))
+        }
+        v = obj
+    }
+    v < 0 -> err = ev-arith-msg(a, b, 'added')
+}
+
+op-sub = (a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    ka i64 = jv-kind(a)
+    kb i64 = jv-kind(b)
+    ka == JV-NUMBER && kb == JV-NUMBER -> v = jv-number(jv-number-val(a) - jv-number-val(b)) #{overflow=wrap}
+    ka == JV-ARRAY && kb == JV-ARRAY -> {
+        arr i64 = jv-array()
+        i <- [0..jv-arr-len(a)): {
+            x i64 = jv-val-idx(a, i)
+            drop bool = false
+            j <- [0..jv-arr-len(b)): {
+                jv-eq(x, jv-val-idx(b, j)) -> drop = true
+            }
+            ! drop -> jv-arr-push(arr, x)
+        }
+        v = arr
+    }
+    v < 0 -> err = ev-arith-msg(a, b, 'subtracted')
+}
+
+ev-repeat = (s str, n f64) (v i64) {
+    v = -1
+    n < 0 -> v = jv-null()
+    n >= 0 -> {
+        cnt i64 = math.f64-to-i64(n)
+        acc str = ''
+        i <- [0..cnt): {
+            acc = acc - s
+        }
+        v = jv-string(acc)
+    }
+}
+
+op-mul = (a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    ka i64 = jv-kind(a)
+    kb i64 = jv-kind(b)
+    ka == JV-NUMBER && kb == JV-NUMBER -> v = jv-number(jv-number-val(a) * jv-number-val(b)) #{overflow=wrap}
+    ka == JV-STRING && kb == JV-NUMBER -> v = ev-repeat(jv-str-val(a), jv-number-val(b))
+    ka == JV-NUMBER && kb == JV-STRING -> v = ev-repeat(jv-str-val(b), jv-number-val(a))
+    v < 0 -> err = ev-arith-msg(a, b, 'multiplied')
+}
+
+op-div = (a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    ka i64 = jv-kind(a)
+    kb i64 = jv-kind(b)
+    ka == JV-NUMBER && kb == JV-NUMBER -> {
+        nb f64 = jv-number-val(b)
+        nb == 0.0 -> err = ev-arith-msg(a, b, 'divided because the divisor is zero')
+        nb != 0.0 -> v = jv-number(jv-number-val(a) / nb)
+    }
+    ka == JV-STRING && kb == JV-STRING -> v = ev-split(jv-str-val(a), jv-str-val(b))
+    v < 0 && err < 0 -> err = ev-arith-msg(a, b, 'divided')
+}
+
+; ev-dtoi: jq builtin.c dtoi macro — truncate f64 toward zero to intmax_t,
+; clamping out-of-range to INTMAX_MIN / INTMAX_MAX.
+ev-dtoi = (n f64) (r i64) {
+    r = 0
+    n < 0.0 - 9223372036854775808.0 -> r = 0 - 9223372036854775807 - 1 #{overflow=wrap}
+    n >= 9223372036854775808.0 -> r = 9223372036854775807
+    n >= 0.0 - 9223372036854775808.0 && n < 9223372036854775808.0 -> r = math.f64-to-i64(n)
+}
+
+op-mod = (a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    ka i64 = jv-kind(a)
+    kb i64 = jv-kind(b)
+    ka == JV-NUMBER && kb == JV-NUMBER -> {
+        na f64 = jv-number-val(a)
+        nb f64 = jv-number-val(b)
+        na != na || nb != nb -> v = jv-number(0.0 / 0.0)
+        na == na && nb == nb -> {
+            bi i64 = ev-dtoi(nb)
+            bi == 0 -> err = ev-arith-msg(a, b, 'divided (remainder) because the divisor is zero')
+            bi != 0 -> {
+                bi == -1 -> v = jv-number(0.0)
+                bi != -1 -> {
+                    ai i64 = ev-dtoi(na)
+                    v = jv-number(math.i64-to-f64(ai % bi))
+                }
+            }
+        }
+    }
+    v < 0 && err < 0 -> err = ev-arith-msg(a, b, 'divided (remainder)')
+}
+
+ev-cmp-to = (op i64, r i64) (v i64) {
+    v = -1
+    op == BIN-EQ -> v = jv-bool(r == 0)
+    op == BIN-NEQ -> v = jv-bool(r != 0)
+    op == BIN-LT -> v = jv-bool(r < 0)
+    op == BIN-GT -> v = jv-bool(r > 0)
+    op == BIN-LE -> v = jv-bool(r <= 0)
+    op == BIN-GE -> v = jv-bool(r >= 0)
+}
+
+ev-arith = (op i64, a i64, b i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    op == BIN-PLUS -> {
+        v, err = op-add(a, b)
+    }
+    op == BIN-MINUS -> {
+        v, err = op-sub(a, b)
+    }
+    op == BIN-MUL -> {
+        v, err = op-mul(a, b)
+    }
+    op == BIN-DIV -> {
+        v, err = op-div(a, b)
+    }
+    op == BIN-MOD -> {
+        v, err = op-mod(a, b)
+    }
+}
+
+ev-cmp = (op i64, x i64, y i64) (err i64, v i64) {
+    err = -1
+    r i64 = jv-cmp(x, y)
+    v = ev-cmp-to(op, r)
+}
+
+; ── index / slice primitives ──────────────────
+ev-idx-get = (p i64, kv i64) (v i64, err i64) {
+    v = -1
+    err = -1
+    pk i64 = jv-kind(p)
+    kk i64 = jv-kind(kv)
+    pk == JV-NULL -> v = jv-null()
+    pk == JV-OBJECT && kk == JV-STRING -> {
+        g i64 = jv-obj-get(p, jv-str-val(kv))
+        g < 0 -> v = jv-null()
+        g >= 0 -> v = g
+    }
+    pk == JV-ARRAY && kk == JV-NUMBER -> {
+        idx i64 = math.f64-to-i64(jv-number-val(kv))
+        n i64 = jv-arr-len(p)
+        idx < 0 -> idx = idx + n #{overflow=wrap}
+        idx >= 0 && idx < n -> v = jv-val-idx(p, idx)
+        idx < 0 -> v = jv-null()
+        idx >= n -> v = jv-null()
+    }
+    v < 0 && err < 0 -> err = ev-msg('Cannot index ' - ev-kindname(p) - ' with ' - ev-desc(kv))
+}
+
+ev-clamp = (n i64, len i64) (r i64) {
+    r = n
+    r < 0 -> r = 0
+    r > len -> r = len
+}
+
+; jqVMP's OP_SLICE packs non-integral containers as {"start":s,"end":e}
+ev-slice-fill = (has bool, d f64, isstart bool, pseudo i64) {
+    v i64 = jv-null()
+    has -> {
+        n i64 = math.f64-to-i64(d)
+        math.i64-to-f64(n) == d -> v = jv-number-i64(n)
+        math.i64-to-f64(n) != d -> v = jv-number(d)
+    }
+    isstart -> jv-obj-insert(pseudo, 'start', v)
+    ! isstart -> jv-obj-insert(pseudo, 'end', v)
+}
+
+; ev-slice-of: jq parse_slice + jv_{array,string}_slice, replicated exactly:
+; start truncates toward zero (round down), end truncates then rounds UP
+; when it had a fractional part (jq: end += end<dend ? 1 : 0).
+ev-slice-of = (p i64, shas bool, sd f64, ehas bool, ed f64) (v i64) {
+    v = -1
+    isstr bool = jv-is-string(p)
+    len = 0
+    isstr -> len = jv-length(p)
+    ! isstr -> len = jv-arr-len(p)
+    lendif f64 = math.i64-to-f64(len)
+
+    dstart = 0.0
+    shas -> dstart = sd
+    dstart != dstart -> dstart = 0.0
+    dstart < 0.0 -> dstart = dstart + lendif
+    dstart < 0.0 -> dstart = 0.0
+    dstart > lendif -> dstart = lendif
+    st i64 = math.f64-to-i64(dstart)
+
+    dend = lendif
+    ehas -> dend = ed
+    dend != dend -> dend = lendif
+    dend < 0.0 -> dend = dend + lendif
+    dend < 0.0 -> dend = math.i64-to-f64(st)
+    en i64 = math.f64-to-i64(dend)
+    en > len -> en = len
+    en < len -> {
+        enf f64 = math.i64-to-f64(en)
+        enf < dend -> en = en + 1 #{overflow=wrap}
+    }
+    en < st -> en = st
+
+    isstr -> v = jv-string(ev-str-range(jv-str-val(p), st, en))
+    ! isstr -> {
+        arr i64 = jv-array()
+        i <- [st..en): {
+            jv-arr-push(arr, jv-val-idx(p, i))
+        }
+        v = arr
+    }
+}
+
+; ── recursive descent (..) ────────────────────
+ev-recurse = (x i64) (o []i64) {
+    o = with-len(0)
+    o.push(x)
+    k i64 = jv-kind(x)
+    (k == JV-ARRAY || k == JV-OBJECT) -> {
+        i <- [0..jv-arr-len(x)): {
+            c = ev-recurse(jv-val-idx(x, i))
+            j <- [0..c.len()): {
+                o.push(c[j])
+            }
+        }
+    }
+}
+
+; ── iterate helper ────────────────────────────
+ev-elems = (x i64) (e []i64, ok bool, errv i64) {
+    e = with-len(0)
+    ok = false
+    errv = -1
+    k i64 = jv-kind(x)
+    k == JV-ARRAY || k == JV-OBJECT -> {
+        i <- [0..jv-arr-len(x)): {
+            e.push(jv-val-idx(x, i))
+        }
+        ok = true
+    }
+    ! (k == JV-ARRAY || k == JV-OBJECT) -> errv = ev-msg('Cannot iterate over ' - ev-desc(x))
+}
+
+ev-arr-of-elems = (e []i64) (arr i64) {
+    arr = jv-array()
+    i <- [0..e.len()): {
+        jv-arr-push(arr, e[i])
+    }
+}
+
+; in-place vec set on a pooled array node (read-modify-write-back)
+jv-arr-set = (idx i64, i i64, x i64) {
+    node jv-value = _pv.nodes[idx]
+    node.elems[i] = x
+    _pv.nodes[idx] = node
+}
+
+; insertion sort a pooled array by jv-cmp (values stay in place)
+jv-arr-sort-inplace = (arr i64) {
+    n i64 = jv-arr-len(arr)
+    s = 1
+    (s < n) {
+        x i64 = jv-val-idx(arr, s)
+        t i64 = s
+        (t > 0) {
+            prev i64 = jv-val-idx(arr, t - 1) #{overflow=wrap}
+            jv-cmp(prev, x) > 0 -> {
+                jv-arr-set(arr, t, prev)
+                jv-arr-set(arr, t - 1, x) #{overflow=wrap}
+                t = t - 1 #{overflow=wrap}
+            }
+            ! (jv-cmp(prev, x) > 0) -> t = 0
+        }
+        s = s + 1 #{overflow=wrap}
+    }
+}
+
+; ── base64 formats (@base64 / @base64d) ──────
+; jq jvp_dtoa_fmt alphabet, RFC 4648 with standard padding.
+B64-ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+b64-enc = (s str) (r str) {
+    r = ''
+    bs = s
+    n i64 = bs.len-bytes()
+    i = 0
+    (i < n) {
+        b0 i64 = 0
+        b1 i64 = 0
+        b2 i64 = 0
+        rem i64 = n - i #{overflow=wrap}
+        b0 = bs.byte(0 + i) #{overflow=wrap}
+        rem > 1 -> {
+            b1 = bs.byte(1 + i) #{overflow=wrap}
+        }
+        rem > 2 -> {
+            b2 = bs.byte(2 + i) #{overflow=wrap}
+        }
+        chunk i64 = (b0 << 16) + (b1 << 8) + b2 #{overflow=wrap}
+        rem > 2 -> {
+            r = r - B64-ALPHABET[(chunk >> 18) & 63]
+            r = r - B64-ALPHABET[(chunk >> 12) & 63]
+            r = r - B64-ALPHABET[(chunk >> 6) & 63]
+            r = r - B64-ALPHABET[chunk & 63]
+        }
+        rem == 1 -> {
+            r = r - B64-ALPHABET[(b0 >> 2) & 63]
+            r = r - B64-ALPHABET[(b0 << 4) & 63]
+            r = r - '='
+            r = r - '='
+        }
+        rem == 2 -> {
+            r = r - B64-ALPHABET[(chunk >> 18) & 63]
+            r = r - B64-ALPHABET[(chunk >> 12) & 63]
+            r = r - B64-ALPHABET[(chunk >> 6) & 63]
+            r = r - '='
+        }
+        i = i + 3 #{overflow=wrap}
+    }
+}
+
+; jq jvp_b64_decode is lenient: '=' is skipped, any character outside the
+; alphabet maps to value 0, and trailing bits that don't fill a byte are
+; dropped (jq-verified: "xxx!" -> raw 00 00 00, "aGk" -> "hi").
+b64-dec = (s str) (r str) {
+    vb []byte = with-len(0)
+    bs = s
+    n i64 = bs.len-bytes()
+    acc = 0
+    nbits = 0
+    i = 0
+    (i < n) {
+        c i64 = bs.byte(i)
+        j i64 = 0
+        v i64 = 0
+        found bool = false
+        (j < 64 && ! found) {
+            bj i64 = B64-ALPHABET.byte(j)
+            bj == c -> {
+                v = j
+                found = true
+            }
+            j = j + 1 #{overflow=wrap}
+        }
+        c == 61 -> v = -1
+        v >= 0 -> {
+            acc = (acc << 6) + v #{overflow=wrap}
+            nbits = nbits + 6 #{overflow=wrap}
+            (nbits >= 8) {
+                nbits = nbits - 8 #{overflow=wrap}
+                out i64 = (acc >> nbits) & 255 #{overflow=wrap}
+                byt byte = out & 255
+                vb.push(byt)
+                acc = acc & ((1 << nbits) - 1) #{overflow=wrap}
+            }
+        }
+        i = i + 1 #{overflow=wrap}
+    }
+    r = vb.to-bytes-str()
+}
+
+; ev-apply-format: jq's per-interpolation format application.
+ev-apply-format = (fmt str, x i64) (s str, err i64) {
+    s = ''
+    err = -1
+    fmt.empty() || fmt == 'text' || fmt == 'json' -> s = ev-str-of(x)
+    fmt == 'base64' -> s = b64-enc(ev-str-of(x))
+    fmt == 'base64d' -> s = b64-dec(ev-str-of(x))
+    fmt != '' && fmt != 'text' && fmt != 'json' && fmt != 'base64' && fmt != 'base64d' -> err = ev-msg('@' - fmt - ' format not yet supported')
+}
+
+; ── string interpolation assembly ─────────────
+; Parts are consumed RIGHT to LEFT, carrying the already-assembled SUFFIX
+; stream. Processing the rightmost part first makes it the OUTER generator
+; (varies slowest); the LEFTMOST varies fastest — matching jq exactly:
+;   "\(1,2)-\(3,4)" -> 1-3,2-3,1-4,2-4.
+ev-str-parts = (parts []i64, pos i64, suf []i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    pos < 0 -> {
+        i <- [0..suf.len()): {
+            outs.push(suf[i])
+        }
+    }
+    pos >= 0 && pos < parts.len() -> {
+        nd i64 = parts[pos] #{index-out=0}
+        tk i64 = ax-kind(nd)
+        pr i64 = 0
+        (! threw && pr < suf.len()) {
+            h i64 = suf[pr] #{index-out=0}
+            tsuffix str = ''
+            jv-kind(h) == JV-STRING -> tsuffix = jv-str-val(h)
+            tk == A-LIT -> {
+                lit str = ev-str-of(ax-val(nd))
+                nxt []i64 = with-len(0)
+                nxt.push(jv-string(lit - tsuffix))
+                outs, threw, errv = ev-str-parts(parts, pos - 1, nxt, in) #{overflow=wrap}
+            }
+            tk == A-INTERP -> {
+                vs, vt, ve = ev(ax-left(nd), in)
+                p i64 = 0
+                (! threw && p < vs.len()) {
+                    x i64 = vs[p]
+                    e i64 = -1
+                    f str = ax-text(nd)
+                    fs str = ''
+                    fs, e = ev-apply-format(f, x)
+                    threw = e >= 0
+                    errv = e
+                    ! threw -> {
+                        nxt []i64 = with-len(0)
+                        nxt.push(jv-string(fs - tsuffix))
+                        so, st, se = ev-str-parts(parts, pos - 1, nxt, in) #{overflow=wrap}
+                        i <- [0..so.len()): {
+                            outs.push(so[i])
+                        }
+                        st -> {
+                            threw = true
+                            errv = se
+                        }
+                    }
+                    ! threw && vt -> {
+                        threw = true
+                        errv = ve
+                    }
+                    p = p + 1 #{overflow=wrap}
+                }
+                threw -> pr = suf.len()
+            }
+            ! (tk == A-LIT || tk == A-INTERP) -> {
+                nxt []i64 = with-len(0)
+                nxt.push(jv-string(tsuffix))
+                outs, threw, errv = ev-str-parts(parts, pos - 1, nxt, in) #{overflow=wrap}
+            }
+            pr = pr + 1 #{overflow=wrap}
+        }
+    }
+}
+
+; ── object construction ───────────────────────
+; Entries nest front-to-back (first entry outer: {a:(1,2),b:(3,4)} ->
+; {a:1,b:3},{a:1,b:4},{a:2,b:3},{a:2,b:4}); within an entry keys are outer.
+ev-obj-entry = (es []i64, pos i64, base i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    pos >= es.len() -> outs.push(base)
+    pos < es.len() -> {
+        e i64 = es[pos] #{index-out=0}
+        ek i64 = ax-op(e)
+        val i64 = ax-right(e)
+        ks []i64 = with-len(0)
+        kpend bool = false
+        kerr i64 = -1
+        ek == EK-IDENT || ek == EK-SHORTHAND || ek == EK-VAR -> ks.push(jv-string(ax-text(e)))
+        ek == EK-STRING || ek == EK-EXPR -> {
+            t, tt, te = ev(ax-left(e), in)
+            i <- [0..t.len()): {
+                ks.push(t[i])
+            }
+            tt -> {
+                kpend = true
+                kerr = te
+            }
+        }
+        k i64 = 0
+        (! threw && k < ks.len()) {
+            kv i64 = ks[k] #{index-out=0}
+            vpend bool = false
+            verr i64 = -1
+            ! jv-is-string(kv) -> {
+                threw = true
+                errv = ev-msg('Object keys must be strings')
+            }
+            jv-is-string(kv) -> {
+                vals, vt, ve = ev(val, in)
+                m i64 = 0
+                (! threw && m < vals.len()) {
+                    nb i64 = jv-copy(base)
+                    jv-obj-insert(nb, jv-str-val(kv), vals[m])
+                    so, st, se = ev-obj-entry(es, pos + 1, nb, in) #{overflow=wrap}
+                    j <- [0..so.len()): {
+                        outs.push(so[j])
+                    }
+                    st -> {
+                        threw = true
+                        errv = se
+                    }
+                    m = m + 1 #{overflow=wrap}
+                }
+                vpend = vt
+                verr = ve
+            }
+            ! threw && vpend -> {
+                threw = true
+                errv = verr
+            }
+            ! threw && kpend -> {
+                threw = true
+                errv = kerr
+            }
+            ! threw -> k = k + 1 #{overflow=wrap}
+            threw -> k = ks.len()
+        }
+    }
+}
+
+; ── main evaluator dispatch ───────────────────
+; node < 0 means the child slot is absent (parser -1): evaluate to the
+; empty stream, matching jq's EMPTY. Guards the ax-* readers, whose
+; out-of-range default is 0 (the pool's first node), from leaking in.
+; run-update: evaluate one reduce/foreach update expression against `st`.
+; Returns the full output stream (may be empty) and any body error signal.
+; jq model (all truths measured against reference):
+;   - update is evaluated ONCE with `.`=state, $x=item; multi-output means all
+;     outputs are computed against the SAME state, and the LAST one becomes
+;     the next iteration's state; empty update -> next state is null.
+;   - foreach yields every update output (or, with extract, extract applied
+;     to each output); reduce yields only the final fold state.
+; All guard bodies are flat single statements -- nested guard blocks inside
+; while bodies trip a Nolang codegen cascade (bogus getelementptr).
+run-update = (upd i64, vname str, v i64, st i64) (os []i64, threw bool, errv i64) {
+    ns []str = with-len(0)
+    nr []i64 = with-len(0)
+    vname.empty() == false -> {
+        ns.push(vname)
+        nr.push(ast-lit(v))
+    }
+    ns.push(STATE-N)
+    nr.push(ast-lit(st))
+    f2 i64 = subst(upd, ns, nr)
+    os, threw, errv = ev(f2, st)
+}
+
+; advance: fold step's carried state = last of os, or null when os is empty
+; (matches jq: [reduce (1,2) as $x (0; empty)] -> null; [foreach (1,2,3)
+; as $x (0; if $x==2 then empty else .+$x end)] -> [1,3]).
+advance = (os []i64) (next i64) {
+    next = jv-null()
+    os.len() > 0 -> {
+        ln i64 = os.len() - 1 #{overflow=wrap}
+        next = os[ln] #{index-out=0}
+    }
+}
+
+; extract-one: run a foreach extract expression for one update output,
+; appending its outputs to acc. $x (the stream item) stays visible inside
+; extract (jq-verified: foreach (1,2) as $x (0; .+$x,.+10; [$x,.]) ->
+; [[1,1],[1,10],[2,12],[2,20]]). Kept guard-flat: nested guard blocks
+; inside while bodies trip a Nolang codegen cascade (bogus getelementptr).
+extract-one = (ex i64, vname str, v i64, s i64, acc []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    ns []str = with-len(0)
+    nr []i64 = with-len(0)
+    vname.empty() == false -> {
+        ns.push(vname)
+        nr.push(ast-lit(v))
+    }
+    ns.push(STATE-N)
+    nr.push(ast-lit(s))
+    f2 i64 = subst(ex, ns, nr)
+    xs, xt, xe = ev(f2, s)
+    nx i64 = xs.len()
+    i <- [0..nx): {
+        acc.push(xs[i]) #{index-out=0}
+    }
+    threw = xt
+    errv = xe
+}
+
+; emit-item: for one stream item, emit every update output (foreach/2) or
+; every extract result (foreach/3). Short-circuits on the first throw.
+emit-item = (fc bool, ex i64, vname str, v i64, os []i64, acc []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    k = 0
+    nos = os.len()
+    (! threw && k < nos) {
+        xt bool = false
+        xe i64 = -1
+        fc -> xt, xe = extract-one(ex, vname, v, os[k], acc)
+        xt -> threw = true
+        xt -> errv = xe
+        fc == false -> acc.push(os[k]) #{index-out=0}
+        k = k + 1 #{overflow=wrap}
+    }
+}
+
+; ev-binder: reduce/foreach evaluation.
+; Semantics pinned against reference jq:
+;   - init is a stream: each init value folds the whole sequence separately
+;   - update runs once per item against the current state; its last output
+;     (or null when empty) becomes the next state
+;   - foreach/2 yields every update output; foreach/3 runs extract against
+;     each output (state bound to its '.', $x still visible) and yields its
+;     outputs; reduce yields only the final fold state per init
+;   - errors: init error wins (skip everything), then update/extract errors
+;     (short-circuit), then a stream error surfaces after the fold.
+; Lazy-commit (jq-verified): foreach COMMITS the update outputs produced
+; before a mid-update error, then surfaces the error — the partials of the
+; errored item are emitted even though iteration stops (top-level
+; foreach (1) as $x (0; 1,error) -> 1, then error). reduce keeps its fold
+; state private, so an update error emits nothing.
+ev-binder = (node i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    isred = ax-kind(node) == A-REDUCE
+    fc = ax-kind(node) == A-FOREACH && ax-c2(node) >= 0
+    vs, vt, ve = ev(ax-left(node), in)
+    inits, it, ie = ev(ax-right(node), in)
+    done = false
+    it -> threw = true
+    it -> errv = ie
+    it -> done = true
+    ninit i64 = inits.len()
+    nvs i64 = vs.len()
+    p = 0
+    (! done && p < ninit) {
+        st i64 = inits[p] #{index-out=0}
+        j i64 = 0
+        inner bool = false
+        berr i64 = -1
+        (! inner && j < nvs) {
+            ov i64 = vs[j] #{index-out=0}
+            os, ot, oe = run-update(ax-c1(node), ax-text(node), ov, st)
+            emit bool = false
+            isred == false && ot && jv-kind(oe) != JV-BREAK -> emit = true
+            ot == false && isred == false -> {
+                fc -> inner, berr = emit-item(true, ax-c2(node), ax-text(node), ov, os, outs)
+                fc == false -> inner, berr = emit-item(false, -1, ax-text(node), ov, os, outs)
+            }
+            ; foreach/2 with a mid-update ERROR still commits the outputs the
+            ; update produced before throwing (jq-verified lazy-commit); a
+            ; BREAK is control flow, not a committed partial, so it emits
+            ; nothing. Nested guard blocks inside a while body trip Nolang
+            ; codegen, hence the flat emit flag + single push loop.
+            x <- [0..os.len()): {
+                emit -> outs.push(os[x]) #{index-out=0}
+            }
+            ot -> inner = true
+            ot -> berr = oe
+            ot == false -> st = advance(os)
+            ot == false -> j = j + 1 #{overflow=wrap}
+            ot -> j = nvs
+        }
+        inner -> threw = true
+        inner -> errv = berr
+        inner -> done = true
+        inner == false && isred -> outs.push(st)
+        p = p + 1 #{overflow=wrap}
+    }
+    done == false && vt -> threw = true
+    done == false && vt -> errv = ve
+}
+
+; ev: evaluate node against input `in`, returning the output stream.
+; Lazy-commit contract (all behaviors measured against reference jq):
+;   - outs always carries the outputs COMMITTED before a throw;
+;   - a sub-expression that threw while still producing partials keeps
+;     that error PENDING: the partials are fed downstream first and the
+;     error surfaces only when the stream is exhausted, and is discarded
+;     if the downstream itself throws before pulling more (errors and
+;     BREAK truncation): label $o | (1,error) | ., break $o -> just 1.
+ev = (node i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    node < 0 -> return
+    k i64 = ax-kind(node)
+    k == A-IDENTITY -> outs.push(in)
+    k == A-LIT -> outs.push(ax-val(node))
+    k == A-REC -> {
+        r []i64 = ev-recurse(in)
+        i <- [0..r.len()): {
+            outs.push(r[i])
+        }
+    }
+    k == A-VAR -> {
+        threw = true
+        errv = ev-msg('$' - ax-text(node) - ' is not defined')
+    }
+    k == A-LOC -> {
+        outs.push(ax-val(node))
+    }
+    k == A-FIELD -> {
+        a, at, ae = ev-parent(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            v i64 = a[i]
+            pk i64 = jv-kind(v)
+            pk == JV-OBJECT || pk == JV-NULL -> {
+                g i64 = jv-obj-get(v, ax-text(node))
+                g < 0 -> g = jv-null()
+                outs.push(g)
+                i = i + 1 #{overflow=wrap}
+            }
+            ! (pk == JV-OBJECT || pk == JV-NULL) -> {
+                threw = true
+                errv = ev-msg('Cannot index ' - ev-kindname(v) - ' with string ' - ev-dump(jv-string(ax-text(node))))
+            }
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-FIELDSTR || k == A-INDEX -> {
+        a, at, ae = ev-parent(ax-left(node), in)
+        b, bt, be = ev(ax-right(node), in)
+        j i64 = 0
+        (! threw && j < b.len()) {
+            kv i64 = b[j]
+            i i64 = 0
+            (! threw && i < a.len()) {
+                v, er = ev-idx-get(a[i], kv)
+                threw = er >= 0
+                errv = er
+                ! threw -> outs.push(v)
+                i = i + 1 #{overflow=wrap}
+            }
+            ! threw && at -> {
+                threw = true
+                errv = ae
+            }
+            j = j + 1 #{overflow=wrap}
+        }
+        ! threw && bt -> {
+            threw = true
+            errv = be
+        }
+    }
+    k == A-ITERATE -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            e, ok, er = ev-elems(a[i])
+            threw = ! ok
+            errv = er
+            ! threw -> {
+                j <- [0..e.len()): {
+                    outs.push(e[j])
+                }
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-SLICE -> {
+        a, at, ae = ev(ax-left(node), in)
+        shas bool = false
+        sd f64 = 0.0
+        ehas bool = false
+        ed f64 = 0.0
+        ! threw && ax-right(node) >= 0 -> {
+            v, er = ev-single(ax-right(node), in)
+            threw = er >= 0
+            errv = er
+            ! threw && ! jv-is-number(v) && ! jv-is-null(v) -> {
+                threw = true
+                errv = ev-msg('Array/string slice indices must be integers')
+            }
+            ! threw && jv-is-number(v) -> {
+                shas = true
+                sd = jv-number-val(v)
+            }
+        }
+        ! threw && ax-c1(node) >= 0 -> {
+            v, er = ev-single(ax-c1(node), in)
+            threw = er >= 0
+            errv = er
+            ! threw && ! jv-is-number(v) && ! jv-is-null(v) -> {
+                threw = true
+                errv = ev-msg('Array/string slice indices must be integers')
+            }
+            ! threw && jv-is-number(v) -> {
+                ehas = true
+                ed = jv-number-val(v)
+            }
+        }
+        i i64 = 0
+        (! threw && i < a.len()) {
+            p i64 = a[i]
+            pk i64 = jv-kind(p)
+            v i64 = -1
+            er i64 = -1
+            pk == JV-NULL -> v = jv-null()
+            pk == JV-ARRAY || pk == JV-STRING -> v = ev-slice-of(p, shas, sd, ehas, ed)
+            ! (pk == JV-NULL || pk == JV-ARRAY || pk == JV-STRING) -> {
+                pseudo i64 = jv-object()
+                ev-slice-fill(shas, sd, true, pseudo)
+                ev-slice-fill(ehas, ed, false, pseudo)
+                er = ev-msg('Cannot index ' - ev-kindname(p) - ' with ' - ev-desc(pseudo))
+            }
+            threw = er >= 0
+            errv = er
+            ! threw -> outs.push(v)
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-OPTPOST -> {
+        a, at, ae = ev(ax-left(node), in)
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+    }
+    k == A-PIPE -> {
+
+        ; Lazy truncation, jq-verified: upstream partials are fed downstream
+        ; one by one; any downstream throw (error or BREAK) wins over the
+        ; upstream's pending error (which is then discarded, the upstream
+        ; was never pulled again); otherwise the pending error surfaces
+        ; after all partials: label $o | (1,error) | ., break $o -> 1.
+        a, at, ae = ev(ax-left(node), in)
+        j i64 = 0
+        (! threw && j < a.len()) {
+            b, bt, be = ev(ax-right(node), a[j])
+            m <- [0..b.len()): {
+                outs.push(b[m])
+            }
+            bt -> {
+                threw = true
+                errv = be
+            }
+            j = j + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-COMMA -> {
+        a, at, ae = ev(ax-left(node), in)
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+        threw = at
+        errv = ae
+        ! threw -> {
+            b, bt, be = ev(ax-right(node), in)
+            threw = bt
+            errv = be
+            m <- [0..b.len()): {
+                outs.push(b[m])
+            }
+        }
+    }
+    k == A-BINOP -> {
+        op i64 = ax-op(node)
+        b, bt, be = ev(ax-right(node), in)
+        q i64 = 0
+        (! threw && q < b.len()) {
+            a, at, ae = ev(ax-left(node), in)
+            p i64 = 0
+            (! threw && p < a.len()) {
+                v i64 = -1
+                er i64 = -1
+                x i64 = a[p]
+                y i64 = b[q]
+                op <= 5 -> {
+                    v, er = ev-arith(op, x, y)
+                }
+                op > 5 -> {
+                    er, v = ev-cmp(op, x, y)
+                }
+                threw = er >= 0
+                errv = er
+                ! threw -> outs.push(v)
+                p = p + 1 #{overflow=wrap}
+            }
+            ! threw -> {
+                threw = at
+                errv = ae
+            }
+            q = q + 1 #{overflow=wrap}
+        }
+        ! threw && bt -> {
+            threw = true
+            errv = be
+        }
+    }
+    k == A-AND -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            x i64 = a[i]
+            ev-truthy(x) -> {
+                b, bt, be = ev(ax-right(node), in)
+                j <- [0..b.len()): {
+                    outs.push(jv-bool(ev-truthy(b[j])))
+                }
+                bt -> {
+                    threw = true
+                    errv = be
+                }
+            }
+            ! ev-truthy(x) -> outs.push(jv-false())
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-OR -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            x i64 = a[i]
+            ev-truthy(x) -> outs.push(jv-true())
+            ! ev-truthy(x) -> {
+                b, bt, be = ev(ax-right(node), in)
+                j <- [0..b.len()): {
+                    outs.push(jv-bool(ev-truthy(b[j])))
+                }
+                bt -> {
+                    threw = true
+                    errv = be
+                }
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-DEFOR -> {
+        a, at, ae = ev(ax-left(node), in)
+        found bool = false
+        i <- [0..a.len()): {
+            x i64 = a[i]
+            ev-truthy(x) -> {
+                found = true
+                outs.push(x)
+            }
+        }
+        ! found && ! at -> {
+            b, bt, be = ev(ax-right(node), in)
+            threw = bt
+            errv = be
+            m <- [0..b.len()): {
+                outs.push(b[m])
+            }
+        }
+        at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-NEGATE -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            x i64 = a[i]
+            jv-is-number(x) -> outs.push(jv-number-literal-neg(x))
+            ! jv-is-number(x) -> {
+                threw = true
+                errv = ev-msg(ev-desc(x) - ' cannot be negated')
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-ASSIGN -> {
+        threw = true
+        errv = ev-msg('path expressions not yet supported')
+    }
+    k == A-ARRAY -> {
+        a, at, ae = ev(ax-left(node), in)
+        threw = at
+        errv = ae
+        ! threw -> outs.push(ev-arr-of-elems(a))
+    }
+    k == A-OBJECT -> {
+        es []i64 = ev-cons-vec(ax-left(node))
+        base i64 = jv-object()
+        so, st, se = ev-obj-entry(es, 0, base, in)
+        threw = st
+        errv = se
+        i <- [0..so.len()): {
+            outs.push(so[i])
+        }
+    }
+    k == A-STR -> {
+        ps []i64 = ev-cons-vec(ax-left(node))
+        seed []i64 = with-len(1)
+        seed[0] = jv-string('')
+        start i64 = ps.len() - 1 #{overflow=wrap}
+        so, st, se = ev-str-parts(ps, start, seed, in)
+        threw = st
+        errv = se
+        i <- [0..so.len()): {
+            outs.push(so[i])
+        }
+    }
+    k == A-FORMAT -> {
+        a, at, ae = ev(ax-left(node), in)
+        threw = at
+        errv = ae
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+    }
+    k == A-IF -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        (! threw && i < a.len()) {
+            c i64 = a[i]
+            ev-truthy(c) -> {
+                b, bt, be = ev(ax-right(node), in)
+                m <- [0..b.len()): {
+                    outs.push(b[m])
+                }
+                bt -> {
+                    threw = true
+                    errv = be
+                }
+            }
+            ! ev-truthy(c) && ax-c1(node) >= 0 -> {
+                b, bt, be = ev(ax-c1(node), in)
+                m <- [0..b.len()): {
+                    outs.push(b[m])
+                }
+                bt -> {
+                    threw = true
+                    errv = be
+                }
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw && at -> {
+            threw = true
+            errv = ae
+        }
+    }
+    k == A-TRY -> {
+        a, at, ae = ev(ax-left(node), in)
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+
+        ; jq 1.8: a break is a catchable thrown value; try catches it and the
+        ; catch expression sees {"__jq": id}. A bare try (no catch) swallows
+        ; it, so the break never reaches its label (jq-verified: [label $o |
+        ; try (1, break $o), 2] -> [1,2]).
+        at && ax-right(node) >= 0 -> {
+            cv i64 = ae
+            jv-kind(ae) == JV-BREAK -> cv = ev-break-value(jv-break-id(ae) - BI-LBLBASE) #{overflow=wrap}
+            b, bt, be = ev(ax-right(node), cv)
+            threw = bt
+            errv = be
+            m <- [0..b.len()): {
+                outs.push(b[m])
+            }
+        }
+    }
+    k == A-AS -> {
+
+        ; E as $x | F: bind each output of E (input of F stays the original
+        ; in), jq-verified: (1,2) as $x | $x + . on 5 -> [6,7]; partial
+        ; outputs committed before a later E error stay emitted (stream
+        ; binding: run F for every value produced before the error, then
+        ; surface the error; an F error short-circuits and wins).
+        vs, vt, ve = ev(ax-left(node), in)
+        j i64 = 0
+        inner bool = false
+        berr i64 = ve
+        (! inner && j < vs.len()) {
+            lit i64 = ast-lit(vs[j])
+            names []str = with-len(1)
+            names[0] = ax-text(node)
+            nodes []i64 = with-len(1)
+            nodes[0] = lit
+            f2 i64 = subst(ax-right(node), names, nodes)
+            os, ot, oe = ev(f2, in)
+            m <- [0..os.len()): {
+                outs.push(os[m])
+            }
+            ot -> inner = true
+            ot -> berr = oe
+            j = j + 1 #{overflow=wrap}
+        }
+        threw = vt
+        inner -> threw = true
+        errv = berr
+    }
+    k == A-CALL -> {
+        a, t, e = ev-call(node, in)
+        threw = t
+        errv = e
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+    }
+    k == A-REDUCE || k == A-FOREACH -> {
+        b, bt, be = ev-binder(node, in)
+        threw = bt
+        errv = be
+        i <- [0..b.len()): {
+            outs.push(b[i])
+        }
+    }
+    k == A-LABEL -> {
+
+        ; label $o | E: E runs normally; a JV-BREAK whose tag matches stops
+        ; the body (already-pushed outs stay), anything else propagates.
+        ; Matching is by tag text against the dynamically innermost running
+        ; label (jq-verified: shadowed same-name labels catch inner-first).
+        a, at, ae = ev(ax-right(node), in)
+        i <- [0..a.len()): {
+            outs.push(a[i])
+        }
+        broke bool = false
+        at && jv-kind(ae) == JV-BREAK && jv-break-id(ae) == ax-val(node) -> broke = true
+        threw = at
+        errv = ae
+        broke -> threw = false
+    }
+    k == A-BREAK -> {
+        threw = true
+        errv = jv-break(ax-val(node))
+    }
+}
+
+ev-parent = (pnode i64, in i64) (a []i64, threw bool, errv i64) {
+    a = with-len(0)
+    threw = false
+    errv = -1
+    pnode >= 0 -> {
+        a, threw, errv = ev(pnode, in)
+    }
+    pnode < 0 -> a.push(in)
+}
+
+; ── user-defined function calls (def) ───────────────
+; jq's parameter model, verified against 1.8.2:
+;   $value params: ARG IS AN EAGER STREAM — the body runs once per output
+;     value (unused params still evaluate: f(1,2,3) with $a unused -> 3 runs;
+;     f(empty) -> 0 runs; multi-param cross product is arg1-outer).
+;   filter params: textual macro — every reference re-runs the arg expr.
+; Both are realized through parser.no's subst (AST clone) at call time.
+
+; ev-defvalues: nested loops over the $-param argument streams; at the
+; innermost level the body is instantiated with literal bindings and run.
+ev-defvalues = (body i64, vnames []str, vargs []i64, pos i64, lits []i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    pos >= vnames.len() -> {
+        b i64 = body
+        vnames.len() > 0 -> b = subst(body, vnames, lits)
+        outs, threw, errv = ev(b, in)
+    }
+    pos < vnames.len() -> {
+
+        ; eager stream binding, jq-verified: values produced before an error
+        ; in the arg stream still run the body (partial commit), then the
+        ; arg error surfaces; a body error short-circuits and wins.
+        argn i64 = vargs[pos] #{index-out=0}
+        vs, vt, ve = ev(argn, in)
+        j i64 = 0
+        inner bool = false
+        berr i64 = ve
+        (! inner && j < vs.len()) {
+            nxt []i64 = with-len(lits.len() + 1) #{overflow=wrap}
+            t <- [0..lits.len()): {
+                nxt[t] = lits[t] #{index-out=0}
+            }
+
+            ; lits holds AST node indices (subst clones them into the body),
+            ; so wrap each bound jv value in a literal node first.
+            nxt[lits.len()] = ast-lit(vs[j]) #{index-out=0}
+            os, ot, oe = ev-defvalues(body, vnames, vargs, pos + 1, nxt, in) #{overflow=wrap}
+            m <- [0..os.len()): {
+                outs.push(os[m])
+            }
+            ot -> inner = true
+            ot -> berr = oe
+            j = j + 1 #{overflow=wrap}
+        }
+        threw = vt
+        inner -> threw = true
+        errv = berr
+    }
+}
+
+ev-defcall = (di i64, node i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    names = def-params(di)
+    pv = def-paramval(di)
+    args = ev-cons-vec(ax-left(node))
+    fnames []str = with-len(0)
+    fnodes []i64 = with-len(0)
+    vnames []str = with-len(0)
+    vargs []i64 = with-len(0)
+    i <- [0..names.len()): {
+        pvv i64 = pv[i] #{index-out=0}
+        nm str = names[i] #{index-out=''}
+        ar i64 = args[i] #{index-out=0}
+        pvv == 0 -> {
+            fnames.push(nm)
+            fnodes.push(ar)
+        }
+        pvv == 1 -> {
+            vnames.push(nm)
+            vargs.push(ar)
+        }
+    }
+    body1 = subst(def-body(di), fnames, fnodes)
+    lits0 []i64 = with-len(0)
+    outs, threw, errv = ev-defvalues(body1, vnames, vargs, 0, lits0, in)
+}
+
+; ── builtin name/arity resolution ─────────────
+bi-code = (name str, argc i64) (c i64) {
+    c = -1
+    name == 'empty' && argc == 0 -> c = BI-EMPTY
+    name == 'error' && argc == 0 -> c = BI-ERROR
+    name == 'error' && argc == 1 -> c = BI-ERROR
+    name == 'length' && argc == 0 -> c = BI-LENGTH
+    name == 'keys' && argc == 0 -> c = BI-KEYS
+    name == 'keys_unsorted' && argc == 0 -> c = BI-KEYS-UNSORTED
+    name == 'values' && argc == 0 -> c = BI-VALUES
+    name == 'type' && argc == 0 -> c = BI-TYPE
+    name == 'tostring' && argc == 0 -> c = BI-TOSTRING
+    name == 'tojson' && argc == 0 -> c = BI-TOJSON
+    name == 'tonumber' && argc == 0 -> c = BI-TONUMBER
+    name == 'not' && argc == 0 -> c = BI-NOT
+    name == 'add' && argc == 0 -> c = BI-ADD
+    name == 'sort' && argc == 0 -> c = BI-SORT
+    name == 'floor' && argc == 0 -> c = BI-FLOOR
+    name == 'ceil' && argc == 0 -> c = BI-CEIL
+    name == 'round' && argc == 0 -> c = BI-ROUND
+    name == 'sqrt' && argc == 0 -> c = BI-SQRT
+    name == 'fabs' && argc == 0 -> c = BI-FABS
+    name == 'explode' && argc == 0 -> c = BI-EXPLODE
+    name == 'implode' && argc == 0 -> c = BI-IMPLODE
+    name == 'select' && argc == 1 -> c = BI-SELECT
+    name == 'map' && argc == 1 -> c = BI-MAP
+    name == 'has' && argc == 1 -> c = BI-HAS
+    name == 'split' && argc == 1 -> c = BI-SPLIT
+    name == 'max' && argc == 0 -> c = BI-MAX
+    name == 'min' && argc == 0 -> c = BI-MIN
+}
+
+; ── numeric helpers (jq native floor/ceil/round/sqrt) ──────────────
+ev-floor = (x f64) (r f64) {
+    r = x
+    x > 0.0 - EV-IPBIG && x < EV-IPBIG -> {
+        n i64 = math.f64-to-i64(x)
+        f f64 = math.i64-to-f64(n)
+        r = f
+        r > x -> r = r - 1.0
+    }
+}
+
+ev-ceil = (x f64) (r f64) {
+    r = 0.0 - ev-floor(0.0 - x)
+}
+
+ev-round = (x f64) (r f64) {
+    r = x
+    x >= 0.0 && x < EV-IPBIG -> r = ev-floor(x + 0.5)
+    x < 0.0 && x > 0.0 - EV-IPBIG -> r = 0.0 - ev-floor(0.0 - x + 0.5)
+}
+
+ev-sqrt = (x f64) (r f64) {
+    r = 0.0 / 0.0
+    x < 0.0 -> r = 0.0 / 0.0
+    x == 0.0 -> r = 0.0
+    x >= EV-DBIG -> r = x
+    x > 0.0 && x < EV-DBIG -> {
+        g f64 = x
+        it <- [0..64): {
+            g = (g + x / g) / 2.0
+        }
+        r = g
+    }
+}
+
+; ── zero-arg builtins ─────────────────────────
+bi-length = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    k i64 = jv-kind(in)
+    ! (k == JV-TRUE || k == JV-FALSE) -> outs.push(jv-number-i64(jv-length(in)))
+    k == JV-NUMBER -> {
+        outs = with-len(0)
+        outs.push(jv-number(f64-abs(jv-number-val(in))))
+    }
+    k == JV-TRUE || k == JV-FALSE -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' has no length')
+    }
+}
+
+bi-keys = (in i64, sorted bool) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    k i64 = jv-kind(in)
+    k == JV-OBJECT || k == JV-ARRAY -> {
+        arr i64 = jv-array()
+        n i64 = jv-arr-len(in)
+        i <- [0..n): {
+            key i64 = jv-null()
+            k == JV-OBJECT -> key = jv-key-idx(in, i)
+            k == JV-ARRAY -> key = jv-number-i64(i)
+            jv-arr-push(arr, key)
+        }
+        sorted -> jv-arr-sort-inplace(arr)
+        outs.push(arr)
+    }
+    ! (k == JV-OBJECT || k == JV-ARRAY) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' has no keys')
+    }
+}
+
+; jq 1.8 builtin: def values: select(. != null)
+bi-values = (in i64) (outs []i64) {
+    outs = with-len(0)
+    ! jv-is-null(in) -> outs.push(in)
+}
+
+bi-type = (in i64) (outs []i64) {
+    outs = with-len(0)
+    outs.push(jv-string(ev-kindname(in)))
+}
+
+bi-tostring = (in i64) (outs []i64) {
+    outs = with-len(0)
+    outs.push(jv-string(ev-str-of(in)))
+}
+
+bi-tojson = (in i64) (outs []i64) {
+    outs = with-len(0)
+    outs.push(jv-string(ev-dump(in)))
+}
+
+bi-tonumber = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    k i64 = jv-kind(in)
+    ok = false
+    k == JV-NUMBER -> {
+        ok = true
+        outs.push(in)
+    }
+    k == JV-STRING && dec-valid(jv-str-val(in)) -> {
+        ok = true
+        outs.push(jv-number-literal(jv-str-val(in)))
+    }
+    ! ok -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' cannot be parsed as a number')
+    }
+}
+
+bi-not = (in i64) (outs []i64) {
+    outs = with-len(0)
+    t = ev-truthy(in)
+    outs.push(jv-bool(! t))
+}
+
+bi-add = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    els, ok, e = ev-elems(in)
+    threw = ! ok
+    errv = e
+    ! threw -> {
+        acc i64 = jv-null()
+        i i64 = 0
+        (! threw && i < els.len()) {
+            v, er = op-add(acc, els[i])
+            threw = er >= 0
+            errv = er
+            ! threw -> {
+                acc = v
+                i = i + 1 #{overflow=wrap}
+            }
+        }
+        ! threw -> outs.push(acc)
+    }
+}
+
+bi-sort = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    jv-is-array(in) -> {
+        arr i64 = jv-array()
+        n i64 = jv-arr-len(in)
+        i <- [0..n): {
+            jv-arr-push(arr, jv-val-idx(in, i))
+        }
+        jv-arr-sort-inplace(arr)
+        outs.push(arr)
+    }
+    ! jv-is-array(in) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' cannot be sorted, as it is not an array')
+    }
+}
+
+; bi-maxmin: jq native max/min — reduce array elements by jv-cmp; [] -> null;
+; non-array -> 'X and X cannot be iterated over'.
+bi-maxmin = (in i64, wantmax bool) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    jv-is-array(in) -> {
+        n i64 = jv-arr-len(in)
+        best i64 = jv-null()
+        i i64 = 0
+        (i < n) {
+            x i64 = jv-val-idx(in, i)
+            i == 0 -> best = x
+            i > 0 -> {
+                r i64 = jv-cmp(x, best)
+                wantmax && r > 0 -> best = x
+                ! wantmax && r < 0 -> best = x
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        outs.push(best)
+    }
+    ! jv-is-array(in) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' and ' - ev-desc(in) - ' cannot be iterated over')
+    }
+}
+
+bi-math1 = (in i64, opname str) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    y = 0.0
+    ok = false
+    jv-is-number(in) -> {
+        ok = true
+        x f64 = jv-number-val(in)
+        y = x
+        opname == 'floor' -> y = ev-floor(x)
+        opname == 'ceil' -> y = ev-ceil(x)
+        opname == 'round' -> y = ev-round(x)
+        opname == 'sqrt' -> y = ev-sqrt(x)
+        opname == 'fabs' -> y = f64-abs(x)
+        outs.push(jv-number(y))
+    }
+    ! ok -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' number required')
+    }
+}
+
+bi-explode = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    jv-is-string(in) -> {
+        arr i64 = jv-array()
+        s str = jv-str-val(in)
+        n i64 = s.count()
+        i <- [0..n): {
+            c str = s[i..i]
+            code i64 = 0
+            j <- [0..c.len-bytes()): {
+                code = code * 256 + c.byte(j) #{overflow=wrap}
+            }
+            jv-arr-push(arr, jv-number-i64(code))
+        }
+        outs.push(arr)
+    }
+    ! jv-is-string(in) -> {
+        threw = true
+        errv = ev-msg('Cannot expand ' - ev-desc(in) - ' as string')
+    }
+}
+
+bi-implode = (in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    jv-is-array(in) -> {
+        s str = ''
+        i <- [0..jv-arr-len(in)): {
+            e i64 = jv-val-idx(in, i)
+            n i64 = math.f64-to-i64(jv-number-val(e))
+            s = s - jv-cp-str(n)
+        }
+        outs.push(jv-string(s))
+    }
+    ! jv-is-array(in) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' cannot be imploded, as it is not an array')
+    }
+}
+
+; ── filter-arg builtins (select/map/has/split/error/unknown) ──────
+ev-call = (node i64, in i64) (outs []i64, threw bool, errv i64) {
+    di i64 = ax-c1(node)
+    di >= 0 -> {
+        outs, threw, errv = ev-defcall(di, node, in)
+    }
+    di < 0 -> {
+        outs, threw, errv = ev-builtin(node, in)
+    }
+}
+
+; ev-builtin: dispatch for calls not resolved to a user def at parse time
+; (a user def of matching name+arity always wins over the builtin).
+ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    name str = ax-text(node)
+    args = ev-cons-vec(ax-left(node))
+    argc = args.len()
+    c = bi-code(name, argc)
+    a0 = -1
+    argc > 0 && c == BI-ERROR -> {
+        a0 = args[0] #{index-out=0}
+    }
+    argc > 0 && c >= BI-SELECT && c <= BI-SPLIT -> {
+        a0 = args[0] #{index-out=0}
+    }
+    c == BI-ERROR && argc == 0 -> {
+        threw = true
+        errv = in
+    }
+    c == BI-ERROR && argc == 1 -> {
+        a, at, ae = ev(a0, in)
+        threw = at
+        errv = ae
+        ! threw && a.len() > 0 -> {
+            threw = true
+            errv = a[0]
+        }
+    }
+    c == BI-SELECT -> {
+        a, at, ae = ev(a0, in)
+        threw = at
+        errv = ae
+        i <- [0..a.len()): {
+            ev-truthy(a[i]) -> outs.push(in)
+        }
+    }
+    c == BI-MAP -> {
+        els, ok, er = ev-elems(in)
+        threw = ! ok
+        errv = er
+        acc []i64 = with-len(0)
+        i i64 = 0
+        (! threw && i < els.len()) {
+            a, at, ae = ev(a0, els[i])
+            threw = at
+            errv = ae
+            j <- [0..a.len()): {
+                acc.push(a[j])
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        ! threw -> outs.push(ev-arr-of-elems(acc))
+    }
+    c == BI-HAS -> {
+        v, er = ev-single(a0, in)
+        threw = er >= 0
+        errv = er
+        ! threw -> {
+            h, ht, he = bi-has(in, v)
+            threw = ht
+            errv = he
+            i <- [0..h.len()): {
+                outs.push(h[i])
+            }
+        }
+    }
+    c == BI-SPLIT -> {
+        v, er = ev-single(a0, in)
+        threw = er >= 0
+        errv = er
+        ! threw -> {
+            jv-is-string(in) && jv-is-string(v) -> outs.push(ev-split(jv-str-val(in), jv-str-val(v)))
+            ! jv-is-string(in) || ! jv-is-string(v) -> {
+                threw = true
+                errv = ev-msg('split input and separator must be strings')
+            }
+        }
+    }
+    c == BI-LENGTH -> {
+        outs, threw, errv = bi-length(in)
+    }
+    c == BI-KEYS -> {
+        outs, threw, errv = bi-keys(in, true)
+    }
+    c == BI-KEYS-UNSORTED -> {
+        outs, threw, errv = bi-keys(in, false)
+    }
+    c == BI-VALUES -> {
+        outs = bi-values(in)
+    }
+    c == BI-TYPE -> {
+        outs = bi-type(in)
+    }
+    c == BI-TOSTRING -> {
+        outs = bi-tostring(in)
+    }
+    c == BI-TOJSON -> {
+        outs = bi-tojson(in)
+    }
+    c == BI-TONUMBER -> {
+        outs, threw, errv = bi-tonumber(in)
+    }
+    c == BI-NOT -> {
+        outs = bi-not(in)
+    }
+    c == BI-ADD -> {
+        outs, threw, errv = bi-add(in)
+    }
+    c == BI-SORT -> {
+        outs, threw, errv = bi-sort(in)
+    }
+    c == BI-MAX -> {
+        outs, threw, errv = bi-maxmin(in, true)
+    }
+    c == BI-MIN -> {
+        outs, threw, errv = bi-maxmin(in, false)
+    }
+    c == BI-FLOOR -> {
+        outs, threw, errv = bi-math1(in, 'floor')
+    }
+    c == BI-CEIL -> {
+        outs, threw, errv = bi-math1(in, 'ceil')
+    }
+    c == BI-ROUND -> {
+        outs, threw, errv = bi-math1(in, 'round')
+    }
+    c == BI-SQRT -> {
+        outs, threw, errv = bi-math1(in, 'sqrt')
+    }
+    c == BI-FABS -> {
+        outs, threw, errv = bi-math1(in, 'fabs')
+    }
+    c == BI-EXPLODE -> {
+        outs, threw, errv = bi-explode(in)
+    }
+    c == BI-IMPLODE -> {
+        outs, threw, errv = bi-implode(in)
+    }
+    c < 0 -> {
+        threw = true
+        errv = ev-msg(name - '/' - ev-dump(jv-number-i64(argc)) - ' is not defined')
+    }
+}
+
+bi-has = (in i64, k i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    kk i64 = jv-kind(k)
+    k >= 0 && kk == JV-NUMBER && ! ev-is-int(jv-number-val(k)) -> {
+        threw = true
+        errv = ev-msg('Invalid array index ' - ev-desc(k) - ' given to has')
+    }
+    ! threw && jv-is-object(in) && jv-is-string(k) -> {
+        outs.push(jv-bool(jv-obj-get(in, jv-str-val(k)) >= 0))
+    }
+    ! threw && jv-is-object(in) && ! jv-is-string(k) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' cannot have keys other than strings')
+    }
+    ! threw && jv-is-array(in) && jv-is-number(k) -> {
+        idx i64 = math.f64-to-i64(jv-number-val(k))
+        n i64 = jv-arr-len(in)
+        idx < 0 -> idx = idx + n #{overflow=wrap}
+        yes bool = idx >= 0 && idx < n
+        outs.push(jv-bool(yes))
+    }
+    ! threw && jv-is-array(in) && ! jv-is-number(k) -> {
+        threw = true
+        errv = ev-msg('Cannot check whether ' - ev-desc(in) - ' has a ' - ev-kindname(k))
+    }
+    ! threw && ! (jv-is-object(in) || jv-is-array(in)) -> {
+        threw = true
+        errv = ev-msg(ev-desc(in) - ' cannot have children')
+    }
+}
+
+; ── public API ────────────────────────────────
+; jq-run: parse and evaluate prog against input value in.
+jq-run = (prog str, in i64) (outs []i64, threw bool, errv i64, cerr str) {
+    root = -1
+    root, cerr = jq-parse-program(prog)
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    cerr.empty() -> {
+        outs, threw, errv = ev(root, in)
+    }
+    ! cerr.empty() -> {
+        threw = true
+        errv = ev-msg(cerr)
+    }
+}
+
+; jq-eval: run prog and render each output compactly; err is the thrown
+; message ('' on success). Non-string carriers use jq's CLI annotation
+; "(not a string): <value>" (jq-verified: bare error at null -> that form).
+; Test-facing convenience.
+jq-eval = (prog str, in i64) (lines []str, err str) {
+    lines = with-len(0)
+    err = ''
+    a, t, e, cerr = jq-run(prog, in)
+    i <- [0..a.len()): {
+        lines.push(ev-dump(a[i]))
+    }
+    cerr.empty() && t && jv-is-string(e) -> err = jv-str-val(e)
+    cerr.empty() && t && ! jv-is-string(e) -> err = '(not a string): ' - ev-dump(e)
+    ! cerr.empty() -> err = cerr
+}

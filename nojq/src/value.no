@@ -1,0 +1,548 @@
+; value — jq value system (jv equivalent)
+;
+; Mirrors jq's src/jv.h / src/jv.c value model. All JSON values live in one
+; global pool (`_pv`) and are referenced by i64 index ("handle"), the same
+; interned-node design std/json.no uses. jq's reference counting is replaced
+; by the pool's scope-based lifetime: everything allocated by the pool is
+; freed when the program's scope exits, so nojq never frees individual values.
+;
+; Numbers follow jq 1.8's dual model: a preserved decimal literal (parsed
+; JSON / source literals; printed verbatim) or a native double (computed
+; values; printed via shortest-roundtrip %g). See dec.no and number.no.
+;
+; Key jq semantics encoded here:
+;   - object keys are kept in insertion order (jq jv_object_set: new keys are
+;     appended, duplicate keys replace the value in place); sorting happens
+;     only for `keys`/`-S` via jv-obj-sort
+;   - ordering: null < false < true < numbers < strings < arrays < objects
+;   - strings are compared by Unicode codepoint (== byte order in UTF-8)
+
+# /nojq/src/dec
+# /nojq/src/number
+
+JV-NULL = 0
+JV-FALSE = 1
+JV-TRUE = 2
+JV-NUMBER = 3
+JV-STRING = 4
+JV-ARRAY = 5
+JV-OBJECT = 6
+
+; JV-BREAK is an internal-only carrier for `break $label` control flow.
+; It never reaches print/type-check paths: A-LABEL converts it back to
+; control flow before any output, and a stray one is a parser error.
+JV-BREAK = 7
+
+; jv-value: one pooled value node (pure scalar fields, safe inside a vec)
+jv-value {
+    kind i64
+    num f64
+    literal str
+    str-val str
+    elems []i64
+    keys []i64
+}
+
+; jv-pool: global value arena
+jv-pool {
+    nodes []jv-value
+}
+
+_pv jv-pool
+
+; zero-jv-value: reset a value node to null (free function — v is an
+; in/out parameter so nested `v.field =` persists, per nolang param model)
+zero-jv-value = (v jv-value) {
+    v.kind = JV-NULL
+    v.num = 0.0
+    v.literal = ''
+    v.str-val = ''
+    v.elems = with-len(0)
+    v.keys = with-len(0)
+}
+
+; jv-reset-pool: empty the pool (called once from main)
+jv-reset-pool = () {
+    _pv.nodes = with-len(0)
+    v jv-value
+    zero-jv-value(v)
+    a <- [0..16): {
+        _pv.nodes.push(v)
+    }
+}
+
+; jv-alloc-node: claim a fresh node, growing the arena as needed
+; returns idx i64: index of the new (zeroed) node
+jv-alloc-node = () (idx i64) {
+    idx = _pv.nodes.len()
+    v jv-value
+    zero-jv-value(v)
+    _pv.nodes.push(v)
+}
+
+; jv-null: allocate a null value
+; returns idx i64: pool index
+jv-null = () (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-NULL
+}
+
+; jv-bool: allocate true/false
+; on bool: truth value
+; returns idx i64: pool index
+jv-bool = (on bool) (idx i64) {
+    idx = jv-alloc-node()
+    on -> {
+        _pv.nodes[idx].kind = JV-TRUE
+    }
+    ! on -> {
+        _pv.nodes[idx].kind = JV-FALSE
+    }
+}
+
+; jv-true / jv-false: convenience allocators
+jv-true = () (idx i64) {
+    idx = jv-bool(true)
+}
+
+jv-false = () (idx i64) {
+    idx = jv-bool(false)
+}
+
+; jv-number: allocate a native (computed) numeric value
+; n f64: the number
+; returns idx i64: pool index
+jv-number = (n f64) (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-NUMBER
+    _pv.nodes[idx].num = n
+}
+
+; jv-number-literal: allocate a literal-number value preserving the exact
+; decimal text (jq jv_number_with_literal). The double payload is derived
+; via the 17-digit reduce so `==`/arithmetic match jq semantics.
+; Special cases mirror jv.c: "nan"/"snan" becomes a native NaN (literal
+; NULL → prints null) and "inf"/"infinity" keeps no literal data either
+; (jvp_literal_number_literal returns NULL for infinities; the printer
+; clamps the ±Inf double to DBL_MAX).
+; text str: literal source text ('1e16', '-2.50', 'nan', ...)
+; returns idx i64: pool index
+jv-number-literal = (text str) (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-NUMBER
+    d dec-num = dec-parse(text)
+    d.is-nan -> {
+        _pv.nodes[idx].num = 0.0 / 0.0
+    }
+    d.is-inf -> {
+        v f64 = 1.0 / 0.0
+        d.neg -> v = 0.0 - v
+        _pv.nodes[idx].num = v
+    }
+    ! d.is-nan && ! d.is-inf -> {
+        _pv.nodes[idx].literal = dec-to-str(d)
+        _pv.nodes[idx].num = jvp-strtod(text)
+    }
+}
+
+; jv-literal: preserved literal text ('' when native)
+jv-literal = (idx i64) (s str) {
+    s = ''
+    _pv.nodes[idx].kind == JV-NUMBER -> s = _pv.nodes[idx].literal
+}
+
+; jv-number-literal-neg: negate preserving the literal (jq's `-1e16` path
+; goes through jv_number_negate on a literal number)
+; idx i64: number handle
+; returns out i64: new handle
+jv-number-literal-neg = (idx i64) (out i64) {
+    out = idx
+    _pv.nodes[idx].kind == JV-NUMBER -> {
+        _pv.nodes[idx].literal.empty() -> out = jv-number(0.0 - _pv.nodes[idx].num)
+        ! _pv.nodes[idx].literal.empty() -> {
+            d dec-num = dec-parse(_pv.nodes[idx].literal)
+            nd dec-num = dec-neg(d)
+            out = jv-number-literal(dec-to-str(nd))
+        }
+    }
+}
+
+; jv-number-i64: allocate an integer value
+; n i64: the integer
+; returns idx i64: pool index
+jv-number-i64 = (n i64) (idx i64) {
+    idx = jv-number(math.i64-to-f64(n))
+}
+
+; jv-string: allocate a string value
+; s str: string contents (raw, unescaped)
+; returns idx i64: pool index
+jv-string = (s str) (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-STRING
+    _pv.nodes[idx].str-val = s
+}
+
+; jv-array: allocate an empty array
+; returns idx i64: pool index
+jv-array = () (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-ARRAY
+}
+
+; jv-break: allocate a break carrier holding the resolved label id.
+; id i64: compile-time label ordinal (matches jq's {"__jq":N} caught value)
+; returns idx i64: pool index
+jv-break = (id i64) (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-BREAK
+    _pv.nodes[idx].num = math.i64-to-f64(id)
+}
+
+; jv-break-id: the label ordinal carried by a break carrier.
+jv-break-id = (idx i64) (id i64) {
+    id = math.f64-to-i64(_pv.nodes[idx].num)
+}
+
+; jv-object: allocate an empty object
+; returns idx i64: pool index
+jv-object = () (idx i64) {
+    idx = jv-alloc-node()
+    _pv.nodes[idx].kind = JV-OBJECT
+}
+
+; jv-kind: the type tag of a value
+; idx i64: pool index
+; returns kind i64: one of JV-*
+jv-kind = (idx i64) (kind i64) {
+    kind = _pv.nodes[idx].kind
+}
+
+; jv-is-*: type predicates
+jv-is-null = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-NULL
+}
+
+jv-is-true = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-TRUE
+}
+
+jv-is-false = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-FALSE
+}
+
+jv-is-boolean = (idx i64) (yes bool) {
+    k i64 = _pv.nodes[idx].kind
+    yes = k == JV-TRUE || k == JV-FALSE
+}
+
+jv-is-number = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-NUMBER
+}
+
+jv-is-string = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-STRING
+}
+
+jv-is-array = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-ARRAY
+}
+
+jv-is-object = (idx i64) (yes bool) {
+    yes = _pv.nodes[idx].kind == JV-OBJECT
+}
+
+; jv-get-number: numeric payload; nil for non-numbers
+; idx i64: pool index
+; returns n ?f64
+jv-get-number = (idx i64) (n ?f64) {
+    n = nil
+    _pv.nodes[idx].kind == JV-NUMBER -> n = _pv.nodes[idx].num
+}
+
+; jv-number-val: raw numeric payload (caller must have checked kind)
+jv-number-val = (idx i64) (n f64) {
+    n = _pv.nodes[idx].num
+}
+
+; jv-get-string: string payload; nil for non-strings
+; idx i64: pool index
+; returns s ?str
+jv-get-string = (idx i64) (s ?str) {
+    s = nil
+    _pv.nodes[idx].kind == JV-STRING -> s = _pv.nodes[idx].str-val
+}
+
+; jv-str-val: raw string payload (caller must have checked kind)
+jv-str-val = (idx i64) (s str) {
+    s = _pv.nodes[idx].str-val
+}
+
+; jv-length: jq `.length` primitive for strings (codepoint count),
+; arrays/objects (element count); others handled by the caller
+jv-length = (idx i64) (n i64) {
+    n = 0
+    k i64 = _pv.nodes[idx].kind
+    k == JV-STRING -> n = _pv.nodes[idx].str-val.count()
+    k == JV-ARRAY -> n = _pv.nodes[idx].elems.len()
+    k == JV-OBJECT -> n = _pv.nodes[idx].keys.len()
+}
+
+; jv-arr-len: element count of an array/object (-1 otherwise)
+jv-arr-len = (idx i64) (n i64) {
+    n = -1
+    k i64 = _pv.nodes[idx].kind
+    k == JV-ARRAY -> n = _pv.nodes[idx].elems.len()
+    k == JV-OBJECT -> n = _pv.nodes[idx].keys.len()
+}
+
+; jv-arr-get: element handle at position i of an array (-1 if out of range)
+jv-arr-get = (idx i64, i i64) (elem i64) {
+    elem = -1
+    _pv.nodes[idx].kind == JV-ARRAY -> {
+        i >= 0 -> {
+            i < _pv.nodes[idx].elems.len() -> elem = _pv.nodes[idx].elems[i]
+        }
+    }
+}
+
+; jv-obj-get: value handle for key `key` in an object (-1 if absent).
+; Linear scan mirrors jv_object_get semantics without overflow-annotated
+; arithmetic on the hot path.
+jv-obj-get = (idx i64, key str) (val i64) {
+    val = -1
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        i <- [0.._pv.nodes[idx].keys.len()): {
+            jv-key-str(idx, i) == key -> {
+                val = _pv.nodes[idx].elems[i]
+                i = _pv.nodes[idx].keys.len()
+            }
+        }
+    }
+}
+
+; jv-key-str: the key string of object entry i
+jv-key-str = (idx i64, i i64) (s str) {
+    s = ''
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        i >= 0 -> {
+            i < _pv.nodes[idx].keys.len() -> {
+                kid = _pv.nodes[idx].keys[i]
+                s = _pv.nodes[kid].str-val
+            }
+        }
+    }
+}
+
+; jv-key-idx: the key VALUE handle of object entry i
+jv-key-idx = (idx i64, i i64) (kid i64) {
+    kid = -1
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        i >= 0 -> {
+            i < _pv.nodes[idx].keys.len() -> kid = _pv.nodes[idx].keys[i]
+        }
+    }
+}
+
+; jv-val-idx: the value handle of array/object entry i (-1 if out of range)
+jv-val-idx = (idx i64, i i64) (val i64) {
+    val = -1
+    k i64 = _pv.nodes[idx].kind
+    k == JV-ARRAY -> {
+        i >= 0 -> {
+            i < _pv.nodes[idx].elems.len() -> val = _pv.nodes[idx].elems[i]
+        }
+    }
+    k == JV-OBJECT -> {
+        i >= 0 -> {
+            i < _pv.nodes[idx].elems.len() -> val = _pv.nodes[idx].elems[i]
+        }
+    }
+}
+
+; jv-arr-push: append an element to an array (jq `. + [x]` core)
+; NOTE: _pv.nodes[idx] yields a struct rvalue, so mutating .elems via .push
+; only changes a copied slice header. Read-modify-write-back so the grown
+; header is stored into the pool node (field assignment persists).
+jv-arr-push = (idx i64, elem i64) (ok bool) {
+    ok = false
+    _pv.nodes[idx].kind == JV-ARRAY -> {
+        node jv-value = _pv.nodes[idx]
+        node.elems.push(elem)
+        _pv.nodes[idx] = node
+        ok = true
+    }
+}
+
+; jv-obj-sort: sort object entries by key (byte order = codepoint order).
+; NOT used on insert — jq preserves insertion order; this backs `keys`,
+; `sort_by` and `-S` output. Insertion sort: object sizes are small.
+jv-obj-sort = (idx i64) {
+
+    #{overflow=wrap}
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        n i64 = _pv.nodes[idx].keys.len()
+        a <- [1..n): {
+            j = a
+            j > 0 -> {
+                ka = jv-key-str(idx, j - 1)
+                kb = jv-key-str(idx, j)
+                kb.compare(ka) < 0 -> {
+                    _pv.nodes[idx].keys.swap(j - 1, j)
+                    _pv.nodes[idx].elems.swap(j - 1, j)
+                    j = j - 1
+                }
+                j <= 0 -> j = 0
+            }
+        }
+    }
+}
+
+; jv-obj-pos: position of `key` in an object's entry list (-1 if absent)
+jv-obj-pos = (idx i64, key str) (pos i64) {
+    pos = -1
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        i <- [0.._pv.nodes[idx].keys.len()): {
+            jv-key-str(idx, i) == key -> {
+                pos = i
+                i = _pv.nodes[idx].keys.len()
+            }
+        }
+    }
+}
+
+; jv-obj-insert: insert or replace key→val preserving insertion order
+; (jq jv_object_set: duplicate keys replace the value in place, new keys
+; append at the end).
+; idx i64: object handle
+; key str: key string
+; val i64: value handle
+jv-obj-insert = (idx i64, key str, val i64) {
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        pos = jv-obj-pos(idx, key)
+        node jv-value = _pv.nodes[idx]
+        pos >= 0 -> {
+            node.elems[pos] = val
+            node.keys[pos] = jv-string(key)
+        }
+        pos < 0 -> {
+            node.keys.push(jv-string(key))
+            node.elems.push(val)
+        }
+        _pv.nodes[idx] = node
+    }
+}
+
+; jv-obj-del: remove a key from an object (no-op if absent)
+jv-obj-del = (idx i64, key str) {
+    _pv.nodes[idx].kind == JV-OBJECT -> {
+        pos = -1
+        i <- [0.._pv.nodes[idx].keys.len()): {
+            jv-key-str(idx, i) == key -> pos = i
+        }
+        pos >= 0 -> {
+            node jv-value = _pv.nodes[idx]
+            node.keys.remove(pos)
+            node.elems.remove(pos)
+            _pv.nodes[idx] = node
+        }
+    }
+}
+
+; jv-copy: deep copy a value tree into the pool
+; idx i64: source handle
+; returns out i64: new handle
+jv-copy = (idx i64) (out i64) {
+    k i64 = _pv.nodes[idx].kind
+    out = idx
+    k == JV-NUMBER -> out = jv-number(_pv.nodes[idx].num)
+    k == JV-STRING -> out = jv-string(_pv.nodes[idx].str-val)
+    k == JV-ARRAY -> {
+        out = jv-array()
+        i <- [0.._pv.nodes[idx].elems.len()): {
+            e = _pv.nodes[idx].elems[i]
+            ce i64 = jv-copy(e)
+            node jv-value = _pv.nodes[out]
+            node.elems.push(ce)
+            _pv.nodes[out] = node
+        }
+    }
+    k == JV-OBJECT -> {
+        out = jv-object()
+        i <- [0.._pv.nodes[idx].keys.len()): {
+            kk = jv-key-str(idx, i)
+            ck i64 = jv-string(kk)
+            cv i64 = jv-copy(_pv.nodes[idx].elems[i])
+            node jv-value = _pv.nodes[out]
+            node.keys.push(ck)
+            node.elems.push(cv)
+            _pv.nodes[out] = node
+        }
+    }
+}
+
+; jv-cmp: three-way comparison following jq's ordering rules
+; a i64, b i64: handles
+; returns r i64: -1 / 0 / 1
+jv-cmp = (a i64, b i64) (r i64) {
+    ka i64 = _pv.nodes[a].kind
+    kb i64 = _pv.nodes[b].kind
+    r = 0
+    ka != kb -> {
+        ka < kb -> r = -1
+        ka > kb -> r = 1
+    }
+    ka == kb -> {
+        ka == JV-NULL -> r = 0
+        ka == JV-FALSE -> r = 0
+        ka == JV-TRUE -> r = 0
+        ka == JV-NUMBER -> {
+            na f64 = _pv.nodes[a].num
+            nb f64 = _pv.nodes[b].num
+            la str = _pv.nodes[a].literal
+            lb str = _pv.nodes[b].literal
+            la.empty() || lb.empty() -> {
+                na < nb -> r = -1
+                na > nb -> r = 1
+            }
+            ! la.empty() && ! lb.empty() -> {
+                da dec-num = dec-parse(la)
+                db dec-num = dec-parse(lb)
+                r = dec-cmp(da, db)
+            }
+        }
+        ka == JV-STRING -> r = _pv.nodes[a].str-val.compare(_pv.nodes[b].str-val)
+        ka == JV-ARRAY -> r = jv-cmp-seq(a, b)
+        ka == JV-OBJECT -> r = jv-cmp-seq(a, b)
+    }
+}
+
+; jv-cmp-seq: lexicographic comparison of array/object entries
+jv-cmp-seq = (a i64, b i64) (r i64) {
+    na i64 = _pv.nodes[a].elems.len()
+    nb i64 = _pv.nodes[b].elems.len()
+    r = 0
+    lim = na
+    na > nb -> lim = nb
+    i = 0
+    (i < lim) {
+        ca = _pv.nodes[a].elems[i]
+        cb = _pv.nodes[b].elems[i]
+        ka i64 = _pv.nodes[a].kind
+        kb i64 = _pv.nodes[b].kind
+        ka == JV-OBJECT -> ca = _pv.nodes[a].keys[i]
+        kb == JV-OBJECT -> cb = _pv.nodes[b].keys[i]
+        r = jv-cmp(ca, cb)
+        r != 0 -> i = lim
+        i = i + 1 #{overflow=wrap}
+    }
+    r == 0 -> {
+        na < nb -> r = -1
+        na > nb -> r = 1
+    }
+}
+
+; jv-eq: jq deep equality
+jv-eq = (a i64, b i64) (yes bool) {
+    yes = jv-cmp(a, b) == 0
+}

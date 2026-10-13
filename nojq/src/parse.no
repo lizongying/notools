@@ -1,0 +1,682 @@
+; parse.no — JSON parser
+;
+; Behavioural port of jq's src/jv_parse.c non-streaming path
+; (jv_parse_sized_custom_flags with flags=0): the same state machine
+; (NORMAL / STRING / STRING_ESCAPE), the same stack/next arrangement, and
+; byte-for-byte the same error messages, including the
+; "… at line L, column C" suffixes and the " (while parsing '<input>')"
+; wrapper appended by jv_parse_sized_custom_flags.
+;
+; jq walks raw bytes and increments column once per byte; since every JSON
+; structural / escape character is ASCII and UTF-8 continuation bytes are
+; >= 0x80 (never confused with `"`, `\`, etc.), scanning by code point while
+; advancing column by the code point's UTF-8 byte width reproduces jq's
+; byte-oriented line/column and token semantics exactly.
+;
+; Returns ?i64: the parsed jv handle, or err(msg) carrying the full jq
+; message (main jq renders it as "jq: error: <msg>").
+
+# /nojq/src/value
+
+; p.st values, mirroring JV_PARSER_NORMAL / STRING / STRING_ESCAPE
+; (JV_PARSER_WAITING_FOR_RS / SEQ mode are unreachable with flags=0)
+JV-ST-NORMAL = 0
+JV-ST-STRING = 1
+JV-ST-ESCAPE = 2
+
+; classify results (mirrors chclass in jv_parse.c)
+JV-CH-LITERAL = 0
+JV-CH-WS = 1
+JV-CH-STRUCT = 2
+JV-CH-QUOTE = 3
+JV-CH-INVALID = 4
+
+; MAX_PARSING_DEPTH from jv_parse.c
+JV-PARSE-DEPTH = 10000
+
+; JV-Q: a single-quote character, used to build the "(while parsing '…')"
+; wrapper without inline escape ambiguity.
+JV-Q = '\''
+
+; jv-cp-str: render a Unicode code point (as produced by a decoded \uXXXX
+; escape) into its UTF-8 string. A function with an i64 parameter is the
+; one place where `char = <i64>` is accepted (a plain i64 local triggers a
+; code-point-range type error under the current compiler).
+jv-cp-str = (n i64) (s str) {
+    ch char = n
+    s = ch.to-str()
+}
+
+; jvp-parser: parser state (mirrors struct jv_parser, non-streaming fields)
+jvp-parser {
+    input str
+    pos i64
+    eof bool
+    line i64
+    column i64
+    st i64
+    token str
+    stack []i64
+    sp i64
+    next i64
+    done bool
+    out-val i64
+    err str
+}
+
+; jvp-new: fresh parser over the whole input string
+; s str: JSON text
+; returns p jvp-parser
+jvp-new = (s str) (p jvp-parser) {
+    p.input = s
+    p.pos = 0
+    p.eof = false
+    p.line = 1
+    p.column = 0
+    p.st = JV-ST-NORMAL
+    p.token = ''
+    p.stack = with-len(JV-PARSE-DEPTH)
+    p.sp = 0
+    p.next = -1
+    p.done = false
+    p.out-val = -1
+    p.err = ''
+}
+
+; jvp-cp-wid: UTF-8 byte width of a code point (jq counts one column per byte)
+jvp-cp-wid = (cp char) (w i64) {
+    w = 1
+    cp < 0 -> w = 1
+    cp > 127 -> {
+        w = 2
+        cp > 2047 -> {
+            w = 3
+            cp > 65535 -> w = 4
+        }
+    }
+}
+
+; jvp-classify: chclass(ch)
+jvp-classify = (cp char) (cls i64) {
+    cls = JV-CH-LITERAL
+    cp == 0 -> cls = JV-CH-INVALID
+    cp == 32 || cp == 9 || cp == 13 || cp == 10 -> cls = JV-CH-WS
+    cp == 34 -> cls = JV-CH-QUOTE
+    cp == 91 || cp == 123 || cp == 93 || cp == 125 || cp == 58 || cp == 44 -> {
+        cls = JV-CH-STRUCT
+    }
+}
+
+; jvp-push: push a handle onto the value stack (array + explicit sp, no vec.remove)
+; v i64: handle
+jvp-push = (p jvp-parser, v i64) {
+    p.stack[p.sp] = v
+
+    #{overflow=wrap}
+    p.sp = p.sp + 1
+}
+
+; jvp-top: handle at the stack top (-1 if empty)
+jvp-top = (p jvp-parser) (v i64) {
+    v = -1
+    n i64 = p.sp
+    n > 0 -> {
+
+        #{overflow=wrap}
+        idx i64 = n - 1
+        v = p.stack[idx]
+    }
+}
+
+; jvp-second: handle below the top (-1 if absent)
+jvp-second = (p jvp-parser) (v i64) {
+    v = -1
+    n i64 = p.sp
+    n >= 2 -> {
+
+        #{overflow=wrap}
+        idx i64 = n - 2
+        v = p.stack[idx]
+    }
+}
+
+; jvp-pop: remove and return the stack top (shrink sp, no vec.remove)
+jvp-pop = (p jvp-parser) (v i64) {
+    v = -1
+    n i64 = p.sp
+    n > 0 -> {
+
+        #{overflow=wrap}
+        idx i64 = n - 1
+        v = p.stack[idx]
+        p.sp = idx
+    }
+}
+
+; jvp-check-done: parse_check_done — a completed top-level value?
+jvp-check-done = (p jvp-parser) (yes bool) {
+    yes = false
+    p.sp == 0 && p.next >= 0 -> {
+        p.out-val = p.next
+        p.next = -1
+        yes = true
+    }
+}
+
+; jvp-value: value() — settle a scanned value into p->next, rejecting a
+; missing separator (the offending value is dropped, matching the C free()).
+; v i64: value handle
+; returns bad str: '' or the error message
+jvp-value = (p jvp-parser, v i64) (bad str) {
+    bad = ''
+    p.next >= 0 -> bad = 'Expected separator between values'
+    bad.empty() -> p.next = v
+}
+
+; jvp-token: parse_token — structure characters (non-streaming)
+; cp char: one of '[' ']' '{' '}' ':' ','
+; returns bad str
+jvp-token = (p jvp-parser, cp char) (bad str) {
+    bad = ''
+    sp i64 = p.sp
+    cp == 91 -> {
+
+        ; '['
+        sp >= JV-PARSE-DEPTH -> bad = 'Exceeds depth limit for parsing'
+        bad.empty() && p.next >= 0 -> bad = 'Expected separator between values'
+        bad.empty() -> jvp-push(p, jv-array())
+    }
+    cp == 123 -> {
+
+        ; '{'
+        sp >= JV-PARSE-DEPTH -> bad = 'Exceeds depth limit for parsing'
+        bad.empty() && p.next >= 0 -> bad = 'Expected separator between values'
+        bad.empty() -> jvp-push(p, jv-object())
+    }
+    cp == 58 -> {
+
+        ; ':'
+        p.next < 0 -> bad = 'Expected string key before \':\''
+        bad.empty() && jv-kind(jvp-top(p)) != JV-OBJECT -> bad = '\':\' not as part of an object'
+        bad.empty() && ! jv-is-string(p.next) -> bad = 'Object keys must be strings'
+        bad.empty() -> {
+            jvp-push(p, p.next)
+            p.next = -1
+        }
+    }
+    cp == 44 -> {
+
+        ; ','
+        p.next < 0 -> bad = 'Expected value before \',\''
+        bad.empty() && p.sp == 0 -> bad = '\',\' not as part of an object or array'
+
+        ; capture top kind once: the STRING branch pops the key, so re-reading
+        ; jvp-top after it would wrongly see the object and raise a spurious
+        ; 'Objects must consist of key:value pairs'.
+        tk i64 = -1
+        bad.empty() -> tk = jv-kind(jvp-top(p))
+        bad.empty() && tk == JV-ARRAY -> {
+            jv-arr-push(jvp-top(p), p.next)
+            p.next = -1
+        }
+        bad.empty() && tk == JV-STRING -> {
+            objh i64 = jvp-second(p)
+            keyh i64 = jvp-top(p)
+            jv-obj-insert(objh, jv-str-val(keyh), p.next)
+            jvp-pop(p)
+            p.next = -1
+        }
+
+        ; {"a", "b"} — top is neither array nor key
+        bad.empty() && tk != JV-ARRAY && tk != JV-STRING -> {
+            bad = 'Objects must consist of key:value pairs'
+        }
+    }
+    cp == 93 -> {
+
+        ; ']'
+        p.sp == 0 || jv-kind(jvp-top(p)) != JV-ARRAY -> bad = 'Unmatched \']\''
+        bad.empty() && p.next >= 0 -> {
+            jv-arr-push(jvp-top(p), p.next)
+            p.next = -1
+            p.out-val = jvp-pop(p)
+            p.next = p.out-val
+        }
+        bad.empty() && p.next < 0 -> {
+            jv-arr-len(jvp-top(p)) != 0 -> bad = 'Expected another array element'
+            bad.empty() -> {
+                p.out-val = jvp-pop(p)
+                p.next = p.out-val
+            }
+        }
+    }
+    cp == 125 -> {
+
+        ; '}'
+        p.sp == 0 -> bad = 'Unmatched \'}\''
+        bad.empty() && p.next >= 0 -> {
+            jv-kind(jvp-top(p)) != JV-STRING -> bad = 'Objects must consist of key:value pairs'
+            bad.empty() -> {
+                objh i64 = jvp-second(p)
+                keyh i64 = jvp-top(p)
+                jv-obj-insert(objh, jv-str-val(keyh), p.next)
+                jvp-pop(p)
+                p.next = -1
+                p.out-val = jvp-pop(p)
+                p.next = p.out-val
+            }
+        }
+        bad.empty() && p.next < 0 -> {
+            jv-kind(jvp-top(p)) != JV-OBJECT -> bad = 'Unmatched \'}\''
+            bad.empty() && jv-arr-len(jvp-top(p)) != 0 -> {
+                bad = 'Expected another key-value pair'
+            }
+            bad.empty() -> {
+                p.out-val = jvp-pop(p)
+                p.next = p.out-val
+            }
+        }
+    }
+}
+
+; jvp-unhex4: unhex4 — 4 hex code points starting at index i, -1 on non-hex
+; s str: token buffer; i i64: code-point offset of the first digit
+; returns r i64
+jvp-unhex4 = (s str, i i64) (r i64) {
+    r = 0
+    bad = false
+    k <- [0..4): {
+
+        #{overflow=wrap}
+        c i64 = s[i + k]
+        n i64 = -1
+        c >= 48 && c <= 57 -> {
+
+            #{overflow=wrap}
+            d i64 = c - 48
+            n = d
+        }
+        c >= 97 && c <= 102 -> {
+
+            #{overflow=wrap}
+            d i64 = c - 97
+
+            #{overflow=wrap}
+            n = d + 10
+        }
+        c >= 65 && c <= 70 -> {
+
+            #{overflow=wrap}
+            d i64 = c - 65
+
+            #{overflow=wrap}
+            n = d + 10
+        }
+        n < 0 -> bad = true
+        ! bad -> {
+
+            #{overflow=wrap}
+            m i64 = r * 16
+
+            #{overflow=wrap}
+            r = m + n
+        }
+    }
+    bad -> r = -1
+}
+
+; jvp-esc-bytes: plain escape char → replacement string ('' = keep as-is)
+jvp-esc-bytes = (c i64) (r str) {
+    r = ''
+    c == 98 -> {
+        bs char = 8
+        r = bs.to-str()
+    }
+    c == 102 -> {
+        ff char = 12
+        r = ff.to-str()
+    }
+    c == 116 -> r = '\t'
+    c == 110 -> r = '\n'
+    c == 114 -> r = '\r'
+}
+
+; jvp-found-string: found_string — unescape the token buffer into p->next
+jvp-found-string = (p jvp-parser) (bad str) {
+    bad = ''
+    out = ''
+    s str = p.token
+    n i64 = s.count()
+    i = 0
+    running = true
+    (i < n && running) {
+        c i64 = s[i]
+
+        #{overflow=wrap}
+        i = i + 1
+        c != 92 -> {
+            c <= 31 -> {
+                bad = 'Invalid string: control characters from U+0000 through U+001F must be escaped'
+                running = false
+            }
+            c > 31 -> {
+                cd char = c
+                out = out - cd.to-str()
+            }
+        }
+        c == 92 && running -> {
+            i >= n -> {
+                bad = 'Expected escape character at end of string'
+                running = false
+            }
+            ! running -> return
+            e i64 = s[i]
+
+            #{overflow=wrap}
+            i = i + 1
+            r str = jvp-esc-bytes(e)
+            ! r.empty() -> out = out - r
+            r.empty() && (e == 92 || e == 34 || e == 47) -> {
+                ed char = e
+                out = out - ed.to-str()
+            }
+            r.empty() && (e == 117) -> {
+
+                ; \uXXXX — the complicated case
+                #{overflow=wrap}
+                i + 4 > n -> bad = 'Invalid \\uXXXX escape'
+                bad.empty() -> {
+                    cp i64 = jvp-unhex4(s, i)
+                    cp < 0 -> bad = 'Invalid characters in \\uXXXX escape'
+                    bad.empty() -> {
+
+                        #{overflow=wrap}
+                        i = i + 4
+                        cp >= 55296 && cp <= 56319 -> {
+
+                            ; lead surrogate: needs a trailing \uDC00-\uDFFF
+                            pair bool = false
+                            lo i64 = 0
+
+                            #{overflow=wrap}
+                            i + 6 <= n -> {
+                                b0 i64 = s[i]
+
+                                #{overflow=wrap}
+                                b1 i64 = s[i + 1]
+                                b0 == 92 && b1 == 117 -> {
+
+                                    #{overflow=wrap}
+                                    lo = jvp-unhex4(s, i + 2)
+                                    lo >= 56320 && lo <= 57343 -> pair = true
+                                }
+                            }
+                            ! pair -> bad = 'Invalid \\uXXXX\\uXXXX surrogate pair escape'
+                            pair -> {
+
+                                #{overflow=wrap}
+                                i = i + 6
+
+                                #{overflow=wrap}
+                                hi i64 = cp - 55296
+
+                                #{overflow=wrap}
+                                hs i64 = hi * 1024
+
+                                #{overflow=wrap}
+                                ls i64 = lo - 56320
+
+                                #{overflow=wrap}
+                                base i64 = 65536 + hs
+
+                                #{overflow=wrap}
+                                cp = base + ls
+                            }
+                        }
+                        bad.empty() -> {
+                            cp > 1114111 -> cp = 65533
+                            out = out - jv-cp-str(cp)
+                        }
+                    }
+                }
+            }
+            r.empty() && e != 92 && e != 34 && e != 47 && e != 117 -> {
+                bad = 'Invalid escape'
+                running = false
+            }
+        }
+    }
+    bad.empty() -> {
+        vi i64 = jv-string(out)
+        bad = jvp-value(p, vi)
+        bad.empty() -> p.token = ''
+    }
+}
+
+; jvp-word: exact whole-token match against an ASCII word
+jvp-word = (t str, w str) (yes bool) {
+    yes = false
+    tc i64 = t.count()
+    wc i64 = w.count()
+    tc == wc -> {
+        good bool = true
+        k <- [0..wc): {
+            t[k] != w[k] -> good = false
+        }
+        good -> yes = true
+    }
+}
+
+; jvp-check-literal: check_literal — finalize an accumulated bare token
+; (true / false / null / number) into p->next.
+jvp-check-literal = (p jvp-parser) (bad str) {
+    bad = ''
+    t str = p.token
+    ! t.empty() -> {
+        c0 i64 = t.byte(0)
+        c0 == 39 -> bad = 'Invalid string literal; expected ", but got \''
+        c0 == 116 && bad.empty() -> {
+            jvp-word(t, 'true') -> {
+                bad = jvp-value(p, jv-true())
+            }
+            ! jvp-word(t, 'true') && bad.empty() -> bad = 'Invalid literal'
+        }
+        c0 == 102 && bad.empty() -> {
+            jvp-word(t, 'false') -> {
+                bad = jvp-value(p, jv-false())
+            }
+            ! jvp-word(t, 'false') && bad.empty() -> bad = 'Invalid literal'
+        }
+        c0 == 110 && bad.empty() -> {
+            nu bool = t.count() > 1 && t[1] == 117
+            nu -> {
+                jvp-word(t, 'null') -> {
+                    bad = jvp-value(p, jv-null())
+                }
+                ! jvp-word(t, 'null') && bad.empty() -> bad = 'Invalid literal'
+            }
+            ! nu && bad.empty() -> {
+                bad = 'Invalid numeric literal'
+                dec-valid(t) -> {
+                    bad = jvp-value(p, jv-number-literal(t))
+                }
+            }
+        }
+        c0 != 116 && c0 != 102 && c0 != 39 && c0 != 110 && bad.empty() -> {
+            bad = 'Invalid numeric literal'
+            dec-valid(t) -> {
+                bad = jvp-value(p, jv-number-literal(t))
+            }
+        }
+        bad.empty() -> p.token = ''
+    }
+}
+
+; jvp-feed-ch: scan() for one code point. Sets p.done (value in p.out-val),
+; p.err on a scan error, or neither when more input is needed. Mirrors the C
+; control flow exactly: for any non-literal class, check_literal runs first
+; (so `truex<NUL>` reports Invalid literal, not Invalid character), a pending
+; top-level value is emitted via check_done before the structure switch, and
+; the switch may still raise an error that overrides it (`1]` → Unmatched).
+jvp-feed-ch = (p jvp-parser, cp char) {
+    w = jvp-cp-wid(cp)
+
+    #{overflow=wrap}
+    p.column = p.column + w
+    cp == 10 -> {
+
+        #{overflow=wrap}
+        p.line = p.line + 1
+        p.column = 0
+    }
+    p.done = false
+    p.err = ''
+    st0 i64 = p.st
+    st0 == JV-ST-NORMAL -> {
+        cls i64 = jvp-classify(cp)
+        answered bool = false
+        cls != JV-CH-LITERAL -> {
+            p.err = jvp-check-literal(p)
+            ! p.err.empty() -> return
+            jvp-check-done(p) -> answered = true
+        }
+        cls == JV-CH-LITERAL -> {
+            cs str = cp.to-str()
+            p.token = p.token - cs
+        }
+        cls == JV-CH-QUOTE -> p.st = JV-ST-STRING
+        cls == JV-CH-STRUCT -> {
+            p.err = jvp-token(p, cp)
+            ! p.err.empty() -> return
+        }
+        cls == JV-CH-INVALID -> {
+            p.err = 'Invalid character'
+            return
+        }
+        jvp-check-done(p) -> answered = true
+        answered -> p.done = true
+    }
+    st0 != JV-ST-NORMAL -> {
+        closing bool = cp == 34 && p.st == JV-ST-STRING
+        closing -> {
+            p.err = jvp-found-string(p)
+            p.st = JV-ST-NORMAL
+            p.err.empty() -> {
+                jvp-check-done(p) -> p.done = true
+            }
+        }
+        ! closing -> {
+            cs str = cp.to-str()
+            p.token = p.token - cs
+            esc bool = cp == 92 && p.st == JV-ST-STRING
+            esc -> p.st = JV-ST-ESCAPE
+            ! esc -> p.st = JV-ST-STRING
+        }
+    }
+}
+
+; jvp-loc: format the trailing " at line L, column C" for make_error.
+jvp-loc = (p jvp-parser) (loc str) {
+    ld str = p.line.to-str()
+    cd str = p.column.to-str()
+    loc = ' at line ' - ld - ', column ' - cd
+}
+
+; jvp-reset: parser_reset (drop any partial parse state, back to NORMAL).
+jvp-reset = (p jvp-parser) {
+    p.token = ''
+    p.sp = 0
+    p.next = -1
+    p.st = JV-ST-NORMAL
+}
+
+; jvp-parse-do: jv_parser_next over the whole buffer + EOF finalization
+; (is_partial=0; after any error or EOF the parser yields nothing more).
+jvp-parse-do = (p jvp-parser) {
+    ! p.eof -> {
+        n i64 = p.input.count()
+        msg bool = false
+        (p.pos < n && ! msg) {
+            cp char = p.input[p.pos]
+
+            #{overflow=wrap}
+            p.pos = p.pos + 1
+            jvp-feed-ch(p, cp)
+            msg = ! p.err.empty() || p.done
+        }
+        msg && ! p.err.empty() -> {
+
+            ; mid-buffer error: append line/column, reset
+            loc str = jvp-loc(p)
+            p.err = p.err - loc
+            jvp-reset(p)
+        }
+        ! msg -> {
+
+            ; EOF branch
+            p.eof = true
+            p.st != JV-ST-NORMAL -> {
+                loc str = jvp-loc(p)
+                p.err = 'Unfinished string at EOF' - loc
+                jvp-reset(p)
+            }
+            p.err.empty() && p.st == JV-ST-NORMAL -> {
+                p.err = jvp-check-literal(p)
+                ! p.err.empty() -> {
+                    loc str = jvp-loc(p)
+                    p.err = p.err - ' at EOF' - loc
+                    jvp-reset(p)
+                }
+                p.err.empty() && p.sp != 0 -> {
+                    loc str = jvp-loc(p)
+                    p.err = 'Unfinished JSON term at EOF' - loc
+                    jvp-reset(p)
+                }
+                p.err.empty() && p.sp == 0 -> {
+                    p.out-val = p.next
+                    p.next = -1
+                    p.done = true
+                }
+            }
+        }
+    }
+}
+
+; jv-parse: jq jv_parse_sized(string, length, 0) — parse exactly one JSON
+; value from the whole string.
+; s str: JSON text
+; returns v ?i64: parsed value handle, or err(full jq error message)
+jv-parse = (s str) (v ?i64) {
+    v = nil
+    p = jvp-new(s)
+    jvp-parse-do(p)
+    first = -1
+    gotfirst = false
+    p.done && p.out-val >= 0 -> {
+
+        ; a single complete value was produced; scan once more to detect
+        ; trailing content (jv_parse_sized_custom_flags calls next twice)
+        first = p.out-val
+        gotfirst = true
+        p.done = false
+        p.out-val = -1
+        p.err = ''
+        jvp-parse-do(p)
+        p.done && p.out-val >= 0 -> {
+
+            ; a second value: "Unexpected extra JSON values"
+            v = err('Unexpected extra JSON values (while parsing ' - JV-Q - s - JV-Q - ')')
+            return
+        }
+        ! p.err.empty() -> {
+
+            ; error after the first value replaces it
+            v = err(p.err - ' (while parsing ' - JV-Q - s - JV-Q - ')')
+            return
+        }
+        v = first
+        return
+    }
+    ! gotfirst && p.err.empty() -> v = err('Expected JSON value (while parsing ' - JV-Q - s - JV-Q - ')')
+    ! gotfirst && ! p.err.empty() -> v = err(p.err - ' (while parsing ' - JV-Q - s - JV-Q - ')')
+}
