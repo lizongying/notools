@@ -53,6 +53,7 @@ BI-HAS = 23
 BI-SPLIT = 24
 BI-MAX = 25
 BI-MIN = 26
+BI-RANGE = 27
 
 ; ── small render helpers ──────────────────────
 ev-dump = (x i64) (s str) {
@@ -851,6 +852,7 @@ ev-binder = (node i64, in i64) (outs []i64, threw bool, errv i64) {
                 fc -> inner, berr = emit-item(true, ax-c2(node), ax-text(node), ov, os, outs)
                 fc == false -> inner, berr = emit-item(false, -1, ax-text(node), ov, os, outs)
             }
+
             ; foreach/2 with a mid-update ERROR still commits the outputs the
             ; update produced before throwing (jq-verified lazy-commit); a
             ; BREAK is control flow, not a committed partial, so it emits
@@ -1475,6 +1477,7 @@ bi-code = (name str, argc i64) (c i64) {
     name == 'split' && argc == 1 -> c = BI-SPLIT
     name == 'max' && argc == 0 -> c = BI-MAX
     name == 'min' && argc == 0 -> c = BI-MIN
+    name == '_range3' && argc == 3 -> c = BI-RANGE
 }
 
 ; ── numeric helpers (jq native floor/ceil/round/sqrt) ──────────────
@@ -1757,11 +1760,18 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
     argc = args.len()
     c = bi-code(name, argc)
     a0 = -1
+    a1 = -1
+    a2 = -1
     argc > 0 && c == BI-ERROR -> {
         a0 = args[0] #{index-out=0}
     }
     argc > 0 && c >= BI-SELECT && c <= BI-SPLIT -> {
         a0 = args[0] #{index-out=0}
+    }
+    argc > 2 && c == BI-RANGE -> {
+        a0 = args[0] #{index-out=0}
+        a1 = args[1] #{index-out=0}
+        a2 = args[2] #{index-out=0}
     }
     c == BI-ERROR && argc == 0 -> {
         threw = true
@@ -1823,6 +1833,26 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
             ! jv-is-string(in) || ! jv-is-string(v) -> {
                 threw = true
                 errv = ev-msg('split input and separator must be strings')
+            }
+        }
+    }
+    c == BI-RANGE -> {
+        v0, r0 = ev-single(a0, in)
+        v1, r1 = ev-single(a1, in)
+        v2, r2 = ev-single(a2, in)
+        er i64 = r0
+        er < 0 -> er = r1
+        er < 0 -> er = r2
+        er >= 0 -> {
+            threw = true
+            errv = er
+        }
+        er < 0 -> {
+            rs, rt, re = bi-range(v0, v1, v2)
+            threw = rt
+            errv = re
+            i <- [0..rs.len()): {
+                outs.push(rs[i])
             }
         }
     }
@@ -1889,6 +1919,32 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
     c < 0 -> {
         threw = true
         errv = ev-msg(name - '/' - ev-dump(jv-number-i64(argc)) - ' is not defined')
+    }
+}
+
+; bi-range: jq's native _range3(from;to;by). The def wrappers (parser.no
+; BI-DEFS) bind the three bounds as $value params, so any stream argument is
+; already cross-producted (arg1-outer) exactly like jq -- this receives only
+; scalars. Non-numeric bound -> "Range bounds and step must be numeric".
+; A zero step or a mis-signed bound pair yields the empty stream (jq-verified:
+; [range(3;1)]==[], [range(1;5;0)]==[]). Accumulation is by += so floats
+; drift identically to jq ([range(0;1;0.3)] -> 0.8999999999999999 tail).
+bi-range = (from i64, to i64, by i64) (outs []i64, threw bool, errv i64) {
+    outs = with-len(0)
+    threw = false
+    errv = -1
+    ! jv-is-number(from) || ! jv-is-number(to) || ! jv-is-number(by) -> {
+        threw = true
+        errv = ev-msg('Range bounds and step must be numeric')
+    }
+    jv-is-number(from) && jv-is-number(to) && jv-is-number(by) -> {
+        cur f64 = jv-number-val(from)
+        endv f64 = jv-number-val(to)
+        step f64 = jv-number-val(by)
+        ((step > 0.0 && cur < endv) || (step < 0.0 && cur > endv)) {
+            outs.push(jv-number(cur))
+            cur = cur + step #{overflow=wrap}
+        }
     }
 }
 

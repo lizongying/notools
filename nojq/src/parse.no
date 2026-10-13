@@ -680,3 +680,60 @@ jv-parse = (s str) (v ?i64) {
     ! gotfirst && p.err.empty() -> v = err('Expected JSON value (while parsing ' - JV-Q - s - JV-Q - ')')
     ! gotfirst && ! p.err.empty() -> v = err(p.err - ' (while parsing ' - JV-Q - s - JV-Q - ')')
 }
+
+; jq-parse-stream-into: parse successive JSON values from a whole buffer, the
+; way the jq CLI reads its input (jv_parser driven to completion per value).
+; The incremental jvp-parse-do yields exactly one value (p.done &&
+; p.out-val>=0) or an error per call; we reset done/out-val and re-enter to
+; pull the next. When the buffer is exhausted with nothing pending it
+; finalizes to done with out-val < 0 -> stop. Empty/whitespace-only input
+; produces an empty stream. Values and line numbers are PUSHED INTO the
+; caller-provided vecs (in/out params) so no value-copied vec ever crosses
+; the return boundary. lines[i] is the newline count consumed up to the
+; delimiter that closed vals[i] -- what jq reports as the input position in
+; "error (at X:N)"; p.line starts at 1 and bumps on every '\n' fed.
+; Returns the first error message ('' on success).
+jq-parse-stream-into = (s str, vals []i64, lines []i64) (err str) {
+    err = ''
+    p = jvp-new(s)
+    stop = false
+    (! stop) {
+        jvp-parse-do(p)
+        ! p.err.empty() -> {
+            err = p.err
+            stop = true
+        }
+        got bool = p.done && p.out-val >= 0
+        got -> {
+            h i64 = p.out-val
+            vals.push(h)
+            lno i64 = p.line - 1 #{overflow=wrap}
+            lines.push(lno)
+            p.done = false
+            p.out-val = -1 #{overflow=wrap}
+        }
+
+        ; No value this call means we are drained: EOF-finalize yields done
+        ; with out-val < 0, and once p.eof is set jvp-parse-do no-ops (done
+        ; stays false). Both mean stop -- keying off `got` (not the resettable
+        ; p.done) is what keeps the loop from spinning after the last value.
+        p.err.empty() && ! got -> {
+            stop = true
+        }
+    }
+}
+
+; jq-parse-stream: thin return-shaped wrapper over jq-parse-stream-into.
+; Returns the value handles and the first error message ('' on success).
+jq-parse-stream = (s str) (vals []i64, err str) {
+    vals = with-len(0)
+    lines []i64 = with-len(0)
+    err = jq-parse-stream-into(s, vals, lines)
+}
+
+; jq-parse-stream-loc: same stream, plus a parallel lines[]i64.
+jq-parse-stream-loc = (s str) (vals []i64, lines []i64, err str) {
+    vals = with-len(0)
+    lines = with-len(0)
+    err = jq-parse-stream-into(s, vals, lines)
+}
