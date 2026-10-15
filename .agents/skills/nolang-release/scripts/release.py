@@ -9,15 +9,20 @@ Subcommands
 -----------
 plan     Resolve the version to release, list commits since the last tag and
          print the exact commands to run. Never mutates the repo.
-         First checks the latest *published* release: if the highest local tag
-         has no matching release (the tag push action failed), it REUSES that
-         tag instead of bumping +1 and prints force re-push commands.
-         EXIT 2 if the working tree is dirty -- the user must commit first.
+         First checks whether the highest local tag has a *published* release
+         (/releases/tags/<tag>); if not, the tag push action failed, so it
+         REUSES that tag instead of bumping +1 and prints force re-push
+         commands.
+         A dirty working tree is NOT a blocker: pending changes are reported and
+         get committed together with HISTORY.md in the release commit.
 apply    Prepend a `## vX.Y.Z` section to HISTORY.md and mirror it into the
          docs history pages (CN `docs/docs/history.md` + EN i18n). Enforces
          English, conventional-commit style.
 verify   Run ./history.sh with no arguments and print what GitHub Actions will
          publish as the release body.
+body     Print the `## vX.Y.Z` section from HISTORY.md (version heading + bullets)
+         to stdout -- intended as the release commit message via `git commit -F`.
+         Defaults to the topmost (newest) section when --version is omitted.
 tag      Create the release tag idempotently (skips if it already points at
          HEAD; --force retargets an existing tag for failed-release reuse).
 sync-docs
@@ -31,13 +36,15 @@ Usage
     release.py apply --version v0.2.33 --body-file /tmp/notes.md [--repo DIR]
     release.py tag   [--repo DIR] [--version v0.2.33] [--force]
     release.py verify [--repo DIR]
+    release.py body   [--repo DIR] [--version v0.2.33]
     release.py sync-docs [--repo DIR] [--dry-run]
 
 Exit codes
 ----------
 0   ok
 1   bad input / usage error / not a git repo
-2   BLOCKED: working tree not clean, or unexpected files appeared
+2   BLOCKED: only on the --update-existing path when a brand-new section would
+    be needed (reserved); a dirty working tree is no longer a blocker
 3   BLOCKED: changelog body is not English / not conventional-commit style
 """
 
@@ -205,42 +212,55 @@ def github_owner_repo(repo: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
-def latest_release_tag(repo: str) -> str | None:
-    """Tag of the newest *published* GitHub Release.
+def tag_release_state(repo: str, tag: str) -> bool | None:
+    """Does a GitHub Release exist for `tag`?
 
     Returns:
-      ''      -> the repo has no releases yet
-      tag str -> the release that CI actually created (e.g. 'v0.3.4')
-      None    -> cannot tell (non-GitHub remote / offline / private without auth)
+      True  -> published (the tag push action succeeded)
+      False -> no release for that tag (the action failed, or the repo has
+               published none yet)
+      None  -> cannot tell (non-GitHub remote / offline / private without auth)
 
-    Used to detect the case where a tag was pushed but its release action
-    failed: the highest local tag then sits ahead of the latest published
-    release. Local tags are always >= any published release, so the check is
-    a single equality probe against /releases/latest -- no listing needed.
-    Query the public API first (no auth, works for public repos); `gh` is only
-    a fallback for private repos where `gh` carries credentials.
+    Asks about the exact tag rather than reading /releases/latest. The local
+    tag is already known, so the per-tag endpoint is directly addressable and
+    unambiguous: `latest` is ranked by *publish time*, so an unrelated release
+    (nolang ships toolchain releases such as `llvm-22.1.8-windows`) can take it
+    over and say nothing about the version tag.
+
+    Only the HTTP status is needed, so the body is discarded
+    (--compressed + -o /dev/null: ~18.6 KB -> ~2.3 KB).
+
+    `gh` is consulted to confirm a 404 when it can actually answer -- a `gh`
+    that is installed but unauthenticated (HTTP 401) must not override curl.
     """
     orr = github_owner_repo(repo)
     if not orr:
         return None
     owner, name = orr
+    endpoint = f"repos/{owner}/{name}/releases/tags/{tag}"
     curl = _try(
-        ["curl", "-s", "-f",
-            f"https://api.github.com/repos/{owner}/{name}/releases/latest"]
+        ["curl", "-s", "--compressed", "-o", os.devnull, "-w", "%{http_code}",
+         f"https://api.github.com/{endpoint}"]
     )
-    if curl is not None and curl.returncode == 0 and curl.stdout.strip():
-        m = re.search(r'"tag_name"\s*:\s*"([^"]+)"', curl.stdout)
-        if m:
-            return m.group(1)
-        if re.search(r'"message"\s*:\s*"Not Found"', curl.stdout):
-            return ""
-    gh = _try(
-        ["gh", "api", f"repos/{owner}/{name}/releases/latest", "--jq", ".tag_name"])
+    if curl is not None and curl.returncode == 0:
+        code = curl.stdout.strip()
+        if code == "200":
+            return True
+        if code == "404":
+            # An anonymous 404 is authoritative for a public repo; a private
+            # repo returns the same 404, so let an authenticated `gh` override
+            # it when it can.
+            gh = _try(["gh", "api", endpoint, "--jq", ".tag_name"])
+            if gh is not None and gh.returncode == 0:
+                return True
+            return False
+        return None
+    gh = _try(["gh", "api", endpoint, "--jq", ".tag_name"])
     if gh is not None:
         if gh.returncode == 0:
-            return gh.stdout.strip()
-        if "Not Found" in gh.stderr or "no releases" in gh.stderr.lower():
-            return ""
+            return True
+        if "Not Found" in gh.stderr or "404" in gh.stderr:
+            return False
     return None
 
 
@@ -256,9 +276,9 @@ def resolve_version(
     """Return (version, previous_version, failed_release).
 
     failed_release is '' normally. When it is set (a release tag), it means the
-    highest local tag was pushed but no matching release was published -- the
-    tag push action failed. In that case `version` reuses the current highest
-    tag instead of bumping +1, and the caller must force re-push that tag.
+    highest local tag has no published release -- the tag push action failed.
+    In that case `version` reuses the current highest tag instead of bumping +1,
+    and the caller must force re-push that tag.
     """
     vers = all_tags(repo)
     if not vers:
@@ -272,16 +292,11 @@ def resolve_version(
             raise SystemExit(
                 f"tag {requested} already exists; choose another version")
         return requested, prev, ""
-    # Default flow: before bumping +1, check whether the latest published
-    # release lags behind the highest local tag (a failed release action).
-    if check_release:
-        rel = latest_release_tag(repo)
-        if (
-            rel
-            and TAG_RE.match(rel)
-            and parse_version(rel) < prev_tuple
-        ):
-            return prev, prev, rel
+    # Default flow: before bumping +1, check whether the highest local tag was
+    # actually published. If it was not, the release action failed and the tag
+    # must be reused (not bumped) so re-pushing retriggers CI.
+    if check_release and tag_release_state(repo, prev) is False:
+        return prev, prev, prev
     nxt = "v%d.%d.%d" % (prev_tuple[0], prev_tuple[1], prev_tuple[2] + 1)
     if nxt in ["v%d.%d.%d" % v for v in vers]:
         raise SystemExit(
@@ -385,7 +400,8 @@ def _sync_docs_file(repo: str, version: str, body: str) -> None:
             text = fh.read()
         new_text, existed = upsert_section(text, version, body)
         if new_text == text:
-            print(f"{target['path']} already current for {version}; no docs change")
+            print(
+                f"{target['path']} already current for {version}; no docs change")
             continue
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(new_text)
@@ -394,19 +410,6 @@ def _sync_docs_file(repo: str, version: str, body: str) -> None:
 
 def cmd_plan(args: argparse.Namespace) -> int:
     repo = args.repo
-
-    dirty = dirty_files(repo)
-    if dirty:
-        print("BLOCKED: working tree is not clean -- commit or stash first, then re-run.")
-        print(f"uncommitted changes: {len(dirty)}")
-        for s in dirty[:40]:
-            print(f"  {s}")
-        if len(dirty) > 40:
-            print(f"  ... {len(dirty) - 40} more")
-        print()
-        print("Deciding what to commit (and with which message) needs human judgment;")
-        print("this skill will not commit on your behalf. Handle it, then re-run `plan`.")
-        return 2
 
     version, prev, failed_release = resolve_version(
         repo, args.version, check_release=not args.no_release_check
@@ -420,13 +423,26 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if args.version and args.version.strip() != version:
         print(f"note:     {args.version.strip()} normalized to {version}")
     print()
-    print("working tree: clean")
+
+    dirty = dirty_files(repo)
+    if dirty:
+        print(
+            f"working tree: {len(dirty)} uncommitted change(s) -- a dirty tree is NOT a blocker;")
+        print("              these pending changes get committed together with HISTORY.md")
+        print("              in the release commit (`git add -A`).")
+        for s in dirty[:40]:
+            print(f"  {s}")
+        if len(dirty) > 40:
+            print(f"  ... {len(dirty) - 40} more")
+    else:
+        print("working tree: clean")
     print()
 
     if failed_release:
         print("!!! RELEASE CHECK: the previous tag push FAILED its release action !!!")
         print(f"    highest local tag: {version}")
-        print(f"    latest published release: {failed_release}")
+        print(
+            f"    no published release found at /releases/tags/{failed_release}")
         print(
             f"    {version} was pushed but no GitHub Release was created -- CI failed.")
         print(
@@ -459,8 +475,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
             f"# 1. fold the commits above into the existing {version} HISTORY.md entry:")
         print(
             f"python3 {script} apply --version {version} --update-existing --body-file /tmp/notes.md")
+        print(
+            f"python3 {script} body --version {version} > /tmp/release-msg.txt   # commit message = HISTORY.md entry")
         print("git add -A")
-        print(f'git commit -m "chore(release): {version}"')
+        print("git commit -F /tmp/release-msg.txt")
         print(
             f"python3 {script} tag --version {version} --force   # retarget the tag at HEAD (now incl. new commits)")
         print(
@@ -475,8 +493,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     print("--- commands to run after confirmation ---")
     print(f"cd {repo}")
+    print(
+        f"python3 {script} body --version {version} > /tmp/release-msg.txt   # commit message = HISTORY.md entry")
     print("git add -A")
-    print(f'git commit -m "chore(release): {version}"')
+    print("git commit -F /tmp/release-msg.txt")
     print(f"python3 {script} tag --version {version}")
     print(f"git push origin {branch}")
     print(f"git push origin {version}")
@@ -544,10 +564,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
     # --- docs/docs/history.md (keep the docs site in sync) ---
     _sync_docs_file(repo, version, body)
 
-    # After the writes the only expected dirty files are HISTORY.md and the
-    # docs history mirror; anything else means a concurrent edit.
+    # After the writes, HISTORY.md and the docs history mirrors are updated.
+    # Any OTHER pending changes are no longer a blocker -- the release commit
+    # uses `git add -A`, so they ride along into the same commit.
+    dirty = dirty_files(repo)
     extra = [
-        s for s in dirty_files(repo)
+        s for s in dirty
         if status_path(s) not in (
             HISTORY_FILE,
             *(t["path"] for t in DOCS_HISTORY_TARGETS),
@@ -555,11 +577,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
     ]
     if extra:
         print(
-            "BLOCKED: unexpected dirty files appeared -- do not commit yet.", file=sys.stderr)
+            f"note: {len(extra)} other uncommitted change(s) present; they will be")
+        print("      committed together with HISTORY.md in the release commit:")
         for s in extra[:20]:
-            print(f"  {s}", file=sys.stderr)
-        return 2
-    print("working tree: only HISTORY.md and docs/docs/history.md modified -- safe to commit")
+            print(f"  {s}")
+        if len(extra) > 20:
+            print(f"  ... {len(extra) - 20} more")
+    print("working tree ready -- `git add -A` will include HISTORY.md, docs history, and any pending changes")
     return 0
 
 
@@ -620,6 +644,34 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_body(args: argparse.Namespace) -> int:
+    """Print a HISTORY.md version section for use as the release commit message.
+
+    Emits the version heading (e.g. `vX.Y.Z`) followed by a blank line and the
+    exact bullet body, so `git commit -F` records the changelog entry itself as
+    the commit message. Defaults to the topmost (newest) section when --version
+    is omitted; never mutates the repo.
+    """
+    repo = args.repo
+    root_path = os.path.join(repo, HISTORY_FILE)
+    if not os.path.exists(root_path):
+        raise SystemExit(f"missing {root_path}")
+    with open(root_path, encoding="utf-8") as fh:
+        text = fh.read()
+    sections = extract_sections(text)
+    if not sections:
+        raise SystemExit("no `## vX.Y.Z` section found in HISTORY.md")
+    if args.version:
+        version = normalize_version(args.version)
+        body = next((b for v, b in sections if v == version), None)
+        if body is None:
+            raise SystemExit(f"no section for {version} in {HISTORY_FILE}")
+    else:
+        version, body = sections[0]
+    sys.stdout.write(f"{version}\n\n{body.strip()}\n")
+    return 0
+
+
 def cmd_sync_docs(args: argparse.Namespace) -> int:
     """Catch up every docs history target so it mirrors HISTORY.md.
 
@@ -672,7 +724,7 @@ def main() -> int:
     p.add_argument(
         "--no-release-check",
         action="store_true",
-        help="skip the online latest-release check (offline / non-GitHub remote)",
+        help="skip the online release check (offline / non-GitHub remote)",
     )
     p.set_defaults(func=cmd_plan)
 
@@ -697,6 +749,16 @@ def main() -> int:
 
     v = sub.add_parser("verify", help="show the release body CI will produce")
     v.set_defaults(func=cmd_verify)
+
+    b = sub.add_parser(
+        "body",
+        help="print a HISTORY.md version section (commit message for git commit -F)",
+    )
+    b.add_argument(
+        "--version",
+        help="which section to print; defaults to the topmost (newest) one",
+    )
+    b.set_defaults(func=cmd_body)
 
     t = sub.add_parser("tag", help="create the release tag idempotently")
     t.add_argument(

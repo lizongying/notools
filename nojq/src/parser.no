@@ -107,6 +107,7 @@ parse-state {
     lblid []i64
     lblctr i64
     bms []i64
+    prelen i64
 }
 _ps parse-state
 _p i64
@@ -122,6 +123,8 @@ ast-pool {
     c3 []i64
     text []str
     val []i64
+    nline []i64
+    ncol []i64
 }
 _ap ast-pool
 
@@ -146,6 +149,10 @@ ap-reset = () {
     _ap.text = t
     v []i64 = with-len(0)
     _ap.val = v
+    nl []i64 = with-len(0)
+    _ap.nline = nl
+    nc []i64 = with-len(0)
+    _ap.ncol = nc
     dn []str = with-len(0)
     _defs.name = dn
     da []i64 = with-len(0)
@@ -156,6 +163,10 @@ ap-reset = () {
     _defscope.items = ds
     dv []i64 = with-len(0)
     _defs.paramval = dv
+    mn []i64 = with-len(0)
+    _defs.pmnline = mn
+    mc0 []i64 = with-len(0)
+    _defs.pmncol = mc0
     dp []i64 = with-len(0)
     _defs.pstart = dp
     dq []i64 = with-len(0)
@@ -184,6 +195,8 @@ mk = (kind i64) (idx i64) {
     _ap.c3.push(-1)
     _ap.text.push('')
     _ap.val.push(-1)
+    _ap.nline.push(0)
+    _ap.ncol.push(0)
 }
 
 ; node accessors (bounds-safe reads into the pool; index-out defaults apply
@@ -232,6 +245,11 @@ p-val = () (v i64) {
 p-line = () (l i64) {
     l = 1
     ! p-eof() -> l = _ps.toks[_p].line
+}
+
+p-col = () (c i64) {
+    c = 1
+    ! p-eof() -> c = _ps.toks[_p].col
 }
 
 p-advance = () {
@@ -299,6 +317,8 @@ def-entry {
     body []i64
     params []str
     paramval []i64
+    pmnline []i64
+    pmncol []i64
 }
 _defs def-entry
 
@@ -308,7 +328,7 @@ def-scope {
 }
 _defscope def-scope
 
-new-def = (name str, params []str, vals []i64) (di i64) {
+new-def = (name str, params []str, vals []i64, mline []i64, mcol []i64) (di i64) {
     di = _defs.name.len()
     _defs.name.push(name)
     _defs.arity.push(params.len())
@@ -318,6 +338,8 @@ new-def = (name str, params []str, vals []i64) (di i64) {
     i <- [0..params.len()): {
         _defs.params.push(params[i])
         _defs.paramval.push(vals[i])
+        _defs.pmnline.push(mline[i])
+        _defs.pmncol.push(mcol[i])
     }
 }
 
@@ -557,7 +579,16 @@ parse-expr = (minbp i64) (node i64) {
             ; bi-run itself and would clobber the _bi-* scratch globals.
             opkind i64 = _bi-opkind
             op i64 = _bi-op
-            next-min i64 = _bi-bp + 1 #{overflow=wrap}
+            next-min i64 = 0
+            next-min-opt = _bi-bp + 1 #{overflow=wrap}
+            next-min-opt: {
+                ok -> {
+                    next-min = it
+                }
+                -> {
+                    next-min = 0
+                }
+            }
             _bi-assoc == 1 -> next-min = _bi-bp
             p-advance()
             rhs i64 = parse-expr(next-min)
@@ -632,9 +663,13 @@ parse-binder-exp = () (node i64) {
     ! ashere -> p-error('expected as')
     ashere -> p-advance()
     vname = ''
+    vl = 1
+    vc = 0
     ka = p-kind()
     _ps.err.empty() && ka == TQ-BINDING -> {
         vname = p-text()
+        vl = p-line()
+        vc = p-col() - vname.count() - 1 #{overflow=wrap}
         p-advance()
     }
     _ps.err.empty() && ka != TQ-BINDING -> p-error('only $name patterns supported')
@@ -656,6 +691,8 @@ parse-binder-exp = () (node i64) {
             _ap.c1[node] = upd
             _ap.c2[node] = ex
             _ap.text[node] = vname
+            _ap.nline[node] = vl
+            _ap.ncol[node] = vc
 
             ; '.' inside update/extract denotes the fold state, not the
             ; outer input: rewrite those subtrees' identity nodes to A-STATE.
@@ -737,7 +774,16 @@ bm-top = () (v i64) {
     v = 0
     n i64 = _ps.bms.len()
     n > 0 -> {
-        ln i64 = n - 1 #{overflow=wrap}
+        ln i64 = 0
+        ln-opt = n - 1 #{overflow=wrap}
+        ln-opt: {
+            ok -> {
+                ln = it
+            }
+            -> {
+                ln = 0
+            }
+        }
         v = _ps.bms[ln] #{index-out=0}
     }
 }
@@ -753,6 +799,8 @@ parse-term = () (node i64) {
         ka i64 = p-kind()
         ka == TQ-BINDING -> {
             vname str = p-text()
+            al i64 = p-line()
+            ac i64 = p-col() - vname.count() - 1 #{overflow=wrap}
             p-advance()
             p-expect(124, 'expected |')
             rhs i64 = parse-expr(1)
@@ -760,6 +808,8 @@ parse-term = () (node i64) {
             _ap.left[n] = node
             _ap.right[n] = rhs
             _ap.text[n] = vname
+            _ap.nline[n] = al
+            _ap.ncol[n] = ac
             node = n
         }
         ka != TQ-BINDING -> p-error('only $name patterns supported')
@@ -940,8 +990,13 @@ parse-primary = () (node i64) {
         done = true
     }
     k == TQ-BINDING -> {
+        ln i64 = p-line()
+        bt str = p-text()
+        cn i64 = p-col() - bt.count() - 1 #{overflow=wrap}
         node = mk(A-VAR)
         _ap.text[node] = p-text()
+        _ap.nline[node] = ln
+        _ap.ncol[node] = cn
         p-advance()
         done = true
     }
@@ -977,6 +1032,8 @@ parse-primary = () (node i64) {
             kn != TQ-IDENT -> p-error('expected function name')
             params []str = with-len(0)
             vals []i64 = with-len(0)
+            mline []i64 = with-len(0)
+            mcol []i64 = with-len(0)
             p-kind() == 40 -> {
                 p-advance()
                 p-kind() != 41 -> {
@@ -984,11 +1041,17 @@ parse-primary = () (node i64) {
                     (loop && _ps.err.empty()) {
                         pk i64 = p-kind()
                         pk == TQ-BINDING -> {
+                            mb i64 = p-col() - p-text().count() - 1 #{overflow=wrap}
+                            mline.push(p-line())
+                            mcol.push(mb)
                             params.push(p-text())
                             vals.push(1)
                             p-advance()
                         }
                         pk == TQ-IDENT -> {
+                            mi i64 = p-col() - p-text().count() #{overflow=wrap}
+                            mline.push(p-line())
+                            mcol.push(mi)
                             params.push(p-text())
                             vals.push(0)
                             p-advance()
@@ -1006,7 +1069,7 @@ parse-primary = () (node i64) {
                 p-expect(41, 'expected )')
             }
             p-expect(58, 'expected :')
-            di i64 = new-def(fname, params, vals)
+            di i64 = new-def(fname, params, vals, mline, mcol)
             _defscope.items.push(di); visible to its own body (recursion)
             b i64 = parse-expr(1)
             _defs.body[di] = b
@@ -1025,7 +1088,14 @@ parse-primary = () (node i64) {
     }
     k == 45 -> {; unary minus '-'
         p-advance()
-        t i64 = parse-term()
+
+        ; the operand of unary minus binds TIGHTER than a trailing `as`: jq
+        ; parses `-E as $x | F` as `(-E) as $x | F`, NOT `-(E as $x | F)`.
+        ; parse-term would absorb the `as` into the operand (its Term-level
+        ; trailing-as binding at the parse-term tail), so build the operand as
+        ; primary+postfix only and let the OUTER parse-term wrap the `as`.
+        t i64 = parse-primary()
+        t >= 0 && _ps.err.empty() -> t = parse-postfix(t)
         node = mk(A-NEGATE)
         _ap.left[node] = t
         done = true
@@ -1098,6 +1168,8 @@ parse-primary = () (node i64) {
     }
     k == TQ-IDENT -> {
         name str = p-text()
+        cl i64 = p-line()
+        cc i64 = p-col() - name.count() #{overflow=wrap}
         p-advance()
         node = mk(A-CALL)
         _ap.text[node] = name
@@ -1126,6 +1198,13 @@ parse-primary = () (node i64) {
             argc i64 = 0
             ax-left(node) >= 0 -> argc = count-cons(ax-left(node))
             _ap.c1[node] = def-lookup(name, argc)
+
+            ; record the call's source position ONLY on genuine A-CALL nodes
+            ; (true/false/null were reassigned to A-LIT above and are skipped,
+            ; so their orphaned A-CALL pool slots keep nline/ncol=0 and never
+            ; trip the compile-time undefined-function scan)
+            _ap.nline[node] = cl
+            _ap.ncol[node] = cc
         }
         done = true
     }
@@ -1307,10 +1386,14 @@ parse-entry = () (node i64) {
     }
     k == TQ-BINDING -> {
         name str = p-text()
+        ln i64 = p-line()
+        cn i64 = p-col() - name.count() - 1 #{overflow=wrap}
         p-advance()
         node = mk(A-ENTRY)
         _ap.op[node] = EK-VAR
         _ap.text[node] = name
+        _ap.nline[node] = ln
+        _ap.ncol[node] = cn
         has-colon bool = p-kind() == 58
         has-colon -> {
             p-advance()
@@ -1319,6 +1402,8 @@ parse-entry = () (node i64) {
         ! has-colon -> {
             v i64 = mk(A-VAR)
             _ap.text[v] = name
+            _ap.nline[v] = ln
+            _ap.ncol[v] = cn
             _ap.right[node] = v
         }
         done = true
@@ -1394,10 +1479,11 @@ is-binder = (k i64) (b bool) {
 ; subtract/negative errors). Kept on ONE line: __loc__ reports only the line
 ; number, and zero newlines here keep user line numbers unchanged. Order is
 ; dependency-first (isempty/nth reference first/skip).
-BI-DEFS = 'def first(g): label $out | g | ., break $out; def isempty(g): first((g|false), true); def limit($n; expr): if $n > 0 then label $out | foreach expr as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end) elif $n == 0 then empty else error("limit doesn\'t support negative count") end; def skip($n; expr): if $n > 0 then foreach expr as $item ($n; . - 1; if . < 0 then $item else empty end) elif $n == 0 then expr else error("skip doesn\'t support negative count") end; def nth($n; g): if $n < 0 then error("nth doesn\'t support negative indices") else first(skip($n; g)) end; def first: .[0]; def last: .[-1]; def range($x;$y;$z): _range3($x;$y;$z); def range($x;$y): range($x;$y;1); def range($x): range(0;$x); def all(generator; condition): isempty(generator|condition and empty); def any(generator; condition): isempty(generator|condition or empty)|not; def all(condition): all(.[]; condition); def any(condition): any(.[]; condition); def all: all(.[]; .); def any: any(.[]; .); '
+BI-DEFS = 'def first(g): label $out | g | ., break $out; def isempty(g): first((g|false), true); def limit($n; expr): if $n > 0 then label $out | foreach expr as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end) elif $n == 0 then empty else error("limit doesn\'t support negative count") end; def skip($n; expr): if $n > 0 then foreach expr as $item ($n; . - 1; if . < 0 then $item else empty end) elif $n == 0 then expr else error("skip doesn\'t support negative count") end; def nth($n; g): if $n < 0 then error("nth doesn\'t support negative indices") else first(skip($n; g)) end; def first: .[0]; def last: .[-1]; def range($x;$y;$z): _range3($x;$y;$z); def range($x;$y): range($x;$y;1); def range($x): range(0;$x); def all(generator; condition): isempty(generator|condition and empty); def any(generator; condition): isempty(generator|condition or empty)|not; def all(condition): all(.[]; condition); def any(condition): any(.[]; condition); def all: all(.[]; .); def any: any(.[]; .); def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}]; def add(f): reduce f as $x (null; . + $x); def from_entries: add(.[] | { (.key // .Key // .name // .Name): if has("value") then .value else .Value end }) // {}; def with_entries(f): to_entries | map(f) | from_entries; def reverse: [.[range(length-1;-1;-1)]]; def recurse: ..; def paths: path(recurse)|select(length > 0); def paths(node_filter): path(recurse|select(node_filter))|select(length > 0); def del(f): delpaths([path(f)]); def map_values(f): .[] |= f; def in(xs): . as $x | xs | has($x); def numbers: select(type == "number"); def strings: select(type == "string"); def booleans: select(type == "boolean"); def nulls: select(. == null); def arrays: select(type == "array"); def objects: select(type == "object"); def iterables: select(type|. == "array" or . == "object"); def scalars: select(type|. != "array" and . != "object"); def ascii_downcase: explode | map(if 65 <= . and . <= 90 then . + 32 else . end) | implode; def ascii_upcase: explode | map(if 97 <= . and . <= 122 then . - 32 else . end) | implode; '
 
 jq-parse-program = (prog str) (root i64, err str) {
     ap-reset()
+    _ps.prelen = pre-length(prog)
     pre = BI-DEFS
     src = pre - prog
     prog.empty() -> src = ''
@@ -1607,6 +1693,8 @@ clone-node = (src i64) (idx i64) {
     _ap.c1[idx] = ax-c1(src)
     _ap.text[idx] = ax-text(src)
     _ap.val[idx] = ax-val(src)
+    _ap.nline[idx] = _ap.nline[src] #{index-out=0}
+    _ap.ncol[idx] = _ap.ncol[src] #{index-out=0}
 }
 
 ; ast-lit: append a fresh A-LIT node carrying a runtime value handle.
@@ -1641,6 +1729,8 @@ subst-def = (di i64) (ndi i64) {
         i <- [0.._defs.pcount[di]): {
             _defs.params.push(_defs.params[st + i]) #{overflow=wrap}
             _defs.paramval.push(_defs.paramval[st + i]) #{overflow=wrap}
+            _defs.pmnline.push(_defs.pmnline[st + i]) #{overflow=wrap}
+            _defs.pmncol.push(_defs.pmncol[st + i]) #{overflow=wrap}
         }
         _sb.old.push(di)
         _sb.new.push(ndi)
@@ -1745,5 +1835,249 @@ subst-rec = (node i64) (new i64) {
             _ap.c1[c] = cv
             new = c
         }
+    }
+}
+
+; pre-length: byte length of the BI-DEFS prefix for the given program ('' →
+; no prefix was prepended, user columns stay as-is).
+pre-length = (prog str) (n i64) {
+    n = 0
+    ! prog.empty() -> n = BI-DEFS.count()
+}
+
+; in-user-zone: is (line, col) past the single-line BI-DEFS prefix? Prefix
+; nodes (builtin defs) self-bind and must never answer the user's checks.
+in-user-zone = (l i64, c i64) (b bool) {
+    b = l > 1
+    l == 1 && c > _ps.prelen -> b = true
+}
+
+; var-is-bound: name appears as a USER-ZONE binder (as/reduce/foreach
+; pattern or a def parameter). Whole-program scope approximation: jq's
+; stricter block scoping is accepted more permissively here.
+var-is-bound = (nm str) (b bool) {
+    b = false
+    i <- [0.._ap.kind.len()): {
+        k i64 = _ap.kind[i] #{index-out=0}
+        kk bool = k == A-AS || k == A-REDUCE || k == A-FOREACH
+        ! b && kk && _ap.text[i] == nm -> {
+            zl i64 = _ap.nline[i] #{index-out=0}
+            zc i64 = _ap.ncol[i] #{index-out=0}
+            in-user-zone(zl, zc) -> b = true
+        }
+    }
+    j <- [0.._defs.params.len()): {
+        ! b && _defs.params[j] == nm -> {
+            pl i64 = _defs.pmnline[j] #{index-out=0}
+            pc i64 = _defs.pmncol[j] #{index-out=0}
+            in-user-zone(pl, pc) -> b = true
+        }
+    }
+}
+
+; jq-undef-var-into: jq's compile-time variable resolution, approximated as a
+; whole-pool scan: an A-VAR reference (or a {$name: ...} EK-VAR entry, which
+; jq also resolves) whose name is bound nowhere in the program and is not in
+; `allow` (CLI names: ENV, ARGS, plus every --arg/--argjson/... key) counts
+; as undefined. jq reports EVERY undefined site (one error per reference
+; position); entries are appended to names/ls/cs sorted by (line, column).
+; in/out params: returning three collected vecs across the call boundary is
+; the known codegen gap (elements past the first zero out), so the caller
+; owns the vectors. Line-1 columns are corrected for the BI-DEFS prefix.
+jq-undef-var-into = (allow []str, names []str, ls []i64, cs []i64) {
+    i <- [0.._ap.kind.len()): {
+        k i64 = _ap.kind[i] #{index-out=0}
+        isref bool = k == A-VAR || (k == A-ENTRY && _ap.op[i] == EK-VAR)
+        isref -> {
+            rl i64 = _ap.nline[i] #{index-out=0}
+            rc i64 = _ap.ncol[i] #{index-out=0}
+
+            ; references inside the builtin prefix resolve against prefix
+            ; binders only; the user check starts past it
+            in-user-zone(rl, rc) -> {
+                nm str = _ap.text[i] #{index-out=''}
+                allowed bool = false
+                a <- [0..allow.len()): {
+                    allow[a] == nm -> allowed = true
+                }
+                ! allowed && ! var-is-bound(nm) -> {
+                    c i64 = rc #{overflow=wrap}
+                    cc i64 = c #{overflow=wrap}
+                    rl == 1 -> cc = c - _ps.prelen #{overflow=wrap}
+
+                    ; insertion sort by (line, column); identical sites
+                    ; (clone artifacts) are deduped
+                    pos i64 = names.len()
+                    s <- [0..names.len()): {
+                        sl i64 = ls[s] #{index-out=0}
+                        sc i64 = cs[s] #{index-out=0}
+                        sl > rl -> {
+                            s < pos -> pos = s
+                        }
+                        sl == rl && sc > cc -> {
+                            s < pos -> pos = s
+                        }
+                    }
+                    dupe bool = false
+                    names.len() > pos -> dupe = names[pos] == nm && ls[pos] == rl && cs[pos] == cc
+                    ! dupe -> {
+
+                        ; grow by one, then shift [pos..end) one slot right
+                        ; (ascending loop, index mapped from the tail: Nolang
+                        ; ranges have no descending form)
+                        names.push('')
+                        ls.push(0)
+                        cs.push(0)
+                        n i64 = names.len()
+                        lim i64 = 0
+                        lim-opt = n - 2 - pos #{overflow=wrap}
+                        lim-opt: {
+                            ok -> {
+                                lim = it
+                            }
+                            -> {
+                                lim = 0
+                            }
+                        }
+                        up i64 = 0
+                        up-opt = lim + 1 #{overflow=wrap}
+                        up-opt: {
+                            ok -> {
+                                up = it
+                            }
+                            -> {
+                                up = 0
+                            }
+                        }
+                        t <- [0..up): {
+                            k i64 = n - 2 - t #{overflow=wrap}
+                            k1 i64 = 0
+                            k1-opt = k + 1 #{overflow=wrap}
+                            k1-opt: {
+                                ok -> {
+                                    k1 = it
+                                }
+                                -> {
+                                    k1 = 0
+                                }
+                            }
+                            names[k1] = names[k] #{index-out=''}
+                            ls[k1] = ls[k] #{index-out=0}
+                            cs[k1] = cs[k] #{index-out=0}
+                        }
+                        names[pos] = nm
+                        ls[pos] = rl
+                        cs[pos] = cc
+                    }
+                }
+            }
+        }
+    }
+}
+
+; jq-undef-func-into: jq's compile-time function resolution, approximated as a
+; whole-pool scan of A-CALL nodes. A call is undefined when it resolved to no
+; user def (node c1 < 0) AND bi-code(name, argc) < 0 (not a native builtin).
+; Keywords (and/or/if/reduce/...) are dedicated node kinds, never A-CALL, so
+; they cannot be flagged here. jq reports EVERY undefined call site; entries
+; go to names/arities/ls/cs sorted by (line, column), deduped at identical
+; sites. in/out params (see jq-undef-var-into for why). Line-1 columns are
+; corrected for the BI-DEFS prefix, and prefix-internal calls are skipped via
+; in-user-zone exactly like the variable pass.
+jq-undef-func-into = (names []str, arities []i64, ls []i64, cs []i64) {
+    i <- [0.._ap.kind.len()): {
+        k i64 = _ap.kind[i] #{index-out=0}
+        k == A-CALL -> {
+            c1 i64 = _ap.c1[i] #{index-out=0}
+            nm str = _ap.text[i] #{index-out=''}
+            argn i64 = _ap.left[i] #{index-out=0}
+            argc i64 = count-cons(argn)
+            bc i64 = bi-code(nm, argc)
+            c1 < 0 && bc < 0 -> {
+                rl i64 = _ap.nline[i] #{index-out=0}
+                rc i64 = _ap.ncol[i] #{index-out=0}
+                in-user-zone(rl, rc) -> {
+                    c i64 = rc #{overflow=wrap}
+                    cc i64 = c #{overflow=wrap}
+                    rl == 1 -> cc = c - _ps.prelen #{overflow=wrap}
+
+                    ; insertion sort by (line, column); identical sites deduped
+                    pos i64 = names.len()
+                    s <- [0..names.len()): {
+                        sl i64 = ls[s] #{index-out=0}
+                        sc i64 = cs[s] #{index-out=0}
+                        sl > rl -> {
+                            s < pos -> pos = s
+                        }
+                        sl == rl && sc > cc -> {
+                            s < pos -> pos = s
+                        }
+                    }
+                    dupe bool = false
+                    names.len() > pos -> dupe = names[pos] == nm && arities[pos] == argc && ls[pos] == rl && cs[pos] == cc
+                    ! dupe -> {
+                        names.push('')
+                        arities.push(0)
+                        ls.push(0)
+                        cs.push(0)
+                        n i64 = names.len()
+                        lim i64 = 0
+                        lim-opt = n - 2 - pos #{overflow=wrap}
+                        lim-opt: {
+                            ok -> {
+                                lim = it
+                            }
+                            -> {
+                                lim = 0
+                            }
+                        }
+                        up i64 = 0
+                        up-opt = lim + 1 #{overflow=wrap}
+                        up-opt: {
+                            ok -> {
+                                up = it
+                            }
+                            -> {
+                                up = 0
+                            }
+                        }
+                        t <- [0..up): {
+                            k i64 = n - 2 - t #{overflow=wrap}
+                            k1 i64 = 0
+                            k1-opt = k + 1 #{overflow=wrap}
+                            k1-opt: {
+                                ok -> {
+                                    k1 = it
+                                }
+                                -> {
+                                    k1 = 0
+                                }
+                            }
+                            names[k1] = names[k] #{index-out=''}
+                            arities[k1] = arities[k] #{index-out=0}
+                            ls[k1] = ls[k] #{index-out=0}
+                            cs[k1] = cs[k] #{index-out=0}
+                        }
+                        names[pos] = nm
+                        arities[pos] = argc
+                        ls[pos] = rl
+                        cs[pos] = cc
+                    }
+                }
+            }
+        }
+    }
+}
+
+; jq-program-uses-input: does the parsed AST reference input/inputs? The CLI
+; skips stdin/file collection under -n unless this returns true (jq -n '1+1'
+; never touches stdin; jq -n 'input' does). Scan runs right after the program
+; is parsed -- any later jq-parse-program (per-value jq-run) resets the pool.
+jq-program-uses-input = () (b bool) {
+    b = false
+    i <- [0.._ap.kind.len()): {
+        t i64 = _ap.kind[i] #{index-out=0}
+        s str = _ap.text[i] #{index-out=''}
+        ! b && t == A-CALL && (s == 'input' || s == 'inputs') -> b = true
     }
 }

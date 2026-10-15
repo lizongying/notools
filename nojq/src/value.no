@@ -436,15 +436,29 @@ jv-obj-insert = (idx i64, key str, val i64) {
 ; jv-obj-del: remove a key from an object (no-op if absent)
 jv-obj-del = (idx i64, key str) {
     _pv.nodes[idx].kind == JV-OBJECT -> {
-        pos = -1
-        i <- [0.._pv.nodes[idx].keys.len()): {
-            jv-key-str(idx, i) == key -> pos = i
-        }
+        pos i64 = jv-obj-pos(idx, key)
         pos >= 0 -> {
-            node jv-value = _pv.nodes[idx]
-            node.keys.remove(pos)
-            node.elems.remove(pos)
-            _pv.nodes[idx] = node
+            nk []i64 = with-len(0)
+            ne []i64 = with-len(0)
+            n i64 = _pv.nodes[idx].keys.len()
+            k i64 = 0
+            (k < n) {
+                k != pos -> {
+                    kv i64 = _pv.nodes[idx].keys[k] #{index-out=0}
+                    evx i64 = _pv.nodes[idx].elems[k] #{index-out=0}
+                    nk.push(kv)
+                    ne.push(evx)
+                }
+                k = k + 1 #{overflow=wrap}
+            }
+            ; Assign straight into the pool slot: a wholesale reassignment of
+            ; a vec field on a LOCAL struct copy followed by `_pv.nodes[idx] =
+            ; node` is silently dropped by the current codegen (the write-back
+            ; only persists in-place push/element edits), so we target the slot
+            ; field directly. `.remove(runtime-idx)` is also unusable here
+            ; (lowers to a malformed 3-operand `sub`).
+            _pv.nodes[idx].keys = nk
+            _pv.nodes[idx].elems = ne
         }
     }
 }

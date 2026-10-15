@@ -1,6 +1,6 @@
 ---
 name: nolang-release
-description: 给当前 git 仓库发版——检测工作树是否干净（不干净就中断交还给用户）、先检查最新已发布 release 是否与最高本地 tag 一致（不一致则说明上次 tag 的 release action 失败，复用当前 tag 而不是 +1 并强制重推）、根据已有 tag 推导版本号（默认末位 +1）、在仓库根 HISTORY.md 顶部新增英文变更日志条目（GitHub Actions 会读取它作为 Release 正文，并同步到文档站 `docs/docs/history.md`）、打 tag，最后在用户确认后才执行 git push。当用户说「publish」「发版」「发布」「release」「打个 tag」「发 v0.3.0」或提到版本号与 HISTORY.md 时使用。
+description: 给当前 git 仓库发版——先按 tag 精确查询最高本地 tag 是否已有已发布 release（查不到则说明上次 tag 的 release action 失败，复用当前 tag 而不是 +1 并强制重推；不用 /releases/latest，它会被同仓库的工具链 release 顶掉）、根据已有 tag 推导版本号（默认末位 +1）、在仓库根 HISTORY.md 顶部新增英文变更日志条目（GitHub Actions 会读取它作为 Release 正文，并同步到文档站 `docs/docs/history.md`）、打 tag；工作树不干净**不中断**——未提交改动会与 HISTORY.md 一起打进同一个发布提交（`git add -A`），最后在用户确认后才执行 git push。当用户说「publish」「发版」「发布」「release」「打个 tag」「发 v0.3.0」或提到版本号与 HISTORY.md 时使用。
 agent_created: true
 ---
 
@@ -8,8 +8,8 @@ agent_created: true
 
 ## 目的
 
-把「发版」这件容易出错的事固化为固定流程：**检查最新 release 是否与最高本地 tag 一致**→ 推导版本号 → 写 HISTORY.md → **停下来问用户** → 打 tag 并推送。
-若上次 tag 的 release action 失败（最高本地 tag 没有对应 release），不 +1，而是复用当前 tag 并强制重推以重新触发 CI。
+把「发版」这件容易出错的事固化为固定流程：**检查最高本地 tag 是否已有已发布 release** → 推导版本号 → 写 HISTORY.md → **停下来问用户** → 打 tag 并推送。
+若上次 tag 的 release action 失败（最高本地 tag 查不到对应 release），不 +1，而是复用当前 tag 并强制重推以重新触发 CI。
 
 **不绑定任何具体仓库**：仓库根、remote、分支都由脚本在运行时用 `git rev-parse --show-toplevel` /
 `git remote get-url origin` 探测，脚本从仓库内任意子目录执行都可以。只对「仓库根有 `HISTORY.md`
@@ -30,17 +30,18 @@ agent_created: true
 
 ## 工作流
 
-### 0. 前置检查：工作树必须干净（不干净就中断）
+### 0. 前置检查：工作树不干净也照常继续（不中断）
 
-`plan` 会先跑 `git status --porcelain`。**只要有任何未提交改动，它就打印清单并以 exit code 2 退出。**
+`plan` 会跑 `git status --porcelain`，但**脏工作树不再是障碍**。
+若有未提交改动，`plan` 会列出清单并说明：这些改动会与 HISTORY.md 一起，
+在后面的发布提交里用 `git add -A` 打包进**同一个 commit**。
 
-此时**立刻中断整个发版流程**，把清单转给用户，请用户自己先提交（或 stash），然后重新发起发版。
-不要替用户提交——选哪些文件、拆成几个 commit、写什么 message 都需要人的判断，
-仓库里可能还混着并行 session 的未提交改动，机器无从判断归属。
+不要再中断流程、也不要请用户先去手动提交或 stash——直接继续走第 1 步。
+发布提交本就是「版本号 + HISTORY.md + 当前所有待发布改动」的快照，把并行 session
+的改动一起带上是可接受的默认行为；但如果 `plan` 列出的脏文件里有**看起来不该进这次发版**的
+（例如临时调试产物、明显无关的大改动），在第四步确认时向用户点出，由用户决定要不要继续。
 
-不在这一步代劳，也不要「先暂存起来发完版再恢复」。中断就是中断。
-
-### 1. 解析版本（先检查最新 release）
+### 1. 解析版本（先检查最高本地 tag 是否已发布）
 
 ```bash
 python3 <skill-dir>/scripts/release.py plan [--version vX.Y.Z] [--no-release-check]
@@ -50,31 +51,40 @@ python3 <skill-dir>/scripts/release.py plan [--version vX.Y.Z] [--no-release-che
 `commits since <last tag>`、待执行命令（含发布页 URL，由 origin 推出）。
 不带 `--version` 时按惯例**末位 +1**（`vX.Y.Z` → `vX.Y.(Z+1)`）。
 
-**`plan` 会先联网查最新的已发布 release**——默认直接打公开 API `https://api.github.com/repos/<owner>/<repo>/releases/latest`（不需要 token；`gh` 只在私有仓库时才作为兜底），拿它和仓库里最高的本地 tag 比对：
+**`plan` 会先联网确认「最高本地 tag 是否已经发布」**——按 tag 精确查询公开 API
+`https://api.github.com/repos/<owner>/<repo>/releases/tags/<最高本地 tag>`（不需要 token；
+`gh` 只在 curl 不可用时介入，以及用于确认匿名 404 —— 装了但未授权的 `gh`（HTTP 401）**不会**覆盖
+curl 的结论），按 HTTP 状态码判定：
 
-- **release == 最高本地 tag**：上次发版成功，走正常 +1 流程。
-- **release < 最高本地 tag**（例如本地已有 `v0.3.4`，但最新 release 还是 `v0.3.3`）：
-  说明 **`v0.3.4` 的 tag 推上去后 release action 失败了**。此时 `plan` **不会 +1**，
-  而是直接复用当前这个 `v0.3.4`，并打印一段 `!!! RELEASE CHECK !!!` 与**强制重推命令**。
-  因为重推会用 `git tag -f v0.3.4` 把 tag 对齐到当前 HEAD，**tag 之后的新提交会被折叠进同一个 release**，
-  所以**必须同步更新 HISTORY.md**（用 `apply --version v0.3.4 --update-existing` 重写现有 `## v0.3.4` 段落正文，
+- **200（该 tag 已有已发布 release）**：上次发版成功，走正常 +1 流程。
+- **404（该 tag 查不到 release）**：说明 **tag 推上去后 release action 失败了**（也涵盖「仓库还从未
+  发布过任何 release」）。此时 `plan` **不会 +1**，而是直接复用当前这个 tag，并打印一段
+  `!!! RELEASE CHECK !!!` 与**强制重推命令**。
+  因为重推会用 `git tag -f <tag>` 把 tag 对齐到当前 HEAD，**tag 之后的新提交会被折叠进同一个 release**，
+  所以**必须同步更新 HISTORY.md**（用 `apply --version <tag> --update-existing` 重写现有 `## <tag>` 段落正文，
   把新提交归纳进去），**不要新增版本号段落**。随后按强制重推命令：提交 → `git tag -f` → `push origin <branch>` →
-  删远端旧 tag → `push origin v0.3.4` 重新触发 CI。
+  删远端旧 tag → `push origin <tag>` 重新触发 CI。
 - 查不到（非 GitHub 远端 / 离线 / 私有未授权）：退回普通 +1 流程。
+
+本地已经知道要问哪个 tag，所以这个端点**可直接寻址、无歧义**；而 `/releases/latest` 按**发布时间**排名，
+本仓库会为**工具链**单独发 release（例如 `llvm-22.1.8-windows`），这类与版本号无关的 release 只要比版本
+release 更晚就会顶掉 `latest`（实测：最高本地 tag 是 `v0.4.4` 时 `latest` 回 `llvm-22.1.8-windows`），
+所以不要用它做判断。
+
+只需要 HTTP 状态码，正文用 `-o /dev/null` 丢弃、再加 `--compressed`（约 18.6 KB → 2.3 KB）。
 
 离线或非 GitHub 远端想跳过联网检查，加 `--no-release-check`。
 
-本地 tag 永远 ≥ 任何已发布 release（发版流程只会往上打 tag），所以检查只需要一次等值比对：
-**最高本地 tag 有没有出现在 `/releases/latest` 里**，一个 grep 就能自行复核 `plan` 的结论：
+一个 `curl` 就能自行复核 `plan` 的结论：
 
 ```bash
-git tag --list 'v*' | sort -V | tail -1   # 最高本地 tag
-curl -sS -f https://api.github.com/repos/<owner>/<repo>/releases/latest | grep -o '"tag_name"[^,]*'
+git tag --list 'v*' | sort -V | tail -1        # 最高本地 tag
+curl -sS --compressed -o /dev/null -w '%{http_code}\n' \
+  https://api.github.com/repos/<owner>/<repo>/releases/tags/<最高本地 tag>
 ```
 
-两条输出的 tag 一致才是 +1 的前提；若本地 tag 比 release 高（`releases/latest` 回 404 表示仓库还没有任何
-release），走下面的复用 tag 分支，即使 `plan` 没提示也要按这个分支处理；只有离线或非 GitHub 远端
-才允许跳过。
+`200` = 已发布（+1 的前提）；`404` = 未发布 ⇒ 走上面的复用 tag 分支，即使 `plan` 没提示也要按这个分支
+处理；只有离线或非 GitHub 远端才允许跳过。
 
 用户给的版本号可以是**不完整的**，脚本会自动补全成 `vMAJOR.MINOR.PATCH`，并在输出里打一行 `note:` 说明补全结果：
 
@@ -117,7 +127,7 @@ python3 <skill-dir>/scripts/release.py apply --version vX.Y.Z --body-file /tmp/n
 
 脚本会挡住三类问题：重复版本、空正文、以及**非英文 / 不符合 conventional 格式的条目**
 （exit 3，逐行报 offending line）。看到 exit 3 就按提示重写，不要用 `--allow-non-english` 绕过。
-写完后脚本还会再查一次工作树：若除 HISTORY.md 与文档站历史镜像（CN `docs/docs/history.md` + EN `docs/i18n/en/docusaurus-plugin-content-docs/current/history.md`）之外还有别的脏文件，报 exit 2 并阻止提交。
+写完后脚本还会再查一次工作树：除 HISTORY.md 与文档站历史镜像（CN `docs/docs/history.md` + EN `docs/i18n/en/docusaurus-plugin-content-docs/current/history.md`）之外的脏文件**不再报错**，`apply` 只会列出它们并说明这些待发布改动会一并用 `git add -A` 打进发布提交。
 
 `apply` 在写入根 `HISTORY.md` 的同时，会把同一 `## vX.Y.Z` 段落**镜像写入文档站历史页**（中文 `docs/docs/history.md` 与英文 `docs/i18n/en/docusaurus-plugin-content-docs/current/history.md`）。每个目标保留各自的 frontmatter / 标题 / 导言，版本段落 body 共用（英文 conventional-commit 行本身语言中立）；EN 档若不存在则由 `apply` 用其 locale 前綴自动建立。因此执行完 `apply` 后，工作树预期多出这两个 docs 历史档的改动——脚本已将其列入允许清单，不会误报 exit 2。
 
@@ -135,17 +145,18 @@ python3 <skill-dir>/scripts/release.py verify
 
 1. 版本号（含上一个 tag，便于核对）
 2. HISTORY.md 新增段落全文
-3. 将依次执行的命令：
+3. 将依次执行的命令（**commit message 直接用本次 HISTORY.md 版本段落内容**）：
    ```bash
+   python3 <skill-dir>/scripts/release.py body --version vX.Y.Z > /tmp/release-msg.txt
    git add -A
-   git commit -m "chore(release): vX.Y.Z"
+   git commit -F /tmp/release-msg.txt
    python3 <skill-dir>/scripts/release.py tag --version vX.Y.Z
    git push origin main
    git push origin vX.Y.Z
    ```
 
-此时工作树里理论上只剩 HISTORY.md 一个改动（`apply` 已校验过）。
-`git add -A` 只是为了省事，若提交前 `git status` 冒出别的路径，停下来问用户。
+此时工作树里会有 HISTORY.md、文档站历史镜像，以及发版前就存在的待发布改动（`apply` 已列出）。
+`git add -A` 会把它们全部打包进同一个发布提交。若 `plan` / `apply` 列出的待提交清单里有**明显不该进这次发版的文件**（临时调试产物、无关大改动），在确认时向用户点出，由用户拍板是否继续。
 
 **未获确认前，不得执行 add / commit / tag / push 中的任何一步。**
 
@@ -155,7 +166,7 @@ python3 <skill-dir>/scripts/release.py verify
 在提交前和推送前各查一次：
 
 ```bash
-git status --porcelain            # 应该只有 M HISTORY.md
+git status --porcelain            # HISTORY.md + 文档站镜像 + 发版前就存在的待发布改动
 git log -1 --oneline              # HEAD 是否是预期的最后一个业务提交
 git tag --list vX.Y.Z             # 本地 tag 是否已存在
 git ls-remote --tags origin vX.Y.Z   # 远端 tag 是否已存在
@@ -163,7 +174,7 @@ git ls-remote --tags origin vX.Y.Z   # 远端 tag 是否已存在
 
 据此分三种情况处理：
 
-- **正常**：`git add -A` → `git commit -m "chore(release): vX.Y.Z"` → `python3 <skill-dir>/scripts/release.py tag --version vX.Y.Z`
+- **正常**：`python3 <skill-dir>/scripts/release.py body --version vX.Y.Z > /tmp/release-msg.txt`（commit message = 本次 HISTORY.md 版本段落）→ `git add -A` → `git commit -F /tmp/release-msg.txt` → `python3 <skill-dir>/scripts/release.py tag --version vX.Y.Z`
   → `git push origin <branch>` → `git push origin vX.Y.Z`
 - **commit 已存在**（`git commit` 回 `nothing to commit`）：说明别处已经提交了。
   不要重试、不要 `--amend`，直接核对 `git log -1 --stat` 确认内容对得上，然后只补 `python3 <skill-dir>/scripts/release.py tag --version vX.Y.Z` 和 push。
@@ -185,7 +196,7 @@ git ls-remote --tags origin vX.Y.Z   # 远端 tag 是否已存在
 
 ## 硬性规则
 
-- **工作树不干净就中断**：把未提交清单交给用户，等用户自己提交完再从头走流程。代提交是禁区。
+- **工作树不干净不中断**：待提交改动会与 HISTORY.md 一起用 `git add -A` 打进同一个发布提交。仅当 `plan` / `apply` 列出的清单里出现**明显不该进这次发版的文件**（临时调试产物、无关大改动）时，在确认环节向用户点出，由用户决定是否继续。
 - 不确认不推送。版本号、日志内容、命令三者都要用户点头。
 - 只改写 `HISTORY.md` 与文档站历史镜像两个文件（`docs/docs/history.md` 中文 + `docs/i18n/en/docusaurus-plugin-content-docs/current/history.md` 英文；英文档由 `apply` 自动建立/同步）；不要顺手改代码、不要改版本号常量（版本由 CI 用 ldflag 注入）。
 - 文档站历史页（CN + EN i18n）应与根 `HISTORY.md` 保持一致：每次 `apply` 自动同步新版本进两个目标；若发现历史段落缺失（例如曾漏同步），执行 `python3 <skill-dir>/scripts/release.py sync-docs` 一次性补齐——它把根 `HISTORY.md` 的所有 `## vX.Y.Z` 段落幂等镜像进两个目标（已存在的原地重写、缺失的插入或新建，旧→新序处理保证最新版在顶），可放心重跑。
@@ -196,7 +207,10 @@ git ls-remote --tags origin vX.Y.Z   # 远端 tag 是否已存在
   说明上次 tag 推上去但 CI 失败了——此时**必须复用当前 tag而不是 +1**，并按强制重推命令删远端旧 tag 重新 push 以重新触发 action。
 - **提交前与推送前各重查一次真实状态**（`git status` / `git log -1` / `git tag --list`）——
   仓库常有并行 session，`git commit` 报 `nothing to commit` 就是它已经替你提交了。
-- commit message 用 `chore(release): vX.Y.Z`。
+- 刷新 MIR 后端 golden 基线（REGRESS）前，必须先让 `no test test/std/` 与语料 build 冒烟全绿：
+  基线冻结于 2026-09-22（63895e59），其后大量 commit 未刷新，REGRESS 数字不可全信、须逐档二分；
+  只有 `no test` 跑通后的基线才可信，故把「`no test` 跑通」作为刷新基线的前置条件纳入发版流程。
+- commit message **用本次 HISTORY.md 版本段落内容**（由 `release.py body --version vX.Y.Z` 输出，经 `git commit -F /tmp/release-msg.txt` 写入）；不再写死 `chore(release): vX.Y.Z`。
 - 若用户只要「写日志、先别发」，执行到第 3 步为止，明确说明尚未提交、未打 tag。
 
 ## 退出码
@@ -204,10 +218,10 @@ git ls-remote --tags origin vX.Y.Z   # 远端 tag 是否已存在
 | code | 含义 | 应对 |
 | --- | --- | --- |
 | 0 | ok | 继续 |
-| 2 | 工作树不干净 / 出现预期外的脏文件 | 交给用户处理，流程中断 |
+| 2 | 保留给特殊情况（脏树不再是障碍，不会回 2） | 一般不出现 |
 | 3 | 日志正文非英文或格式不合规范 | 重写条目 |
 
 ## 参考
 
 - `references/release-pipeline.md` —— CI 细节、`history.sh` 行为、回滚 tag 的方法
-- `scripts/release.py` —— `plan` / `apply` / `verify` 三个子命令，`plan` 与 `verify` 只读
+- `scripts/release.py` —— `plan` / `apply` / `verify` / `body` / `tag` / `sync-docs` 子命令；`plan`、`verify`、`body` 只读（`body` 输出某版本的 HISTORY.md 段落，用作 `git commit -F` 的提交信息）

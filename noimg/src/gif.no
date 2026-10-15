@@ -62,9 +62,12 @@ gif-load-frames = (path str) (frames []image) {
     }
 
     ; Logical screen descriptor
-    w = (data[6] & 255) | ((data[7] & 255) << 8)
-    h = (data[8] & 255) | ((data[9] & 255) << 8)
-    packed = data[10] & 255
+    #{index-out=zero}
+    w i64 = (data[6] & 255) | ((data[7] & 255) << 8)
+    #{index-out=zero}
+    h i64 = (data[8] & 255) | ((data[9] & 255) << 8)
+    #{index-out=zero}
+    packed i64 = data[10] & 255
     {
         w <= 0 || h <= 0 || w > 65535 || h > 65535 -> {
             return
@@ -91,7 +94,17 @@ gif-load-frames = (path str) (frames []image) {
 
     ; Create canvas (current composited frame)
     #{overflow=wrap}
-    canvas-data []byte = with-len(w * h * 4)
+    wh4 i64 = 0
+    wh4-opt = w * h * 4
+    wh4-opt: {
+        ok -> {
+            wh4 = it
+        }
+        -> {
+            wh4 = 0
+        }
+    }
+    canvas-data []byte = with-len(wh4)
     canvas = image.new-from-data(w, h, 4, canvas-data)
     i <- [0..w * h * 4): {
         canvas.data[i] = 0
@@ -112,7 +125,7 @@ gif-load-frames = (path str) (frames []image) {
                     ; Image descriptor (0x2C)
                     ; Save canvas state for disposal method 3 (restore to previous)
                     #{overflow=wrap}
-                    prev-canvas-data []byte = with-len(w * h * 4)
+                    prev-canvas-data []byte = with-len(wh4)
                     {
                         disposal == 3 -> {
                             i <- [0..w * h * 4): {
@@ -127,7 +140,7 @@ gif-load-frames = (path str) (frames []image) {
 
                     ; Create output frame (copy of canvas)
                     #{overflow=wrap}
-                    frame-data []byte = with-len(w * h * 4)
+                    frame-data []byte = with-len(wh4)
                     i <- [0..w * h * 4): {
                         frame-data[i] = canvas.data[i]
                     }
@@ -193,7 +206,7 @@ gif-load-frames = (path str) (frames []image) {
                         label == 249 -> {
 
                             ; Graphic Control Extension
-                            gce-size = data[pos] & 255
+                            gce-size i64 = data[pos] & 255
 
                             #{overflow=wrap}
                             pos = pos + 1
@@ -267,19 +280,19 @@ gif-process-image = (data []byte, pos i64, img image, gct []byte, has-gct bool, 
     frame-h = 0
 
     ; Image descriptor fields
-    left = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
+    left i64 = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
 
     #{overflow=wrap}
     new-pos = new-pos + 2
-    top = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
+    top i64 = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
 
     #{overflow=wrap}
     new-pos = new-pos + 2
-    iw = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
+    iw i64 = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
 
     #{overflow=wrap}
     new-pos = new-pos + 2
-    ih = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
+    ih i64 = (data[new-pos] & 255) | ((data[new-pos + 1] & 255) << 8)
 
     #{overflow=wrap}
     new-pos = new-pos + 2
@@ -339,7 +352,17 @@ gif-process-image = (data []byte, pos i64, img image, gct []byte, has-gct bool, 
 
     ; LZW decode
     #{overflow=wrap}
-    decoded = gif-lzw-decode(block-data, min-code, iw * ih)
+    iwih i64 = 0
+    iwih-opt = iw * ih
+    iwih-opt: {
+        ok -> {
+            iwih = it
+        }
+        -> {
+            iwih = 0
+        }
+    }
+    decoded = gif-lzw-decode(block-data, min-code, iwih)
 
     ; Interlacing
     interlaced = (packed & 64) != 0
@@ -490,7 +513,16 @@ gif-deinterlace-y = (seq-y i64, h i64) (actual-y i64) {
     }
 
     #{overflow=wrap}
-    pass4count = (h - 1 + 1) / 2
+    pass4count i64 = 0
+    pass4count-opt = (h - 1 + 1) / 2
+    pass4count-opt: {
+        ok -> {
+            pass4count = it
+        }
+        -> {
+            pass4count = 0
+        }
+    }
     {
         h <= 1 -> pass4count = 0
     }
@@ -581,7 +613,7 @@ gif-lzw-decode = (data []byte, min-code i64, expected-len i64) (decoded []byte) 
             bit-count < code-size -> break
 
             ; Extract code
-            code = bit-buf & ((1 << code-size) - 1)
+            code i64 = bit-buf & ((1 << code-size) - 1)
             bit-buf = bit-buf >> code-size
 
             #{overflow=wrap}
@@ -1161,58 +1193,94 @@ gif-median-cut = (img image, n-colors i64) (palette []byte, indexed []byte) {
             img.bands >= 3 -> {
 
                 #{overflow=wrap}
-                r = img.data[i * img.bands]
+                r i64 = img.data[i * img.bands]
 
                 #{overflow=wrap}
-                g = img.data[i * img.bands + 1]
+                g i64 = img.data[i * img.bands + 1]
 
                 #{overflow=wrap}
-                b = img.data[i * img.bands + 2]
+                b i64 = img.data[i * img.bands + 2]
             }
 
             -> {
 
                 #{overflow=wrap}
-                r = img.data[i * img.bands]
-                g = r
-                b = r
+                r i64 = img.data[i * img.bands]
+                g i64 = r
+                b i64 = r
             }
         }
 
         ; Find nearest palette color
         best-idx = 0
-        best-dist = 999999
+        best-dist i64 = 999999
         ci <- [0..n-pal-colors): {
 
             #{overflow=wrap}
-            pr = palette[ci * 3]
+            pr i64 = palette[ci * 3]
 
             #{overflow=wrap}
-            pg = palette[ci * 3 + 1]
+            pg i64 = palette[ci * 3 + 1]
 
             #{overflow=wrap}
-            pb = palette[ci * 3 + 2]
+            pb i64 = palette[ci * 3 + 2]
 
             #{overflow=wrap}
-            dr = r - pr
+            dr i64 = 0
+            dr-opt = r - pr
+            dr-opt: {
+                ok -> {
+                    dr = it
+                }
+                -> {
+                    dr = 0
+                }
+            }
             {
                 dr < 0 -> dr = -dr
             }
 
             #{overflow=wrap}
-            dg = g - pg
+            dg i64 = 0
+            dg-opt = g - pg
+            dg-opt: {
+                ok -> {
+                    dg = it
+                }
+                -> {
+                    dg = 0
+                }
+            }
             {
                 dg < 0 -> dg = -dg
             }
 
             #{overflow=wrap}
-            db = b - pb
+            db i64 = 0
+            db-opt = b - pb
+            db-opt: {
+                ok -> {
+                    db = it
+                }
+                -> {
+                    db = 0
+                }
+            }
             {
                 db < 0 -> db = -db
             }
 
             #{overflow=wrap}
-            dist = dr + dg + db
+            dist i64 = 0
+            dist-opt = dr + dg + db
+            dist-opt: {
+                ok -> {
+                    dist = it
+                }
+                -> {
+                    dist = 0
+                }
+            }
             {
                 dist < best-dist -> {
                     best-dist = dist
@@ -1617,7 +1685,7 @@ gif-quantize-with-palette = (img image, palette []byte, n-colors i64) (indexed [
 
         ; Find nearest palette entry
         best-idx = 0
-        best-dist = 1000000
+        best-dist i64 = 1000000
         ci <- [0..n-colors): {
 
             #{index-out=zero, overflow=wrap}

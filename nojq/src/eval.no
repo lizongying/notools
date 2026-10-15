@@ -54,6 +54,12 @@ BI-SPLIT = 24
 BI-MAX = 25
 BI-MIN = 26
 BI-RANGE = 27
+BI-INPUT = 28
+BI-INPUTS = 29
+BI-PATH = 30
+BI-GETPATH = 31
+BI-SETPATH = 32
+BI-DELPATHS = 33
 
 ; ── small render helpers ──────────────────────
 ev-dump = (x i64) (s str) {
@@ -508,7 +514,16 @@ b64-enc = (s str) (r str) {
         b0 i64 = 0
         b1 i64 = 0
         b2 i64 = 0
-        rem i64 = n - i #{overflow=wrap}
+        rem i64 = 0
+        rem-opt = n - i #{overflow=wrap}
+        rem-opt: {
+            ok -> {
+                rem = it
+            }
+            -> {
+                rem = 0
+            }
+        }
         b0 = bs.byte(0 + i) #{overflow=wrap}
         rem > 1 -> {
             b1 = bs.byte(1 + i) #{overflow=wrap}
@@ -691,7 +706,7 @@ ev-obj-entry = (es []i64, pos i64, base i64, in i64) (outs []i64, threw bool, er
             verr i64 = -1
             ! jv-is-string(kv) -> {
                 threw = true
-                errv = ev-msg('Object keys must be strings')
+                errv = ev-msg('Cannot use ' - ev-desc(kv) - ' as object key')
             }
             jv-is-string(kv) -> {
                 vals, vt, ve = ev(val, in)
@@ -900,8 +915,13 @@ ev = (node i64, in i64) (outs []i64, threw bool, errv i64) {
         }
     }
     k == A-VAR -> {
-        threw = true
-        errv = ev-msg('$' - ax-text(node) - ' is not defined')
+        nm str = ax-text(node)
+        nv i64 = ev-named-get(nm)
+        nv >= 0 -> outs.push(nv)
+        nv < 0 -> {
+            threw = true
+            errv = ev-msg('$' - nm - ' is not defined')
+        }
     }
     k == A-LOC -> {
         outs.push(ax-val(node))
@@ -1196,8 +1216,137 @@ ev = (node i64, in i64) (outs []i64, threw bool, errv i64) {
         }
     }
     k == A-ASSIGN -> {
-        threw = true
-        errv = ev-msg('path expressions not yet supported')
+
+        ; jq-verified assignment family (tmp/ipp/ptruth*.out). evp collects the
+        ; LHS paths (pp) and their current values (pv); each op then threads
+        ; updates from the original input `in` (jv-setpath deep-copies, so the
+        ; per-path pv handles stay valid for arithmetic).
+        pp []i64 = with-len(0)
+        pv []i64 = with-len(0)
+        pt, pe = evp(ax-left(node), in, pp, pv)
+        threw = pt
+        errv = pe
+        asg i64 = ax-op(node)
+
+        ; = and arithmetic op= : the RHS is a stream evaluated on the ORIGINAL
+        ; input; one output per RHS value, each starting fresh from `in` and
+        ; threading every LHS path (jq: (.a,.b)=(1,2) -> {a:1,b:1},{a:2,b:2};
+        ; .a+=(1,2) on {a:1} -> {a:2},{a:3}; RHS empty -> no output).
+        ! threw && (asg == ASG-ASSIGN || (asg >= ASG-PLUS && asg <= ASG-MOD)) -> {
+            bs, bt, be = ev(ax-right(node), in)
+            i i64 = 0
+            (! threw && i < bs.len()) {
+                w i64 = bs[i] #{index-out=0}
+                acc i64 = in
+                j i64 = 0
+                ok bool = true
+                (ok && j < pp.len()) {
+                    nv i64 = w
+                    asg >= ASG-PLUS -> {
+                        binop i64 = 0
+                        binop-opt = asg - 2 #{overflow=wrap}
+                        binop-opt: {
+                            ok -> {
+                                binop = it
+                            }
+                            -> {
+                                binop = 0
+                            }
+                        }
+                        xv, er = ev-arith(binop, pv[j], w)
+                        er >= 0 -> {
+                            ok = false
+                            threw = true
+                            errv = er
+                        }
+                        er < 0 -> nv = xv
+                    }
+                    ok -> {
+                        sa, ser = jv-setpath(acc, pp[j], nv)
+                        ser >= 0 -> {
+                            ok = false
+                            threw = true
+                            errv = ser
+                        }
+                        ser < 0 -> acc = sa
+                    }
+                    j = j + 1 #{overflow=wrap}
+                }
+                ok -> outs.push(acc)
+                i = i + 1 #{overflow=wrap}
+            }
+            ! threw && bt -> {
+                threw = true
+                errv = be
+            }
+        }
+
+        ; |= : single accumulated output. Apply f to the value at each path,
+        ; keep first(f); f yielding NO value DELETES that path (jq: map_values
+        ; (empty) -> {}; [..|=1] errors once a number is indexed by a string).
+        ! threw && asg == ASG-PIPE -> {
+            accp i64 = in
+            ip i64 = 0
+            (! threw && ip < pp.len()) {
+                bs2, bt2, be2 = ev(ax-right(node), pv[ip])
+                threw = bt2
+                errv = be2
+                ! threw && bs2.len() > 0 -> {
+                    sa2, ser2 = jv-setpath(accp, pp[ip], bs2[0])
+                    threw = ser2 >= 0
+                    errv = ser2
+                    ser2 < 0 -> accp = sa2
+                }
+                ! threw && bs2.len() == 0 -> {
+                    dlarr i64 = jv-array()
+                    jv-arr-push(dlarr, pp[ip]) #{index-out=0}
+                    da, der = ev-delpaths(accp, dlarr)
+                    threw = der >= 0
+                    errv = der
+                    der < 0 -> accp = da
+                }
+                ip = ip + 1 #{overflow=wrap}
+            }
+            ! threw -> outs.push(accp)
+        }
+
+        ; //= : jq desugars LHS //= RHS to a STREAMING update (NOT `.a = (.a //
+        ; RHS)`), identical in shape to = / op= : the RHS is evaluated on the
+        ; ORIGINAL input and one output is produced PER RHS VALUE; within each
+        ; output every path p is set to `p // w` = keep p when p is truthy,
+        ; otherwise take the single RHS value w verbatim (even if w is itself
+        ; falsy). jq-verified: {a:1}|.a//=(2,3) -> {a:1},{a:1} (2 outputs, RHS
+        ; count); {a:null}|.a//=(false,2,3) -> {a:false},{a:2},{a:3}; an EMPTY
+        ; RHS stream yields no output ({a:null}|.a//=empty -> nothing, rc 0).
+        ! threw && asg == ASG-DEFOR -> {
+            bs, bt, be = ev(ax-right(node), in)
+            i i64 = 0
+            (! threw && i < bs.len()) {
+                w i64 = bs[i] #{index-out=0}
+                acc i64 = in
+                j i64 = 0
+                ok bool = true
+                (ok && j < pp.len()) {
+                    pvv i64 = pv[j] #{index-out=0}
+                    nv i64 = w
+                    ev-truthy(pvv) -> nv = pvv
+                    sa, ser = jv-setpath(acc, pp[j], nv)
+                    ser >= 0 -> {
+                        ok = false
+                        threw = true
+                        errv = ser
+                    }
+                    ser < 0 -> acc = sa
+                    j = j + 1 #{overflow=wrap}
+                }
+                ok -> outs.push(acc)
+                i = i + 1 #{overflow=wrap}
+            }
+            ! threw && bt -> {
+                threw = true
+                errv = be
+            }
+        }
     }
     k == A-ARRAY -> {
         a, at, ae = ev(ax-left(node), in)
@@ -1478,6 +1627,12 @@ bi-code = (name str, argc i64) (c i64) {
     name == 'max' && argc == 0 -> c = BI-MAX
     name == 'min' && argc == 0 -> c = BI-MIN
     name == '_range3' && argc == 3 -> c = BI-RANGE
+    name == 'input' && argc == 0 -> c = BI-INPUT
+    name == 'inputs' && argc == 0 -> c = BI-INPUTS
+    name == 'path' && argc == 1 -> c = BI-PATH
+    name == 'getpath' && argc == 1 -> c = BI-GETPATH
+    name == 'setpath' && argc == 2 -> c = BI-SETPATH
+    name == 'delpaths' && argc == 1 -> c = BI-DELPATHS
 }
 
 ; ── numeric helpers (jq native floor/ceil/round/sqrt) ──────────────
@@ -1704,18 +1859,14 @@ bi-explode = (in i64) (outs []i64, threw bool, errv i64) {
         s str = jv-str-val(in)
         n i64 = s.count()
         i <- [0..n): {
-            c str = s[i..i]
-            code i64 = 0
-            j <- [0..c.len-bytes()): {
-                code = code * 256 + c.byte(j) #{overflow=wrap}
-            }
-            jv-arr-push(arr, jv-number-i64(code))
+            cp i64 = s[i]
+            jv-arr-push(arr, jv-number-i64(cp))
         }
         outs.push(arr)
     }
     ! jv-is-string(in) -> {
         threw = true
-        errv = ev-msg('Cannot expand ' - ev-desc(in) - ' as string')
+        errv = ev-msg('explode input must be a string')
     }
 }
 
@@ -1725,16 +1876,29 @@ bi-implode = (in i64) (outs []i64, threw bool, errv i64) {
     errv = -1
     jv-is-array(in) -> {
         s str = ''
-        i <- [0..jv-arr-len(in)): {
+        n i64 = jv-arr-len(in)
+        i i64 = 0
+        (! threw && i < n) {
             e i64 = jv-val-idx(in, i)
-            n i64 = math.f64-to-i64(jv-number-val(e))
-            s = s - jv-cp-str(n)
+            ! jv-is-number(e) -> {
+                threw = true
+                errv = ev-msg(ev-desc(e) - ' can\'t be imploded, unicode codepoint needs to be numeric')
+            }
+            jv-is-number(e) -> {
+                v i64 = math.f64-to-i64(jv-number-val(e))
+                cp i64 = v
+                v < 0 -> cp = 65533
+                v > 1114111 -> cp = 65533
+                v >= 55296 && v <= 57343 -> cp = 65533
+                s = s - jv-cp-str(cp)
+            }
+            i = i + 1 #{overflow=wrap}
         }
-        outs.push(jv-string(s))
+        ! threw -> outs.push(jv-string(s))
     }
     ! jv-is-array(in) -> {
         threw = true
-        errv = ev-msg(ev-desc(in) - ' cannot be imploded, as it is not an array')
+        errv = ev-msg('implode input must be an array')
     }
 }
 
@@ -1767,6 +1931,12 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
     }
     argc > 0 && c >= BI-SELECT && c <= BI-SPLIT -> {
         a0 = args[0] #{index-out=0}
+    }
+    argc > 0 && c >= BI-PATH && c <= BI-DELPATHS -> {
+        a0 = args[0] #{index-out=0}
+    }
+    argc > 1 && c == BI-SETPATH -> {
+        a1 = args[1] #{index-out=0}
     }
     argc > 2 && c == BI-RANGE -> {
         a0 = args[0] #{index-out=0}
@@ -1854,6 +2024,101 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
             i <- [0..rs.len()): {
                 outs.push(rs[i])
             }
+        }
+    }
+    c == BI-INPUT -> {
+        p i64 = _ist.pos
+        p < _ist.vals.len() -> {
+            _ist.pos = p + 1 #{overflow=wrap}
+            outs.push(_ist.vals[p])
+        }
+        p >= _ist.vals.len() -> {
+            threw = true
+            errv = ev-msg('break')
+        }
+    }
+    c == BI-INPUTS -> {
+        p i64 = _ist.pos
+        n i64 = _ist.vals.len()
+        i <- [p..n): {
+            outs.push(_ist.vals[i])
+        }
+        _ist.pos = n
+    }
+    c == BI-PATH -> {
+        tp []i64 = with-len(0)
+        tv []i64 = with-len(0)
+        pt, pe = evp(a0, in, tp, tv)
+        threw = pt
+        errv = pe
+        k <- [0..tp.len()): {
+            outs.push(tp[k])
+        }
+    }
+    c == BI-GETPATH -> {
+        gs, gt, ge = ev(a0, in)
+        threw = gt
+        errv = ge
+        ig i64 = 0
+        (! threw && ig < gs.len()) {
+            gp i64 = gs[ig] #{index-out=0}
+            ! jv-is-array(gp) -> {
+                threw = true
+                errv = ev-msg('Path must be specified as an array')
+            }
+            jv-is-array(gp) -> {
+                w, wer = ev-getpath-walk(in, gp)
+                threw = wer >= 0
+                errv = wer
+                wer < 0 -> outs.push(w)
+            }
+            ig = ig + 1 #{overflow=wrap}
+        }
+    }
+    c == BI-SETPATH -> {
+        ps, pt2, pe2 = ev(a0, in)
+        threw = pt2
+        errv = pe2
+        vs, vt2, ve2 = ev(a1, in)
+        ! threw && vt2 && ps.len() > 0 && vs.len() == 0 -> {
+            threw = true
+            errv = ve2
+        }
+        ia i64 = 0
+        (! threw && ia < ps.len()) {
+            pth i64 = ps[ia] #{index-out=0}
+            ! jv-is-array(pth) -> {
+                threw = true
+                errv = ev-msg('Path must be specified as an array')
+            }
+            jv-is-array(pth) -> {
+                ib i64 = 0
+                (! threw && ib < vs.len()) {
+                    sv i64 = vs[ib] #{index-out=0}
+                    so, sor = jv-setpath(in, pth, sv)
+                    threw = sor >= 0
+                    errv = sor
+                    sor < 0 -> outs.push(so)
+                    ib = ib + 1 #{overflow=wrap}
+                }
+            }
+            ia = ia + 1 #{overflow=wrap}
+        }
+    }
+    c == BI-DELPATHS -> {
+        ds, dt, de = ev(a0, in)
+        threw = dt
+        errv = de
+        id i64 = 0
+        (! threw && id < ds.len()) {
+            dlst i64 = ds[id] #{index-out=0}
+            jv-is-array(dlst) -> {
+                ro, rerr = ev-delpaths(in, dlst)
+                threw = rerr >= 0
+                errv = rerr
+                rerr < 0 -> outs.push(ro)
+            }
+            id = id + 1 #{overflow=wrap}
         }
     }
     c == BI-LENGTH -> {
@@ -1982,6 +2247,87 @@ bi-has = (in i64, k i64) (outs []i64, threw bool, errv i64) {
 }
 
 ; ── public API ────────────────────────────────
+; jq-named: global table of named values ($name bindings from --arg etc.).
+; A struct global mirrors the _pv pool pattern (bare global vec mutation
+; does not persist).
+jq-named {
+    keys []str
+    vals []i64
+}
+_pn jq-named
+
+jq-clear-named = () {
+    _pn.keys = with-len(0)
+    _pn.vals = with-len(0)
+}
+
+; jq-set-named: bind $name to v. jq keeps the FIRST binding when a name is
+; passed twice (--arg a 1 --arg a 2 => "1"), so an existing name is ignored.
+jq-set-named = (name str, v i64) {
+    i <- [0.._pn.keys.len()): {
+        _pn.keys[i] == name -> return
+    }
+    _pn.keys.push(name)
+    _pn.vals.push(v)
+}
+
+; ev-named-get: handle of $name, or -1 when unbound.
+ev-named-get = (name str) (v i64) {
+    v = -1
+    i <- [0.._pn.keys.len()): {
+        _pn.keys[i] == name -> v = _pn.vals[i] #{index-out=0}
+    }
+}
+
+; named-table scalar accessors (for the CLI's $ARGS builder).
+jq-named-count = () (n i64) {
+    n = _pn.keys.len()
+}
+
+; ── input stream state ────────────────────────
+; input/inputs consume the SAME queue the CLI main loop feeds: appending a
+; value advances the shared cursor so the top-level loop skips it (jq's
+; semantics, verified: `1 2 3 | input` prints 2 then breaks on the 3rd run).
+; A struct global mirrors _pn (bare global vec mutation does not persist).
+input-state {
+    vals []i64
+    pos i64
+}
+_ist input-state
+
+jq-inputs-reset = () {
+    _ist.vals = with-len(0)
+    _ist.pos = 0
+}
+
+jq-inputs-append = (v i64) {
+    _ist.vals.push(v)
+}
+
+jq-inputs-len = () (n i64) {
+    n = _ist.vals.len()
+}
+
+jq-inputs-pos = () (p i64) {
+    p = _ist.pos
+}
+
+jq-inputs-setpos = (p i64) {
+    _ist.pos = p
+}
+
+jq-inputs-get = (i i64) (v i64) {
+    v = _ist.vals[i] #{index-out=0}
+}
+
+jq-named-key = (i i64) (s str) {
+    s = _pn.keys[i] #{index-out=''}
+}
+
+jq-named-val = (i i64) (v i64) {
+    v = _pn.vals[i] #{index-out=0}
+}
+
 ; jq-run: parse and evaluate prog against input value in.
 jq-run = (prog str, in i64) (outs []i64, threw bool, errv i64, cerr str) {
     root = -1
@@ -2012,4 +2358,805 @@ jq-eval = (prog str, in i64) (lines []str, err str) {
     cerr.empty() && t && jv-is-string(e) -> err = jv-str-val(e)
     cerr.empty() && t && ! jv-is-string(e) -> err = '(not a string): ' - ev-dump(e)
     ! cerr.empty() -> err = cerr
+}
+
+; ── path machinery: deep set/get/del primitives ───────
+; All jq-verified against 1.8.2 (tmp/ipp/ptruth*.out): numeric path segments
+; TRUNCATE ([1,2]|setpath([1.5];9) -> [1,9]); missing object keys and
+; out-of-range array indices materialize (nulls padded); null containers
+; birth an object or array from the segment kind; slices ride as
+; {"start":s,"end":e} objects and only assign arrays.
+
+; jv-arr-del-at: remove the array element at pos i (in place).
+; Rebuilds the elems vec by skipping index i rather than calling .remove(i):
+; the current codegen lowers a runtime-index remove to a malformed 3-operand
+; `sub i64 len, idx, 1` (LLVM-verifier failure), so removal is done manually.
+jv-arr-del-at = (idx i64, i i64) {
+    ne []i64 = with-len(0)
+    n i64 = _pv.nodes[idx].elems.len()
+    k i64 = 0
+    (k < n) {
+        ek i64 = _pv.nodes[idx].elems[k] #{index-out=0}
+        k != i -> ne.push(ek)
+        k = k + 1 #{overflow=wrap}
+    }
+    _pv.nodes[idx].elems = ne
+}
+
+; ev-is-slice-seg: does the path element carry the slice object shape?
+ev-is-slice-seg = (seg i64) (yes bool) {
+    yes = false
+    jv-kind(seg) == JV-OBJECT && jv-obj-get(seg, 'start') >= 0 && jv-obj-get(seg, 'end') >= 0 -> yes = true
+}
+
+; ev-seg-bounds: slice seg -> normalized [s..e) against length n.
+ev-seg-bounds = (seg i64, n i64) (s i64, e i64) {
+    sh i64 = jv-obj-get(seg, 'start')
+    eh i64 = jv-obj-get(seg, 'end')
+    s = 0
+    e = n
+    jv-is-number(sh) -> {
+        s = math.f64-to-i64(jv-number-val(sh))
+        s < 0 -> s = s + n #{overflow=wrap}
+    }
+    jv-is-number(eh) -> {
+        e = math.f64-to-i64(jv-number-val(eh))
+        e < 0 -> e = e + n #{overflow=wrap}
+    }
+    s = ev-clamp(s, n)
+    e = ev-clamp(e, n)
+    e < s -> e = s
+}
+
+; ev-getpath-walk: descend v along patharr (read semantics: missing -> null,
+; wrong-type indexing -> the shared Cannot index error).
+ev-getpath-walk = (v i64, patharr i64) (out i64, err i64) {
+    out = v
+    err = -1
+    n i64 = jv-arr-len(patharr)
+    i i64 = 0
+    (err < 0 && i < n) {
+        seg i64 = jv-val-idx(patharr, i) #{index-out=0}
+        nv i64 = -1
+        ev-is-slice-seg(seg) -> {
+            pk i64 = jv-kind(out)
+            pk == JV-NULL -> nv = jv-null()
+            pk == JV-ARRAY || pk == JV-STRING -> {
+                sb i64 = 0
+                eb i64 = 0
+                sb, eb = ev-seg-bounds(seg, jv-length(out))
+                nv = ev-slice-of-num(out, sb, eb)
+            }
+            pk > JV-STRING -> {
+                err = ev-msg('Cannot index ' - ev-kindname(out) - ' with ' - ev-desc(seg))
+            }
+        }
+        ! ev-is-slice-seg(seg) -> {
+            nv, err = ev-idx-get(out, seg)
+        }
+        err < 0 -> out = nv
+        i = i + 1 #{overflow=wrap}
+    }
+}
+
+; ev-slice-of-num: ev-slice-of with integer bounds (normalized by ev-seg-bounds).
+ev-slice-of-num = (p i64, s i64, e i64) (v i64) {
+    v = ev-slice-of(p, true, math.i64-to-f64(s), true, math.i64-to-f64(e))
+}
+
+; jv-setpath: deep set of patharr -> val. Returns an error carrier (string
+; handle) on wrong-type indexing / bad slice assignment; the partially
+; mutated copy is then discarded by the caller (jq: a failed assignment
+; leaves the input untouched), so in-place staging is safe.
+jv-setpath = (root i64, patharr i64, val i64) (out i64, err i64) {
+    out, err = jv-setpath-rec(jv-copy(root), patharr, 0, val)
+}
+
+jv-setpath-rec = (cur i64, patharr i64, i i64, val i64) (out i64, err i64) {
+    out = cur
+    err = -1
+    n i64 = jv-arr-len(patharr)
+    i >= n -> out = val
+    i < n -> {
+        seg i64 = jv-val-idx(patharr, i) #{index-out=0}
+        ck i64 = jv-kind(cur)
+        sk i64 = jv-kind(seg)
+        islice bool = ev-is-slice-seg(seg)
+        last bool = i == n - 1 #{overflow=wrap}
+
+        ; null birth: materialize object/array from the segment kind, then
+        ; re-run the SAME segment against the fresh container (verified:
+        ; null|.[1:2]=["x"] -> ["x"], .[0]=1 -> [1], .["x"]=1 -> {"x":1}).
+        ck == JV-NULL -> {
+            fresh i64 = jv-null()
+            sk == JV-STRING -> fresh = jv-object()
+            sk == JV-NUMBER -> fresh = jv-array()
+            islice -> fresh = jv-array()
+            sk != JV-STRING && sk != JV-NUMBER && ! islice -> {
+                err = ev-msg('Cannot index null with ' - ev-desc(seg))
+            }
+            err < 0 -> out, err = jv-setpath-rec(fresh, patharr, i, val)
+        }
+
+        ck == JV-OBJECT && sk == JV-STRING && ! islice -> {
+            key str = jv-str-val(seg)
+            g i64 = jv-obj-get(cur, key)
+            last -> jv-obj-insert(cur, key, val)
+            ! last -> {
+                child i64 = g
+                child < 0 -> child = jv-null()
+                nc i64 = -1
+                nc, err = jv-setpath-rec(child, patharr, i + 1, val) #{overflow=wrap}
+                err < 0 -> jv-obj-insert(cur, key, nc)
+            }
+            err < 0 -> out = cur
+        }
+        ck == JV-OBJECT && ! (sk == JV-STRING && ! islice) -> {
+            err = ev-msg('Cannot index object with ' - ev-desc(seg))
+        }
+
+        ck == JV-ARRAY && sk == JV-NUMBER && ! islice -> {
+            idx i64 = math.f64-to-i64(jv-number-val(seg))
+            nlen i64 = jv-arr-len(cur)
+            idx < 0 -> idx = idx + nlen #{overflow=wrap}
+            idx < 0 -> {
+                err = ev-msg('Out of bounds negative array index')
+            }
+            idx >= 0 -> {
+                last && idx < nlen -> jv-arr-set(cur, idx, val)
+                last && idx >= nlen -> {
+                    pad i64 = nlen
+                    (pad < idx) {
+                        jv-arr-push(cur, jv-null())
+                        pad = pad + 1 #{overflow=wrap}
+                    }
+                    jv-arr-push(cur, val)
+                }
+                ! last -> {
+                    child i64 = jv-null()
+                    idx < nlen -> child = jv-val-idx(cur, idx) #{index-out=0}
+                    nc i64 = -1
+                    nc, err = jv-setpath-rec(child, patharr, i + 1, val) #{overflow=wrap}
+                    err < 0 && idx < nlen -> jv-arr-set(cur, idx, nc)
+                    err < 0 && idx >= nlen -> {
+                        pad i64 = nlen
+                        (pad < idx) {
+                            jv-arr-push(cur, jv-null())
+                            pad = pad + 1 #{overflow=wrap}
+                        }
+                        jv-arr-push(cur, nc)
+                    }
+                }
+                out = cur
+            }
+        }
+        ck == JV-ARRAY && sk == JV-STRING && ! islice -> {
+            err = ev-msg('Cannot index array with string ' - ev-dump(seg))
+        }
+        ; a boolean (or any non-number/non-string/non-slice) segment cannot key
+        ; an array (jq: setpath([true];9) -> "Cannot index array with boolean
+        ; (true)"); the trailing generic fallback below is gated on the CUR not
+        ; being an array, so this case needs its own branch.
+        ck == JV-ARRAY && ! (sk == JV-NUMBER || sk == JV-STRING || islice) -> {
+            err = ev-msg('Cannot index array with ' - ev-desc(seg))
+        }
+        ck == JV-ARRAY && islice -> {
+            nlen i64 = jv-arr-len(cur)
+            sb i64 = 0
+            eb i64 = 0
+            sb, eb = ev-seg-bounds(seg, nlen)
+            last && ! jv-is-array(val) -> {
+                err = ev-msg('A slice of an array can only be assigned another array')
+            }
+            last && jv-is-array(val) -> out = ev-arr-splice(cur, sb, eb, val)
+            ! last -> {
+                child i64 = ev-slice-of-num(cur, sb, eb)
+                nc i64 = -1
+                nc, err = jv-setpath-rec(child, patharr, i + 1, val) #{overflow=wrap}
+                err < 0 -> out = ev-arr-splice(cur, sb, eb, nc)
+            }
+        }
+
+        ck == JV-STRING && islice -> {
+            err = ev-msg('Cannot update string slices')
+        }
+        ! (ck == JV-NULL || ck == JV-OBJECT || ck == JV-ARRAY || (ck == JV-STRING && islice)) -> {
+            err = ev-msg('Cannot index ' - ev-kindname(cur) - ' with ' - ev-desc(seg))
+        }
+    }
+}
+
+; ev-arr-splice: replace cur[s..e) with the elements of repl (new array).
+ev-arr-splice = (cur i64, s i64, e i64, repl i64) (out i64) {
+    out = jv-array()
+    n i64 = jv-arr-len(cur)
+    rn i64 = jv-arr-len(repl)
+    i i64 = 0
+    (i < s) {
+        jv-arr-push(out, jv-val-idx(cur, i)) #{index-out=0}
+        i = i + 1 #{overflow=wrap}
+    }
+    j i64 = 0
+    (j < rn) {
+        jv-arr-push(out, jv-val-idx(repl, j)) #{index-out=0}
+        j = j + 1 #{overflow=wrap}
+    }
+    k i64 = e
+    (k < n) {
+        jv-arr-push(out, jv-val-idx(cur, k)) #{index-out=0}
+        k = k + 1 #{overflow=wrap}
+    }
+}
+
+; ev-delpaths: remove every path from a copy of root (jq delpaths/1).
+; Verified: delpaths([["a"],["a","b"]]) -> {} (parent removal wins);
+; del(.[0],.[1]) on [1,2,3] -> [3] (indices resolved against the ORIGINAL
+; layout, i.e. batch removal, not sequential shifting).
+ev-delpaths = (root i64, plistarr i64) (out i64, err i64) {
+    ; plistarr is a jv ARRAY of path arrays (NOT a []i64 vec: a locally built
+    ; vec passed across a function boundary arrives empty — the known
+    ; vec-across-boundary codegen bug; jv handles cross fine, cf. jv-setpath).
+    err = -1
+    out = jv-copy(root)
+    isroot bool = false
+    q i64 = 0
+    (! isroot && q < jv-arr-len(plistarr)) {
+        jv-arr-len(jv-val-idx(plistarr, q)) == 0 -> isroot = true #{index-out=0}
+        q = q + 1 #{overflow=wrap}
+    }
+    isroot -> out = jv-null()
+    ! isroot && jv-arr-len(plistarr) > 0 -> out, err = ev-delpaths-rec(out, plistarr)
+}
+
+ev-delpaths-rec = (cur i64, pathsarr i64) (out i64, err i64) {
+    out = cur
+    err = -1
+    ck i64 = jv-kind(cur)
+    ! (ck == JV-OBJECT || ck == JV-ARRAY) -> return
+
+    dks []i64 = with-len(0)
+    gk []i64 = with-len(0)
+    gs []i64 = with-len(0)
+    npaths i64 = jv-arr-len(pathsarr)
+    i i64 = 0
+    (i < npaths) {
+        p i64 = jv-val-idx(pathsarr, i) #{index-out=0}
+        pn i64 = jv-arr-len(p)
+        seg i64 = jv-val-idx(p, 0) #{index-out=0}
+        pn == 1 -> dks.push(seg)
+        pn > 1 -> {
+            gi i64 = -1
+            t i64 = 0
+            (gi < 0 && t < gk.len()) {
+                jv-cmp(gk[t], seg) == 0 -> gi = t #{index-out=0}
+                t = t + 1 #{overflow=wrap}
+            }
+            rest i64 = jv-array()
+            r i64 = 1
+            (r < pn) {
+                jv-arr-push(rest, jv-val-idx(p, r)) #{index-out=0}
+                r = r + 1 #{overflow=wrap}
+            }
+            gi >= 0 -> jv-arr-push(gs[gi], rest)
+            gi < 0 -> {
+                gk.push(seg)
+                na i64 = jv-array()
+                jv-arr-push(na, rest)
+                gs.push(na)
+            }
+        }
+        i = i + 1 #{overflow=wrap}
+    }
+
+    ; descend groups first (jq-verified: delpaths([["a","b"],["a"]]) -> {})
+    g i64 = 0
+    (err < 0 && g < gk.len()) {
+        k i64 = gk[g] #{index-out=0}
+        child i64 = -1
+        ck == JV-OBJECT && jv-is-string(k) -> {
+            pos i64 = jv-obj-pos(cur, jv-str-val(k))
+            pos >= 0 -> child = jv-val-idx(cur, pos) #{index-out=0}
+        }
+        ck == JV-ARRAY && jv-is-number(k) -> {
+            ci i64 = math.f64-to-i64(jv-number-val(k))
+            nlen i64 = jv-arr-len(cur)
+            ci < 0 -> ci = ci + nlen #{overflow=wrap}
+            ci >= 0 && ci < nlen -> child = jv-val-idx(cur, ci) #{index-out=0}
+        }
+        child >= 0 -> {
+            subarr i64 = gs[g] #{index-out=0}
+            nc i64 = -1
+            nc, err = ev-delpaths-rec(child, subarr)
+            err < 0 && ck == JV-OBJECT -> jv-obj-insert(cur, jv-str-val(k), nc)
+            err < 0 && ck == JV-ARRAY -> {
+                ci i64 = math.f64-to-i64(jv-number-val(k))
+                nlen i64 = jv-arr-len(cur)
+                ci < 0 -> ci = ci + nlen #{overflow=wrap}
+                ci >= 0 && ci < nlen -> jv-arr-set(cur, ci, nc)
+            }
+        }
+        g = g + 1 #{overflow=wrap}
+    }
+
+    ; direct removals: object keys in any order; array indices DESCENDING so
+    ; earlier removals do not shift later targets.
+    err < 0 && ck == JV-OBJECT -> {
+        d i64 = 0
+        (d < dks.len()) {
+            k i64 = dks[d] #{index-out=0}
+            jv-is-string(k) -> jv-obj-del(cur, jv-str-val(k))
+            d = d + 1 #{overflow=wrap}
+        }
+    }
+    err < 0 && ck == JV-ARRAY -> {
+        idxs []i64 = with-len(0)
+        nlen i64 = jv-arr-len(cur)
+        d i64 = 0
+        (d < dks.len()) {
+            k i64 = dks[d] #{index-out=0}
+            jv-is-number(k) -> {
+                ci i64 = math.f64-to-i64(jv-number-val(k))
+                ci < 0 -> ci = ci + nlen #{overflow=wrap}
+                ci >= 0 && ci < nlen -> {
+                    pos i64 = idxs.len()
+                    idxs.push(ci)
+                    _ = pos
+                }
+            }
+            d = d + 1 #{overflow=wrap}
+        }
+        ; delete from the HIGHEST position down so removals never shift the
+        ; still-pending lower targets (batch semantics, jq del(.[0],.[1])).
+        r i64 = 0
+        r-opt = nlen - 1 #{overflow=wrap}
+        r-opt: {
+            ok -> {
+                r = it
+            }
+            -> {
+                r = 0
+            }
+        }
+        (r >= 0) {
+            hit bool = false
+            d2 i64 = 0
+            (d2 < idxs.len()) {
+                idxs[d2] == r -> hit = true
+                d2 = d2 + 1 #{overflow=wrap}
+            }
+            hit -> jv-arr-del-at(cur, r)
+            r = r - 1 #{overflow=wrap}
+        }
+    }
+}
+
+; ── path-mode evaluation (evp) ────────────────────
+; evp replicates jq's path-tracking execution: instead of values it collects
+; PAIRS (path array handle, value handle) into caller-supplied vecs (the
+; in/out shape that dodges the vec-across-boundary codegen bug). Every node
+; jq can track is handled; anything that produces a value instead of a path
+; raises "Invalid path expression with result X" exactly like jq (verified:
+; path(1), path(.a)=1, path(foreach ...)).
+
+evp-push = (op []i64, ov []i64, p i64, v i64) {
+    op.push(p)
+    ov.push(v)
+}
+
+; evp-combine: fresh path = pfx ++ rest (copies, never shares handles).
+evp-combine = (pfx i64, rest i64) (np i64) {
+    np = jv-copy(pfx)
+    i <- [0..jv-arr-len(rest)): {
+        jv-arr-push(np, jv-val-idx(rest, i))
+    }
+}
+
+; evp-with-seg: fresh path = p ++ [seg].
+evp-with-seg = (p i64, seg i64) (np i64) {
+    np = jv-copy(p)
+    jv-arr-push(np, seg)
+}
+
+; evp-invalid: value-mode node in path position. A value produced → the
+; Invalid message; an error propagates; empty output stays silent (path(empty)).
+evp-invalid = (node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    a, at, ae = ev(node, in)
+    at -> {
+        threw = true
+        errv = ae
+    }
+    ! at && a.len() > 0 -> {
+        threw = true
+        errv = ev-msg('Invalid path expression with result ' - ev-dump(a[0]))
+    }
+}
+
+evp = (node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    node < 0 -> return
+    k i64 = ax-kind(node)
+
+    k == A-IDENTITY -> evp-push(op, ov, jv-array(), in)
+
+    k == A-FIELD || k == A-FIELDSTR || k == A-INDEX -> {
+        pp []i64 = with-len(0)
+        pv []i64 = with-len(0)
+        pnode i64 = ax-left(node)
+        pnode < 0 -> evp-push(pp, pv, jv-array(), in)
+        pnode >= 0 -> {
+            pt, pe = evp(pnode, in, pp, pv)
+            threw = pt
+            errv = pe
+        }
+        ks []i64 = with-len(1)
+        ! threw && k == A-FIELD -> ks[0] = jv-string(ax-text(node))
+        ! threw && k != A-FIELD -> {
+            ka, kt, ke = ev(ax-right(node), in)
+            threw = kt
+            errv = ke
+            ks = ka
+        }
+        i i64 = 0
+        (! threw && i < pp.len()) {
+            j i64 = 0
+            (! threw && j < ks.len()) {
+                v, er = ev-idx-get(pv[i], ks[j])
+                threw = er >= 0
+                errv = er
+                ! threw -> evp-push(op, ov, evp-with-seg(pp[i], ks[j]), v)
+                j = j + 1 #{overflow=wrap}
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+    }
+
+    k == A-ITERATE -> {
+        pp []i64 = with-len(0)
+        pv []i64 = with-len(0)
+        pnode i64 = ax-left(node)
+        pnode < 0 -> evp-push(pp, pv, jv-array(), in)
+        pnode >= 0 -> {
+            pt, pe = evp(pnode, in, pp, pv)
+            threw = pt
+            errv = pe
+        }
+        i i64 = 0
+        (! threw && i < pp.len()) {
+            e, ok, er = ev-elems(pv[i])
+            threw = ! ok
+            errv = er
+            ! threw -> {
+                j <- [0..e.len()): {
+                    seg i64 = jv-number-i64(j)
+                    jv-is-object(pv[i]) -> seg = jv-string(jv-key-str(pv[i], j))
+                    evp-push(op, ov, evp-with-seg(pp[i], seg), e[j])
+                }
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+    }
+
+    k == A-SLICE -> {
+        pp []i64 = with-len(0)
+        pv []i64 = with-len(0)
+        pnode i64 = ax-left(node)
+        pnode < 0 -> evp-push(pp, pv, jv-array(), in)
+        pnode >= 0 -> {
+            pt, pe = evp(pnode, in, pp, pv)
+            threw = pt
+            errv = pe
+        }
+        shas bool = false
+        sd f64 = 0.0
+        ehas bool = false
+        ed f64 = 0.0
+        ! threw && ax-right(node) >= 0 -> {
+            v, er = ev-single(ax-right(node), in)
+            threw = er >= 0
+            errv = er
+            ! threw && jv-is-number(v) -> {
+                shas = true
+                sd = jv-number-val(v)
+            }
+        }
+        ! threw && ax-c1(node) >= 0 -> {
+            v, er = ev-single(ax-c1(node), in)
+            threw = er >= 0
+            errv = er
+            ! threw && jv-is-number(v) -> {
+                ehas = true
+                ed = jv-number-val(v)
+            }
+        }
+        i i64 = 0
+        (! threw && i < pp.len()) {
+            p i64 = pp[i] #{index-out=0}
+            v i64 = pv[i] #{index-out=0}
+            pk i64 = jv-kind(v)
+            seg i64 = jv-object()
+            ev-slice-fill(shas, sd, true, seg)
+            ev-slice-fill(ehas, ed, false, seg)
+            pk == JV-NULL -> evp-push(op, ov, evp-with-seg(p, seg), jv-null())
+            pk == JV-ARRAY || pk == JV-STRING -> evp-push(op, ov, evp-with-seg(p, seg), ev-slice-of(v, shas, sd, ehas, ed))
+            ! (pk == JV-NULL || pk == JV-ARRAY || pk == JV-STRING) -> {
+                threw = true
+                errv = ev-msg('Cannot index ' - ev-kindname(v) - ' with ' - ev-desc(seg))
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+    }
+
+    k == A-OPTPOST -> {
+        tmp []i64 = with-len(0)
+        tv []i64 = with-len(0)
+        bt, be = evp(ax-left(node), in, tmp, tv)
+        swallow bool = bt && jv-kind(be) != JV-BREAK
+        swallow -> bt = false
+        m <- [0..tmp.len()): {
+            evp-push(op, ov, tmp[m], tv[m])
+        }
+        threw = bt
+        errv = be
+    }
+
+    k == A-PIPE -> {
+        lp []i64 = with-len(0)
+        lv []i64 = with-len(0)
+        lt, le = evp(ax-left(node), in, lp, lv)
+        i i64 = 0
+        inner bool = false
+        (! inner && i < lp.len()) {
+            tp []i64 = with-len(0)
+            tv []i64 = with-len(0)
+            rt, re = evp(ax-right(node), lv[i], tp, tv)
+            m <- [0..tp.len()): {
+                evp-push(op, ov, evp-combine(lp[i], tp[m]), tv[m])
+            }
+            rt -> inner = true
+            rt -> threw = true
+            rt -> errv = re
+            i = i + 1 #{overflow=wrap}
+        }
+        ! inner && lt -> {
+            threw = true
+            errv = le
+        }
+    }
+
+    k == A-COMMA -> {
+        threw, errv = evp(ax-left(node), in, op, ov)
+        ! threw -> {
+            threw, errv = evp(ax-right(node), in, op, ov)
+        }
+    }
+
+    k == A-IF -> {
+        a, at, ae = ev(ax-left(node), in)
+        i i64 = 0
+        inner bool = false
+        berr i64 = ae
+        (! inner && i < a.len()) {
+            br i64 = -1
+            ev-truthy(a[i]) -> br = ax-right(node)
+            ! ev-truthy(a[i]) -> br = ax-c1(node)
+            br >= 0 -> {
+                pt, pe = evp(br, in, op, ov)
+                pt -> inner = true
+                pt -> berr = pe
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+        threw = at
+        inner -> threw = true
+        errv = berr
+    }
+
+    k == A-DEFOR -> {
+        tmp []i64 = with-len(0)
+        tv []i64 = with-len(0)
+        lt, le = evp(ax-left(node), in, tmp, tv)
+        lt -> {
+            threw = true
+            errv = le
+        }
+        ! lt && tmp.len() > 0 && ev-truthy(tv[0]) -> {
+            m <- [0..tmp.len()): {
+                evp-push(op, ov, tmp[m], tv[m])
+            }
+        }
+        ! lt && ! (tmp.len() > 0 && ev-truthy(tv[0])) -> {
+            threw, errv = evp(ax-right(node), in, op, ov)
+        }
+    }
+
+    k == A-REC -> evp-recurse-all(in, jv-array(), op, ov)
+
+    k == A-AS -> {
+        vs, vt, ve = ev(ax-left(node), in)
+        j i64 = 0
+        inner bool = false
+        berr i64 = ve
+        (! inner && j < vs.len()) {
+            names []str = with-len(1)
+            names[0] = ax-text(node)
+            nodes []i64 = with-len(1)
+            nodes[0] = ast-lit(vs[j])
+            f2 i64 = subst(ax-right(node), names, nodes)
+            pt, pe = evp(f2, in, op, ov)
+            pt -> inner = true
+            pt -> berr = pe
+            j = j + 1 #{overflow=wrap}
+        }
+        threw = vt
+        inner -> threw = true
+        errv = berr
+    }
+
+    k == A-LABEL -> {
+        bt, be = evp(ax-right(node), in, op, ov)
+        broke bool = bt && jv-kind(be) == JV-BREAK && jv-break-id(be) == ax-val(node)
+        threw = bt
+        errv = be
+        broke -> threw = false
+    }
+    k == A-BREAK -> {
+        threw = true
+        errv = jv-break(ax-val(node))
+    }
+
+    k == A-TRY -> {
+        tmp []i64 = with-len(0)
+        tv []i64 = with-len(0)
+        bt, be = evp(ax-left(node), in, tmp, tv)
+        m <- [0..tmp.len()): {
+            evp-push(op, ov, tmp[m], tv[m])
+        }
+        threw = bt
+        errv = be
+    }
+
+    k == A-CALL -> {
+        di i64 = ax-c1(node)
+        di >= 0 -> {
+            threw, errv = evp-defcall(di, node, in, op, ov)
+        }
+        di < 0 -> {
+            threw, errv = evp-builtin(node, in, op, ov)
+        }
+    }
+
+    ! (k == A-IDENTITY || k == A-FIELD || k == A-FIELDSTR || k == A-INDEX || k == A-ITERATE || k == A-SLICE || k == A-OPTPOST || k == A-PIPE || k == A-COMMA || k == A-IF || k == A-DEFOR || k == A-REC || k == A-AS || k == A-LABEL || k == A-BREAK || k == A-TRY || k == A-CALL) -> {
+        threw, errv = evp-invalid(node, in, op, ov)
+    }
+}
+
+; evp-recurse-all: pre-order all-node paths (jq ..), verified order
+; path(..) on {"a":[1]} -> [], ["a"], ["a",0].
+evp-recurse-all = (v i64, p i64, op []i64, ov []i64) {
+    evp-push(op, ov, p, v)
+    e, ok, er = ev-elems(v)
+    _ = er
+    ok -> {
+        j <- [0..e.len()): {
+            seg i64 = jv-number-i64(j)
+            jv-is-object(v) -> seg = jv-string(jv-key-str(v, j))
+            evp-recurse-all(e[j], evp-with-seg(p, seg), op, ov)
+        }
+    }
+}
+
+; evp-builtin: the path-mode-callable subset. select/empty/getpath track;
+; every other builtin is a VALUE producer and lands in the jq Invalid
+; message (verified: path(.a|length) -> Invalid path expression).
+evp-builtin = (node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    name str = ax-text(node)
+    args = ev-cons-vec(ax-left(node))
+    argc i64 = args.len()
+    a0 i64 = -1
+    argc > 0 -> {
+        a0 = args[0] #{index-out=0}
+    }
+
+    name == 'select' && argc == 1 -> {
+        a, at, ae = ev(a0, in)
+        threw = at
+        errv = ae
+        i <- [0..a.len()): {
+            ev-truthy(a[i]) -> evp-push(op, ov, jv-array(), in)
+        }
+    }
+    name == 'empty' && argc == 0 -> {}
+    name == 'getpath' && argc == 1 -> {
+        ka, kt, ke = ev(a0, in)
+        threw = kt
+        errv = ke
+        i i64 = 0
+        (! threw && i < ka.len()) {
+            pa i64 = ka[i] #{index-out=0}
+            ! jv-is-array(pa) -> {
+                threw = true
+                errv = ev-msg('Path must be specified as an array')
+            }
+            jv-is-array(pa) -> {
+                g i64 = -1
+                er i64 = -1
+                g, er = ev-getpath-walk(in, pa)
+                threw = er >= 0
+                errv = er
+                ! threw -> evp-push(op, ov, jv-copy(pa), g)
+            }
+            i = i + 1 #{overflow=wrap}
+        }
+    }
+    ! ((name == 'select' && argc == 1) || (name == 'empty' && argc == 0) || (name == 'getpath' && argc == 1)) -> {
+        threw, errv = evp-invalid(node, in, op, ov)
+    }
+}
+
+; evp-defvalues / evp-defcall: the def-call machinery of ev, re-targeted at
+; evp leaves (same eager-$value / macro-filter parameter model, verified in
+; the value-mode comment above; only the innermost evaluation differs).
+evp-defvalues = (body i64, vnames []str, vargs []i64, pos i64, lits []i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    nvs i64 = vnames.len()
+    pos >= nvs -> {
+        b i64 = body
+        nvs > 0 -> b = subst(body, vnames, lits)
+        threw, errv = evp(b, in, op, ov)
+    }
+    pos < nvs -> {
+        argn i64 = vargs[pos] #{index-out=0}
+        vs, vt, ve = ev(argn, in)
+        j i64 = 0
+        inner bool = false
+        berr i64 = ve
+        (! inner && j < vs.len()) {
+            nxt []i64 = with-len(lits.len() + 1) #{overflow=wrap}
+            t <- [0..lits.len()): {
+                nxt[t] = lits[t] #{index-out=0}
+            }
+            nxt[lits.len()] = ast-lit(vs[j]) #{index-out=0}
+            pt, pe = evp-defvalues(body, vnames, vargs, pos + 1, nxt, in, op, ov) #{overflow=wrap}
+            pt -> inner = true
+            pt -> berr = pe
+            j = j + 1 #{overflow=wrap}
+        }
+        threw = vt
+        inner -> threw = true
+        errv = berr
+    }
+}
+
+evp-defcall = (di i64, node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
+    threw = false
+    errv = -1
+    names = def-params(di)
+    pv = def-paramval(di)
+    args = ev-cons-vec(ax-left(node))
+    fnames []str = with-len(0)
+    fnodes []i64 = with-len(0)
+    vnames []str = with-len(0)
+    vargs []i64 = with-len(0)
+    i <- [0..names.len()): {
+        pvv i64 = pv[i] #{index-out=0}
+        nm str = names[i] #{index-out=''}
+        ar i64 = args[i] #{index-out=0}
+        pvv == 0 -> {
+            fnames.push(nm)
+            fnodes.push(ar)
+        }
+        pvv == 1 -> {
+            vnames.push(nm)
+            vargs.push(ar)
+        }
+    }
+    body1 = subst(def-body(di), fnames, fnodes)
+    lits0 []i64 = with-len(0)
+    threw, errv = evp-defvalues(body1, vnames, vargs, 0, lits0, in, op, ov)
 }

@@ -325,7 +325,7 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                         found bool = false
                         offset-opt: {
                             ok -> {
-                                offset = offset-opt
+                                offset = it
                                 found = true
                             }
 
@@ -346,7 +346,7 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
                         found bool = false
                         offset-opt: {
                             ok -> {
-                                offset = offset-opt
+                                offset = it
                                 found = true
                             }
 
@@ -399,12 +399,31 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
     ; fanout table at offset 8, 256 entries of 4 bytes each
     ; fanout[255] = total object count
     #{overflow=wrap}
-    obj-count = read-u32-be-local-idx(idx, 8 + 255 * 4)
+    fan-off i64 = 0
+    fan-off-opt = 8 + 255 * 4
+    fan-off-opt: {
+        ok -> {
+            fan-off = it
+        }
+        -> {
+            fan-off = 0
+        }
+    }
+    obj-count = read-u32-be-local-idx(idx, fan-off)
     obj-count == 0 -> return
 
     ; oid table starts at offset 8 + 256*4 = 1032
     #{overflow=wrap}
-    oid-table-start = 8 + 256 * 4
+    oid-table-start i64 = 0
+    oid-table-start-opt = 8 + 256 * 4
+    oid-table-start-opt: {
+        ok -> {
+            oid-table-start = it
+        }
+        -> {
+            oid-table-start = 0
+        }
+    }
 
     ; binary search for the target oid in the sorted oid table
     target-bytes str = with-len(20)
@@ -421,7 +440,16 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
         lo > hi -> break
 
         #{overflow=wrap}
-        mid i64 = (lo + hi) / 2
+        mid i64 = 0
+        mid-opt = (lo + hi) / 2
+        mid-opt: {
+            ok -> {
+                mid = it
+            }
+            -> {
+                mid = 0
+            }
+        }
 
         ; compare target with oid at mid
         #{overflow=wrap}
@@ -458,21 +486,81 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
     ; offset table starts after oid table + crc table
     ; layout: oid-table (obj-count * 20) + crc-table (obj-count * 4) + offset-table (obj-count * 4)
     #{overflow=wrap}
-    offset-table-start = oid-table-start + obj-count * 20 + obj-count * 4
+    offset-table-start i64 = 0
+    offset-table-start-opt = oid-table-start + obj-count * 20 + obj-count * 4
+    offset-table-start-opt: {
+        ok -> {
+            offset-table-start = it
+        }
+        -> {
+            offset-table-start = 0
+        }
+    }
 
     #{overflow=wrap}
-    off-raw = read-u32-be-local-idx(idx, offset-table-start + found-idx * 4)
+    oid-step i64 = 0
+    oid-step-opt = found-idx * 4
+    oid-step-opt: {
+        ok -> {
+            oid-step = it
+        }
+        -> {
+            oid-step = 0
+        }
+    }
+    #{overflow=wrap}
+    oid-slot i64 = 0
+    oid-slot-opt = offset-table-start + oid-step
+    oid-slot-opt: {
+        ok -> {
+            oid-slot = it
+        }
+        -> {
+            oid-slot = 0
+        }
+    }
+    off-raw = read-u32-be-local-idx(idx, oid-slot)
 
     ; if high bit is set, it's an index into the large-offset table
     (off-raw & 0x80000000) != 0 -> {
         large-idx = off-raw & 0x7fffffff
 
         #{overflow=wrap}
-        large-table-start = offset-table-start + obj-count * 4
+        large-table-start i64 = 0
+        large-table-start-opt = offset-table-start + obj-count * 4
+        large-table-start-opt: {
+            ok -> {
+                large-table-start = it
+            }
+            -> {
+                large-table-start = 0
+            }
+        }
 
         ; large offsets are 8 bytes each
         #{overflow=wrap}
-        offset = read-u64-be-local-idx(idx, large-table-start + large-idx * 8)
+        lo-step i64 = 0
+        lo-step-opt = large-idx * 8
+        lo-step-opt: {
+            ok -> {
+                lo-step = it
+            }
+            -> {
+                lo-step = 0
+            }
+        }
+        #{overflow=wrap}
+        lo-slot i64 = 0
+        lo-slot-opt = large-table-start + lo-step
+        lo-slot-opt: {
+            ok -> {
+                lo-slot = it
+            }
+            -> {
+                lo-slot = 0
+            }
+        }
+        offset = read-u64-be-local-idx(idx, lo-slot)
     }
 
     -> {
@@ -538,6 +626,7 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
     warmup-data[9] = 0x00
     warmup-data[10] = 0x01
     _w-opt = zlib.zlib-decompress(warmup-data)
+    _ = _w-opt
 
     ; walk all objects
     pos = 12
@@ -735,6 +824,7 @@ read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
     warmup-data[9] = 0x00
     warmup-data[10] = 0x01
     _w-opt = zlib.zlib-decompress(warmup-data)
+    _ = _w-opt
 
     kind, data, ok = read-packed-at-offset(git-dir, pack-data, offset)
 }
@@ -789,7 +879,7 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
             apply-ok bool = false
             result-opt: {
                 ok -> {
-                    result = result-opt
+                    result = it
                     apply-ok = true
                 }
 
@@ -847,7 +937,7 @@ read-packed-at-offset = (git-dir str, pack-data str, offset i64) (kind str, data
             apply-ok bool = false
             result-opt: {
                 ok -> {
-                    result = result-opt
+                    result = it
                     apply-ok = true
                 }
 

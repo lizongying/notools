@@ -31,6 +31,7 @@ cli-opts {
     tab bool
     indent i64
     exit-status bool
+    args-mode i64
 }
 
 ; render-value: JSON-serialize one output honoring -c/-a/-S/--tab/--indent and
@@ -43,19 +44,49 @@ render-value = (x i64, o cli-opts) (s str) {
     ! israw -> s = jv-dump-string(x, pretty, o.ascii, o.sort, o.tab, o.indent)
 }
 
+; count-newlines: total '\n' in a source text. jq reports an input/inputs
+; EOF ("break") error at the line count of the stream AFTER all values were
+; consumed, i.e. this number (verified: '1\n2\n3\n' -> :3, '1\n2\n3' -> :2,
+; '1\n' -> :1, '1' -> :0).
+count-newlines = (s str) (n i64) {
+    n = 0
+    i <- [0..s.len()): {
+        b i64 = s.byte(i)
+        b == 10 -> n = n + 1 #{overflow=wrap}
+    }
+}
+
 ; split-lines: jq -R line splitting -- split on '\n'; a single trailing newline
 ; does NOT yield a final empty line (jq emits only the real lines).
 split-lines = (s str) (out []str) {
     out = s.split('\n')
-    n = out.len()
+    n i64 = out.len()
     cnt i64 = s.count()
     lastb = 0
     cnt > 0 -> {
-        li i64 = cnt - 1 #{overflow=wrap}
+        li i64 = 0
+        li-opt = cnt - 1 #{overflow=wrap}
+        li-opt: {
+            ok -> {
+                li = it
+            }
+            -> {
+                li = 0
+            }
+        }
         lastb = s[li] #{index-out=0}
     }
     ! (n == 0) && cnt > 0 && lastb == 10 -> {
-        m i64 = n - 1 #{overflow=wrap}
+        m i64 = 0
+        m-opt = n - 1 #{overflow=wrap}
+        m-opt: {
+            ok -> {
+                m = it
+            }
+            -> {
+                m = 0
+            }
+        }
         kept []str = with-len(m)
         i <- [0..m): {
             kept[i] = out[i] #{index-out=''}
@@ -113,35 +144,127 @@ is-string-carrier = (e i64) (yes bool) {
     yes = jv-is-string(e)
 }
 
-; parse-int: decimal digits of s into n; ok false if no digits.
+; parse-int: optionally-signed decimal digits of s into n; ok false if no
+; digits (jq strtol's the --indent value, so a leading '-' is accepted).
 parse-int = (s str) (n i64, ok bool) {
     n = 0
     ok = false
-    i <- [0..s.count()): {
+    neg = false
+    start = 0
+    c0 i64 = s[0] #{index-out=0}
+    s.count() > 0 && c0 == 45 -> {
+        neg = true
+        start = 1
+    }
+    i <- [start..s.count()): {
         c i64 = s[i] #{index-out=0}
         c >= 48 && c <= 57 -> {
-            d i64 = c - 48 #{overflow=wrap}
-            t i64 = n * 10 #{overflow=wrap}
+            d i64 = 0
+            d-opt = c - 48 #{overflow=wrap}
+            d-opt: {
+                ok -> {
+                    d = it
+                }
+                -> {
+                    d = 0
+                }
+            }
+            t i64 = 0
+            t-opt = n * 10 #{overflow=wrap}
+            t-opt: {
+                ok -> {
+                    t = it
+                }
+                -> {
+                    t = 0
+                }
+            }
             n = t + d #{overflow=wrap}
             ok = true
         }
     }
+    neg -> n = 0 - n #{overflow=wrap}
 }
 
 ; print-usage: help/usage text to stdout.
 print-usage = () {
     io.outln('jq - commandline JSON processor [version ' - VERSION - ']')
-    io.outln('Usage: jq [options] <jq filter> [file...]')
-    io.outln('  Supported: -c -r -j -n -s -R -a -S -e --tab --indent N --version --help')
-    io.outln('  (named args --arg/--argjson and input/inputs are not yet implemented)')
+    io.outln('')
+    io.outln('Usage:\tjq [options] <jq filter> [file...]')
+    io.outln('\tjq [options] --args <jq filter> [strings...]')
+    io.outln('\tjq [options] --jsonargs <jq filter> [JSON_TEXTS...]')
+    io.outln('')
+    io.outln('jq is a tool for processing JSON inputs, applying the given filter to')
+    io.outln('its JSON text inputs and producing the filter\'s results as JSON on')
+    io.outln('standard output.')
+    io.outln('')
+    io.outln('The simplest filter is ., which copies jq\'s input to its output')
+    io.outln('unmodified except for formatting. For more advanced filters see')
+    io.outln('the jq(1) manpage ("man jq") and/or https://jqlang.org/.')
+    io.outln('')
+    io.outln('Example:')
+    io.outln('')
+    io.outln('\t$ echo \'{"foo": 0}\' | jq .')
+    io.outln('\t{')
+    io.outln('\t  "foo": 0')
+    io.outln('\t}')
+    io.outln('')
+    io.outln('Command options:')
+    io.outln('  -n, --null-input          use `null` as the single input value;')
+    io.outln('  -R, --raw-input           read each line as string instead of JSON;')
+    io.outln('  -s, --slurp               read all inputs into an array and use it as')
+    io.outln('                            the single input value;')
+    io.outln('  -c, --compact-output      compact instead of pretty-printed output;')
+    io.outln('  -r, --raw-output          output strings without escapes and quotes;')
+    io.outln('      --raw-output0         implies -r and output NUL after each output;')
+    io.outln('  -j, --join-output         implies -r and output without newline after')
+    io.outln('                            each output;')
+    io.outln('  -a, --ascii-output        output strings by only ASCII characters')
+    io.outln('                            using escape sequences;')
+    io.outln('  -S, --sort-keys           sort keys of each object on output;')
+    io.outln('  -C, --color-output        colorize JSON output;')
+    io.outln('  -M, --monochrome-output   disable colored output;')
+    io.outln('      --tab                 use tabs for indentation;')
+    io.outln('      --indent n            use n spaces for indentation (max 7 spaces);')
+    io.outln('      --unbuffered          flush output stream after each output;')
+    io.outln('      --stream              parse the input value in streaming fashion;')
+    io.outln('      --stream-errors       implies --stream and report parse error as')
+    io.outln('                            an array;')
+    io.outln('      --seq                 parse input/output as application/json-seq;')
+    io.outln('  -f, --from-file           load the filter from a file;')
+    io.outln('  -L, --library-path dir    search modules from the directory;')
+    io.outln('      --arg name value      set $name to the string value;')
+    io.outln('      --argjson name value  set $name to the JSON value;')
+    io.outln('      --slurpfile name file set $name to an array of JSON values read')
+    io.outln('                            from the file;')
+    io.outln('      --rawfile name file   set $name to string contents of file;')
+    io.outln('      --args                consume remaining arguments as positional')
+    io.outln('                            string values;')
+    io.outln('      --jsonargs            consume remaining arguments as positional')
+    io.outln('                            JSON values;')
+    io.outln('  -e, --exit-status         set exit status code based on the output;')
+    io.outln('  -V, --version             show the version;')
+    io.outln('  --build-configuration     show jq\'s build configuration;')
+    io.outln('  -h, --help                show the help;')
+    io.outln('  --                        terminates argument processing;')
+    io.outln('')
+    io.outln('Named arguments are also available as $ARGS.named[], while')
+    io.outln('positional arguments are available as $ARGS.positional[].')
 }
 
 is-known-long = (a str) (yes bool) {
-    yes = a == '--compact-output' || a == '--raw-output' || a == '--join-output' || a == '--null-input' || a == '--slurp' || a == '--raw-input' || a == '--ascii-output' || a == '--sort-keys' || a == '--tab' || a == '--exit-status' || a == '--unbuffered' || a == '--help' || a == '--version' || a == '--indent'
+    yes = a == '--compact-output' || a == '--raw-output' || a == '--join-output' || a == '--null-input' || a == '--slurp' || a == '--raw-input' || a == '--ascii-output' || a == '--sort-keys' || a == '--tab' || a == '--exit-status' || a == '--unbuffered' || a == '--help' || a == '--version' || a == '--indent' || a == '--arg' || a == '--argjson' || a == '--slurpfile' || a == '--rawfile' || a == '--args' || a == '--jsonargs'
+}
+
+; opt-help-hint: the two trailer lines jq prints after a usage error.
+opt-help-hint = () {
+    io.errln('Use jq --help for help with command-line options,')
+    io.errln('or see the jq manpage, or online docs at https://jqlang.org')
 }
 
 ; ── top-level driver ──────────────────────────
 jv-reset-pool()
+jq-clear-named()
 
 argc i64 = os.args()
 o cli-opts
@@ -150,17 +273,23 @@ o.indent = 2
 filter = ''
 have-filter = false
 files []str = with-len(0)
+posargs []str = with-len(0)
 ddash = false
 bad = false
 do-help = false
 do-version = false
-skip = -1
+skip-to = 0
 
 i <- [1..argc): {
-    skip == i -> {}
-    skip != i -> {
+    i < skip-to -> {}
+    i >= skip-to -> {
         a str = os.arg(i)
         take-positional bool = false
+        jarg i64 = i + 1 #{overflow=wrap}
+        karg i64 = i + 2 #{overflow=wrap}
+        nm str = ''
+        fp str = ''
+        ival str = ''
 
         ; everything after `--` is positional
         ddash -> take-positional = true
@@ -186,31 +315,142 @@ i <- [1..argc): {
                 o.indent = 1
             }
             a == '--exit-status' -> o.exit-status = true
+            a == '--args' -> o.args-mode = 1
+            a == '--jsonargs' -> o.args-mode = 2
             a == '--unbuffered' -> {}
             a == '--help' -> do-help = true
             a == '--version' -> do-version = true
             a == '--indent' -> {
-                i + 1 < argc -> {
-                    v str = os.arg(i + 1)
+                jarg < argc -> {
+                    ival = os.arg(jarg)
                     w i64 = 2
                     pok bool = false
-                    w, pok = parse-int(v)
-                    pok -> o.indent = w
-                    ! pok -> {
-                        io.errln('jq: invalid integer for --indent: ' - v)
+                    w, pok = parse-int(ival)
+                    pok && w >= -1 && w <= 7 -> {
+                        w == -1 -> {
+                            o.tab = true
+                            o.indent = 1
+                        }
+                        w != -1 -> o.indent = w
+                    }
+                    ! (pok && w >= -1 && w <= 7) -> {
+                        io.errln('jq: --indent takes a number between -1 and 7')
+                        opt-help-hint()
                         bad = true
                     }
-                    skip = i + 1 #{overflow=wrap}
+                    skip-to = jarg + 1 #{overflow=wrap}
                 }
-                ! (i + 1 < argc) -> {
+                ! (jarg < argc) -> {
                     io.errln('jq: option --indent requires an argument')
+                    opt-help-hint()
+                    bad = true
+                }
+            }
+            a == '--arg' -> {
+                karg < argc -> {
+                    nm = os.arg(jarg)
+                    ival = os.arg(karg)
+                    jq-set-named(nm, jv-string(ival))
+                    skip-to = karg + 1 #{overflow=wrap}
+                }
+                ! (karg < argc) -> {
+                    io.errln('jq: --arg takes two parameters (e.g. --arg varname value)')
+                    opt-help-hint()
+                    bad = true
+                }
+            }
+            a == '--argjson' -> {
+                karg < argc -> {
+                    nm = os.arg(jarg)
+                    ival = os.arg(karg)
+                    r = jv-parse(ival)
+                    r: {
+                        ok -> {
+                            jq-set-named(nm, it)
+                            skip-to = karg + 1 #{overflow=wrap}
+                        }
+
+                        err -> {
+                            io.errln('jq: invalid JSON text passed to --argjson')
+                            opt-help-hint()
+                            bad = true
+                        }
+
+                        nil -> {
+                            io.errln('jq: invalid JSON text passed to --argjson')
+                            opt-help-hint()
+                            bad = true
+                        }
+                    }
+                }
+                ! (karg < argc) -> {
+                    io.errln('jq: --argjson takes two parameters (e.g. --argjson varname text)')
+                    opt-help-hint()
+                    bad = true
+                }
+            }
+            a == '--slurpfile' -> {
+                karg < argc -> {
+                    nm = os.arg(jarg)
+                    fp = os.arg(karg)
+                    fcontent str = ''
+                    fcerr str = ''
+                    fcontent, fcerr = read-source(fp)
+                    fcerr.empty() -> {
+                        svals []i64 = with-len(0)
+                        slines []i64 = with-len(0)
+                        pe str = jq-parse-stream-into(fcontent, svals, slines)
+                        pe.empty() -> {
+                            arr i64 = jv-array()
+                            q <- [0..svals.len()): {
+                                e i64 = svals[q] #{index-out=0}
+                                aok bool = jv-arr-push(arr, e)
+                                _ = aok
+                            }
+                            jq-set-named(nm, arr)
+                            skip-to = karg + 1 #{overflow=wrap}
+                        }
+                        ! pe.empty() -> {
+                            io.errln('jq: Bad JSON in --slurpfile ' - nm - ' ' - fp - ': ' - pe)
+                            bad = true
+                        }
+                    }
+                    ! fcerr.empty() -> {
+                        io.errln('jq: Bad JSON in --slurpfile ' - nm - ' ' - fp - ': Could not open ' - fp - ': ' - fs-fail-reason(fp))
+                        bad = true
+                    }
+                }
+                ! (karg < argc) -> {
+                    io.errln('jq: --slurpfile takes two parameters (e.g. --slurpfile varname filename)')
+                    opt-help-hint()
+                    bad = true
+                }
+            }
+            a == '--rawfile' -> {
+                karg < argc -> {
+                    nm = os.arg(jarg)
+                    fp = os.arg(karg)
+                    rc2content str = ''
+                    rc2err str = ''
+                    rc2content, rc2err = read-source(fp)
+                    rc2err.empty() -> {
+                        jq-set-named(nm, jv-string(rc2content))
+                        skip-to = karg + 1 #{overflow=wrap}
+                    }
+                    ! rc2err.empty() -> {
+                        io.errln('jq: Bad JSON in --rawfile ' - nm - ' ' - fp - ': Could not open ' - fp - ': ' - fs-fail-reason(fp))
+                        bad = true
+                    }
+                }
+                ! (karg < argc) -> {
+                    io.errln('jq: --rawfile takes two parameters (e.g. --rawfile varname filename)')
+                    opt-help-hint()
                     bad = true
                 }
             }
             ! is-known-long(a) -> {
                 io.errln('jq: Unknown option ' - a)
-                io.errln('Use jq --help for help with command-line options,')
-                io.errln('or see the jq manpage, or online docs at https://jqlang.org')
+                opt-help-hint()
                 bad = true
             }
         }
@@ -260,7 +500,14 @@ i <- [1..argc): {
                 filter = a
                 have-filter = true
             }
-            was -> files.push(a)
+            was -> {
+
+                ; --args/--jsonargs: every positional after the filter becomes
+                ; an $ARGS entry and NO file input is opened (stdin is used)
+                mode i64 = o.args-mode
+                mode > 0 -> posargs.push(a)
+                ! (mode > 0) -> files.push(a)
+            }
         }
     }
 }
@@ -279,6 +526,58 @@ bad -> os.exit(2)
     os.exit(2)
 }
 
+; build $ARGS (jq always defines it): {positional:[...], named:{...}} with
+; named entries in first-binding order (--arg a 1 --arg a 2 => "1").
+pos-arr i64 = jv-array()
+m <- [0..posargs.len()): {
+    ps str = posargs[m] #{index-out=''}
+    pv i64 = jv-string(ps)
+    mode2 i64 = o.args-mode
+    mode2 == 2 -> {
+        rr = jv-parse(ps)
+        rr: {
+            ok -> pv = it
+
+            err -> {
+                io.errln('jq: invalid JSON text passed to --jsonargs')
+                opt-help-hint()
+                os.exit(2)
+            }
+
+            nil -> {
+                io.errln('jq: invalid JSON text passed to --jsonargs')
+                opt-help-hint()
+                os.exit(2)
+            }
+        }
+    }
+    okp bool = jv-arr-push(pos-arr, pv)
+    _ = okp
+}
+named-obj i64 = jv-object()
+nc i64 = jq-named-count()
+t <- [0..nc): {
+    key str = jq-named-key(t)
+    val i64 = jq-named-val(t)
+    jv-obj-insert(named-obj, key, val)
+}
+args-obj i64 = jv-object()
+jv-obj-insert(args-obj, 'positional', pos-arr)
+jv-obj-insert(args-obj, 'named', named-obj)
+jq-set-named('ARGS', args-obj)
+
+; compile-time variable resolution needs the named table as the allow list.
+; ENV stays a deferred builtin (no env enumeration API in this toolchain):
+; allowed here so it never produces a false compile error, it fails at
+; runtime instead.
+allow []str = with-len(0)
+allow.push('ENV')
+allow.push('ARGS')
+u <- [0..nc): {
+    ak str = jq-named-key(u)
+    allow.push(ak)
+}
+
 ; an empty-string program is jq's "Top-level program not given" compile error
 have-filter && filter.empty() -> {
     io.errln('jq: error: Top-level program not given (try ".")')
@@ -288,10 +587,120 @@ have-filter && filter.empty() -> {
 
 ; validate the program once; a compile error exits 3 before touching input.
 proot, pcerr = jq-parse-program(filter)
+uses-input bool = jq-program-uses-input()
 _ = proot
 ! pcerr.empty() -> {
     io.errln('jq: error: ' - pcerr)
     io.errln('jq: 1 compile error')
+    os.exit(3)
+}
+
+; jq's variable-resolution compile pass: every unbound $name is a compile
+; error (exit 3), each rendered with its source line and caret span, then a
+; counted trailer (jq: N compile error[s]).
+unames []str = with-len(0)
+ulns []i64 = with-len(0)
+ucs []i64 = with-len(0)
+jq-undef-var-into(allow, unames, ulns, ucs)
+unames.len() > 0 -> {
+    flines []str = split-lines(filter)
+    q <- [0..unames.len()): {
+        tok str = '$' - unames[q] #{index-out=''}
+        ul i64 = ulns[q] #{index-out=0}
+        uc i64 = ucs[q] #{index-out=0}
+        io.errln('jq: error: ' - tok - ' is not defined at <top-level>, line ' - ul.to-str() - ', column ' - uc.to-str() - ':')
+        si i64 = 0
+        si-opt = ul - 1 #{overflow=wrap}
+        si-opt: {
+            ok -> {
+                si = it
+            }
+            -> {
+                si = 0
+            }
+        }
+        raw str = flines[si] #{index-out=''}
+        io.errln('    ' - raw)
+        pc i64 = 0
+        pc-opt = uc - 1 #{overflow=wrap}
+        pc-opt: {
+            ok -> {
+                pc = it
+            }
+            -> {
+                pc = 0
+            }
+        }
+        pads str = ''
+        g <- [0..pc): {
+            pads = pads - ' '
+        }
+        cares str = ''
+        h <- [0..tok.count()): {
+            cares = cares - '^'
+        }
+        io.errln('    ' - pads - cares)
+    }
+    cnt i64 = unames.len()
+    tail str = ' error'
+    cnt > 1 -> tail = ' errors'
+    io.errln('jq: ' - cnt.to-str() - ' compile' - tail)
+    os.exit(3)
+}
+
+; jq's function-resolution compile pass: every call to a name/arity that is
+; neither a native builtin nor a user def is a compile error (exit 3), each
+; rendered with its source line and caret span, then a counted trailer. Runs
+; after the variable pass and, like it, before any input is touched.
+fnames []str = with-len(0)
+farity []i64 = with-len(0)
+flns []i64 = with-len(0)
+fcs []i64 = with-len(0)
+flines2 []str = split-lines(filter)
+jq-undef-func-into(fnames, farity, flns, fcs)
+fnames.len() > 0 -> {
+    q <- [0..fnames.len()): {
+        nm str = fnames[q] #{index-out=''}
+        ar i64 = farity[q] #{index-out=0}
+        ul i64 = flns[q] #{index-out=0}
+        uc i64 = fcs[q] #{index-out=0}
+        io.errln('jq: error: ' - nm - '/' - ar.to-str() - ' is not defined at <top-level>, line ' - ul.to-str() - ', column ' - uc.to-str() - ':')
+        si i64 = 0
+        si-opt = ul - 1 #{overflow=wrap}
+        si-opt: {
+            ok -> {
+                si = it
+            }
+            -> {
+                si = 0
+            }
+        }
+        raw str = flines2[si] #{index-out=''}
+        io.errln('    ' - raw)
+        pc i64 = 0
+        pc-opt = uc - 1 #{overflow=wrap}
+        pc-opt: {
+            ok -> {
+                pc = it
+            }
+            -> {
+                pc = 0
+            }
+        }
+        pads str = ''
+        g <- [0..pc): {
+            pads = pads - ' '
+        }
+        cares str = ''
+        h <- [0..nm.count()): {
+            cares = cares - '^'
+        }
+        io.errln('    ' - pads - cares)
+    }
+    cnt i64 = fnames.len()
+    tail str = ' error'
+    cnt > 1 -> tail = ' errors'
+    io.errln('jq: ' - cnt.to-str() - ' compile' - tail)
     os.exit(3)
 }
 
@@ -300,14 +709,20 @@ vals []i64 = with-len(0)
 srcs []str = with-len(0)
 lns []i64 = with-len(0)
 parse-err = ''
+; break-error position: source name + total newlines of the LAST collected
+; stream (jq reports input/inputs EOF there, not at the running value).
+eof-name = '<stdin>'
+eof-nl = 0
 
 o.null-input -> {
     vals.push(jv-null())
-    srcs.push('<stdin>')
+    srcs.push('<unknown>')
     lns.push(0)
 }
 
-! o.null-input -> {
+; under -n the sources are only read when the program uses input/inputs
+; (jq -n '1+1' never touches stdin); otherwise the null above is the sole input.
+! o.null-input || uses-input -> {
     src-list []str = files
     src-list.len() == 0 -> {
         src-list = with-len(1)
@@ -347,27 +762,52 @@ o.null-input -> {
             }
             ! pe.empty() -> parse-err = pe
         }
+        eof-nl = count-newlines(content)
+        eof-name = name
     }
 
     ! o.raw-input && o.slurp -> {
+        ; under -n the leading null stays the running input; slurp merges
+        ; everything after it into one array (jq -n -s 'input' -> [1,2]).
+        keep i64 = 0
+        o.null-input -> keep = 1
         arr i64 = jv-array()
-        k <- [0..vals.len()): {
+        k <- [keep..vals.len()): {
             e i64 = vals[k] #{index-out=0}
             aok bool = jv-arr-push(arr, e)
             _ = aok
         }
         lastline i64 = 0
         lastidx i64 = vals.len() - 1 #{overflow=wrap}
-        vals.len() > 0 -> lastline = lns[lastidx] #{index-out=0}
+        vals.len() > keep -> lastline = lns[lastidx] #{index-out=0}
         src0 str = '<stdin>'
-        vals.len() > 0 -> src0 = srcs[0] #{index-out=''}
-        vals = with-len(1)
-        vals[0] = arr
-        srcs = with-len(1)
-        srcs[0] = src0
-        lns = with-len(1)
-        lns[0] = lastline
+        vals.len() > keep -> src0 = srcs[keep] #{index-out=''}
+        vals = with-len(keep + 1) #{index-out=0}
+        q <- [0..keep): {
+            vals[q] = jv-null() #{index-out=0}
+        }
+        vals[keep] = arr
+        srcs = with-len(keep + 1)
+        q <- [0..keep): {
+            srcs[q] = '<unknown>' #{index-out=''}
+        }
+        srcs[keep] = src0
+        lns = with-len(keep + 1)
+        q <- [0..keep): {
+            lns[q] = 0 #{index-out=0}
+        }
+        lns[keep] = lastline
     }
+}
+
+; ── seed the shared input queue ───────────────
+; input/inputs inside evaluation pop from the same queue the main loop walks
+; below; the loop re-reads the cursor each iteration so consumed values are
+; skipped (jq semantics: a value eaten by input is never run as `.`).
+jq-inputs-reset()
+k2 <- [0..vals.len()): {
+    v2 i64 = vals[k2] #{index-out=0}
+    jq-inputs-append(v2)
 }
 
 ; ── run + emit ────────────────────────────────
@@ -379,10 +819,23 @@ rc = 0
 last = -1
 got-output = false
 
-vi <- [0..vals.len()): {
-    inp i64 = vals[vi] #{index-out=0}
+; The loop is cursor-driven (not a fixed range): input/inputs inside a run
+; advance the shared cursor, so values they consumed are skipped as `.` here.
+; Cursor state is mirrored in locals around the while guard (function calls
+; in the condition compile to fragile MIR).
+cap i64 = jq-inputs-len()
+; under -n only the null runs as `.`; queued source values exist solely for
+; input/inputs to consume (jq -n 'input' on 1,2,3 prints 1, never re-runs).
+o.null-input -> cap = 1
+cp i64 = jq-inputs-pos()
+(cp < cap) {
+    vi i64 = cp
+    inp i64 = jq-inputs-get(vi)
+    cp = cp + 1 #{overflow=wrap}
+    jq-inputs-setpos(cp)
     outs, threw, errv, rc2 = jq-run(filter, inp)
     _ = rc2
+    cp = jq-inputs-pos()
     rc = 0
     oi <- [0..outs.len()): {
         ov i64 = outs[oi] #{index-out=0}
@@ -394,8 +847,13 @@ vi <- [0..vals.len()): {
     threw -> {
         pos str = srcs[vi] #{index-out=''}
         line i64 = lns[vi] #{index-out=0}
+        unk bool = pos == '<unknown>'
         head str = 'jq: error (at ' - pos - ':' - line.to-str() - ')'
+        uh str = 'jq: error (at <unknown>)'
+        unk -> head = uh
         sc bool = is-string-carrier(errv)
+        brk bool = sc && err-carrier-text(errv) == 'break'
+        brk -> head = 'jq: error (at ' - eof-name - ':' - eof-nl.to-str() - ')'
         sc -> io.errln(head - ': ' - err-carrier-text(errv))
         ! sc -> io.errln(head - ' ' - err-carrier-text(errv))
         rc = 5
