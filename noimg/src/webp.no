@@ -653,6 +653,7 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     }
 
     ; Per-tree alphabet sizes (libwebp kAlphabetSize)
+    ts0 i64 = 0
     #{overflow=wrap}
     ts0 = 280 + cc-size
 
@@ -753,6 +754,10 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     #{overflow=wrap}
     count-4 []i64 = with-len(n-groups * 16)
 
+    gb0 i64 = 0
+    gb1 i64 = 0
+    gb4 i64 = 0
+    gf i64 = 0
     g <- [0..n-groups): {
 
         #{overflow=wrap}
@@ -916,6 +921,10 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     cc-cache []byte = with-len(cc-size * 4)
 
     ; Decode pixels
+    lb0 i64 = 0
+    lb1 i64 = 0
+    lb4 i64 = 0
+    lf i64 = 0
     px = 0
     (px < sub-n) {
         px < sub-n -> {
@@ -1277,9 +1286,6 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             #{overflow=wrap}
                             ct-h = (h + ct-block - 1) / ct-block
 
-                            #{overflow=wrap}
-                            ct-n = ct-w * ct-h
-
                             ; Decode the color transform sub-image as ARGB
                             ct-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h, false)
                         }
@@ -1582,6 +1588,22 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     ; ── Compute prediction ──
+                    avg-lt-a i64 = 0
+                    avg-lt-r i64 = 0
+                    avg-lt-g i64 = 0
+                    avg-lt-b i64 = 0
+                    avg-ltl-a i64 = 0
+                    avg-ltl-r i64 = 0
+                    avg-ltl-g i64 = 0
+                    avg-ltl-b i64 = 0
+                    avg-ltr-a i64 = 0
+                    avg-ltr-r i64 = 0
+                    avg-ltr-g i64 = 0
+                    avg-ltr-b i64 = 0
+                    avg-ttr-a i64 = 0
+                    avg-ttr-r i64 = 0
+                    avg-ttr-g i64 = 0
+                    avg-ttr-b i64 = 0
                     pred-a = 0
                     pred-r = 0
                     pred-g = 0
@@ -2156,7 +2178,22 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
 ; webp-read-u32-le: read 32-bit little-endian
 webp-read-u32-le = (data []byte, pos i64) (val i64) {
-    val = (data[pos] & 255) | ((data[pos + 1] & 255) << 8) | ((data[pos + 2] & 255) << 16) | ((data[pos + 3] & 255) << 24)
+    #{index-out=zero}
+    b0 = data[pos]
+    #{index-out=zero}
+    b1 = data[pos + 1]
+    #{index-out=zero}
+    b2 = data[pos + 2]
+    #{index-out=zero}
+    b3 = data[pos + 3]
+
+    #{overflow=wrap}
+    acc = (b0 & 255) | ((b1 & 255) << 8) | ((b2 & 255) << 16) | ((b3 & 255) << 24)
+    acc: {
+        ok -> val = it
+
+        -> val = 0
+    }
 }
 
 ; webp-parse-vp8: parse VP8 lossy bitstream header for dimensions
@@ -2477,12 +2514,16 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
             ; count a rlen of equal code lengths (max 6) starting at i
             rlen = 1
             scanning = true
+            ni i64 = 0
             (scanning && rlen < 6) {
                 scanning && rlen < 6 -> {
 
                     #{overflow=wrap}
                     ni = i + rlen
-                    ni < n && lens[ni] == v -> {
+
+                    #{index-out=zero}
+                    nv = lens[ni]
+                    ni < n && nv == v -> {
 
                         #{overflow=wrap}
                         rlen = rlen + 1
@@ -2825,6 +2866,8 @@ load = (path str) (img ?image) {
     vp8l-pos = -1
     vp8l-size = 0
     has-alpha = false
+    chunk-data-pos i64 = 0
+    size-pos i64 = 0
 
     ; Parse RIFF chunks
     #{overflow=wrap}
@@ -2833,7 +2876,11 @@ load = (path str) (img ?image) {
         #{overflow=wrap}
         pos + 8 <= data.len() -> {
             fourcc = data.slice(pos, pos + 4).to-bytes-str()
-            chunk-size = webp-read-u32-le(data, pos + 4)
+
+            #{overflow=wrap}
+            size-pos = pos + 4
+            chunk-size = webp-read-u32-le(data, size-pos)
+            #{overflow=wrap}
             chunk-data-pos = pos + 8
             {
                 fourcc == 'VP8X' -> {
@@ -2885,9 +2932,13 @@ load = (path str) (img ?image) {
                     }
                 }
             }
+            #{overflow=wrap}
             pos = chunk-data-pos + chunk-size
             {
-                chunk-size & 1 != 0 -> pos = pos + 1
+                chunk-size & 1 != 0 -> {
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
             }
         }
     }

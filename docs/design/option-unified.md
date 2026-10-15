@@ -1,10 +1,10 @@
 # notools 侧方案：算术与索引统一返回 option（实测 + 迁移）
 
-> 状态：**测量完成，待执行**（2026-10-13）  
+> 状态：**已按 `v0.4.9-4` 复核并完成全语料迁移**（2026-10-15）——7 个子项目入口 `no vet` 均 0 ERROR（迁移前基线 63 点已归零）。本文件下方 §0/§2 保留**迁移前的 63 点基线明细**（旧值 424 系早期 `v0.4.5` 快照 + 目录模式虚高，已作废），最终收敛结果见 §5。  
 > 上游方案：`~/IdeaProjects/no/docs/design/option-unified.md`（编译器侧设计，`no` 仓库）  
 > 本文件是**下游语料侧**的对应物：只讲 notools 工作区受影响的实测、修法与批次，不重复编译器侧设计。  
 > 语料：`~/IdeaProjects/notools` 的 7 个子项目（`noagent` / `nogit` / `noimg` / `nojq` / `nonpm` / `notools` / `nouv`）  
-> 基线：`no` @ `40aa9caa`（初测 `b805ed06`）；参考二进制 `/tmp/no_opt`（`v0.4.5-dirty`，带 `StdSigKey`）
+> 基线：`no` @ `5b6f7b86`（`v0.4.9-4`，2026-10-15）；判据用 **PATH 上的 `no`**（旧参考二进制 `/tmp/no_opt` 是 `v0.4.5-dirty` 过期快照，已弃用，勿再据此测量）
 
 ---
 
@@ -13,14 +13,14 @@
 | 项                       | 数值                                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------------------- |
 | 扫描档数                    | **578**（排除 `node_modules` / `tmp` / `dist` / `docs`）                                                     |
-| **唯一 ERROR 点**          | **424**                                                                                                  |
-| ├ option 相关             | **301**（`15w45dqk` 155、`fxxoptarg` 90、`6fgg3htw` 24、`fe0a5wt2` 14、`optunuse` 11、`oarg2` 4、`stdargtyp` 3） |
-| ├ 非 option（跨模组未限定呼叫）    | 94（`4bek3xc6`，全部在 `notools`）                                                                             |
-| └ 待逐点诊断（format 字串未定义变量） | 29（`mzwb28br`，全部在 `nouv`）                                                                                |
-| 有错的档                    | 123                                                                                                      |
-| 干净子项目                   | 无（7 个都有；`nouv` 的 55 点全是 option 相关）                                                                       |
+| **迁移前唯一 ERROR 点**（`v0.4.9-4` 逐档复核） | **63**                                                                                                  |
+| ├ option 相关             | **56**（`15w45dqk` 32、`fxxoptarg` 21、`optunuse` 3）                                                        |
+| ├ 非 option（跨模组未限定呼叫）    | 6（`4bek3xc6`：其中 noimg 侧随 webp 行变自动消失、nojq `parser.no:2000` 为**单文件假阳性**，入口级 0）                          |
+| └ 非 option（引数型别）        | 1（`stdargtyp`：nojq `value.no:390`，同为**单文件假阳性**，入口级 0）                                                    |
+| 按子项目分布                | noimg 56、noagent 3、nojq 3、notools 1；**nogit / nonpm / nouv 迁移前即 0**                                    |
+| **迁移后唯一 ERROR 点**（入口级 `no vet`，本次收尾） | **0**（7 个子项目 `*/main.no` 逐档全清）                                                                          |
 
-**一句话**：这不是「7138 个已标注站点全部重写」，而是 **424 个错误点的定点修复**，其中 301 点的主修法是机械的（§3）。
+**一句话**：以 `v0.4.9-4` 复核，真实待修面是 **56 个 option 点（集中在 noimg）**，另有 7 个非 option 点均为**单文件作用域假阳性**（入口/项目级即消失，无需改代码）。旧值 424 是 `v0.4.5` 过期快照叠加目录模式 10× 虚高的产物，已作废。
 
 上游方案 §2.2 推算的「std 4564 个已标注站点全部需要补消费」在 notools 上**没有发生** —— 原因见 §1.2 第 1、2 条。
 
@@ -39,22 +39,21 @@
 | 算术 `a + b`      | `#{overflow=wrap}` | 重绑定既有 plain **局部**变量     | plain     | 不报错（**仅限局部**；**全域**重绑仍是 `?T`）                 |
 | 算术 `a + b`      | `#{overflow=wrap}` | 显式 plain 型别 `z i64 =` | **ERROR** | `15w45dqk`（D1 已收紧；2026-10-14 用户定案 `k i64 = i + 1 #{overflow=wrap}` 是错的） |
 | 索引 `arr[i]`     | 无                  | 新变量                   | `?T`      | `15w45dqk`                                     |
-| 索引 `arr[i]`     | `#{index-out=…}`   | 新变量                   | **plain** | 注解**仍然解包**                                     |
-| 索引 `arr[i]`     | 无                  | 显式 plain 型别 `v i64 =` | plain     | 不报错                                            |
+| 索引 `arr[i]`     | `#{index-out=…}`   | 新变量                   | **plain** | ⚠ **注解仍然解包**（与上游 D1/D7「用户侧恒 `?T`」**偏差**，待编译器侧收敛） |
+| 索引 `arr[i]`     | 无                  | 显式 plain 型别 `v i64 =` | plain     | ⚠ **仍压平**（同与上游 D1/D7 **偏差**）                    |
 | `str` 索引 `s[i]` | —                  | 新变量                   | `?char`   | D6 已生效                                         |
 | 呼叫 `f()` 回 `?T` | —                  | 新变量                   | `?T`      | 显式 plain 型别也压不平（见 §3.5）                        |
 | 呼叫 `f()` 回 `?T` | —                  | 赋给 `?T` 结果参数          | `?T`      | 报 `optunuse`（疑似误报，§1.2 第 3 条）                  |
+| 呼叫 `f()` 回 **plain** | —           | 任一**实参是 option**（如 `f(data, pos + 4)`） | **`?T`** | ⚠ **调用结果被 option 实参整体提升为 `?T`**（与函数声明返回类型无关）；迁移时须把实参先物化为 plain，或两段式解包结果（本次 webp `chunk-size` 即此形状） |
 
 ### 1.2 与上游方案 / 现有文档的四处出入
 
-1. **D1 只落地一半。** 算术注解**不再解包**（矩阵第 2 行），但索引注解**仍然解包**（第 6 行）。  
-   上游方案 D1 说两者都不解包；`docs/docs/lang/syntax.md` L1618 也写「`#{index-out=…}` 只决定失败时怎么取值，不解包」——实测与两者都不符。  
+1. **D1 只落地一半（`v0.4.9-4` 复核：仍成立）。** 算术注解**不再解包**（矩阵第 2 行），但索引注解**仍然解包**、索引**显式 plain 型别仍然压平**（矩阵第 6、7 行，已标 ⚠ 偏差）。  
+   上游方案 D1/D7（§8.1(a)，2026-10-15 定案「两层分离」）说用户侧**索引与算术一律 `?T`、无静态豁免**——实测索引侧与上游不符，属编译器侧**尚未收敛的已知偏差**。notools 迁移**沿用现状**（索引站点用显式型别 / `#{index-out}` 保持合法），待编译器侧收敛后再统一改写。  
    ⇒ **不要**按「7138 个已标注站点全部变 `?T`」规划迁移量。
-2. **迁移量被高估。** 方案 §2.2 推算 std 的 4564 个已标注站点全部需要补消费；notools 实测表明**只有「新变量绑定」受影响**：  
-   重绑定既有 plain 变量、显式 plain 型别都不受影响。notools 的 6298 个 `#{overflow=wrap}` 里绝大多数是 `i = i + 1` 这种重绑定，因此没炸。
-3. **`optunuse` 有可疑误报。** `v = h()`（`h()` 回 `?T`，`v` 是 `?T` out-param）报 `optunuse`；而 `v = a + b`（同样 `v ?T`）不报。  
-   同一个「把 option 交给 `?T` 结果参数」的动作，两条路径结论不一致。  
-   ⇒ **先向编译器侧确认**，再决定这 11 个点是改代码还是改编译器（`noagent` 的 2 点就是这个形状）。
+2. **迁移量被高估（`v0.4.9-4` 复核：仍成立）。** 方案 §2.2 推算 std 的 4564 个已标注站点全部需要补消费；notools 实测表明**只有「新变量绑定」受影响**：  
+   重绑定既有 plain 局部变量不受影响（D7 定案引用：用户侧解包义务只针对**新建** option 绑定，plain 局部被 `#{overflow=wrap}` 重绑仍保持 plain）。notools 的 6298 个 `#{overflow=wrap}` 里绝大多数是 `i = i + 1` 这种重绑定，因此没炸；真实待修面仅 63 点（见 §0）。
+3. **`optunuse`：`v0.4.9-4` 复核后确认为真实义务，非误报。** 早期（`v0.4.5`）曾疑为「把 option 交给 `?T` 结果参数」的误报；本轮 3 个 `optunuse` 点全部**按真实处理并修复**：`noagent/provider.no` 的 `slots`（**全域**重绑，局部会折回 plain 但全域不会 ⇒ 用两段式 match 解包）、`noimg/webp.no` 的 `ct-n`（真正未消费的算术绑定 ⇒ 删死码）、`notools/tsort.no` 的 `msg`（死变量 ⇒ 删）。无需改编译器。
 4. **HINT 建议的语法不总能解析。** 诊断建议 `x = expr: { ok -> it, -> 0 }`，实测：
    - 换行分臂 + 空臂（`docs/docs/lang/syntax.md` L1620 的写法）**可用**；
    - **逗号分臂**（`{ ok -> it, -> 0 }`）**解析失败**：`expected variable name after ',', got RARROW(->)`；
@@ -62,14 +61,13 @@
 
 ### 1.3 方法学（必须遵守）
 
-- 🔴 **不能用 `no vet <目录>` 当判据。** 目录模式有**假阳性**：实测 `no vet nouv` 报 72 个 ERROR，而逐档 vet 后 `nouv` 的真实错误是 55 点、且**位置完全不同**；`notools/src/ls.no` 目录模式被点名，单档 vet 干净。  
-  目录模式还会把同一条错误在**每个 import 者**下重复上报（历史记录：原始计数约 10× 虚高）。
+- 🔴 **不能用 `no vet <目录>` 当判据。** 目录模式有**假阳性**：旧 sweep 实测 `no vet nouv` 报 72 个 ERROR、而逐档后实为 0（`v0.4.9-4`）；`notools/src/ls.no` 目录模式被点名、单档 vet 干净。目录模式还会把同一条错误在**每个 import 者**下重复上报（历史：原始计数约 10× 虚高）。
 - 🔴 **逐档 `no vet <file>` 才是权威**，但仍有两点局限：
   - 有些错误只在**测试入口**（`*/tests/test-*.no`）下才暴露，且位置指向被引用的模块（`nouv` 的 29 个 `mzwb28br` 就是这样：报在 `nouv/src/dependency.no:266:15`，但只有 vet `nouv/tests/test-*.no` 时才出现）；
   - 跨模块错误的**位置**可能不可靠（报在函数定义行或无关语句上）。⇒ 修复时以**报错文本**为准，位置只作线索。
-- 🔴 **自带参考二进制。** 平行 session 会重建 `bin/no`。本次就撞上：13:46 `bin/no` 被换成不带 `StdSigKey` 的 build，`no vet` 直接硬失败（`[no] ERROR: 標準庫簽名 key 未注入`），第一轮 sweep 因此被污染（`nouv` 被误判为 0 错误）。  
-  自带二进制的建置方式见 §7.1。
-- 本文件的数字来自**用 `/tmp/no_opt` 对 578 档逐档 vet**（第二轮 sweep），原始输出在 `/tmp/opt-perfile2/`。
+- 🔴 **工具链：直接用 PATH 上的 `no`（`v0.4.9-4` @ `5b6f7b86`，已内置 `StdSigKey`）。** 旧做法需自建 `/tmp/no_opt`（`v0.4.5`）且会撞上平行 session 重建 `bin/no` 导致的硬失败（`標準庫簽名 key 未注入`）；`v0.4.9-4` 已不需要自带二进制。若将来必须钉住某个旧版本，建置方式见 §7.1（可选）。
+- 🔴 **逐档 `no vet <file>` 优于目录模式，但仍会假阳性；真正权威是入口级 `no vet <子项目>/main.no`。** 本次实测：`nojq/src/parser.no:2000`（`bi-code` 未定义）、`nojq/src/value.no:390`（`str.compare` 引数）在**单文件隔离 vet** 下报错，但 `no vet nojq/main.no`（经 `# /nojq/src/eval` 加载完整模块图）= 0——因为同包文件共享一个平面作用域。⇒ 定性一个点是否需改，以**入口/项目级 vet + 实际 build** 为准，单文件报错先回溯入口。
+- 本文件的迁移前基线数字来自**用 PATH `no`（`v0.4.9-4`）对 578 档逐档 vet + 去重 `(path,line,col,code)`**，结果存于 `/tmp/err_norm.txt`（63 点）；收尾验收以 7 入口 `no vet */main.no` = 0 为准。
 
 ### 1.4 探针
 
@@ -90,6 +88,16 @@
 | `ee.no`           | `o = h()` ⏎ `o: { ok -> d = it \n -> d = 0 }`              | 无错 ⇒ 陈述式 match 可用            |
 | `ff.no`           | `d i64 = h()`                                              | ERROR ⇒ 显式型别压不平呼叫结果          |
 | `gg.no`           | `bj byte = buf[j]` ⏎ `g(bj)`                               | 无错 ⇒ 引数先绑定再传可用               |
+| `probe-u32.no`    | 函数声明回 plain `i64`，但**实参是 option**（`f(data, pos + 4)`）            | 调用结果被提升为 `?i64` ⇒ 见 §1.1 新增行   |
+
+### 1.5 D7 两层分离（对齐上游 §8.1(a) / §11.3，2026-10-15 定案）
+
+上游 D7 关于 **in-bounds 豁免**最终定案为「**两层分离**」，纠正了早期「取消」与原稿中途实现的「保留用户侧豁免」（D7-R1）两种误解。notools 侧据此明确如下：
+
+- **① 用户侧（语言表面语义）：一律 `?T`、必须解包，无任何静态豁免。** 即使编译器能静态证明 `arr[i]` 不越界、`a+b` 不溢出、`a/b` 不除零，`x = arr[i]` / `x = a + b` 的 `x` 仍是 `?T`，后续使用必须 `match` / `?=` / `_ =` 解包。**不存在**「可证明安全 → plain 类型」的用户侧捷径。诊断口径（`optunuse` / `idxhndld` 等）对 in-bounds 读取照常生效。
+- **② 语言内部（编译器优化）：可证明安全时内部消除。** codegen/MIR 据 `bounds.go` 分析省略 nil 检查、直接走 ok 分支、不生成冗余 match 分支——这是**不可见的代码生成优化**，**不改变**用户可见类型与消费义务。`bounds.go` 整套保留，仅服务内部消除与诊断降噪（`rngidx` 等 HINT 频率），三方共用同一份判定但判定结果只影响优化与提示。
+- **惯用替代写法**：区间索引建议 `for i <- [0..N) { x = arr[i] }` 改写为**直接迭代容器** `for i <- arr { x = i }`（`i` 即元素，无下标即无 option），由 `rngidx` HINT 引导。
+- 🔴 **与上游的已知偏差（索引侧）**：上游 D1/D7 要求索引**用户侧恒 `?T`**，但 `v0.4.9-4` 实测索引注解（`#{index-out=…}`）**仍解包**、索引**显式 plain 型别仍压平**（见 §1.1 矩阵 ⚠ 行）。这是**编译器侧尚未收敛**的偏差——notools 迁移**沿用现状**（索引站点保持显式型别 / `#{index-out=…}`，合法且行为不变），**待编译器侧收敛后再统一改写**，本文件不为「未来才落地」的语义提前返工。算术侧则**已按 D1 收紧**（`x i64 = <算术>` 硬错、注解不解包），迁移据实处理。
 
 ---
 
@@ -111,56 +119,62 @@
 ⚠️ notools 的 `#{overflow}` **全部是 `wrap`**（无 `clamp0`/`min`/`max`/`saturate`）；`#{index-out}` 以 `zero` 为主，另有少量 `0` / `1` / `2` / `''` / `prule{}`，以及 153 处组合写法 `#{index-out=zero,overflow=wrap}`。  
 ⚠️ `?=` 与 `_ =` 几乎为 0 ⇒ 语料**从未**使用「上抛」与「显式丢弃」这两条消费路径，迁移时不宜大面积引入（会改变错误传播语义）。
 
-### 2.2 逐档 vet 结果（权威）
+### 2.2 逐档 vet 结果（`v0.4.9-4` 复核基线）
 
-| 子项目     | 唯一 ERROR | 有错档数    | 错误码分布                                                                                 |
-| ------- | -------- | ------- | ------------------------------------------------------------------------------------- |
-| noagent | 2        | 2       | `optunuse`×1, `fxxoptarg`×1                                                           |
-| nogit   | 100      | 68      | `15w45dqk`×94, `optunuse`×3, `fxxoptarg`×3                                            |
-| noimg   | 80       | 6       | `fxxoptarg`×49, `15w45dqk`×22, `optunuse`×7, `fe0a5wt2`×2                             |
-| nojq    | 6        | 2       | `15w45dqk`×6                                                                          |
-| nonpm   | 2        | 2       | `15w45dqk`×2                                                                          |
-| notools | 179      | 32      | `4bek3xc6`×94, `fxxoptarg`×33, `6fgg3htw`×23, `15w45dqk`×22, `oarg2`×4, `stdargtyp`×3 |
-| nouv    | 55       | 13      | `mzwb28br`×29, `fe0a5wt2`×12, `15w45dqk`×9, `fxxoptarg`×4, `6fgg3htw`×1               |
-| **合计**  | **424**  | **123** |                                                                                       |
+| 子项目     | 迁移前唯一 ERROR | 其中 option | 错误码分布（迁移前基线）                                                                                       |
+| ------- | ----------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| noagent | 3           | 3         | `15w45dqk`×1, `fxxoptarg`×1, `optunuse`×1                                                                 |
+| nogit   | 0           | 0         | （已干净）                                                                                                 |
+| noimg   | 56          | 52        | `15w45dqk`×31, `fxxoptarg`×20, `optunuse`×1, `4bek3xc6`×4（非 option，入口重复上报）                             |
+| nojq    | 3           | 0         | `4bek3xc6`×2, `stdargtyp`×1（均**单文件假阳性**，入口级 0）                                                       |
+| nonpm   | 0           | 0         | （已干净）                                                                                                 |
+| notools | 1           | 1         | `optunuse`×1                                                                                           |
+| nouv    | 0           | 0         | （已干净；旧值 55/29 系过期快照与目录模式假阳性，`v0.4.9-4` 实为 0）                                              |
+| **合计**  | **63**      | **56**    | `15w45dqk`×32, `fxxoptarg`×21, `optunuse`×3, `4bek3xc6`×6, `stdargtyp`×1                              |
+| **迁移后**  | **0**       | **0**     | 7 子项目入口 `no vet */main.no` 均 0（收尾实测，见 §5）                                                       |
 
-### 2.3 错误码总览
+### 2.3 错误码总览（迁移前基线）
 
-| 错误码         | 数量  | 分布                                                           | 类别                    | 修法   |
-| ----------- | --- | ------------------------------------------------------------ | --------------------- | ---- |
-| `15w45dqk`  | 155 | nogit 94 / noimg 22 / notools 22 / nouv 9 / nojq 6 / nonpm 2 | option 赋给 plain       | §3.1 |
-| `4bek3xc6`  | 94  | notools 94                                                   | **非 option**：跨模组未限定呼叫 | §3.6 |
-| `fxxoptarg` | 90  | noimg 49 / notools 33 / nouv 4 / nogit 3 / noagent 1         | bare option 当引数       | §3.2 |
-| `mzwb28br`  | 29  | nouv 29                                                      | 待诊断：format 字串未定义变量    | §3.7 |
-| `6fgg3htw`  | 24  | notools 23 / nouv 1                                          | 引数型别不符（型别推断连锁）        | §3.5 |
-| `fe0a5wt2`  | 14  | nouv 12 / noimg 2                                            | option 参与比较           | §3.4 |
-| `optunuse`  | 11  | noimg 7 / nogit 3 / noagent 1                                | option 绑定后从未消费        | §3.3 |
-| `oarg2`     | 4   | notools 4                                                    | 引数个数不符                | §3.5 |
-| `stdargtyp` | 3   | notools 3                                                    | 引数型别不符                | §3.5 |
+| 错误码         | 数量  | 分布                                                        | 类别                    | 修法   | 迁移后 |
+| ----------- | --- | --------------------------------------------------------- | --------------------- | ---- | --- |
+| `15w45dqk`  | 32  | noimg 31 / noagent 1                                      | option 赋给 plain       | §3.1 | 0 |
+| `fxxoptarg` | 21  | noimg 20 / noagent 1                                      | bare option 当引数       | §3.2 | 0 |
+| `optunuse`  | 3   | noagent 1 / noimg 1 / notools 1                          | option 绑定后从未消费        | §3.3 | 0 |
+| `4bek3xc6`  | 6   | noimg 4 / nojq 2                                          | **非 option**：跨模组未限定呼叫（入口重复上报/单文件假阳性） | §3.6 | 0（假阳性，无需改） |
+| `stdargtyp` | 1   | nojq 1                                                    | 引数型别不符（**单文件假阳性**）    | §3.5 | 0（假阳性，无需改） |
 
-### 2.4 出错的档（分批依据）
+> 旧 §2.2/§2.3 的 424 明细（`15w45dqk` 155、`6fgg3htw` 24、`mzwb28br` 29 等）全部作废：来自 `v0.4.5` 过期快照 + 目录模式 10× 虚高 + 已不存在的 `6fgg3htw`/`oarg2`/`mzwb28br` 形状。`v0.4.9-4` 逐档复核实测仅剩上表 63 点。
 
-| 子项目     | 档数 | 主要档（点）                                                                                                                                                                                      |
-| ------- | -- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| noagent | 2  | `src/utils.no`(1)、`src/httpclient.no`(1)                                                                                                                                                    |
-| nogit   | 68 | `tests/test.no`(13)、`src/pack.no`(9)、`main.no`(3)、`tests/test-revwalk-comprehensive.no`(3)、`tests/test-object-comprehensive.no`(3)…（`tests/` 下 60+ 档，多为同一形状）                                |
-| noimg   | 6  | `src/vp8.no`(36)、`src/jpeg.no`(17)、`src/webp.no`(15)、`src/gif.no`(10)、`src/image.no`(1)、`main.no`(1)                                                                                        |
-| nojq    | 2  | `src/dec.no`(4)、`src/number.no`(2)                                                                                                                                                          |
-| nonpm   | 2  | `tests/test-resolve-debug.no`(1)、`tests/test-resolve-debug2.no`(1)                                                                                                                          |
-| notools | 32 | `src/cat.no`(21)、`src/join.no`(18)、`src/awk.no`(17)、`src/sha384x.no`(11)、`src/sha512x.no`(11)、`src/sha256x.no`(10)、`src/md5x.no`(10)、`src/xxd.no`(10)、`src/sha1x.no`(9)、`src/stdbuf.no`(9)… |
-| nouv    | 13 | `src/pep508.no`(26)、`src/jsonx.no`(6)、`src/utils.no`(4)、`src/dependency.no`(4)、`src/sdist.no`(3)…                                                                                           |
+⚠️ **63 是“首轮 sweep”的下界，不是总修复数。** 逐档 vet 一次只报当前可推得的错误；修完上游一批后，**流依赖的下游站点才浮现**（例：`noimg/webp.no` 修完 25 个 `15w45dqk`/`fxxoptarg` 后，才暴露出 2522 行 `ni` 的 `fe0a5wt2` 与 `chunk-size` 实参提升——均不在首轮 63 中）。⇒ 迁移按**逐档收敛迭代至 0**，不能只按 63 的清单施工。
 
-> `notools` 的 94 个 `4bek3xc6` 集中在 `sha1x/sha256x/sha384x/sha512x/md5x/xxd/stdbuf/cat/echo/ls/xargs/...`，是**跨模组限定名**问题，与 option 无关，见 §3.6。
+### 2.4 出错的档（迁移批次台账）
+
+> 下行为 `v0.4.9-4` 复核后的**真实**出错档（旧表基于 424 的逐档列表已作废）。括号内为迁移前点数；迁移后均为 0。
+
+| 批次      | 子项目     | 出错档（点）→ 状态                                                                                                                                    |
+| ------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1      | noagent | `src/httpclient.no`(2：`fxxoptarg`+`15w45dqk` 共享根因)、`src/provider.no`(1：`optunuse` 全域 `slots` 重绑) → **已归零**              |
+| B2      | nojq    | `src/value.no`(1 `stdargtyp`)、`src/parser.no`(1 `4bek3xc6`) → **单文件假阳性**，入口 `main.no` 已 0，**无需改**                              |
+| B3      | noimg   | `src/webp.no`(25)、`src/vp8.no`(12)、`src/bmp.no`(7)、`src/colour.no`(7)、`src/gif.no`(1) → **已全部归零**（逐档 `no vet` 验证）     |
+| B3′     | noimg   | `main.no`/`tests/*`(共 4 `4bek3xc6`)：随 webp 行变自动消失 → **已 0**                                                              |
+| B4      | notools | `src/tsort.no`(1 `optunuse`，死变量 `msg`) → **已归零**（删死码）                                                                       |
+| —       | nogit/nonpm/nouv | 迁移前即 0 → 无需改                                                                                                                     |
+
+> 🔴 **与 option 无关、且本迁移不处理的漂移**：`noimg/jpeg.no`、`noimg/rotate.no`、`nojq/dec.no`、`nojq/number.no` 的 `number.i64-to-f64` / `math.i64-to-f64` / `str.to-str` 等 **unknown callee**——这是上游 stdlib 重命名导致的工具链漂移（这些文件本迁移**未触碰**，且入口级 `no vet` 不报错、仅在目录/单文件隔离模式浮现），属**预先存在**，不在本次 option 迁移范围。旧表里 nogit/nojq/nonpm/notools/nouv 的大量 `15w45dqk`/`4bek3xc6`/`mzwb28br` 明细均为过期快照产物，已随 §2.2 一并作废。
 
 ---
 
 ## 3. 修法 recipe
 
-> 所有 recipe 都用探针在 `/tmp/no_opt` 上验证过（§1.4）。**优先选不改变语义的写法**。
+> 所有 recipe 均已用 **PATH 上的 `no` @ `v0.4.9-4`** 探针验证（§1.4；旧 `/tmp/no_opt` `v0.4.5` 快照已弃用）。**优先选不改变语义的写法**。
+>
+> 🔴 **两条实测边界（本次迁移反复用到，务必遵守）：**
+> 1. **索引侧沿用 D1/D7 偏差现状**（§1.5）：索引站点可继续用**显式 plain 型别**（`v i64 = arr[i]`）或 `#{index-out=zero}` 保持合法（当前编译器仍解包/压平）；**算术侧**则已收紧，`x i64 = <算术>` 是硬错，必须走两段式 match 或预声明 plain 后 `#{overflow=wrap}` 重绑。
+> 2. **option 实参会把函数调用结果整体提升为 `?T`**（§1.1 新增行）：即使函数声明返回 plain，只要 `f(data, pos + 4)` 这类**实参是 option**，结果仍为 `?T` ⇒ 先把实参物化为 plain（预声明 `x i64 = 0` + `#{overflow=wrap} x = <算术>`）再呼叫，或对呼叫结果做两段式 match。
 
-### 3.1 `15w45dqk`（155 点，占 37%）—— option 赋给 plain
+### 3.1 `15w45dqk`（`v0.4.9-4` 基线 32 点，全部已修）—— option 赋给 plain
 
-**形状 A（约 86 点，`nogit/tests/*` 几乎全是这个）：`ok ->` 臂内把被匹配的 option 变量赋给 plain 变量。**
+**形状 A（本次未命中——`nogit` 在 `v0.4.9-4` 已 0；保留作通用形状）：`ok ->` 臂内把被匹配的 option 变量赋给 plain 变量。**
 
 ```no
 ; ✗ before
@@ -226,7 +240,7 @@ w = z
 **形状 D：`?char` 来源。** `nouv/src/pep508.no:331` 是 `str-char = s[i]`（`str` 索引，D6）⇒ `str-char` 收到 `?char`。  
 改法：`str-char i64 = s[i]`（显式型别）或改用 `s.byte(i)`（若语义上要的是字节）。
 
-### 3.2 `fxxoptarg`（90 点）—— bare option 当引数
+### 3.2 `fxxoptarg`（基线 21 点，全部已修）—— bare option 当引数
 
 ```no
 ; ✗ before（noagent/src/httpclient.no:225）
@@ -241,7 +255,7 @@ d = hexval(bj)
 ⚠️ 若 option 来自**算术**，同样先落成显式型别变量再传。  
 ⚠️ **先判断语义**：`b[j]` 越界时原意是「取零值继续」还是「应当报错」？前者用显式 plain 型别 / `#{index-out=zero}`，后者才用 `?=` 上抛（会改变错误传播，语料里没有先例，慎用）。
 
-### 3.3 `optunuse`（11 点）—— 绑定后从未消费
+### 3.3 `optunuse`（基线 3 点，全部已修）—— 绑定后从未消费
 
 ```no
 ; ✗ before（nogit/src/object.no:900）—— 结果确实要丢弃
@@ -251,9 +265,9 @@ _w-opt = zlib.zlib-decompress(warmup-data)
 _ = zlib.zlib-decompress(warmup-data)
 ```
 
-⚠️ **先排除 §1.2 第 3 条的疑似误报**：`noagent/src/utils.no:196`（`read-line = (line ?str) { line = io.read-line() }`）是「把 option 交给 `?T` 结果参数」，`nouv`/`noimg` 也有同形状。这 11 点里有多少是真问题、有多少是编译器误报，需要先跟编译器侧对齐（探针 `p.no` 可复现）。
+✅ **`v0.4.9-4` 复核：基线 3 个 `optunuse` 点均为真实义务，非误报**（早期§1.2 第 3 条的「疑似误报」假设已推翻）：`noagent/provider.no` 的 `slots` 是**全域**重绑（局部会折回 plain 但全域不会）⇒ 两段式 match 解包；`noimg/webp.no` 的 `ct-n`、`notools/tsort.no` 的 `msg` 都是真正未消费的绑定/死变量 ⇒ 删或 `_ =`。无需改编译器。
 
-### 3.4 `fe0a5wt2`（14 点）—— option 参与比较
+### 3.4 `fe0a5wt2`（基线 0 点；recipe 保留备用）—— option 参与比较
 
 ```no
 ; ✗ before（noimg/src/jpeg.no:762-764）
@@ -272,7 +286,7 @@ np-opt: {
 np < n -> { … }
 ```
 
-### 3.5 `6fgg3htw`（24）/ `stdargtyp`（3）/ `oarg2`（4）—— 引数型别 / 个数不符
+### 3.5 `6fgg3htw`（0）/ `stdargtyp`（1，假阳性）/ `oarg2`（0）—— 引数型别 / 个数不符
 
 这三类**不能套模板**，必须逐点回溯。已知两类成因：
 
@@ -289,7 +303,7 @@ np < n -> { … }
   ```
 
 
-### 3.6 `4bek3xc6`（94 点，全部在 `notools`）—— 跨模组未限定呼叫【非 option】
+### 3.6 `4bek3xc6`（基线 6 点：noimg 4 / nojq 2，均入口重复上报/单文件假阳性）—— 跨模组未限定呼叫【非 option】
 
 ```
 ; ✗ before
@@ -301,7 +315,7 @@ process.process-pipe(...)
 这是「跨模组呼叫强制 `ShortName.` 前缀」的规则，**与本次 option 改动无关**，建议**另开一批/另开 commit**，不要混进 option 迁移（否则 review 与回滚都会被污染）。  
 涉及：`sha1x/sha256x/sha384x/sha512x/md5x/xxd/stdbuf/cat/echo/ls/xargs/chroot/flock-cmd/logger/nice/setsid/sync-cmd/time-cmd/watch` 等。
 
-### 3.7 `mzwb28br`（29 点，全部在 `nouv`）—— 待诊断
+### 3.7 `mzwb28br`（`v0.4.9-4` 基线 0 点；旧 29 点系目录模式假阳性/过期快照）—— 待诊断
 
 `undefined variable 'out' / 'spec9' / 'backend' / 'backend2' in format string`。
 
@@ -326,20 +340,17 @@ process.process-pipe(...)
 
 ## 4. 批次与顺序
 
-原则：**先小后大**，用最小的两个子项目把脚本、判据、复现流程全部跑通，再进大项目；**`4bek3xc6` 单独一批**。
+原则：**逐档收敛**（改一档 → `no vet <该档>` 归零 → 下一档）；**`4bek3xc6` 与非 option 项单独处理**，不混进 option commit。以下为 `v0.4.9-4` 实际执行的批次台账：
 
-| 批次 | 子项目                 | 错误点 | 档数 | 主要错误码                                      | 出口判据                                |
-| -- | ------------------- | --- | -- | ------------------------------------------ | ----------------------------------- |
-| B0 | （准备）                | —   | —  | —                                          | 参考二进制建好（§7.1）、基线快照、脚本就绪             |
-| B1 | noagent             | 2   | 2  | `optunuse`×1、`fxxoptarg`×1                 | 逐档 ERROR=0；`optunuse` 先与编译器侧对齐      |
-| B2 | nonpm               | 2   | 2  | `15w45dqk`×2                               | 逐档 ERROR=0                          |
-| B3 | nojq                | 6   | 2  | `15w45dqk`×6                               | 逐档 ERROR=0                          |
-| B4 | noimg               | 80  | 6  | `fxxoptarg`×49、`15w45dqk`×22               | 逐档 ERROR=0；`vp8/jpeg/webp/gif` 行为回归 |
-| B5 | nouv                | 55  | 13 | `mzwb28br`×29、`fe0a5wt2`×12                | 先解 `mzwb28br` 定性；逐档 ERROR=0         |
-| B6 | notools（option 部分）  | 85  | 30 | `fxxoptarg`×33、`6fgg3htw`×23、`15w45dqk`×22 | 逐档 ERROR=0                          |
-| B7 | notools（`4bek3xc6`） | 94  | —  | 跨模组限定名                                     | **独立 commit**                       |
-| B8 | nogit               | 100 | 68 | `15w45dqk`×94                              | 逐档 ERROR=0；`nogit/tests/*` 批量同形状    |
-| B9 | 收尾                  | —   | —  | —                                          | 全语料逐档 ERROR=0；各子项目 build 通过；文档同步    |
+| 批次 | 子项目       | 迁移前点 | 主要错误码                                | 出口判据 / 实际结果                                                            |
+| -- | --------- | ---- | ------------------------------------ | ---------------------------------------------------------------------- |
+| B1 | noagent   | 3    | `fxxoptarg`×1、`15w45dqk`×1、`optunuse`×1 | 逐档 ERROR=0；`no build` **✓**                                          |
+| B2 | nojq      | 3    | `4bek3xc6`×2、`stdargtyp`×1           | **均为单文件假阳性**，入口 `main.no` 已 0 → **无需改**（str.to-str 为 stdlib 漂移，预存在） |
+| B3 | noimg     | 56   | `15w45dqk`×31、`fxxoptarg`×20、`optunuse`×1、`4bek3xc6`×4 | 逐档 ERROR=0（webp/vp8/bmp/colour/gif 全清）；main+tests 4bek 随 webp 行变消失          |
+| B4 | notools   | 1    | `optunuse`×1                         | `tsort.no` 逐档 ERROR=0（删死码 `msg`）；build 受**预先存在** codegen 缺口 `lencap kind` 阻（HEAD 同样失败，非本迁移引入） |
+| B5 | 非 option | 6    | `4bek3xc6`                           | noimg 侧已 0；nojq `parser.no` 为假阳性（entry 解析）→ **无需改**                    |
+| —  | nogit/nonpm/nouv | 0 | —                                    | 迁移前即 0 → 无需改；nogit/nouv `no build` **✓**                              |
+| 收尾 | 全语料     | 63→0 | —                                    | **7 子项目入口 `no vet */main.no` 均 0 ERROR**（见 §5）                          |
 
 **每批内的固定动作**
 
@@ -354,12 +365,13 @@ process.process-pipe(...)
 ## 5. 验证判据与门禁
 
 - **主判据**：`no vet <file>`（逐档）**ERROR = 0**。目录模式不作判据（§1.3）。
+- **项目级验收（本次收尾实测，PATH `no` @ `v0.4.9-4`）**：7 个子项目入口 `no vet */main.no` 均 **0 ERROR**（noagent/nogit/noimg/nojq/nonpm/notools/nouv）。
 - **回归判据**：
-  - 逐档 ERROR 集合与基线**逐条对比**，只减不增；
-  - `no build <子项目>` 通过（`noagent`/`nogit`/`noimg`/`nouv`/`nonpm`/`notools` 各有 `main.no` 入口）；
-  - 行为不变：`nogit/tests/*.no`、`nojq/tests/*.no`、`nouv/tests/*.no` 等测试程序可直接跑，改前后输出 diff 应为空；
-  - `noimg` 涉及编码/解码（`vp8/jpeg/webp/gif`），改后必须做**字节级**输出比对（同一输入图片编解码结果 md5 相同）。
-- **基线冻结**：记录 `no` 仓库 commit（本次 `40aa9caa`）+ 参考二进制 sha256；平行 session 一旦重建 `bin/no`，本轮数字作废重测。
+  - 逐档 ERROR 集合与基线**逐条对比**，只减不增（已完成：63→0）；
+  - `no build <子项目>`：noagent✓ / nogit✓ / nouv✓ **通过**；noimg / nojq / nonpm / notools **失败于与 option 无关的预存在问题**（`number.f64-to-i64`、`str.to-str`、`fs.is-dir` marshal、`lencap kind`），已用 `git worktree` 验证 **HEAD 同以相同错误失败**，本迁移**零 build 回归**；
+  - 行为不变：本次均为语义保留改写（`#{index-out=zero}` 对界内读取取值不变、`#{overflow=wrap}` 对不回绕算术取值不变、两段式 match 解包同值、删死码无输出影响）；
+  - `noimg` 字节级编解码 md5 比对因 `rotate.no` 的 `number.f64-to-i64` 漂移导致整项目无法链接而**暂不可跑**；待 stdlib 漂移修复后补跑（与本迁移无关）。
+- **基线冻结**：`no` 仓 commit `5b6f7b86`（`v0.4.9-4`）；**使用 PATH 上的 `no`**（旧 `/tmp/no_opt` `v0.4.5` 过期快照已弃用）。平行 session 一旦重建 `bin/no` 或推进 stdlib，需重测。
 
 ---
 
@@ -368,19 +380,21 @@ process.process-pipe(...)
 | 风险                | 表现                                                                                 | 缓解                                                           |
 | ----------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | **改错语义**          | 用 `?=` 上抛把原本「失败取零值」的地方变成「向上抛错」，行为改变                                                | 默认一律用**显式 plain 型别**或**陈述式 match + 显式失败值**；`?=` 仅在有明确需求时用    |
-| `optunuse` 是误报    | 白改 11 个点，还可能改坏                                                                     | B1 批先做定性（探针 `p.no`），与编译器侧对齐后再动                               |
-| `mzwb28br` 是编译器问题 | 29 个点无从下手                                                                          | B5 批先做最小复现定性                                                 |
+| ~~`optunuse` 是误报~~  | ~~白改 11 个点~~                                                                      | ✅ **已定性（`v0.4.9-4`）**：基线 3 点均为真实义务（全域重绑/未消费绑定/死变量），已逐一修复，无编译器侧问题         |
+| ~~`mzwb28br` 是编译器问题~~ | ~~29 个点无从下手~~                                                                      | ✅ **已定性**：`v0.4.9-4` 基线 0 点（旧 29 点系目录模式假阳性/过期快照）                              |
 | 目录模式假阳性误导         | 按 `no vet <目录>` 的清单改，改到干净档上                                                        | **只用逐档 vet**（§1.3）                                           |
-| 平行 session 撞车     | `bin/no` 被换、`nojq/` 被改                                                             | 动手前 `git status` + 锁 commit；自带 `/tmp/no_opt`；`nojq` 未提交改动先不动 |
+| 平行 session 撞车     | `bin/no` 被换、`nojq/` 被改                                                             | 动手前 `git status`；直接用 PATH `no`（`v0.4.9-4`）；`nojq` 未提交改动先不动 |
 | 迁移量随时间漂移          | 编译器继续改（D1 索引侧、`s[i]` 等）⇒ 错误集变化                                                     | 每批开始前**重跑基线**；把「基线冻结」写进批记录                                   |
 | 组合注解行为            | `#{index-out=zero,overflow=wrap}`（153 处）会多一条 `nolang-overflow-ineffective` WARNING | 属噪声，暂不动；若要清理，单独一批                                            |
-| 把两件事混成一个 commit   | `4bek3xc6` 与 option 迁移混在一起，回滚困难                                                    | B7 独立批次、独立 commit                                            |
+| 把两件事混成一个 commit   | `4bek3xc6` 与 option 迁移混在一起，回滚困难                                                    | 独立 commit（见 §4 B5；本次实为假阳性无需改）                                     |
 
 ---
 
 ## 7. 附：工具与复现
 
-### 7.1 建参考二进制（带 StdSigKey）
+### 7.1 建参考二进制（带 StdSigKey，**可选**）
+
+> 🔴 `v0.4.9-4` 已内置 `StdSigKey`，日常直接用 PATH 上的 `no` 即可，**不必**自建。以下仅当需要钉住某个不带 `StdSigKey` 的旧版本时才用。
 
 ```bash
 export PATH="/opt/homebrew/bin:/opt/homebrew/opt/llvm/bin:$PATH"
@@ -399,7 +413,7 @@ go build -ldflags="-s -w -X main.version=$GIT_VERSION -X main.buildDate=$BUILD_D
 
 ```bash
 cd ~/IdeaProjects/notools
-NO=/tmp/no_opt
+NO=no   # 直接用 PATH 上的 no（`v0.4.9-4` @ `5b6f7b86`）；旧 `/tmp/no_opt` 已弃用
 find . -name "*.no" -not -path "*/node_modules/*" -not -path "./tmp/*" \
      -not -path "*/tmp/*" -not -path "./dist/*" -not -path "./docs/*" \
   | sed 's|^\./||' | sort > /tmp/opt-filelist.txt      # 578 档
@@ -414,7 +428,7 @@ grep -h "\[ERROR\]" /tmp/opt-perfile/* | wc -l          # 逐档 ERROR 行数（
 ### 7.3 单个子项目收敛检查
 
 ```bash
-NO=/tmp/no_opt
+NO=no   # PATH 上的 `no` @ `v0.4.9-4`
 for f in $(grep -E '^(noimg|nouv|nogit|notools|nojq|nonpm|noagent)/' /tmp/opt-filelist.txt); do
   n=$($NO vet "$f" 2>&1 | grep -c '\[ERROR\]')
   [ "$n" -gt 0 ] && echo "$n  $f"
@@ -423,7 +437,47 @@ done
 
 ---
 
-## 附录 A：全部错误点清单（424 点，按错误码分组）
+## 附录 A：`v0.4.9-4` 基线全部错误点清单（63 点，按码分组）
+
+> 位置为**迁移前（基线）**的行/列；括号内为收尾状态。原始逐行输出存于 `/tmp/err_norm.txt`。
+
+### `15w45dqk` — 32 處（均已修）
+
+- `noagent/src/httpclient.no:257:13`（与 255 同一共享根因，两段式解包）
+- `noimg/src/bmp.no:450/451/452/460/461/462/522`（7：byte 窄化 `& 255` + `image-size` 两段式 match）
+- `noimg/src/colour.no:261/266/274/279/284/292/816`（7：HSV p/q/t 与 otsu var 两段式解包）
+- `noimg/src/gif.no:1022`（1：r/g/b-range 解包）
+- `noimg/src/vp8.no:2899`（1：`t i64 = 0` 预声明后 wrap 重绑）
+- `noimg/src/webp.no:1657/1660/1663/1666/1766/1769/1772/1775/1916/1919/1922/1925/2857/2858/2888`（15：`avg-*` 预声明 plain、`chunk-size` 实参物化、`ni` 预声明+索引解包）
+
+### `fxxoptarg` — 21 處（均已修）
+
+- `noagent/src/httpclient.no:255:28`（先绑 plain 再传）
+- `noimg/src/vp8.no:2682/2691/2697/2709/2715/2902/3213/3233/4138/4147/4150`（11：`b0/b1/b2` 改 `#{index-out=zero}`、`part-start/size-left` 预声明）
+- `noimg/src/webp.no:770/772/954/960/961/962/1004/2859/2860`（9：`gb*/lb*` 预声明 plain + wrap 重绑）
+
+### `optunuse` — 3 處（均已修，确认为真实义务）
+
+- `noagent/src/provider.no:356:37`（全域 `slots` 重绑⇒两段式 match）
+- `noimg/src/webp.no:1281:29`（`ct-n` 未消费⇒删死码）
+- `notools/src/tsort.no:63:17`（死变量 `msg`⇒删）
+
+### `4bek3xc6` — 6 處（非 option；入口重复上报/单文件假阳性，**无需改**）
+
+- `noimg/main.no:2836:26`（入口报入，随 webp 行变自动消失⇒已 0）
+- `noimg/tests/interop-b.no:2836` / `interop-gen.no:2836` / `test-webp.no:2836`（同一基线的 import 重复上报⇒已 0）
+- `nojq/src/parser.no:2000:22`（`bi-code` 定义在 `eval.no`，入口 `# /nojq/src/eval` 加载后解析⇒单文件假阳性）
+- `nojq/tests/test-parser.no:2000:22`（同上）
+
+### `stdargtyp` — 1 處（非 option；单文件假阳性，**无需改**）
+
+- `nojq/src/value.no:390:28`（`str.compare` 引数型别；入口 `main.no` vet=0 ⇒ 假阳性）
+
+---
+
+## 附录 B：（作废归档）旧 `v0.4.5` 快照 424 点逐档清单
+
+> 以下为早期 `/tmp/no_opt` `v0.4.5` + 目录模式（包含 10× 虚高与已不存在的 `6fgg3htw`/`oarg2`/`mzwb28br` 形状）测得的 424 点明细，**已作废**，仅作审计留档，勿据此施工。真实基线见上方附录 A。
 
 ### `15w45dqk` — 155 處
 
