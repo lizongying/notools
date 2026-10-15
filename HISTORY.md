@@ -1,5 +1,17 @@
 # 更新日誌
 
+## v0.1.34
+
+- feat(std): promote exit from the os module to a global builtin
+- refactor(tools): run subcommands as top-level scripts instead of wrapping them in main
+- refactor(notools): migrate command sources to D1 option arithmetic with explicit result unwrapping
+- fix(noimg): replace removed number width-cast functions with f64/i64 to-i64/to-f64 methods
+- fix(nojq): rename a colliding variable in main and move bi-code into the parser module for codegen
+- fix(nonpm): bind indexed vec reads to plain locals so fs.is-dir and is-file marshal correctly
+- refactor: remove redundant overflow annotations and explicit type annotations
+- docs(design): mark the unified option-migration document as review-complete
+- refactor(release): drop the dirty-tree blocker and use the history section as the commit message
+
 ## v0.1.33
 
 - feat(noagent): add autonomous LLM agent CLI with chat session recovery and persistence
