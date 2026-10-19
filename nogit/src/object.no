@@ -85,8 +85,10 @@ i64-to-octal = (n i64) (out str) {
     i <- [0..L): {
         cb str = with-len(1)
 
-        #{index-out=zero, overflow=wrap}
-        cb[0] = tmp[L - 1 - i]
+        ; str 基底 place-match 写丢写 + vec 裸读打包字（bug19/strfix 同类）—— set-byte 绕行
+        #{index-out=zero}
+        b byte = tmp[L - 1 - i]
+        cb.set-byte(0, b)
         out = out - cb
     }
 }
@@ -113,7 +115,7 @@ id-bytes = (id oid) (out str) {
     out = ''
     k <- [0..20): {
         cb str = with-len(1)
-        cb[0] = id.id[k]
+        cb.set-byte(0, id.id[k])
         out = out - cb
     }
 }
@@ -761,8 +763,18 @@ hex-char = (b byte) (s str) {
     hi = (b >> 4) & 15
     lo = b & 15
     s str = with-len(2)
-    s[0] = hc[hi]
-    s[1] = hc[lo]
+    #{index-out=zero}
+    d9v1 str = hc[hi]
+    s[0]: {
+        ok -> it = d9v1
+        -> _
+    }
+    #{index-out=zero}
+    d9v2 str = hc[lo]
+    s[1]: {
+        ok -> it = d9v2
+        -> _
+    }
 }
 
 ; object-path: <git-dir>/objects/<aa>/<bbbb...> path string.
@@ -798,13 +810,15 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
 
     #{overflow=wrap}
     full str = with-len(hdr.len-bytes() + data.len-bytes())
+    ; set-byte: place-writes of bytes >= 0x80 into a str store code points and
+    ; consecutive writes lose high bytes (D9 bug) — corrupts the hash input
     i <- [0..hdr.len-bytes()): {
-        full[i] = hdr.byte(i)
+        full.set-byte(i, hdr.byte(i))
     }
     i <- [0..data.len-bytes()): {
 
         #{overflow=wrap}
-        full[hdr.len-bytes() + i] = data.byte(i)
+        full.set-byte(hdr.len-bytes() + i, data.byte(i))
     }
     comp str = zlib.zlib-compress(full)
 
@@ -886,17 +900,17 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
     ;   ff ff      = NLEN=~0
     ;   00 01 00 01 = Adler-32 of empty data (a=1, b=0 → 0x00010001)
     warmup-data str = with-len(11)
-    warmup-data[0] = 0x78
-    warmup-data[1] = 0x9c
-    warmup-data[2] = 0x01
-    warmup-data[3] = 0x00
-    warmup-data[4] = 0x00
-    warmup-data[5] = 0xff
-    warmup-data[6] = 0xff
-    warmup-data[7] = 0x00
-    warmup-data[8] = 0x01
-    warmup-data[9] = 0x00
-    warmup-data[10] = 0x01
+    warmup-data.set-byte(0, 0x78)
+    warmup-data.set-byte(1, 0x9c)
+    warmup-data.set-byte(2, 0x01)
+    warmup-data.set-byte(3, 0x00)
+    warmup-data.set-byte(4, 0x00)
+    warmup-data.set-byte(5, 0xff)
+    warmup-data.set-byte(6, 0xff)
+    warmup-data.set-byte(7, 0x00)
+    warmup-data.set-byte(8, 0x01)
+    warmup-data.set-byte(9, 0x00)
+    warmup-data.set-byte(10, 0x01)
     _w-opt = zlib.zlib-decompress(warmup-data)
     _ = _w-opt
 
@@ -937,13 +951,13 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 
     #{overflow=wrap}
     dlen = out-bytes.len() - start
-    payload []byte = with-len(dlen)
+    ; set-byte 逐位元组写入：vec 基底 place-match 写在此站点静默丢数据（payload 全零），
+    ; 且 #{index-out=zero} 会把 []byte 读取降为 u64 暂存 —— 一律绕开。
+    data str = with-len(dlen)
     m <- [0..dlen): {
-
-        #{index-out=zero, overflow=wrap}
-        payload[m] = out-bytes[start + m]
+        #{overflow=wrap}
+        data.set-byte(m, out.byte(start + m))
     }
-    data = payload.to-bytes-str()
     ok = true
 }
 

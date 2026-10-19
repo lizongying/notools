@@ -646,8 +646,11 @@ awk-find-eq = (s str) (pos i64) {
     pos = -1
     inq = false
     n = s.len()
-    i <- [0..n): {
-        c = s[i]
+    ; renamed loop var i -> q: checker var-snapshot pollution from awk-parse-rule's
+    ; `i` (a ?i64 unwrapped via match) leaked into this function and made `pos = i`
+    ; a 15w45dqk error (pre-existing at HEAD, reproduced with pinned compiler).
+    q <- [0..n): {
+        c = s[q]
         {
             inq && c == '"' -> inq = false
 
@@ -659,20 +662,20 @@ awk-find-eq = (s str) (pos i64) {
             -> {
 
                 #{overflow=wrap}
-                i1 = i + 1
+                q1 = q + 1
 
                 #{overflow=wrap}
-                i2 = i + 2
+                q2 = q + 2
                 c == '=' -> {
                     {
-                        i1 < n && s[i1] == '=' -> i = i2
+                        q1 < n && s[q1] == '=' -> q = q2
 
                         #{overflow=wrap}
-                        im1 = i - 1
-                        i > 0 && (s[im1] == '!' || s[im1] == '<' || s[im1] == '>' || s[im1] == '=') -> {}
+                        qm1 = q - 1
+                        q > 0 && (s[qm1] == '!' || s[qm1] == '<' || s[qm1] == '>' || s[qm1] == '=') -> {}
 
                         -> {
-                            pos = i
+                            pos = q
                             break
                         }
                     }
@@ -820,15 +823,33 @@ awk-getvar = (names []str, vals []str, fields []str, scal []str, t str) (v str) 
 awk-setvar = (names []str, vals []str, scal []str, t str, v str) {
     i <- [0..names.len()): {
         names[i] == t -> {
-            vals[i] = v
+            vals[i]: {
+                ok -> it = v
+                -> _
+            }
             break
         }
     }
     names.push(t)
     vals.push(v)
-    t == 'FS' -> scal[2] = v
-    t == 'OFS' -> scal[3] = v
-    t == 'ORS' -> scal[4] = v
+    t == 'FS' -> {
+        scal[2]: {
+            ok -> it = v
+            -> _
+        }
+    }
+    t == 'OFS' -> {
+        scal[3]: {
+            ok -> it = v
+            -> _
+        }
+    }
+    t == 'ORS' -> {
+        scal[4]: {
+            ok -> it = v
+            -> _
+        }
+    }
 }
 
 ; value of a token (string form); numbers normalized to integers
@@ -912,7 +933,10 @@ awk-starts-term = (s str, pos i64) (yes bool) {
 }
 
 awk-eval-full = (s str, names []str, vals []str, fields []str, scal []str, pos []i64) (v str) {
-    pos[0] = 0
+    pos[0]: {
+        ok -> it = 0
+        -> _
+    }
     v = awk-eval-or(s, names, vals, fields, scal, pos)
 }
 
@@ -934,7 +958,10 @@ awk-eval-or = (s str, names []str, vals []str, fields []str, scal []str, pos []i
             isor -> {
 
                 #{overflow=wrap}
-                pos[0] = p + 2
+                pos[0]: {
+                    ok -> it = p + 2
+                    -> _
+                }
                 rv = awk-eval-or(s, names, vals, fields, scal, pos)
                 b = awk-truthy(v) || awk-truthy(rv)
                 b -> v = '1'
@@ -966,7 +993,10 @@ awk-eval-and = (s str, names []str, vals []str, fields []str, scal []str, pos []
             isand -> {
 
                 #{overflow=wrap}
-                pos[0] = p + 2
+                pos[0]: {
+                    ok -> it = p + 2
+                    -> _
+                }
                 rv = awk-eval-and(s, names, vals, fields, scal, pos)
                 b = awk-truthy(v) && awk-truthy(rv)
                 b -> v = '1'
@@ -1007,7 +1037,10 @@ awk-eval-cmp = (s str, names []str, vals []str, fields []str, scal []str, pos []
         ! twochar -> e2 = s[p].to-str()
 
         #{overflow=wrap}
-        pos[0] = p + adv
+        pos[0]: {
+            ok -> it = p + adv
+            -> _
+        }
         rv = awk-eval-cat(s, names, vals, fields, scal, pos)
         v = awk-cmp(v, rv, e2)
     }
@@ -1028,7 +1061,10 @@ awk-eval-cat = (s str, names []str, vals []str, fields []str, scal []str, pos []
     !! {
         sw4 i64 = pos[0]
         p = awk-skip-ws(s, sw4)
-        pos[0] = p
+        pos[0]: {
+            ok -> it = p
+            -> _
+        }
         st = awk-starts-term(s, p)
         st -> {
             rv = awk-eval-add(s, names, vals, fields, scal, pos)
@@ -1062,7 +1098,10 @@ awk-eval-add = (s str, names []str, vals []str, fields []str, scal []str, pos []
                 op char = s[p]
 
                 #{overflow=wrap}
-                pos[0] = p + 1
+                pos[0]: {
+                    ok -> it = p + 1
+                    -> _
+                }
                 rv = awk-eval-mul(s, names, vals, fields, scal, pos)
                 a = awk-parse-int(v)
                 b = awk-parse-int(rv)
@@ -1100,7 +1139,10 @@ awk-eval-mul = (s str, names []str, vals []str, fields []str, scal []str, pos []
                 op char = s[p]
 
                 #{overflow=wrap}
-                pos[0] = p + 1
+                pos[0]: {
+                    ok -> it = p + 1
+                    -> _
+                }
                 rv = awk-eval-unary(s, names, vals, fields, scal, pos)
                 a = awk-parse-int(v)
                 b = awk-parse-int(rv)
@@ -1136,7 +1178,10 @@ awk-eval-unary = (s str, names []str, vals []str, fields []str, scal []str, pos 
         bang -> {
 
             #{overflow=wrap}
-            pos[0] = p + 1
+            pos[0]: {
+                ok -> it = p + 1
+                -> _
+            }
             rv = awk-eval-unary(s, names, vals, fields, scal, pos)
             t = awk-truthy(rv)
             t -> v = '0'
@@ -1146,13 +1191,19 @@ awk-eval-unary = (s str, names []str, vals []str, fields []str, scal []str, pos 
         minus -> {
 
             #{overflow=wrap}
-            pos[0] = p + 1
+            pos[0]: {
+                ok -> it = p + 1
+                -> _
+            }
             rv = awk-eval-unary(s, names, vals, fields, scal, pos)
             v = (0 - awk-parse-int(rv)).to-str()
         }
 
         -> {
-            pos[0] = p
+            pos[0]: {
+                ok -> it = p
+                -> _
+            }
             v = awk-eval-prim(s, names, vals, fields, scal, pos)
         }
     }
@@ -1188,7 +1239,10 @@ awk-eval-prim = (s str, names []str, vals []str, fields []str, scal []str, pos [
             raw = s.slice(p + 1, i) - ''
 
             #{overflow=wrap}
-            pos[0] = i + 1
+            pos[0]: {
+                ok -> it = i + 1
+                -> _
+            }
             v = awk-unescape(raw)
         }
 
@@ -1206,7 +1260,10 @@ awk-eval-prim = (s str, names []str, vals []str, fields []str, scal []str, pos [
                 ! d -> break
             }
             t = s.slice(st, p) - ''
-            pos[0] = p
+            pos[0]: {
+                ok -> it = p
+                -> _
+            }
             v = awk-resolve(t, names, vals, fields, scal)
         }
 
@@ -1229,11 +1286,17 @@ awk-eval-prim = (s str, names []str, vals []str, fields []str, scal []str, pos [
             isfn -> {
 
                 #{overflow=wrap}
-                pos[0] = p + 1
+                pos[0]: {
+                    ok -> it = p + 1
+                    -> _
+                }
                 v = awk-eval-fn(t, s, names, vals, fields, scal, pos)
             }
             ! isfn -> {
-                pos[0] = p
+                pos[0]: {
+                    ok -> it = p
+                    -> _
+                }
                 v = awk-resolve(t, names, vals, fields, scal)
             }
         }
@@ -1241,19 +1304,28 @@ awk-eval-prim = (s str, names []str, vals []str, fields []str, scal []str, pos [
         p < n && s[p] == '(' -> {
 
             #{overflow=wrap}
-            pos[0] = p + 1
+            pos[0]: {
+                ok -> it = p + 1
+                -> _
+            }
             v = awk-eval-or(s, names, vals, fields, scal, pos)
             sw8 i64 = pos[0]
             q = awk-skip-ws(s, sw8)
 
             #{overflow=wrap}
-            pos[0] = q + 1
+            pos[0]: {
+                ok -> it = q + 1
+                -> _
+            }
         }
 
         -> {
 
             #{overflow=wrap}
-            pos[0] = p + 1
+            pos[0]: {
+                ok -> it = p + 1
+                -> _
+            }
         }
     }
 }
@@ -1272,20 +1344,29 @@ awk-eval-fn = (name str, s str, names []str, vals []str, fields []str, scal []st
         args.push(a)
         sw9 i64 = pos[0]
         q = awk-skip-ws(s, sw9)
-        pos[0] = q
+        pos[0]: {
+            ok -> it = q
+            -> _
+        }
         {
             q >= n -> break
 
             s[q] == ',' -> {
 
                 #{overflow=wrap}
-                pos[0] = q + 1
+                pos[0]: {
+                    ok -> it = q + 1
+                    -> _
+                }
             }
 
             s[q] == ')' -> {
 
                 #{overflow=wrap}
-                pos[0] = q + 1
+                pos[0]: {
+                    ok -> it = q + 1
+                    -> _
+                }
                 break
             }
 
@@ -1454,7 +1535,10 @@ awk-do-assign = (lhs str, rhs str, names []str, vals []str, fields []str, scal [
             (fields.len() <= k) {
                 fields.push('')
             }
-            fields[k] = rhs
+            fields[k]: {
+                ok -> it = rhs
+                -> _
+            }
             ofs = awk-getvar(names, vals, fields, scal, 'OFS')
             r str = ''
             j <- [1..fields.len()): {
@@ -1464,7 +1548,10 @@ awk-do-assign = (lhs str, rhs str, names []str, vals []str, fields []str, scal [
                 j1 = j + 1
                 j1 < fields.len() -> r = r - ofs
             }
-            fields[0] = r
+            fields[0]: {
+                ok -> it = r
+                -> _
+            }
         }
     }
 }
@@ -1570,9 +1657,19 @@ awk-exec-stmt = (st awk-stmt, names []str, vals []str, fields []str, scal []str)
             }
         }
 
-        st.op == 'X' -> scal[5] = 'exit'
+        st.op == 'X' -> {
+            scal[5]: {
+                ok -> it = 'exit'
+                -> _
+            }
+        }
 
-        st.op == 'N' -> scal[5] = 'next'
+        st.op == 'N' -> {
+            scal[5]: {
+                ok -> it = 'next'
+                -> _
+            }
+        }
 
         -> {
         }
@@ -1630,7 +1727,12 @@ awk-run-rules = (rules []prule, names []str, vals []str, fields []str, scal []st
             m -> awk-exec-block(r.act, names, vals, fields, scal)
         }
         fl = awk-sc(scal, 5, '')
-        fl == 'next' -> scal[5] = ''
+        fl == 'next' -> {
+            scal[5]: {
+                ok -> it = ''
+                -> _
+            }
+        }
         fl == 'exit' -> break
     }
 }
@@ -1653,9 +1755,18 @@ awk-process-content = (content str, rules []prule, names []str, vals []str, fiel
 
         #{overflow=wrap}
         nr = nr + 1
-        scal[0] = nr.to-str()
-        scal[1] = fnr.to-str()
-        scal[5] = ''
+        scal[0]: {
+            ok -> it = nr.to-str()
+            -> _
+        }
+        scal[1]: {
+            ok -> it = fnr.to-str()
+            -> _
+        }
+        scal[5]: {
+            ok -> it = ''
+            -> _
+        }
         fields.truncate(0)
         awk-build-fields(line, names, vals, fields, scal)
         awk-run-rules(rules, names, vals, fields, scal)
@@ -1796,7 +1907,12 @@ awk-run = () {
         awk-setvar(names, vals, scal, vlhs[k], vrhs[k])
     }
     fs2 = awk-getvar(names, vals, fields, scal, 'FS')
-    fs2 == '' -> scal[2] = ' '
+    fs2 == '' -> {
+        scal[2]: {
+            ok -> it = ' '
+            -> _
+        }
+    }
 
     bi <- [0..rules.len()): {
 
@@ -1830,7 +1946,10 @@ awk-run = () {
                 -> {
                 }
             }
-            scal[1] = '0'
+            scal[1]: {
+                ok -> it = '0'
+                -> _
+            }
             awk-process-content(content, rules, names, vals, fields, scal)
         }
     }

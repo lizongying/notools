@@ -41,22 +41,37 @@ diff-engine-lcs = (a []str, b []str) (ops []diff-op) {
         aj <- [nb - 1..0]: {
             a[ai].compare(b[aj]) == 0 -> {
 
+                #{index-out=zero}
+                d9v1 i64 = dp[(ai + 1) * cols + (aj + 1)]
                 #{overflow=wrap}
-                dp[ai * cols + aj] = dp[(ai + 1) * cols + (aj + 1)] + 1
+                dp[ai * cols + aj]: {
+                    ok -> it = d9v1 + 1
+                    -> _
+                }
             }
 
             #{overflow=wrap}
             dp[ai * cols + aj] < dp[(ai + 1) * cols + aj] -> {
 
                 #{index-out=zero}
-                dp[ai * cols + aj] = dp[(ai + 1) * cols + aj]
+                d9v2 i64 = dp[(ai + 1) * cols + aj]
+                #{index-out=zero}
+                dp[ai * cols + aj]: {
+                    ok -> it = d9v2
+                    -> _
+                }
             }
 
             #{overflow=wrap}
             dp[ai * cols + aj] < dp[ai * cols + (aj + 1)] -> {
 
                 #{index-out=zero}
-                dp[ai * cols + aj] = dp[ai * cols + (aj + 1)]
+                d9v3 i64 = dp[ai * cols + (aj + 1)]
+                #{index-out=zero}
+                dp[ai * cols + aj]: {
+                    ok -> it = d9v3
+                    -> _
+                }
             }
         }
     }
@@ -302,37 +317,42 @@ format-range = (start i64, count i64) (s str) {
 
 ; emit-normal: emit normal diff hunk
 emit-normal = (a-start i64, a-count i64, b-start i64, b-count i64, a-before i64, b-before i64, del-lines []str, ins-lines []str) {
-    has-del = a-count > 0
-    has-ins = b-count > 0
+    ; workaround for "xor i1 1, %option" link error: precompute the three hunk
+    ; modes with plain comparisons (no `!` on bools, no indexed []str reads —
+    ; container iteration avoids the option-boxed element read that got
+    ; mis-lowered by the D9 checker var-snapshot pollution).
+    both = a-count > 0 && b-count > 0
+    only-del = a-count > 0 && b-count <= 0
+    only-ins = a-count <= 0 && b-count > 0
 
     {
-        has-del && has-ins -> {
+        both -> {
             ra = format-range(a-start, a-count)
             rb = format-range(b-start, b-count)
 
             print(ra - 'c' - rb)
-            i <- [0..del-lines.len()): {
-                print('< ' - del-lines[i])
+            dl <- del-lines: {
+                print('< ' - dl)
             }
             print('---')
-            i <- [0..ins-lines.len()): {
-                print('> ' - ins-lines[i])
+            il <- ins-lines: {
+                print('> ' - il)
             }
         }
 
-        has-del && ! has-ins -> {
+        only-del -> {
             ra = format-range(a-start, a-count)
             print(ra - 'd' - b-before.to-str())
-            i <- [0..del-lines.len()): {
-                print('< ' - del-lines[i])
+            dl <- del-lines: {
+                print('< ' - dl)
             }
         }
 
-        ! has-del && has-ins -> {
+        only-ins -> {
             rb = format-range(b-start, b-count)
             print(a-before.to-str() - 'a' - rb)
-            i <- [0..ins-lines.len()): {
-                print('> ' - ins-lines[i])
+            il <- ins-lines: {
+                print('> ' - il)
             }
         }
     }
@@ -430,14 +450,22 @@ ops-in-hunk = (ops []diff-op, context i64) (flags []i64) {
         #{index-out=zero}
         op = ops[i]
         op.kind != 0 -> {
-            flags[i] = 1
+            flags[i]: {
+                ok -> it = 1
+                -> _
+            }
 
             #{overflow=wrap}
             d <- [1..context + 1): {
 
                 #{overflow=wrap}
                 j = i - d
-                j >= 0 -> flags[j] = 1
+                j >= 0 -> {
+                    flags[j]: {
+                        ok -> it = 1
+                        -> _
+                    }
+                }
             }
 
             #{overflow=wrap}
@@ -445,7 +473,12 @@ ops-in-hunk = (ops []diff-op, context i64) (flags []i64) {
 
                 #{overflow=wrap}
                 j = i + d
-                j < n -> flags[j] = 1
+                j < n -> {
+                    flags[j]: {
+                        ok -> it = 1
+                        -> _
+                    }
+                }
             }
         }
     }
@@ -1125,7 +1158,10 @@ d3-print-body = (lines []str, from i64, to i64) {
 
 ; d3-change: BSD change() — '%d:' header + prange, body unless dup; last[] bookkeeping.
 d3-change = (no i64, from i64, to i64, dup bool, lines []str, last []i64) {
-    last[no] = to
+    last[no]: {
+        ok -> it = to
+        -> _
+    }
     rs = d3-prange(from, to)
     print(no.to-str() - ':' - rs)
     ! dup -> d3-print-body(lines, from, to)
@@ -1151,7 +1187,10 @@ d3-keep = (no i64, b-from i64, b-to i64, last []i64) {
     tt = b-to - delta
     rs = d3-prange(tf, tt)
     print(no.to-str() - ':' - rs)
-    last[no] = tt
+    last[no]: {
+        ok -> it = tt
+        -> _
+    }
 }
 
 ; d3-same-range: BSD duplicate() — same line count and identical text.
@@ -1184,6 +1223,8 @@ d3-same-range = (a1 i64, a2 i64, c1 i64, c2 i64, f1 []str, f2 []str) (same bool)
 }
 
 d3-set-h = (h []d3-hunk, idx i64, v d3-hunk) {
+    ; keep plain index-assign: option-form store of a struct payload mislowers the
+    ; `ok` arm as `icmp eq %d3-hunk` (link error: icmp requires integer operands)
     h[idx] = v
 }
 

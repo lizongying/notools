@@ -67,7 +67,10 @@ zlib-compress = (data str) (out str) {
         rem <= 65535 -> bfinal = 1
         hdr byte = bfinal | 0; BTYPE=00 (stored)
         hs str = with-len(1)
-        hs[0] = hdr
+        hs[0]: {
+            ok -> it = hdr
+            -> _
+        }
         out = out - hs
 
         ; LEN (little-endian 16-bit)
@@ -79,19 +82,21 @@ zlib-compress = (data str) (out str) {
         nlen-hi byte = len-hi ^ 0xff
 
         ; write LEN and NLEN
+        ; NOTE: consecutive place-writes into a str with-len() LOSE bytes >= 0x80
+        ; (compiler D9 bug — see tmp/nolang-bugs); set-byte writes correctly.
         ln str = with-len(4)
-        ln[0] = len-lo
-        ln[1] = len-hi
-        ln[2] = nlen-lo
-        ln[3] = nlen-hi
+        ln.set-byte(0, len-lo)
+        ln.set-byte(1, len-hi)
+        ln.set-byte(2, nlen-lo)
+        ln.set-byte(3, nlen-hi)
         out = out - ln
 
         ; write data bytes
+        ; set-byte: place-writing a byte >= 0x80 into a str stores a CODE POINT
+        ; (UTF-8 re-encoding on concat corrupts binary data) — D9/str semantics bug
         i <- [0..blen): {
             bs str = with-len(1)
-
-            #{overflow=wrap}
-            bs[0] = data.byte(pos + i)
+            bs.set-byte(0, data.byte(pos + i))
             out = out - bs
         }
 
@@ -110,10 +115,10 @@ zlib-compress = (data str) (out str) {
     a2 byte = (adler >> 8) & 0xff
     a3 byte = adler & 0xff
     adler-str str = with-len(4)
-    adler-str[0] = a0
-    adler-str[1] = a1
-    adler-str[2] = a2
-    adler-str[3] = a3
+    adler-str.set-byte(0, a0)
+    adler-str.set-byte(1, a1)
+    adler-str.set-byte(2, a2)
+    adler-str.set-byte(3, a3)
     out = out - adler-str
 }
 
@@ -156,7 +161,10 @@ zlib-decompress = (data str) (out ?str) {
         i <- [0..data.len-bytes() - 2): {
 
             #{overflow=wrap}
-            deflate-data[i] = data.byte(i + 2)
+            deflate-data[i]: {
+                ok -> it = data.byte(i + 2)
+                -> _
+            }
         }
 
         ; Estimate output size: 100x input (capped to avoid OOM)
@@ -171,12 +179,18 @@ zlib-decompress = (data str) (out ?str) {
         }
 
         ; Manual []byte to str conversion to ensure correct byte values
-        out = with-len(decomp-bytes.len())
+        ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
+        res str = with-len(decomp-bytes.len())
         i <- [0..decomp-bytes.len()): {
-
-            #{index-out=zero}
-            out[i] = decomp-bytes[i]
+            dvb = decomp-bytes[i]
+            dv byte = 0
+            dvb: {
+                ok -> dv = it
+                -> _
+            }
+            res.set-byte(i, dv)
         }
+        out = res
         return
     }
 
@@ -195,12 +209,18 @@ zlib-decompress = (data str) (out ?str) {
     }
 
     ; Manual []byte to str conversion to ensure correct byte values
-    out = with-len(decomp-bytes.len())
+    ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
+    res str = with-len(decomp-bytes.len())
     i <- [0..decomp-bytes.len()): {
-
-        #{index-out=zero}
-        out[i] = decomp-bytes[i]
+        dvb = decomp-bytes[i]
+        dv byte = 0
+        dvb: {
+            ok -> dv = it
+            -> _
+        }
+        res.set-byte(i, dv)
     }
+    out = res
 }
 
 ; zlib-decompress-stored: decompress stored-blocks-only zlib stream

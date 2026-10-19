@@ -8,7 +8,10 @@
 ; returns s str: a 1-byte string
 char-str = (c byte) (s str) {
     s str = with-len(1)
-    s[0] = c
+    s[0]: {
+        ok -> it = c
+        -> _
+    }
 }
 
 ; bytes-range: take a byte slice [start, end) and view it as a string
@@ -21,9 +24,14 @@ bytes-range = (data []byte, start i64, end i64) (out str) {
     n = end - start
     out str = with-len(n)
     i <- [0..n): {
-
-        #{index-out=zero, overflow=wrap}
-        out[i] = data[start + i]
+        ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
+        dvo = data[start + i]
+        dv byte = 0
+        dvo: {
+            ok -> dv = it
+            -> _
+        }
+        out.set-byte(i, dv)
     }
 }
 
@@ -57,7 +65,7 @@ str-range = (s str, start i64, end i64) (out str) {
     i <- [0..n): {
 
         #{overflow=wrap}
-        out[i] = s.byte(a + i)
+        out.set-byte(i, s.byte(a + i))
     }
 }
 
@@ -163,16 +171,28 @@ read-u32-be = (data []byte, pos i64) (v i64) {
 ; pos i64: offset where to write
 ; v i64: value to write (low 32 bits used)
 write-u32-be = (buf []byte, pos i64, v i64) {
-    buf[pos] = (v >> 24) & 255
+    buf[pos]: {
+        ok -> it = (v >> 24) & 255
+        -> _
+    }
 
     #{overflow=wrap}
-    buf[pos + 1] = (v >> 16) & 255
+    buf[pos + 1]: {
+        ok -> it = (v >> 16) & 255
+        -> _
+    }
 
     #{overflow=wrap}
-    buf[pos + 2] = (v >> 8) & 255
+    buf[pos + 2]: {
+        ok -> it = (v >> 8) & 255
+        -> _
+    }
 
     #{overflow=wrap}
-    buf[pos + 3] = v & 255
+    buf[pos + 3]: {
+        ok -> it = v & 255
+        -> _
+    }
 }
 
 ; read-u16-be: read a big-endian 16-bit unsigned integer
@@ -193,10 +213,16 @@ read-u16-be = (data []byte, pos i64) (v i64) {
 ; pos i64: offset
 ; v i64: value
 write-u16-be = (buf []byte, pos i64, v i64) {
-    buf[pos] = (v >> 8) & 255
+    buf[pos]: {
+        ok -> it = (v >> 8) & 255
+        -> _
+    }
 
     #{overflow=wrap}
-    buf[pos + 1] = v & 255
+    buf[pos + 1]: {
+        ok -> it = v & 255
+        -> _
+    }
 }
 
 ; find-byte: locate the first occurrence of byte b at or after `from`
@@ -302,7 +328,10 @@ hex-decode = (s str) (out ?[]byte) {
         #{overflow=wrap}
         lo = hexdigit(s.byte(i * 2 + 1))
         hi < 0 || lo < 0 -> return
-        tmp[i] = (hi << 4) | lo
+        tmp[i]: {
+            ok -> it = (hi << 4) | lo
+            -> _
+        }
     }
     out = tmp
 }
@@ -320,11 +349,21 @@ hex-encode = (data []byte) (out str) {
         #{index-out=zero}
         b = data[i]
 
+        #{index-out=zero}
+        d9v1 str = hex-chars[(b >> 4) & 15]
         #{overflow=wrap}
-        out[i * 2] = hex-chars[(b >> 4) & 15]
+        out[i * 2]: {
+            ok -> it = d9v1
+            -> _
+        }
 
+        #{index-out=zero}
+        d9v2 str = hex-chars[b & 15]
         #{overflow=wrap}
-        out[i * 2 + 1] = hex-chars[b & 15]
+        out[i * 2 + 1]: {
+            ok -> it = d9v2
+            -> _
+        }
     }
 }
 
@@ -354,8 +393,13 @@ i64-to-str = (n i64) (out str) {
     i <- [0..L): {
         cb str = with-len(1)
 
+        #{index-out=zero}
+        d9v3 byte = tmp[L - 1 - i]
         #{index-out=zero, overflow=wrap}
-        cb[0] = tmp[L - 1 - i]
+        cb[0]: {
+            ok -> it = d9v3
+            -> _
+        }
         out = out - cb
     }
 }
