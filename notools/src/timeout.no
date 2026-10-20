@@ -97,6 +97,28 @@ parse-sig = (s str) (sig i64) {
     }
 }
 
+; quote-arg: POSIX single-quote a token for embedding into an `sh -c` command
+; string, preserving argv boundaries and shell metacharacters. Each ' becomes
+; the '\'' idiom. Returns the quoted token.
+quote-arg = (s str) (q str) {
+    q = '\''
+    c <- s: {
+        {
+            c == '\'' -> {
+
+                ; quote-slash-quote idiom: close quote, backslash, reopen quoted quote
+                q = q - '\''
+                q = q - "\\"
+                q = q - '\''
+                q = q - '\''
+            }
+
+            -> q = q - c
+        }
+    }
+    q = q - '\''
+}
+
 ; parse-duration: parse duration string to microseconds
 ; Supports: integer seconds, suffix s/m/h
 parse-duration = (s str) (us i64) {
@@ -154,7 +176,7 @@ parse-duration = (s str) (us i64) {
 timeout-run = () {
     argc = os.args()
 
-    sig = 15; SIG-TERM default
+    sig = 15 ; SIG-TERM default
     next-is-signal = false
     duration-str = ''
     cmd-start = 2
@@ -167,7 +189,7 @@ timeout-run = () {
                 a = os.arg(i)
                 parsed = parse-sig(a)
                 parsed < 0 -> {
-                    print("N")
+                    print('timeout: invalid signal: ' - a)
                     exit(1)
                 }
                 sig = parsed
@@ -191,7 +213,7 @@ timeout-run = () {
                         cand = a.slice(2, a.len())
                         parsed = parse-sig(cand)
                         parsed < 0 -> {
-                            print("N")
+                            print('timeout: invalid signal: ' - cand)
                             exit(1)
                         }
                         sig = parsed
@@ -226,88 +248,109 @@ timeout-run = () {
 
     {
         have-duration == false -> {
-            print("N")
+            print('timeout: missing duration operand')
             exit(1)
         }
 
         cmd-start >= argc -> {
-            print("N")
+            print('timeout: missing command')
             exit(1)
         }
     }
 
-    ; Build command string
+    ; Build command string from the remaining argv (program + args), shell-quoting
+    ; each token so argv boundaries and metacharacters survive `sh -c`.
     cmd = ''
     i <- [cmd-start..argc): {
         i > cmd-start -> cmd = cmd - ' '
-        cmd = cmd - os.arg(i)
+        cmd = cmd - quote-arg(os.arg(i))
     }
 
     duration-us = parse-duration(duration-str)
     {
         duration-us <= 0 -> {
-            print("N")
+            print('timeout: invalid duration: ' - duration-str)
             exit(1)
         }
     }
 
-    ; Start child process
-    p = process {}
-    ok = p.start('/bin/sh', '-c ' - cmd)
+    ; Run the command via `spawn`, which forks + exec-sh-c without capturing
+    ; stdout/stderr: the child inherits our streams, so output passes straight
+    ; through and there is no pipe-buffer deadlock while we poll. The timeout
+    ; signal and the real exit status reach the target. The command string is
+    ; pre-quoted per argv (see quote-arg) so boundaries and metacharacters survive.
+    pid = process.spawn(cmd)
     {
-        ok == false -> {
-            print("N")
-            exit(1)
+        pid < 0 -> {
+            print('timeout: failed to run command: ' - cmd)
+            exit(126)
         }
     }
 
-    ; Poll for duration-us microseconds, checking every 100ms
-    elapsed-us = 0
+    ; Watchdog: poll every 100ms until the child exits or the deadline passes.
+    ; process-waitpid-nohang returns -1 while the child still runs, otherwise its
+    ; exit code. A conditional loop with done-flags is used because break inside a
+    ; nested match triggers a MIR codegen trap.
     step-us = 100000
+    elapsed-us = 0
+    finished = false
     timed-out = false
-    !! {
-        elapsed-us >= duration-us -> *
-        exited = p.wait-nohang()
-        exited == true -> break
-        os.sleep-us(step-us)
-
-        #{overflow=wrap}
-        elapsed-us = elapsed-us + step-us
-    }
-
-    ; Check if process exited
-    exited = p.wait-nohang()
-    {
-        exited == false -> {
-
-            ; Send the configured signal
-            p.kill(sig)
-            timed-out = true
-
-            ; Grace period: 10 seconds, poll every 100ms
-            grace-us = 0
-            grace-limit = 10000000
-            !! {
-                grace-us >= grace-limit -> *
-                done = p.wait-nohang()
-                done == true -> break
-                os.sleep-us(step-us)
-
-                #{overflow=wrap}
-                grace-us = grace-us + step-us
+    final-code = 0
+    ( ! finished ) {
+        code = process.process-waitpid-nohang(pid)
+        {
+            code >= 0 -> {
+                final-code = code
+                finished = true
             }
 
-            ; Force kill if still running
-            still = p.wait-nohang()
-            still == false -> {
-                p.kill(9)
-                p.wait()
+            -> {
+                elapsed-us >= duration-us -> {
+                    timed-out = true
+                    finished = true
+                }
+
+                ! timed-out -> {
+                    os.sleep-us(step-us)
+
+                    #{overflow=wrap}
+                    elapsed-us = elapsed-us + step-us
+                }
             }
         }
     }
 
-    code = p.exit-code
-    p.close()
+    ; On timeout: send the configured signal, wait up to a 10s grace, then SIGKILL.
+    timed-out -> {
+        process.process-kill(pid, sig)
+
+        grace-us = 0
+        grace-limit = 10000000
+        gone = false
+        ( ! gone && grace-us < grace-limit ) {
+            c2 = process.process-waitpid-nohang(pid)
+            {
+                c2 >= 0 -> gone = true
+
+                -> {
+                    os.sleep-us(step-us)
+
+                    #{overflow=wrap}
+                    grace-us = grace-us + step-us
+                }
+            }
+        }
+
+        ; Force kill if it survived the grace period, then reap it.
+        c3 = process.process-waitpid-nohang(pid)
+        {
+            c3 < 0 -> {
+                process.process-kill(pid, 9)
+                final-code = process.wait(pid)
+            }
+        }
+    }
+
     timed-out -> exit(124)
-    exit(code)
+    exit(final-code)
 }
