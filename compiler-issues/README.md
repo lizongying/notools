@@ -1,0 +1,319 @@
+# Nolang 编译器问题记录与最小复现
+
+记录日期：2026-11-05
+编译器源码：`/Users/lizongying/IdeaProjects/no`（dev，HEAD `33027788`）
+验证二进制：`/Users/lizongying/no/bin/no`（`make no` 构建并 install）
+复现方式：在文件所在目录执行 `no build <file>.no`；构建产物 `dist/<name>` 可直接运行
+
+所有 `.no` 文件都是**最小复现或回归守卫**，可直接单独构建。
+
+---
+
+## Issue 1 — `os.arg(i + 1)` 的「静默解包」（已由其他 session 修复）
+
+**真正的问题是静默的错误结果，不是报错。**
+
+| 项目 | 内容 |
+|---|---|
+| 触发 | 先声明 plain 变量，再重指派：`x str = ''` … `x = os.arg(i + 1)` |
+| 旧行为 | 编译通过。`os.arg` 返回 `?str`，但只有 payload 被读进 plain `str`，tag（ok / nil / err）被丢弃 → 越界时得到**空字符串**而不是错误 |
+| 当前行为 | 报 `15w45dqk`：`cannot assign ?str value to str variable 'x'; an option cannot be unwrapped implicitly` |
+| 结论 | **报错是合理的**，属于修复生效，不要改回静默通过 |
+| 修复位置 | `src/checker/checker.go` → `validateStmtTypes`，新增「重指派到已存在的 plain 变量」也套用 D1 规则（结果参数同样不豁免） |
+
+复现：
+
+- `os-arg-silent-unwrap.no` — 应报 `15w45dqk`
+- `os-arg-new-binding.no` — 对照组，新绑定推断为 `?str` 并用 match 消费，应构建成功
+
+正确写法（任选）：两步 unwrap（`k = <expr>` 后 `v = k: { ok -> it ... }`）、match 语句、`k ?= <expr>`、或显式丢弃 `_ = <expr>`。
+
+---
+
+## Issue 2 — 布尔结果 infix 被误当作「可错算术」做 option 捕获（本次修复）
+
+### 现象
+
+```nolang
+s = 'hello'
+lb = s[0]        // 安全索引 → ?char
+b = lb == 10     // 期望 bool
+! b -> print('y')
+```
+
+LLVM 验证失败：
+
+```
+repro.ll:1906:20: error: '%lv.65' defined with type '%option = type { i64, [3 x i64] }' but expected 'i1'
+  %c40 = xor i1 1, %lv.65
+```
+
+命中 notools 的 `tail-run`（`ends-nl`）、`pr-run`（`stdin-src`）、`du-walk`（`skip`）、`pr-cell`（`is-tab`）等多个布尔变量。
+
+### 根因（MIR 层证据）
+
+`b` 的 slot 被分配成 **`?i64`** 而非 `bool`，并生成 ok / err / nil 三臂捕获链：
+
+| 分支 | 实际降级 |
+|---|---|
+| ok 臂 | `v24 = lb`（直接把整个 option 赋给结果，没有比较） |
+| err 臂 | `v24 = lb` |
+| nil 臂（且 `lb == nil`） | 才执行真正的 `payload(lb) == 10`（正确的 bool），却又 `option-wrap` 成 `?i64` |
+| 后续 | `not v24` → `xor i1 1, %option` → 报错 |
+
+来源：`src/parser/lowering.go` → `maybeCaptureOptionAssign`
+
+```go
+case *InfixExpression:
+    inner = "i64"          // 所有 infix 一律硬编码
+```
+
+该函数 1416 行的短路只放行 `isOptionArithOperator`（`+ - * / %`）；比较与逻辑运算符不在其中，于是 `==` / `&&` 也被当成可错算术，合成 `?i64`。函数自身的注释（1473–1493）已写明 `inner = "i64"` **只对整数算术成立**，但代码只覆写了 `f64` / `str` 两种例外，漏掉了布尔结果。
+
+对照实验（缩小触发边界）：
+
+| 源码 | 结果 |
+|---|---|
+| `b = lb == 10` + `! b` | ❌ 失败（原始问题） |
+| `b bool = lb == 10` + `! b` | ✅ 显式标注 bool 后，`eq dst=25:bool` 直接 payload 比较 |
+| `lb == 10 -> ...`（直接作条件） | ✅ `if` 条件对 option 有处理 |
+| `b = lb == 10` + `b -> ...`（不用 `!`） | ✅ 同上 |
+| `x = lb + 1`（算术） | ✅ |
+
+### 修复
+
+在 `src/parser/lowering.go`：
+
+1. 新增 `isBoolResultInfixOperator(op)`：`== != < <= > >= && ||`
+2. 在 `maybeCaptureOptionAssign` 取得 `root` 后，对这类根提前 `return nil`，跳过 option 捕获
+
+理由与 `src/mir/index_compare_test.go` 的語言契約一致：比较在 `emitCmp` 直接对 `?T` 取 payload 比较得 bool，安全索引越界的 nil 自然给出 false，不传播 option。
+
+### 验证
+
+- `make test`（带 `LD_FLAGS_WITH_SIG` 注入）：**EXIT=0，0 FAIL**（此前裸 `go test ./...` 的 7 个 FAIL 全部是 `StdSigKey 未注入` 的环境错误，与代码无关）
+- 语义用例全部正确（比较真/假、内联安全索引越界 `a[oob] == 5`、`&&` 链），无崩溃
+- 不改编译器的规避方式：显式写 `b bool = lb == 10`
+
+复现与守卫：
+
+- `option-compare-bool.no` — 最小复现
+- `safe-index-compare.no` — 跳过捕获后安全索引仍需越界保护
+
+---
+
+## Issue 3 — 多值解构漏检 → void 分支条件 → 无效 IR（已修复）
+
+### 现象
+
+修好 Issue 2 后 notools 主项目暴露（此前被第一个错误掩盖，验证器一次只报一处）：
+
+```
+notools.ll:217530:23: error: void type only allowed for function results
+  %cb.80895 = icmp ne void undef, 0
+  br i1 %cb.80895, label %namei_run.bb72, label %namei_run.bb73
+```
+
+`nonpm` 修掉 Issue 5 后也出现同款错误（`cmd_link`、`get_latest_version`），确认是共性问题。
+
+### 独立最小复现（本次完成）
+
+`void-cond-multitarget.no`：
+
+```nolang
+j = json.parse('{"name":"x"}')
+j: {
+    ok -> {
+        nv = it.get('name')
+        nv: {
+            ok -> {
+                s, found = it.str()
+                {
+                    found -> print('has')
+
+                    -> print('no')
+                }
+            }
+
+            -> {
+            }
+        }
+    }
+
+    -> {
+    }
+}
+```
+
+修复前稳定输出 `void-cond-multitarget.ll:2020:21: error: void type only allowed for function results / %cb.129 = icmp ne void undef, 0`。
+
+### 根因链条
+
+| 环节 | 位置 | 问题 |
+|---|---|---|
+| 1. 签名表分两张 | `src/checker/stdsig_gen.go` | std **方法**签名在 `embeddedStdMethodSigs`（`json.json.str` / `json.str` → `?str`），与模块函数 `embeddedStdFuncSigs` 分离 |
+| 2. checker 漏检 | `src/checker/funcargs.go` → `lookupReturnCount` | 只调 `CollectStdModuleSignatures()`，**从不查 `CollectStdMethodSigs()`**；`it.str()` / `json.str(v)` 返回 `-1` → `rfzrw1nh` 的 `expectedReturns >= 0` 门槛不满足，静默跳过 |
+| 3. MIR 丢弃多余 target | `src/mir/hir2mir.go` → `lowerMultiAssign`(12870) / `lowerMultiAssignCall`(12917) | `for i, t := range targets { if i >= len(dsts) { break } }` — 第二个 target 根本不进 `l.locals` |
+| 4. 读到未绑定名字 | `src/mir/codegen.go` → `loadVal`(5483) | KindVoid → `("void","undef")` |
+| 5. 生成无效 IR | `src/mir/codegen.go` → `emitTerm(OpCondBr)`(17442) | `vT != "i1"` 无条件生成 `icmp ne void undef, 0` |
+
+`fs.readlink('/tmp')` 之所以会正确报 `rfzrw1nh`，是因为它是**模块级自由函数**（`fs.readlink` 在 funcSigs 里）且 builtin 裸名表也命中；换成任何 std **方法**就漏检。`it` 是 match 的隐式绑定，`checker/funcargs.go:625` 明确 `delete(varTypes, "it")`，连 `baseType.method` 都构造不出来。
+
+`docs/design/option-unified.md` §3.3 规定消费 `?T` 只有 `?=`、`x: { ok -> ... }`、`_ = expr` 三条路径；`s, found = it.str()` 是迁移前 `(T, ok bool)` 的过时写法，**不能**在 MIR 层把缺失结果补成 `i1 false` 来兼容 —— 那等于承认静默拆包，且 `found` 恒 false 会产生更难查的静默错误行为。
+
+### 修复
+
+1. `src/checker/funcargs.go` → `lookupReturnCount`：引入 `CollectStdMethodSigs()`，在 DotExpression 的 `isVar` / `else` 两分支补查 `module.method`、`module.struct.method`、裸方法名；对 `it` 这类无类型 receiver 增加「方法名后缀唯一匹配」兜底 —— 遍历 methodSigs 中所有 `.methodName` 结尾的键，**仅当所有候选返回数量一致**时采用，歧义仍返回 `-1`（保留「无法确定则跳过」契约，避免误伤）。
+2. `src/mir/codegen.go` → `emitTerm(OpCondBr)`：`vT == "void"` 时不再生成 `icmp`，改为 `c.fail(...)` 累加诊断并停止发射该 terminator；`EmitLLVM` 把 `c.errs` 聚合成 `zodppsnm`。这是纵深防御，覆盖 checker 未来被绕过的其它 void 来源。
+3. `src/checker/farg_bare_option_test.go`：新增 `TestMultiAssignStdMethodReturnCountRejected`（`it.str()` / `json.str(v)` 应报 `rfzrw1nh`）与 `TestMultiAssignUserFunctionReturnCountOK`（合法双结果函数不误报）。
+
+### 验证
+
+- 修复后 `void-cond-multitarget.no`：`void-cond-multitarget.no:8:26: [ERROR] ... function returns 1 value(s) but 2 target(s) provided [rfzrw1nh]` —— 从 LLVM verifier 崩溃变成带行号的源码诊断。
+- `make no` 重建 + `make test`：**EXIT=0，0 FAIL**。
+- 影响面：`nogit` / `nojq` / `nouv` 不含此类过时写法，不受影响；`nonpm` / `notools` 中残留的 `x, ok = it.str()` 现在会明确报错，需按 Issue 1 的写法迁移。
+
+---
+
+## Issue 4 — noimg 的项目本地 struct 未注册进 MIR（已定位，待修）
+
+```
+EmitLLVM: setfield: field "depth" not found on "image.image" (struct key "image.image") [3nktiaae]
+```
+
+`noimg/src/image.no:7..20` 明确定义了 `image { … depth i64 … }`（13 个字段），但 `NOLANG_MIR_DUMP_MIR=1` 的 `### structs (15)` 段里**只有 std 的 struct，完全没有 `image.image`**。所以不是字段缺失，而是**项目本地 struct 定义没有被注册到 MIR 的 `StructFields` 表**；`src/mir/codegen.go:11747` 的 `mod.FieldIndex("image.image", "depth")` 因此必然返回 false。
+
+进一步定位：`noimg/main.no` 的 111 行 import **全部是函数级**（`# /noimg/src/image.new`、`pnm.load` …），**没有任何模块级（无点号）import**。因此 `image.no` 的文件级 `image { … }` 定义从未进入 HIR，`collectStructFields`（`src/mir/hir2mir.go:738`，只扫 `pkg.Top` 的 `KStructDef`）自然注册不到。HIR dump 里 12 个 struct 全是 std，也印证了这点。
+
+**解决方案（已实测有效）**：在 `main.no` 的 import 区补一行模块级导入
+
+```nolang
+# /noimg/src/image
+```
+
+加完后 `setfield depth` 立即消失（暴露出下一个链式错误 `unknown callee i64.to-i64 in func jpeg-decode-progressive [4qhyyund]`，属另一问题）。该改动涉及项目源码且有并行 session，本次**未保留**，仅记录解法。备选的编译器侧方案：让函数级 import 同时带上同文件里的类型/struct 定义。
+
+---
+
+## Issue 5 — `?T` 赋给 struct 字段绕过检查，生成坏 IR（已复现，源码侧已规避）
+
+### 现象
+
+`nonpm` 修掉 `15w45dqk` 后暴露：
+
+```
+nonpm.ll:7334:19: error: '%lv.1744' defined with type '%option = type { i64, [3 x i64] }' but expected '%str-long = type { i64, i64, ptr }'
+  store %str-long %lv.1744, %str-long* %gp.1745
+```
+
+### 最小复现
+
+`setfield-option.no`：
+
+```nolang
+box {
+    name str
+    n i64
+}
+make-box = () (b box) {
+    b.name = ''
+    b.n = 0
+    return
+}
+g = (i i64) {
+    c = make-box()
+    c.name = os.arg(i + 1)
+    print(c.name)
+}
+g(0)
+```
+
+稳定复现 `store %str-long %lv.N, %str-long* %gp.N`。
+
+### 根因与源码位置
+
+`nonpm/main.no` 的 `cmd-install` 原本是：
+
+```nolang
+i < argc -> cfg.registry = os.arg(i + 1)
+i < argc -> cfg.store-dir = os.arg(i + 1)
+```
+
+`nonpm/src/config.no` 的 `config` 第 0 个字段是 `registry str`，IR 中 `getelementptr %config_config ... i32 0, i32 0` 正是它。`15w45dqk`（D1 规则）只覆盖「重指派到已存在的 plain 变量」，**setfield 赋值路径未做 option 检查**；codegen 直接把整个 `%option` store 进 `%str-long*`。
+
+### 解决方案
+
+- **源码侧（本次已采用）**：两步 unwrap 后再赋值，改完该 IR 错误消失：
+
+  ```nolang
+  i < argc -> {
+      #{overflow=wrap}
+      reg-arg = os.arg(i + 1)
+      cfg.registry = reg-arg: {
+          ok -> it
+
+          -> ''
+      }
+  }
+  ```
+
+- **编译器侧（待修）**：把 D1 规则扩展到 `setfield` 赋值，让这类写法在 checker 层就报 `15w45dqk`，而不是生成无效 IR。这是 Issue 1 规则收紧的自然延伸。
+
+---
+
+## Issue 6 — `eprint` 收到 bare `?T` 时 checker 漏检（已复现，待修）
+
+### 最小复现
+
+`eprint-option.no`：
+
+```nolang
+x = os.arg(1)
+eprint(x)
+```
+
+→ `Error: ... EmitLLVM: eprint expects str/i64/byte/char/bool arg, got %option [w9ajg8ow]`
+
+对照组 `eprint('v=' - x)`（字符串拼接）**构建成功**，说明只有直接传 bare option 才触发。notools 主项目修好 Issue 3 后暴露的正是这个错误。
+
+### 判断
+
+与 Issue 5 同类：D1 / `3604icnf` 覆盖了普通变量重指派与普通函数实参，但 **builtin `print` / `eprint` 的 option 实参**没有被 checker 拦下，而是一路走到 codegen 才报 `w9ajg8ow`，且该诊断缺少源码行号与函数名。
+
+### 解决方案
+
+- 源码侧：先 unwrap 再打印（`x = os.arg(1): { ok -> it ... }` 后 `eprint(x)`），或 `x: { ok -> eprint(it) ... }`。
+- 编译器侧（待修）：把 bare-option 实参检查扩展到 builtin `eprint` / `print`，在 checker 层带行号报错；或至少给 `w9ajg8ow` 补上函数名与位置。
+
+---
+
+## 7 个子项目回归（「先2」完成 + Issue 3 修复后重建 dev 编译器）
+
+| 项目 | 结果 | 说明 |
+|---|---|---|
+| noagent | ✅ | Build successful |
+| nogit | ✅ | 1 处 `15w45dqk` 已适配（两步 unwrap） |
+| nojq | ✅ | 10 处 `15w45dqk` 已适配 |
+| nouv | ✅ | 9 处 `15w45dqk` 已适配；另把 `cmd-add` 的 `resolved-opt: { ok -> ... }` 语句式 match 改成「两步 unwrap 表达式 + `resolved != ''` 条件」，消除链式 `3604icnf` |
+| nonpm | ❌ | `sub` 与 `cfg.registry` / `cfg.store-dir` 的 setfield option（Issue 5）已修；现在**一次列出 7 个函数**含 void 条件：`get_latest_version` / `login` / `whoami` / `link_deps` / `get_dist_info`×2 / `get_versions`，都是 `x, ok = it.str()` 过时写法，见 Issue 3 |
+| noimg | ❌ | Issue 4：`setfield: field "depth" not found on "image.image" [3nktiaae]` |
+| notools | ❌ | Issue 3 的无效 IR 已消除；现在暴露 `eprint ... got %option [w9ajg8ow]`，见 Issue 6 |
+
+**21 处 `15w45dqk` 已全部消除，4 个项目构建成功。** 剩余 3 个项目的失败现在都是可读的编译诊断，不再是 LLVM verifier 崩溃。
+
+### 源码适配清单（下一步）
+
+1. `nonpm`：把 7 个函数里的 `x, ok = it.str()` / `json.str(v)` 改成 option 消费（可参照 `cmd-link` 已改好的 `pkg-name-opt = it.str()` + `pkg-name-opt: { ok -> ... }` 写法）。全仓另有约 20 处同类写法，部分未产生 void 条件但同样过时。
+2. `noimg`：按 Issue 4 补模块级 `# /noimg/src/image`，再处理链式 `unknown callee i64.to-i64 [4qhyyund]`。
+3. `notools`：定位哪一处 `eprint` 收到 bare `?T`，按 Issue 6 的写法 unwrap。
+
+这些改动跨 3 个项目，工作区存在并行 session，动手前须 `git status --porcelain` 全量核对边界。
+
+---
+
+## 环境注意事项
+
+- `no build` 需要 `PATH` 含 `/opt/homebrew/opt/llvm/bin`，且需关闭沙箱；大项目构建超过前台默认超时，应后台执行。
+- 保留 IR：`NOLANG_MIR_DUMP_LL=1`（打印 `[MIR] emitted LLVM -> <path>`）；MIR / HIR 分别用 `NOLANG_MIR_DUMP_MIR=1` / `NOLANG_MIR_DUMP_HIR=1`。
+- 编译器测试必须走 `make test`（注入 `StdSigKey`），裸 `go test ./...` 会因签名 key 为空而硬失败。
+- 本工作区存在并行 session；提交前须 `git status --porcelain` 全量核对改动边界。
