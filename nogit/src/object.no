@@ -651,8 +651,8 @@ person-line = (role str, p person-info) (out str) {
 ; parts as top-level scalars/strings (a struct return would lose the `str`
 ; fields, so we return them individually).
 parse-person-fields = (s str) (name str, email str, time i64, tz str) {
-    lt i64 = s.index('<')
-    gt i64 = s.index('>')
+    lt = s.index('<')
+    gt = s.index('>')
     nm str = util.str-range(s, 0, lt)
     {
         nm.len() > 0 -> {
@@ -673,10 +673,12 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     rpos = 0
     !! {
         rpos < rest.len() -> {
-
             {
-                #{overflow=wrap}
-                rest.byte(rpos) == 32 -> rpos = rpos + 1
+                rest.byte(rpos) == 32 -> {
+
+                    #{overflow=wrap}
+                    rpos = rpos + 1
+                }
 
                 -> break
             }
@@ -686,7 +688,7 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     sp i64 = util.find-byte-str(rest, 32, 0)
     sp < 0 -> sp = rest.len()
     ts str = util.str-range(rest, 0, sp)
-    ti ?i64 = ts.to-i64()
+    ti = ts.to-i64()
     ti: {
         ok -> time = it
 
@@ -765,16 +767,20 @@ hex-char = (b byte) (s str) {
     hi = (b >> 4) & 15
     lo = b & 15
     s str = with-len(2)
+
     #{index-out=zero}
     d9v1 str = hc[hi]
     s[0]: {
         ok -> it = d9v1
+
         -> _
     }
+
     #{index-out=zero}
     d9v2 str = hc[lo]
     s[1]: {
         ok -> it = d9v2
+
         -> _
     }
 }
@@ -789,7 +795,6 @@ object-path = (git-dir str, o oid) (out str) {
     sl = '/'
     out = out - sl
     i <- [1..20): {
-
         out = out - hex-char(o.id[i])
     }
 }
@@ -812,6 +817,7 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
 
     #{overflow=wrap}
     full str = with-len(hdr.len-bytes() + data.len-bytes())
+
     ; set-byte: place-writes of bytes >= 0x80 into a str store code points and
     ; consecutive writes lose high bytes (D9 bug) — corrupts the hash input
     i <- [0..hdr.len-bytes()): {
@@ -828,7 +834,7 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     ; comp 是「位元組字串」：len() 是碼點數，len-bytes() 才是位元組數。zlib 流含
     ; >= 0x80 的位元組時兩者不等（每個高位元組編成 2 bytes UTF-8），用 len() 會
     ; 截斷尾端（Adler-32）產生損壞的 loose object。故先轉 []byte 再按元素數寫出。
-    comp-bytes []byte = comp.to-bytes()
+    comp-bytes = comp.to-bytes()
     fd = fs.open-write(f)
     fs.write(fd, comp-bytes, comp-bytes.len())
     fs.close(fd)
@@ -953,10 +959,12 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
 
     #{overflow=wrap}
     dlen = out-bytes.len() - start
+
     ; set-byte 逐位元组写入：vec 基底 place-match 写在此站点静默丢数据（payload 全零），
     ; 且 #{index-out=zero} 会把 []byte 读取降为 u64 暂存 —— 一律绕开。
     data str = with-len(dlen)
     m <- [0..dlen): {
+
         #{overflow=wrap}
         data.set-byte(m, out.byte(start + m))
     }
@@ -1006,7 +1014,7 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
         }
     }
     text str = d
-    idx i64 = text.index('\n\n')
+    idx = text.index('\n\n')
     hend = text.len()
     idx >= 0 -> hend = idx
     message = ''
@@ -1070,7 +1078,7 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
 ;   c-name str, c-email str, c-time i64, c-tz str, message str, ok bool
 parse-commit-from-data = (d str) (tree-oid oid, parenthex str, a-name str, a-email str, a-time i64, a-tz str, c-name str, c-email str, c-time i64, c-tz str, message str, ok bool) {
     text = d
-    idx i64 = text.index('\n\n')
+    idx = text.index('\n\n')
     hend = text.len-bytes()
     idx >= 0 -> hend = idx
     message = ''
@@ -1158,7 +1166,7 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str, t-name str
         }
     }
     text str = d
-    idx i64 = text.index('\n\n')
+    idx = text.index('\n\n')
     hend = text.len()
     idx >= 0 -> hend = idx
     message = ''
@@ -1367,6 +1375,7 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
                 last = dest-dir.byte(dest-dir.len-bytes() - 1)
                 last != 47 -> full-path = dest-dir - '/' - nm
             }
+
             dest-dir.len-bytes() == 0 -> full-path = nm
 
             mode == 16384 -> {
@@ -1438,7 +1447,8 @@ remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-
                 fe-ok = true
             }
 
-            -> {}
+            -> {
+            }
         }
         fe-ok -> {
 
@@ -1447,7 +1457,6 @@ remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-
             is-dotdot = util.str-eq(fname, '..')
             is-git = util.str-eq(fname, '.git')
             ! is-dot && ! is-dotdot && ! is-git -> {
-
                 full-path = dir - '/' - fname
 
                 ; compute relative path from base-dir

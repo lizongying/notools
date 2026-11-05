@@ -287,7 +287,55 @@ eprint(x)
 
 ---
 
-## 7 个子项目回归（「先2」完成 + Issue 3 修复后重建 dev 编译器）
+## Issue 7 — 函数级 import 的 lazy-load 漏加载同文件内部函数（已定位，待修）
+
+### 现象
+
+`noimg` 依次修好 Issue 4（`image.image`）、progressive JPEG 的 `i64.to-i64`、`vp8.vp8-br` 后，稳定停在：
+
+```
+Error: ... EmitLLVM: unknown callee jpeg-read-block-444 in func jpeg-encode-scan [4qhyyund]
+```
+
+### 证据
+
+- `src/jpeg.no` 里 `jpeg-read-block-420`（L2557）与 `jpeg-read-block-444`（L2632）都是**顶层函数定义**，函数体闭合正常，签名与已注册的 `jpeg-read-block` 同为 `[64]f64` 返回。
+- `NOLANG_MIR_DUMP_MIR=1` 的 `### func` 段注册了 **27 个 jpeg 函数**（含 `jpeg-read-block`、`jpeg-dct-8x8`、`jpeg-quantize`、`jpeg-encode-block`），**唯独没有这两个**。
+- `NOLANG_MIR_DUMP_HIR=1` 里连这两个名字都没出现 → 缺失发生在 **HIR 之前的 lazy-load / 签名收集阶段**，不是 codegen 的名字不匹配。
+- 调用点只在 `jpeg-encode-scan` 的深层条件分支里（4:4:4 分支 L2408/2415、4:2:0 else 分支 L2438/2445）；同分支内的其它 callee 都正常注册。
+
+### 已排除的绕过（全部无效）
+
+| 尝试 | 结果 |
+|---|---|
+| 补模块级 `# /noimg/src/jpeg`（与 image / vp8 同法） | 注册函数 0 → 27，仍缺这两个 |
+| 补函数级 `# /noimg/src/jpeg.jpeg-read-block-444` / `-420` | MIR 里连前缀名都没出现，错误不变 |
+| 删掉 `jpeg.load` / `jpeg.save` 函数级 import，只留模块级 | 错误不变 |
+| 重命名成不含共同前缀的 `jpeg-sample-444` / `-420` | 错误跟着名字变，说明不是前缀去重或名字解析 |
+
+重命名实验已回退，源码保持原名。
+
+### 本次已保留的有效修复
+
+`noimg/main.no` 补 3 行模块级 import（`# /noimg/src/image`、`vp8`、`jpeg`）解决 `image.image` / `vp8.vp8-br` 的 struct 注册；`noimg/src/jpeg.no` 的 `jpeg-decode-progressive` 补 6 个显式 `f64` 标注（与 baseline 解码函数一致），消除 `i64.to-i64`。这三处让 noimg 连过 3 层错误，只剩 Issue 7。
+
+### 复现方式
+
+```bash
+cd /Users/lizongying/IdeaProjects/notools/noimg
+export PATH=/opt/homebrew/opt/llvm/bin:$PATH
+no build
+```
+
+单文件最小复现尚未构造出来：该问题依赖项目级 lazy-load 上下文（模块级 + 函数级 import 混合、同文件内部调用），独立小模块暂未复现。构造它应是修编译器前的第一步。
+
+### 建议修复方向
+
+函数级 import 的递归依赖 enqueue 没有把「仅在深层条件分支出现的同文件 callee」加入队列。应对已加载函数的 HIR body 做完整 callee 扫描（而非只扫顶层语句），或在 `unknown callee` 之前按裸名从已加载模块 fallback lazy-load。
+
+---
+
+## 7 个子项目回归（本轮收尾）
 
 | 项目 | 结果 | 说明 |
 |---|---|---|
