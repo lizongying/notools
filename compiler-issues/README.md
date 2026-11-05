@@ -5,7 +5,7 @@
 验证二进制：`/Users/lizongying/no/bin/no`（`make no` 构建并 install）
 复现方式：在文件所在目录执行 `no build <file>.no`；构建产物 `dist/<name>` 可直接运行
 
-所有 `.no` 文件都是**最小复现或回归守卫**，可直接单独构建。
+所有 `.no` 文件都是**最小复现或回归守卫**，可直接单独构建。`filter-exports-block/` 是目录型复现（`package.jsonc` + `lib.no` + `mod.no` + `main.no`），需从 notools 根目录构建。
 
 ---
 
@@ -175,7 +175,7 @@ j: {
 
 ---
 
-## Issue 4 — noimg 的项目本地 struct 未注册进 MIR（已定位，待修）
+## Issue 4 — noimg 的项目本地 struct 未注册进 MIR（源码侧已解决，编译器侧可改）
 
 ```
 EmitLLVM: setfield: field "depth" not found on "image.image" (struct key "image.image") [3nktiaae]
@@ -287,7 +287,9 @@ eprint(x)
 
 ---
 
-## Issue 7 — 函数级 import 的 lazy-load 漏加载同文件内部函数（已定位，待修）
+## Issue 7 — `lib.no` 导出过滤漏掉巢状区块内的 callee（已修复）
+
+> **更正**：本问题此前被记录为「函数级 import 的 lazy-load 漏加载同文件内部函数（待修）」，该判断**是错的**。下面保留推翻过程，供后续排查参考。
 
 ### 现象
 
@@ -297,71 +299,117 @@ eprint(x)
 Error: ... EmitLLVM: unknown callee jpeg-read-block-444 in func jpeg-encode-scan [4qhyyund]
 ```
 
-### 证据
+### 旧假说为何无效
 
-- `src/jpeg.no` 里 `jpeg-read-block-420`（L2557）与 `jpeg-read-block-444`（L2632）都是**顶层函数定义**，函数体闭合正常，签名与已注册的 `jpeg-read-block` 同为 `[64]f64` 返回。
-- `NOLANG_MIR_DUMP_MIR=1` 的 `### func` 段注册了 **27 个 jpeg 函数**（含 `jpeg-read-block`、`jpeg-dct-8x8`、`jpeg-quantize`、`jpeg-encode-block`），**唯独没有这两个**。
-- `NOLANG_MIR_DUMP_HIR=1` 里连这两个名字都没出现 → 缺失发生在 **HIR 之前的 lazy-load / 签名收集阶段**，不是 codegen 的名字不匹配。
-- 调用点只在 `jpeg-encode-scan` 的深层条件分支里（4:4:4 分支 L2408/2415、4:2:0 else 分支 L2438/2445）；同分支内的其它 callee 都正常注册。
+| 尝试 | 结果 | 事后解释 |
+|---|---|---|
+| 补模块级 `# /noimg/src/jpeg` | 仍缺这两个 | `processUseAndMerge` 的去重键是 `use.Path`，不是 `(Path, Function)`；函数级 import 本来就等价于整模块导入 |
+| 补函数级 `# /noimg/src/jpeg.jpeg-read-block-444` / `-420` | 错误不变 | 同上，且 `use.Function` 只在同时有 `Alias` 时才点名筛选，这些 import 全被去重跳过 |
+| 删掉 `jpeg.load` / `jpeg.save` 函数级 import | 错误不变 | 同上 |
+| 重命名成不含共同前缀的名字 | 错误跟着名字变 | 名字解析本身没问题，是定义被过滤 |
 
-### 已排除的绕过（全部无效）
+真正线索是「定义在文件**中间**被删、前后函数都在」：`jpeg-read-block-420` / `-444` 之后的 `jpeg-dct-8x8`、`jpeg-quantize`、`jpeg-encode-block` 全部正常注册，所以不是文件尾部截断，也不是 reachability worklist 的深度问题。
 
-| 尝试 | 结果 |
+### 逐层定位（全部为实测）
+
+| 步骤 | 结论 |
 |---|---|
-| 补模块级 `# /noimg/src/jpeg`（与 image / vp8 同法） | 注册函数 0 → 27，仍缺这两个 |
-| 补函数级 `# /noimg/src/jpeg.jpeg-read-block-444` / `-420` | MIR 里连前缀名都没出现，错误不变 |
-| 删掉 `jpeg.load` / `jpeg.save` 函数级 import，只留模块级 | 错误不变 |
-| 重命名成不含共同前缀的 `jpeg-sample-444` / `-420` | 错误跟着名字变，说明不是前缀去重或名字解析 |
+| 独立 Go parse `noimg/src/jpeg.no` | `ERRORS=0`，42 statements / 31 个 `FunctionDefinition`，`-420` 在 `[33]`、`-444` 在 `[34]`，`GenericParams=0` → **parser 完全正常** |
+| `NOLANG_AST_CACHE_OFF=1` 重建 | 结果不变 → 排除 Tier-1 磁盘 AST 缓存 |
+| `NOLANG_DEBUG_SELF=1` → `/tmp/merged_dump.txt` | merged 只有 25 个 `jpeg-*` 函数，原始 27 个，缺的正好是连续这两个 |
+| 临时 pipeline trace（`CompileTarget` 各 pass 后计数） | **`after-mergeModules` 就已经缺**，后续 stdLoad / prefix / monomorph / secondStage / finalize 都只是保持缺失 |
+| 同一 trace 细化到 `processUseAndMerge` | `parseFile:CACHE:.../jpeg.no` = **42 stmts、两个定义都在**；`merge:resolveUse:/noimg/src/jpeg` = **40 stmts、两个都不在** → 丢在 `resolveFile` |
+| 直接调用 `checker.FilterByExports` | `BEFORE=31 AFTER=29 stmts=40`，`REMOVED` 恰好 `-420` / `-444` |
 
-重命名实验已回退，源码保持原名。
+### 根因
 
-### 本次已保留的有效修复
+`src/build/transpiler_resolve.go` 的 `resolveFile` 对含 `lib.no` 的包一律跑 `checker.FilterByExports`。`noimg/lib.no` 是导出白名单，只列了 `jpeg.load` / `save` / `save-quality` / `save-quality-subsampling` 四个公开函数。
 
-`noimg/main.no` 补 3 行模块级 import（`# /noimg/src/image`、`vp8`、`jpeg`）解决 `image.image` / `vp8.vp8-br` 的 struct 注册；`noimg/src/jpeg.no` 的 `jpeg-decode-progressive` 补 6 个显式 `f64` 标注（与 baseline 解码函数一致），消除 `i64.to-i64`。这三处让 noimg 连过 3 层错误，只剩 Issue 7。
+`src/checker/funcargs.go` 的 `filterByExports` 会从公开函数出发，**传递收集同模块 callee** 来决定还要保留哪些内部 helper（否则内部函数全被过滤、呼叫点悬空）。它的 `walkStmts` 只处理 5 种 statement：`LetStatement` / `ExpressionStatement` / `MultiAssignStatement` / `ReturnStatement` / `ForStatement`，**缺 `*parser.BlockStatement`**。
 
-### 复现方式
+Nolang 的 `{ cond -> {...} -> {...} }` if-group 正是 `BlockStatement`（探针在该文件命中 **35 次未处理节点**）。整个巢状区块被跳过，于是**只在 `jpeg-encode-scan` 深层 subsampling 分支里被呼叫**的 `-420` / `-444` 没进 keep-set → 定义被过滤、呼叫点保留 → codegen 报 `4qhyyund`。其余 25 个内部函数因为在浅层分支或其它函数里也有呼叫而被正常收集。
 
-```bash
-cd /Users/lizongying/IdeaProjects/notools/noimg
-export PATH=/opt/homebrew/opt/llvm/bin:$PATH
-no build
+附带确认：HIR/MIR 里的 `enqueueCallee` 静默丢弃、AST 缓存、数字后缀词法、签名重复去重、`[64]f64` 类型、`GenericParams` 过滤全部排除。
+
+### 修复
+
+`src/checker/funcargs.go` → `filterByExports.walkStmts` 补一个 case（唯一改动）：
+
+```go
+case *parser.BlockStatement:
+    // A bare `{ ... }` group (if-group / match group with arms) is a
+    // statement in its own right. Without this case the whole nested
+    // group is skipped, so helpers called only from a nested arm are
+    // dropped from the export keep-set and later report
+    // "unknown callee" in MIR codegen.
+    if s != nil {
+        walkStmts(s.Statements)
+    }
 ```
 
-单文件最小复现尚未构造出来：该问题依赖项目级 lazy-load 上下文（模块级 + 函数级 import 混合、同文件内部调用），独立小模块暂未复现。构造它应是修编译器前的第一步。
+回归守卫 `src/checker/filter_exports_block_test.go`：**双向验证过** —— 带修复 `PASS`，临时撤掉该 case 后 `FAIL` 且报错为 `helper called only from a nested block was dropped from the export keep-set`。
 
-### 建议修复方向
+### 最小复现
 
-函数级 import 的递归依赖 enqueue 没有把「仅在深层条件分支出现的同文件 callee」加入队列。应对已加载函数的 HIR body 做完整 callee 扫描（而非只扫顶层语句），或在 `unknown callee` 之前按裸名从已加载模块 fallback lazy-load。
+`compiler-issues/filter-exports-block/`（`package.jsonc` + `lib.no` + `mod.no` + `main.no`）。`lib.no` 只导出 `public-fn`，而它只在两层巢状 if-group 里呼叫 `nested-helper`：
+
+```bash
+cd /Users/lizongying/IdeaProjects/notools
+export PATH=/opt/homebrew/opt/llvm/bin:$PATH
+no build compiler-issues/filter-exports-block/main.no
+./dist/main        # 修复后输出 3
+```
+
+修复前：`unknown callee nested-helper in func public-fn [4qhyyund]`。
+
+> 注意 `open` 不能用作函数名（与 builtin 冲突，会报 `unknown callee open in func main`），复现里改用 `public-fn`。
+
+### 验证
+
+- `make no` 重建 + 新增 `checker` 回归测试：`ok github.com/lizongying/nolang/checker`。
+- `make test`：`checker` / `mir` / `parser` / `lsp` / `fmt` 等 package 全 ok；**唯一 FAIL** 是 `parser/dump` 的 `TestCheckerSugarDriftIsWithinKnownSet`（`ovfhndld` 新 drift + 6 个 stale allowlist entries），属并行 session 的 checker/lowering 改动，与只作用于 import 导出过滤的本次修复无关。
+- **7 个子项目全量回归：7/7 `Build successful`**（`noimg` 首次通过）。
+
+### 本次保留的源码侧修复
+
+`noimg/main.no` 补 3 行模块级 import（`# /noimg/src/image`、`vp8`、`jpeg`）解决 `image.image` / `vp8.vp8-br` 的 struct 注册；`noimg/src/jpeg.no` 的 `jpeg-decode-progressive` 补 6 个显式 `f64` 标注（与 baseline 解码函数一致），消除 `i64.to-i64`。这三处让 noimg 连过前 3 层错误，Issue 7 修完后全绿。
 
 ---
 
-## 7 个子项目回归（本轮收尾）
+## 7 个子项目回归（最终：7/7 全绿）
 
-| 项目 | 结果 | 说明 |
+验证二进制：`make no` 重建后的 dev `no`；日志 `/tmp/regression_final2.log`。
+
+| 项目 | 结果 | 关键修复 |
 |---|---|---|
-| noagent | ✅ | Build successful |
-| nogit | ✅ | 1 处 `15w45dqk` 已适配（两步 unwrap） |
-| nojq | ✅ | 10 处 `15w45dqk` 已适配 |
-| nouv | ✅ | 9 处 `15w45dqk` 已适配；另把 `cmd-add` 的 `resolved-opt: { ok -> ... }` 语句式 match 改成「两步 unwrap 表达式 + `resolved != ''` 条件」，消除链式 `3604icnf` |
-| nonpm | ❌ | `sub` 与 `cfg.registry` / `cfg.store-dir` 的 setfield option（Issue 5）已修；现在**一次列出 7 个函数**含 void 条件：`get_latest_version` / `login` / `whoami` / `link_deps` / `get_dist_info`×2 / `get_versions`，都是 `x, ok = it.str()` 过时写法，见 Issue 3 |
-| noimg | ❌ | Issue 4：`setfield: field "depth" not found on "image.image" [3nktiaae]` |
-| notools | ❌ | Issue 3 的无效 IR 已消除；现在暴露 `eprint ... got %option [w9ajg8ow]`，见 Issue 6 |
+| noagent | ✅ | 无需额外改动 |
+| nogit | ✅ | 1 处 `15w45dqk` 两步 unwrap |
+| nojq | ✅ | 10 处 `15w45dqk` 两步 unwrap |
+| nouv | ✅ | 9 处 `15w45dqk` 两步 unwrap；`cmd-add` 语句式 match → 两步 unwrap 表达式 + `resolved != ''`（消 `3604icnf`） |
+| nonpm | ✅ | setfield option（Issue 5）两步 unwrap；`src/*.no` 23 处旧 `(T, ok bool)` 解构 → option match；`cmd-link` 同 |
+| noimg | ✅ | 3 行模块级 import 注册 struct + 6 个显式 `f64` 标注 + **Issue 7 编译器修复**（`FilterByExports` 补 `BlockStatement`） |
+| notools | ✅ | `rename.no` 从源头 unwrap 安全索引（`src = files[i]`）；`namei.no` / `readlink.no` 共 3 处 `fs.readlink` 旧解构 → option match |
 
-**21 处 `15w45dqk` 已全部消除，4 个项目构建成功。** 剩余 3 个项目的失败现在都是可读的编译诊断，不再是 LLVM verifier 崩溃。
+**21 处 `15w45dqk` 全部消除，7 个项目均 `Build successful`。** 过程中从 LLVM verifier 崩溃一路收敛到可读的源码诊断，最后剩下的两个真正编译器缺陷（Issue 3、Issue 7）都在编译器侧修掉并配了回归测试。
 
-### 源码适配清单（下一步）
+### 编译器侧仍待修（不影响 7/7 构建）
 
-1. `nonpm`：把 7 个函数里的 `x, ok = it.str()` / `json.str(v)` 改成 option 消费（可参照 `cmd-link` 已改好的 `pkg-name-opt = it.str()` + `pkg-name-opt: { ok -> ... }` 写法）。全仓另有约 20 处同类写法，部分未产生 void 条件但同样过时。
-2. `noimg`：按 Issue 4 补模块级 `# /noimg/src/image`，再处理链式 `unknown callee i64.to-i64 [4qhyyund]`。
-3. `notools`：定位哪一处 `eprint` 收到 bare `?T`，按 Issue 6 的写法 unwrap。
+| Issue | 状态 | 说明 |
+|---|---|---|
+| Issue 5 | 源码侧已规避，编译器待修 | 把 D1 规则扩展到 `setfield` 赋值，让 `c.field = os.arg(...)` 在 checker 层报 `15w45dqk` |
+| Issue 6 | 源码侧已规避，编译器待修 | bare `?T` 传给 `print` / `eprint` 的检查；`w9ajg8ow` 已补函数名但缺行号 |
+| Issue 4 | 源码侧已解决，编译器可改 | 函数级 import 可考虑连同文件的 struct / 类型定义一起带入，省掉手写模块级 import |
 
-这些改动跨 3 个项目，工作区存在并行 session，动手前须 `git status --porcelain` 全量核对边界。
+`make test` 目前唯一 FAIL 是 `parser/dump` 的 sugar-drift allowlist（并行 session 改 checker/lowering 导致白名单陈旧：`ovfhndld` 新增、6 个 stale entries），与本次修复无关。
 
 ---
 
 ## 环境注意事项
 
 - `no build` 需要 `PATH` 含 `/opt/homebrew/opt/llvm/bin`，且需关闭沙箱；大项目构建超过前台默认超时，应后台执行。
+- **`no build` 会规范化源码并写回磁盘**：会在 option-match 臂之间插空行、展开 `-> {}`、移动注解，产生大量纯格式 diff（本轮 `noimg/src/jpeg.no` 与 `notools/src/*.no` 的 M 多半来自这里）。提交前务必区分「逻辑改动」与「构建噪音」。
 - 保留 IR：`NOLANG_MIR_DUMP_LL=1`（打印 `[MIR] emitted LLVM -> <path>`）；MIR / HIR 分别用 `NOLANG_MIR_DUMP_MIR=1` / `NOLANG_MIR_DUMP_HIR=1`。
-- 编译器测试必须走 `make test`（注入 `StdSigKey`），裸 `go test ./...` 会因签名 key 为空而硬失败。
-- 本工作区存在并行 session；提交前须 `git status --porcelain` 全量核对改动边界。
+- `NOLANG_DEBUG_SELF=1` 会把 merge 完成后的 `merged.Statements` 逐条写到 `/tmp/merged_dump.txt`；`NOLANG_AST_CACHE_OFF=1` 可强制全新 parse、排除 Tier-1 磁盘 AST 缓存干扰。
+- 定位「某函数在 pipeline 哪一阶段消失」时，可在 `CompileTarget` 各 pass 之后临时插入 env-gated 计数；本轮用它把 Issue 7 从 HIR 一路收敛到 `resolveFile`。诊断补丁已全部移除。
+- 编译器测试必须走 `make test`（注入 `StdSigKey`），裸 `go test ./...` 会因签名 key 为空而硬失败；改完编译器源码必须 `make no` 重建并 install 才生效。
+- 本工作区存在并行 session；**HEAD 会被别的 session 推进**（本轮 `compiler-issues/README.md`、21 处适配、`noimg` 修改都已被提交进 `ea8506f` / `62d07ef`）。提交前须 `git status --porcelain` 全量核对改动边界。
