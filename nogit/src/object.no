@@ -674,10 +674,12 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
     !! {
         rpos < rest.len() -> {
 
-            #{overflow=wrap}
-            rest.byte(rpos) == 32 -> rpos = rpos + 1
+            {
+                #{overflow=wrap}
+                rest.byte(rpos) == 32 -> rpos = rpos + 1
 
-            -> break
+                -> break
+            }
         }
     }
     rest = util.str-range(rest, rpos, rest.len())
@@ -1296,35 +1298,37 @@ tree-to-flat = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, 
 
         ; build full path: prefix/nm or just nm if prefix is empty
         full-path = nm
-        prefix.len-bytes() > 0 -> {
-            full-path = prefix - '/' - nm
-        }
+        {
+            prefix.len-bytes() > 0 -> {
+                full-path = prefix - '/' - nm
+            }
 
-        mode == 16384 -> {
+            mode == 16384 -> {
 
-            ; subtree — recurse
-            sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat(git-dir, entry-oid, full-path)
-            sub-ok -> {
-                paths = paths - sub-paths
-                hexoids = hexoids - sub-hexoids
-                modes = modes - sub-modes
+                ; subtree — recurse
+                sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat(git-dir, entry-oid, full-path)
+                sub-ok -> {
+                    paths = paths - sub-paths
+                    hexoids = hexoids - sub-hexoids
+                    modes = modes - sub-modes
+
+                    #{overflow=wrap}
+                    count = count + sub-count
+                }
+            }
+
+            -> {
+
+                ; blob or other — add as flat entry
+                paths = paths - full-path - '\n'
+                hexoids = hexoids - entry-hex
+                mode-str = util.i64-to-str(mode)
+
+                modes = modes - mode-str - '\n'
 
                 #{overflow=wrap}
-                count = count + sub-count
+                count = count + 1
             }
-        }
-
-        -> {
-
-            ; blob or other — add as flat entry
-            paths = paths - full-path - '\n'
-            hexoids = hexoids - entry-hex
-            mode-str = util.i64-to-str(mode)
-
-            modes = modes - mode-str - '\n'
-
-            #{overflow=wrap}
-            count = count + 1
         }
     }
     ok = true
@@ -1356,37 +1360,39 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
 
         ; build full path: dest-dir/nm
         full-path = dest-dir
-        dest-dir.len-bytes() > 0 -> {
+        {
+            dest-dir.len-bytes() > 0 -> {
 
-            #{overflow=wrap}
-            last = dest-dir.byte(dest-dir.len-bytes() - 1)
-            last != 47 -> full-path = dest-dir - '/' - nm
-        }
-        dest-dir.len-bytes() == 0 -> full-path = nm
+                #{overflow=wrap}
+                last = dest-dir.byte(dest-dir.len-bytes() - 1)
+                last != 47 -> full-path = dest-dir - '/' - nm
+            }
+            dest-dir.len-bytes() == 0 -> full-path = nm
 
-        mode == 16384 -> {
+            mode == 16384 -> {
 
-            ; subtree — create directory and recurse
-            util.mkdir-all(full-path)
-            sub-ok = checkout-tree(git-dir, entry-oid, full-path)
-        }
+                ; subtree — create directory and recurse
+                util.mkdir-all(full-path)
+                sub-ok = checkout-tree(git-dir, entry-oid, full-path)
+            }
 
-        -> {
+            -> {
 
-            ; blob — read object and write to file
-            b-kind str
-            b-data str
-            b-ok bool
-            b-kind, b-data, b-ok = read-loose(git-dir, entry-oid)
-            b-ok -> {
+                ; blob — read object and write to file
+                b-kind str
+                b-data str
+                b-ok bool
+                b-kind, b-data, b-ok = read-loose(git-dir, entry-oid)
+                b-ok -> {
 
-                ; ensure parent directory exists
-                slash = full-path.rindex('/')
-                slash >= 0 -> {
-                    parent = util.str-range(full-path, 0, slash)
-                    util.mkdir-all(parent)
+                    ; ensure parent directory exists
+                    slash = full-path.rindex('/')
+                    slash >= 0 -> {
+                        parent = util.str-range(full-path, 0, slash)
+                        util.mkdir-all(parent)
+                    }
+                    util.write-file-simple(full-path, b-data)
                 }
-                util.write-file-simple(full-path, b-data)
             }
         }
     }
@@ -1423,7 +1429,17 @@ remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-
     fe-ok = true
     !! {
         ! fe-ok -> break
-        fname, fe-ok = fs.read-dir(dirp)
+        fname-opt = fs.read-dir(dirp)
+        fname = ''
+        fe-ok = false
+        fname-opt: {
+            ok -> {
+                fname = it
+                fe-ok = true
+            }
+
+            -> {}
+        }
         fe-ok -> {
 
             ; skip . and .. and .git

@@ -664,6 +664,26 @@ dec-round17 = (d dec-num) (out dec-num) {
     }
 }
 
+; dec-from-digits: exact decimal-digit-string -> bigint conversion.
+; v0.4.18 removed the string constructor; rebuild the value digit by digit
+; using the public small-integer helpers (_mul-i64 / _add-i64).
+; s str: ASCII decimal digits (non-negative); returns out bigint
+dec-from-digits = (s str) (out bigint) {
+    out = bigint.from-i64(0)
+    n i64 = s.len-bytes()
+    i <- [0..n): {
+        b-opt = s.byte(i)
+        b = b-opt: {
+            ok -> it
+
+            -> 48
+        }
+        d i64 = b - 48
+        out = out._mul-i64(10)
+        out = out._add-i64(d)
+    }
+}
+
 ; dec-pow10: 10^n as a positive bigint (n >= 0). mul-i64 by 10 cannot
 ; overflow a 32-bit limb pair, so linear multiplication is exact here.
 ; n i64
@@ -671,7 +691,7 @@ dec-round17 = (d dec-num) (out dec-num) {
 dec-pow10 = (n i64) (b bigint) {
     b = bigint.from-i64(1)
     i <- [0..n): {
-        b = bigint.mul-i64(b, 10)
+        b = b._mul-i64(10)
     }
 }
 
@@ -681,7 +701,7 @@ dec-pow10 = (n i64) (b bigint) {
 dec-pow2 = (n i64) (b bigint) {
     b = bigint.from-i64(1)
     i <- [0..n): {
-        b = bigint.mul-i64(b, 2)
+        b = b._mul-i64(2)
     }
 }
 
@@ -749,21 +769,21 @@ dec-cmp = (a dec-num, b dec-num) (r i64) {
     da > db -> r = 1
     da < db -> r = -1
     da == db -> {
-        ai bigint = bigint.from-str(a.digits)
-        bi bigint = bigint.from-str(b.digits)
+        ai bigint = dec-from-digits(a.digits)
+        bi bigint = dec-from-digits(b.digits)
         ea = a.exp
         eb = b.exp
 
         #{overflow=wrap}
         ea > eb -> {
             p = dec-pow10(ea - eb)
-            ai = bigint.mul(ai, p)
+            ai = ai.mul-bigint(p)
         }
 
         #{overflow=wrap}
         eb > ea -> {
             p = dec-pow10(eb - ea)
-            bi = bigint.mul(bi, p)
+            bi = bi.mul-bigint(p)
         }
         r = ai.cmp(bi)
     }
@@ -812,14 +832,14 @@ dec-to-f64 = (d dec-num) (v f64) {
         d.neg -> v = 0.0 - v
         return
     }
-    n bigint = bigint.from-str(r17.digits)
+    n bigint = dec-from-digits(r17.digits)
     e >= 0 -> {
-        n = bigint.mul(n, dec-pow10(e))
+        n = n.mul-bigint(dec-pow10(e))
     }
 
     #{overflow=wrap}
     e < 0 -> {
-        n = bigint.mul(n, dec-pow2(1075))
+        n = n.mul-bigint(dec-pow2(1075))
         e = e - 1075
     }
 
@@ -865,7 +885,7 @@ dec-round64 = (n bigint, e i64) (v f64) {
 
         #{overflow=wrap}
         cmp-r > 0 -> {
-            m = bigint.add(m, bigint.from-i64(1))
+            m = m.add-bigint(bigint.from-i64(1))
             bits = bits + 1
         }
 
@@ -873,7 +893,7 @@ dec-round64 = (n bigint, e i64) (v f64) {
         cmp-r == 0 -> {
             odd i64 = m.limbs[0] & 1
             odd == 1 -> {
-                m = bigint.add(m, bigint.from-i64(1))
+                m = m.add-bigint(bigint.from-i64(1))
                 bits = bits + 1
             }
         }
@@ -920,10 +940,10 @@ dec-round64 = (n bigint, e i64) (v f64) {
             }
             half2 bigint = dec-pow2(hs2)
             c2 i64 = r2.cmp(half2)
-            c2 > 0 -> m2 = bigint.add(m2, bigint.from-i64(1))
+            c2 > 0 -> m2 = m2.add-bigint(bigint.from-i64(1))
             c2 == 0 -> {
                 odd2 i64 = m2.limbs[0] & 1
-                odd2 == 1 -> m2 = bigint.add(m2, bigint.from-i64(1))
+                odd2 == 1 -> m2 = m2.add-bigint(bigint.from-i64(1))
             }
         }
         v = bigint-to-f64(m2)

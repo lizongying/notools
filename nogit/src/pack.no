@@ -96,93 +96,95 @@ apply-delta = (base str, delta str) (result ?str) {
         pos = pos + 1
 
         ; high bit set = copy from base
-        (op & 0x80) != 0 -> {
+        {
+            (op & 0x80) != 0 -> {
 
-            ; copy instruction: read variable offset and size
-            copy-off i64 = 0
-            copy-sz i64 = 0
-            (op & 0x01) != 0 -> {
-                copy-off = copy-off | ((delta[pos] & 0xff))
+                ; copy instruction: read variable offset and size
+                copy-off i64 = 0
+                copy-sz i64 = 0
+                (op & 0x01) != 0 -> {
+                    copy-off = copy-off | ((delta[pos] & 0xff))
 
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x02) != 0 -> {
-                copy-off = copy-off | ((delta[pos] & 0xff) << 8)
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x04) != 0 -> {
-                copy-off = copy-off | ((delta[pos] & 0xff) << 16)
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x08) != 0 -> {
-                copy-off = copy-off | ((delta[pos] & 0xff) << 24)
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x10) != 0 -> {
-                copy-sz = copy-sz | ((delta[pos] & 0xff))
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x20) != 0 -> {
-                copy-sz = copy-sz | ((delta[pos] & 0xff) << 8)
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-            (op & 0x40) != 0 -> {
-                copy-sz = copy-sz | ((delta[pos] & 0xff) << 16)
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-
-            ; default size if 0 means 0x10000
-            copy-sz == 0 -> copy-sz = 0x10000
-
-            ; copy bytes from base
-            i <- [0..copy-sz): {
-
-                #{overflow=wrap}
-                copy-off + i >= base.len-bytes() -> break
-                cs str = with-len(1)
-
-                #{index-out=zero}
-                d9v1 str = base[copy-off + i]
-                #{overflow=wrap}
-                cs[0]: {
-                    ok -> it = d9v1
-                    -> _
+                    #{overflow=wrap}
+                    pos = pos + 1
                 }
-                acc = acc - cs
-            }
-        }
+                (op & 0x02) != 0 -> {
+                    copy-off = copy-off | ((delta[pos] & 0xff) << 8)
 
-        -> {
-
-            ; high bit clear = insert literal data (1-127 bytes)
-            ins-len = op & 0x7f
-            ins-len == 0 -> return
-            i <- [0..ins-len): {
-                pos >= delta.len-bytes() -> break
-                cs str = with-len(1)
-                #{index-out=zero}
-                d9v2 str = delta[pos]
-                cs[0]: {
-                    ok -> it = d9v2
-                    -> _
+                    #{overflow=wrap}
+                    pos = pos + 1
                 }
-                acc = acc - cs
+                (op & 0x04) != 0 -> {
+                    copy-off = copy-off | ((delta[pos] & 0xff) << 16)
 
-                #{overflow=wrap}
-                pos = pos + 1
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
+                (op & 0x08) != 0 -> {
+                    copy-off = copy-off | ((delta[pos] & 0xff) << 24)
+
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
+                (op & 0x10) != 0 -> {
+                    copy-sz = copy-sz | ((delta[pos] & 0xff))
+
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
+                (op & 0x20) != 0 -> {
+                    copy-sz = copy-sz | ((delta[pos] & 0xff) << 8)
+
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
+                (op & 0x40) != 0 -> {
+                    copy-sz = copy-sz | ((delta[pos] & 0xff) << 16)
+
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
+
+                ; default size if 0 means 0x10000
+                copy-sz == 0 -> copy-sz = 0x10000
+
+                ; copy bytes from base
+                i <- [0..copy-sz): {
+
+                    #{overflow=wrap}
+                    copy-off + i >= base.len-bytes() -> break
+                    cs str = with-len(1)
+
+                    #{index-out=zero}
+                    d9v1 str = base[copy-off + i]
+                    #{overflow=wrap}
+                    cs[0]: {
+                        ok -> it = d9v1
+                        -> _
+                    }
+                    acc = acc - cs
+                }
+            }
+
+            -> {
+
+                ; high bit clear = insert literal data (1-127 bytes)
+                ins-len = op & 0x7f
+                ins-len == 0 -> return
+                i <- [0..ins-len): {
+                    pos >= delta.len-bytes() -> break
+                    cs str = with-len(1)
+                    #{index-out=zero}
+                    d9v2 str = delta[pos]
+                    cs[0]: {
+                        ok -> it = d9v2
+                        -> _
+                    }
+                    acc = acc - cs
+
+                    #{overflow=wrap}
+                    pos = pos + 1
+                }
             }
         }
     }
@@ -300,7 +302,17 @@ find-pack-object = (git-dir str, o oid) (pack-path str, offset i64, ok bool) {
     pk-ok = true
     !! {
         ! pk-ok -> break
-        fname, pk-ok = fs.read-dir(dirp)
+        fname-opt = fs.read-dir(dirp)
+        fname = ''
+        pk-ok = false
+        fname-opt: {
+            ok -> {
+                fname = it
+                pk-ok = true
+            }
+
+            -> {}
+        }
         pk-ok -> {
             fname.len() > 5 -> {
 
@@ -532,49 +544,51 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
     off-raw = read-u32-be-local-idx(idx, oid-slot)
 
     ; if high bit is set, it's an index into the large-offset table
-    (off-raw & 0x80000000) != 0 -> {
-        large-idx = off-raw & 0x7fffffff
+    {
+        (off-raw & 0x80000000) != 0 -> {
+            large-idx = off-raw & 0x7fffffff
 
-        large-table-start i64 = 0
-        large-table-start-opt = offset-table-start + obj-count * 4
-        large-table-start-opt: {
-            ok -> {
-                large-table-start = it
+            large-table-start i64 = 0
+            large-table-start-opt = offset-table-start + obj-count * 4
+            large-table-start-opt: {
+                ok -> {
+                    large-table-start = it
+                }
+
+                -> {
+                    large-table-start = 0
+                }
             }
 
-            -> {
-                large-table-start = 0
+            ; large offsets are 8 bytes each
+            lo-step i64 = 0
+            lo-step-opt = large-idx * 8
+            lo-step-opt: {
+                ok -> {
+                    lo-step = it
+                }
+
+                -> {
+                    lo-step = 0
+                }
             }
+            lo-slot i64 = 0
+            lo-slot-opt = large-table-start + lo-step
+            lo-slot-opt: {
+                ok -> {
+                    lo-slot = it
+                }
+
+                -> {
+                    lo-slot = 0
+                }
+            }
+            offset = read-u64-be-local-idx(idx, lo-slot)
         }
 
-        ; large offsets are 8 bytes each
-        lo-step i64 = 0
-        lo-step-opt = large-idx * 8
-        lo-step-opt: {
-            ok -> {
-                lo-step = it
-            }
-
-            -> {
-                lo-step = 0
-            }
+        -> {
+            offset = off-raw
         }
-        lo-slot i64 = 0
-        lo-slot-opt = large-table-start + lo-step
-        lo-slot-opt: {
-            ok -> {
-                lo-slot = it
-            }
-
-            -> {
-                lo-slot = 0
-            }
-        }
-        offset = read-u64-be-local-idx(idx, lo-slot)
-    }
-
-    -> {
-        offset = off-raw
     }
 }
 

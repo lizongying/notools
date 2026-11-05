@@ -11,7 +11,7 @@ Nolang 的内建函数（builtin）是由编译器直接生成 LLVM IR 的函数
 
 ### 1. Builtin 不是标准库 .no 文件中的函数
 
-`fs.read-file`、`os.get-env`、`os.now` 等函数在标准库 `.no` 文件中**以注释形式存在**（如 `fs.no` 中 `; read-file = (p str) (content []byte) { ... }`），仅作为文档说明。它们真正的定义在 `src/builtin/` 下的 Go 文件中注册。
+`fs.read-file`、`os.get-env`、`os.now` 等函数在标准库 `.no` 文件中**以注释形式存在**（如 `fs.no` 中 `; read-file = (p str) (content []byte) { }`），仅作为文档说明。它们真正的定义在 `src/builtin/` 下的 Go 文件中注册。
 
 ### 2. 注册位置
 
@@ -49,6 +49,7 @@ src/builtin/
 非字面量参数（变量、表达式）按普通可变参数处理。
 
 ```no
+#{fmt-skip}
 val = 42
 print('result={val}', 42, 'result={val}')  ; result=42 42 result=42
 tmpl = '{val}'
@@ -103,9 +104,10 @@ BuiltinMethod{
 1. **內建函式樁**（`#{buildin}` 在函式定義前）：
 
    ```no
-   ; read-file = (p str) (content ?str) { ... }
+   ; read-file = (p str) (content ?str) { }
    #{buildin}
-   read-file = (p str) (content ?str) { }
+   read-file = (p str) (content ?str) {
+   }
    ```
 
    解析器在 `parser/annotation.go` 的 `attachAnnotations` 中把 `FunctionDefinition.BuiltinStub`
@@ -119,13 +121,19 @@ BuiltinMethod{
    option {
        ok(v t),
        nil,
-       err(e str),
+       err(e error.err),
    }
    ```
 
    置 `TaggedEnumDefinition.Builtin`。變體（名稱/順序/載荷型別）登記進 `sem.EnumVariants`，
    驅動匹配與窮盡性檢查；但底層表示與構造由 builtin runtime 提供（`?t` option 用 `%option`
    型別與 `ok(...)`/`nil`/`err(...)` 構造器），**不生成使用者可見的 struct/union**。
+
+   > `err` 變體的載荷是 std/err 的結構化錯誤 `err.err`（`code` / `msg` / `file` / `line` /
+   > `col`），不再是 `str`（`global.no` 頂部以 `# std/err error` 引入，故寫成 `error.err`）。
+   > 三處必須一致：`src/std/global.no` 的宣告、`checker.errVariantPayloadType`、
+   > `mir.Module.OptionErrRaw`；任一漂移，match 的 `err ->` 臂裡 `it` 的型別就會與 codegen
+   > 實際存入載荷的內容不匹配（err.err 走裝箱指標，讀取側要先解箱）。
 
 > 歷史：早期寫法為 `#{buildin=NAME}`（帶 Go 側 builtin 鍵值）。由於查找只依賴裸名，
 > `=NAME` 屬冗餘，已統一簡化為 `#{buildin}`。
@@ -180,7 +188,7 @@ func FindBuiltinMethod(name string) *BuiltinMethod {
 2. 如果是 `.no` 文件中的函数 → 改写为直接函数调用 `Identifier{fnName}`
 3. 如果不是 → 保持 DotExpression，由 codegen 查 builtin
 
-例如：`fs.read-str` 在 `fs.no` 中有实际定义（`read-str = (p str) (content ?str) { ... }`），所以 `fs.read-str()` 会改写为 `read-str()` 直接调用。而 `fs.read-file` 在 `fs.no` 中只有注释，没有实际定义，所以保持 `fs.read-file` 的 DotExpression 形式，由 codegen 查 builtin。
+例如：`fs.read-str` 在 `fs.no` 中有实际定义（`read-str = (p str) (content ?str) { }`），所以 `fs.read-str()` 会改写为 `read-str()` 直接调用。而 `fs.read-file` 在 `fs.no` 中只有注释，没有实际定义，所以保持 `fs.read-file` 的 DotExpression 形式，由 codegen 查 builtin。
 
 ### ⚠️ 同名遮蔽陷阱：一个裸名两条注册
 
@@ -226,11 +234,12 @@ grep -r 'MethodName.*"read-file"' src/builtin/
 
 2. 在对应的标准库 `.no` 文件中添加注释文档：
    ```no
+   #{fmt-skip}
    ; build-in (ForwardFunc: my-builtin)
    ; my-builtin: 我的内建函数
    ; p: 参数说明
    ; 成功返回 true
-   ; my-builtin = (p str) (ok bool) {  // LLVM: ...
+   ; my-builtin = (p str) (ok bool) {  ; LLVM: ...
    ; }
    ```
 
@@ -270,6 +279,21 @@ lowering 写在 legacy `src/build/llvm/call_stdlib.go` 的 `callDatabase`；该�
   见 `example/sqlite-driver`、`example/mysql-driver`；
 - 删 builtin 注册时，同步删 `src/std` 里对应的 `#{buildin}` 桩，再 `make gen` 重生 stdsig
   （否则烘焙表里仍留着这些名字）。
+
+## Intercepted 內建的可失敗（option）返回
+
+`Intercepted: true` 的內建（如 `str/txt` 的 raw-byte 讀寫器 `.byte` / `.set-byte`）由 MIR
+inline 展開、無 std 函式體。讓它們「可失敗」的做法：`BuiltinMethodList` 條目的 `Return`
+帶 `&parser.NullableType{Type: ...}`（如 `?bool`），參數用 `parser.TypeByte` 等窄型別。
+呼叫端參數檢查會**跳過 option 實參**（`funcargs.go` 的 `strings.HasPrefix(argType, "?")`
+skip），所以 `out.set-byte(i, s.byte(i))` 這類 option 值直接可用；純 i64/char 實參才需 `& 255` 窄化。
+
+emitter 注意：對**有副作用**的寫者（`set-byte`），即使結果被丟棄（`inst.Dst <= NoVal`）也
+**必須照常發射那條 store**（用 `select` 把越界的寫入導到一塊 hoist 到 entry 的 1 位元組 scratch、
+索引鉗到 0，避免野寫），只在真有 `%option` 目的欄位時才組裝 option；這與純讀者
+`emitBuiltinRawByteAt`（`Dst <= NoVal` 直接 early-return）不同。邊界以**實體容量**為準
+（`%txt` 固定 255、`%str-long` 用 `cap` 欄位 field 1）而非 `len`，否則「先填緩衝再 set len」的
+構建內建會全部失效。
 
 ## 常见问题排查
 

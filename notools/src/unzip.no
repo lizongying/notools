@@ -5,14 +5,14 @@
 ;
 ; NOTE: 不使用 zip 标准库结构体方法，也不使用模块级函数传递 []byte 参数。
 ;       Nolang 的 slice 所有权 bug 会导致传递 []byte 给函数时数据损坏。
-;       使用自定义结构体方法，直接通过 .data 访问字节，避免传递 slice。
+;       使用自定义结构体方法，直接通过 .zdata 访问字节，避免传递 slice。
 
-unzip-arch {
-    data []byte
+uz-arch {
+    zdata []byte
 }
 
-; read-u32le: 读取 .data[off..off+4] 的小端序 u32
-unzip-arch.read-u32le = (off i64) (v i64) {
+; read-u32le: 读取 .zdata[off..off+4] 的小端序 u32
+uz-arch.read-u32le = (off i64) (v i64) {
 
     #{overflow=wrap}
     off1 = off + 1
@@ -22,42 +22,42 @@ unzip-arch.read-u32le = (off i64) (v i64) {
 
     #{overflow=wrap}
     off3 = off + 3
-    b0 = .data[off] & 255
-    b1 = .data[off1] & 255
-    b2 = .data[off2] & 255
-    b3 = .data[off3] & 255
+    b0 = .zdata[off] & 255
+    b1 = .zdata[off1] & 255
+    b2 = .zdata[off2] & 255
+    b3 = .zdata[off3] & 255
     v = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 }
 
-; read-u16le: 读取 .data[off..off+2] 的小端序 u16
-unzip-arch.read-u16le = (off i64) (v i64) {
+; read-u16le: 读取 .zdata[off..off+2] 的小端序 u16
+uz-arch.read-u16le = (off i64) (v i64) {
 
     #{overflow=wrap}
     off1 = off + 1
-    b0 = .data[off] & 255
-    b1 = .data[off1] & 255
+    b0 = .zdata[off] & 255
+    b1 = .zdata[off1] & 255
     v = b0 | (b1 << 8)
 }
 
 ; find-eocd: 从尾部搜索 EOCD 签名 (0x06054b50)
-unzip-arch.find-eocd = () (off i64) {
+uz-arch.find-eocd = () (off i64) {
     off = -1
-    n = len(.data)
+    n = len(.zdata)
     n < 22 -> return
 
     #{overflow=wrap}
     i = n - 22
     (i >= 0) {
-        b0 = .data[i] & 255
+        b0 = .zdata[i] & 255
 
         #{overflow=wrap}
-        b1 = .data[i + 1] & 255
+        b1 = .zdata[i + 1] & 255
 
         #{overflow=wrap}
-        b2 = .data[i + 2] & 255
+        b2 = .zdata[i + 2] & 255
 
         #{overflow=wrap}
-        b3 = .data[i + 3] & 255
+        b3 = .zdata[i + 3] & 255
         sig = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
         {
             sig == 101010256 -> {
@@ -72,7 +72,7 @@ unzip-arch.find-eocd = () (off i64) {
 }
 
 ; entry-offset: 计算第 idx 个 CD 条目的偏移
-unzip-arch.entry-offset = (idx i64) (off i64) {
+uz-arch.entry-offset = (idx i64) (off i64) {
     off = 0
     eocd = .find-eocd()
     eocd < 0 -> return
@@ -96,7 +96,7 @@ unzip-arch.entry-offset = (idx i64) (off i64) {
 }
 
 ; read-name: 读取第 idx 个条目的档名
-unzip-arch.read-name = (idx i64) (name str) {
+uz-arch.read-name = (idx i64) (name str) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
@@ -105,13 +105,13 @@ unzip-arch.read-name = (idx i64) (name str) {
     j <- [0..name-len): {
 
         #{overflow=wrap}
-        jc char = .data[off + 46 + j] & 255
+        jc char = .zdata[off + 46 + j] & 255
         name = name - jc.to-str()
     }
 }
 
 ; read-size: 读取第 idx 个条目的原始大小
-unzip-arch.read-size = (idx i64) (sz i64) {
+uz-arch.read-size = (idx i64) (sz i64) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
@@ -119,7 +119,7 @@ unzip-arch.read-size = (idx i64) (sz i64) {
 }
 
 ; read-method: 读取第 idx 个条目的压缩方式
-unzip-arch.read-method = (idx i64) (method i64) {
+uz-arch.read-method = (idx i64) (method i64) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
@@ -127,7 +127,7 @@ unzip-arch.read-method = (idx i64) (method i64) {
 }
 
 ; total: 读取条目总数
-unzip-arch.total = () (total i64) {
+uz-arch.total = () (total i64) {
     total = 0
     eocd = .find-eocd()
     eocd < 0 -> return
@@ -137,7 +137,7 @@ unzip-arch.total = () (total i64) {
 }
 
 ; extract-stored: 提取 method 0 (stored) 条目，直接写文件
-unzip-arch.extract-stored = (idx i64, out-name str) {
+uz-arch.extract-stored = (idx i64, out-name str) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
@@ -159,7 +159,7 @@ unzip-arch.extract-stored = (idx i64, out-name str) {
     i <- [0..sz): {
 
         #{index-out=zero}
-        d9v1 byte = .data[data-off + i]
+        d9v1 byte = .zdata[data-off + i]
         #{overflow=wrap}
         out[i]: {
             ok -> it = d9v1
@@ -170,7 +170,7 @@ unzip-arch.extract-stored = (idx i64, out-name str) {
 }
 
 ; extract-deflate: 提取 method 8 (deflate) 条目，解压后写文件
-unzip-arch.extract-deflate = (idx i64, out-name str) {
+uz-arch.extract-deflate = (idx i64, out-name str) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
@@ -195,7 +195,7 @@ unzip-arch.extract-deflate = (idx i64, out-name str) {
     i <- [0..csz): {
 
         #{index-out=zero}
-        d9v2 byte = .data[data-off + i]
+        d9v2 byte = .zdata[data-off + i]
         #{overflow=wrap}
         compressed[i]: {
             ok -> it = d9v2
@@ -220,13 +220,18 @@ make-parent-dirs = (name str) {
 }
 
 unzip-run = () {
-    argc = os.args()
+    argc = os.args().len()
 
     list-only = false
     filename = ''
 
     i <- [2..argc): {
-        a = os.arg(i)
+        a-opt = os.arg(i)
+        a = a-opt: {
+            ok -> it
+
+            -> ''
+        }
         a == '-l' -> list-only = true
         ! a.starts-with('-') -> {
             filename.len() == 0 -> filename = a
@@ -256,10 +261,10 @@ unzip-run = () {
         err -> {
         }
     }
-    data = raw
+    buf []byte = raw
 
-    archive = unzip-arch {
-        data: data
+    archive = uz-arch {
+        zdata: buf
     }
 
     n = archive.total()

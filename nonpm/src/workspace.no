@@ -29,38 +29,9 @@ discover = (dir str) (paths ?[]str) {
     p = path {
         p: ws-path
     }
-    p.exists() -> {
-        result = fs.read-str(ws-path)
-        result: {
-            ok -> content = it
-
-            nil -> content = ''
-
-            err -> content = ''
-        }
-        patterns = parse-packages-field(content)
-
-        ; expand each glob pattern
-        pat-lines = patterns.split('\n')
-        n = pat-lines.len()
-        i <- [0..n): {
-            pat = pat-lines[i].trim()
-            pat.len() > 0 -> {
-                expand-pattern(dir, pat, acc)
-            }
-        }
-        found = true
-    }
-
-    -> {
-
-        ; check package.json for "workspaces" field
-        pkg-path = dir - '/package.json'
-        pp = path {
-            p: pkg-path
-        }
-        pp.exists() -> {
-            result = fs.read-str(pkg-path)
+    {
+        p.exists() -> {
+            result = fs.read-str(ws-path)
             result: {
                 ok -> content = it
 
@@ -68,20 +39,83 @@ discover = (dir str) (paths ?[]str) {
 
                 err -> content = ''
             }
-            v = json.parse(content)
-            v: {
-                ok -> {
-                    ws ?json = it.get('workspaces')
-                    ws: {
-                        ok -> {
-                            it.is-arr() -> {
-                                n = it.arr-len()
-                                i <- [0..n): {
-                                    entry ?json = it.arr-get(i)
-                                    entry: {
+            patterns = parse-packages-field(content)
+
+            ; expand each glob pattern
+            pat-lines = patterns.split('\n')
+            n = pat-lines.len()
+            i <- [0..n): {
+                pat = pat-lines[i].trim()
+                pat.len() > 0 -> {
+                    expand-pattern(dir, pat, acc)
+                }
+            }
+            found = true
+        }
+
+        -> {
+
+            ; check package.json for "workspaces" field
+            pkg-path = dir - '/package.json'
+            pp = path {
+                p: pkg-path
+            }
+            pp.exists() -> {
+                result = fs.read-str(pkg-path)
+                result: {
+                    ok -> content = it
+
+                    nil -> content = ''
+
+                    err -> content = ''
+                }
+                v = json.parse(content)
+                v: {
+                    ok -> {
+                        ws ?json = it.get('workspaces')
+                        ws: {
+                            ok -> {
+                                it.is-arr() -> {
+                                    n = it.arr-len()
+                                    i <- [0..n): {
+                                        entry ?json = it.arr-get(i)
+                                        entry: {
+                                            ok -> {
+                                                pat, str-ok = it.str()
+                                                expand-pattern(dir, pat, acc)
+                                            }
+
+                                            nil -> {
+                                            }
+
+                                            err -> {
+                                            }
+                                        }
+                                    }
+                                    found = true
+                                }
+
+                                it.is-obj() -> {
+                                    packages ?json = it.get('packages')
+                                    packages: {
                                         ok -> {
-                                            pat, str-ok = it.str()
-                                            expand-pattern(dir, pat, acc)
+                                            n = packages.arr-len()
+                                            i <- [0..n): {
+                                                entry ?json = packages.arr-get(i)
+                                                entry: {
+                                                    ok -> {
+                                                        pat, str-ok = it.str()
+                                                        expand-pattern(dir, pat, acc)
+                                                    }
+
+                                                    nil -> {
+                                                    }
+
+                                                    err -> {
+                                                    }
+                                                }
+                                            }
+                                            found = true
                                         }
 
                                         nil -> {
@@ -91,53 +125,21 @@ discover = (dir str) (paths ?[]str) {
                                         }
                                     }
                                 }
-                                found = true
                             }
 
-                            it.is-obj() -> {
-                                packages ?json = it.get('packages')
-                                packages: {
-                                    ok -> {
-                                        n = packages.arr-len()
-                                        i <- [0..n): {
-                                            entry ?json = packages.arr-get(i)
-                                            entry: {
-                                                ok -> {
-                                                    pat, str-ok = it.str()
-                                                    expand-pattern(dir, pat, acc)
-                                                }
-
-                                                nil -> {
-                                                }
-
-                                                err -> {
-                                                }
-                                            }
-                                        }
-                                        found = true
-                                    }
-
-                                    nil -> {
-                                    }
-
-                                    err -> {
-                                    }
-                                }
+                            nil -> {
                             }
-                        }
 
-                        nil -> {
-                        }
-
-                        err -> {
+                            err -> {
+                            }
                         }
                     }
-                }
 
-                nil -> {
-                }
+                    nil -> {
+                    }
 
-                err -> {
+                    err -> {
+                    }
                 }
             }
         }
@@ -166,21 +168,23 @@ parse-packages-field = (content str) (patterns str) {
             continue
         }
         in-packages -> {
-            trimmed.starts-with('-') -> {
-                val = trimmed.slice(1, trimmed.len()).trim()
-                val.starts-with('"') -> val = val.slice(1, val.len())
+            {
+                trimmed.starts-with('-') -> {
+                    val = trimmed.slice(1, trimmed.len()).trim()
+                    val.starts-with('"') -> val = val.slice(1, val.len())
 
-                #{overflow=wrap}
-                val.ends-with('"') -> val = val.slice(0, val.len() - 1)
-                val.starts-with("'") -> val = val.slice(1, val.len())
+                    #{overflow=wrap}
+                    val.ends-with('"') -> val = val.slice(0, val.len() - 1)
+                    val.starts-with("'") -> val = val.slice(1, val.len())
 
-                #{overflow=wrap}
-                val.ends-with("'") -> val = val.slice(0, val.len() - 1)
-                patterns = patterns - val - '\n'
-            }
+                    #{overflow=wrap}
+                    val.ends-with("'") -> val = val.slice(0, val.len() - 1)
+                    patterns = patterns - val - '\n'
+                }
 
-            -> {
-                in-packages = false
+                -> {
+                    in-packages = false
+                }
             }
         }
     }
@@ -219,23 +223,25 @@ expand-pattern = (base-dir str, pattern str, paths []str) {
 
             #{index-out=zero}
             cur = current[k]
-            seg == '*' -> {
-                entries = fs.dir-entries(cur)
-                e = entries.len()
-                q <- [0..e): {
-                    eq str = entries[q] #{index-out=''}
-                    sub = cur - '/' - eq
-                    fs.is-dir(sub) -> next.push(sub)
+            {
+                seg == '*' -> {
+                    entries = fs.dir-entries(cur)
+                    e = entries.len()
+                    q <- [0..e): {
+                        eq str = entries[q] #{index-out=''}
+                        sub = cur - '/' - eq
+                        fs.is-dir(sub) -> next.push(sub)
+                    }
                 }
-            }
 
-            seg == '**' -> {
-                collect-dirs(cur, next)
-            }
+                seg == '**' -> {
+                    collect-dirs(cur, next)
+                }
 
-            -> {
-                cand = cur - '/' - seg
-                fs.is-dir(cand) -> next.push(cand)
+                -> {
+                    cand = cur - '/' - seg
+                    fs.is-dir(cand) -> next.push(cand)
+                }
             }
         }
         current = next

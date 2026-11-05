@@ -24,7 +24,7 @@ VERSION = 'dev'
 ; argc and add 1 to every arg index to skip the program name.
 
 #{overflow=wrap}
-argc = os.args() - 1
+argc = os.args().len() - 1
 argc < 1 -> {
     print-usage()
     exit(0)
@@ -166,36 +166,38 @@ tree-to-flat-unified = (git-dir str, tree-oid oid, prefix str) (paths str, hexoi
 
         ; build full path
         full-path = nm
-        prefix.len-bytes() > 0 -> {
+        {
+            prefix.len-bytes() > 0 -> {
 
-            full-path = prefix - '/' - nm
-        }
+                full-path = prefix - '/' - nm
+            }
 
-        mode == 16384 -> {
+            mode == 16384 -> {
 
-            ; subtree — recurse
-            sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat-unified(git-dir, entry-oid, full-path)
-            sub-ok -> {
-                paths = paths - sub-paths
-                hexoids = hexoids - sub-hexoids
-                modes = modes - sub-modes
+                ; subtree — recurse
+                sub-paths, sub-hexoids, sub-modes, sub-count, sub-ok = tree-to-flat-unified(git-dir, entry-oid, full-path)
+                sub-ok -> {
+                    paths = paths - sub-paths
+                    hexoids = hexoids - sub-hexoids
+                    modes = modes - sub-modes
+
+                    #{overflow=wrap}
+                    count = count + sub-count
+                }
+            }
+
+            -> {
+
+                ; blob — add as flat entry
+                paths = paths - full-path - '\n'
+                hexoids = hexoids - entry-hex
+                mode-str = util.i64-to-str(mode)
+
+                modes = modes - mode-str - '\n'
 
                 #{overflow=wrap}
-                count = count + sub-count
+                count = count + 1
             }
-        }
-
-        -> {
-
-            ; blob — add as flat entry
-            paths = paths - full-path - '\n'
-            hexoids = hexoids - entry-hex
-            mode-str = util.i64-to-str(mode)
-
-            modes = modes - mode-str - '\n'
-
-            #{overflow=wrap}
-            count = count + 1
         }
     }
     ok = true
@@ -222,38 +224,40 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
 
         ; build full path
         full-path = dest-dir
-        dest-dir.len-bytes() > 0 -> {
+        {
+            dest-dir.len-bytes() > 0 -> {
 
-            #{overflow=wrap}
-            last = dest-dir[dest-dir.len-bytes() - 1]
+                #{overflow=wrap}
+                last = dest-dir[dest-dir.len-bytes() - 1]
 
-            last != 47 -> full-path = dest-dir - '/' - nm
-        }
-        dest-dir.len-bytes() == 0 -> full-path = nm
+                last != 47 -> full-path = dest-dir - '/' - nm
+            }
+            dest-dir.len-bytes() == 0 -> full-path = nm
 
-        mode == 16384 -> {
+            mode == 16384 -> {
 
-            ; subtree — create directory and recurse
-            util.mkdir-all(full-path)
-            sub-ok = checkout-tree-unified(git-dir, entry-oid, full-path)
-        }
+                ; subtree — create directory and recurse
+                util.mkdir-all(full-path)
+                sub-ok = checkout-tree-unified(git-dir, entry-oid, full-path)
+            }
 
-        -> {
+            -> {
 
-            ; blob — read object and write to file
-            b-kind str
-            b-data str
-            b-ok bool
-            b-kind, b-data, b-ok = read-object-unified(git-dir, entry-oid)
-            b-ok -> {
+                ; blob — read object and write to file
+                b-kind str
+                b-data str
+                b-ok bool
+                b-kind, b-data, b-ok = read-object-unified(git-dir, entry-oid)
+                b-ok -> {
 
-                ; ensure parent directory exists
-                slash = full-path.rindex('/')
-                slash >= 0 -> {
-                    parent = util.str-range(full-path, 0, slash)
-                    util.mkdir-all(parent)
+                    ; ensure parent directory exists
+                    slash = full-path.rindex('/')
+                    slash >= 0 -> {
+                        parent = util.str-range(full-path, 0, slash)
+                        util.mkdir-all(parent)
+                    }
+                    util.write-file-simple(full-path, b-data)
                 }
-                util.write-file-simple(full-path, b-data)
             }
         }
     }
@@ -320,27 +324,29 @@ log-packed = (git-dir str, oneline bool, max-count i64) {
             #{overflow=wrap}
             pos = nl + 1
         }
-        oneline -> {
-            short-hex = util.str-range(cur-hex, 0, 7)
+        {
+            oneline -> {
+                short-hex = util.str-range(cur-hex, 0, 7)
 
-            ; first line of message
-            ml = msg.len-bytes()
-            mnl = util.find-byte-str(msg, 10, 0)
-            mnl >= 0 -> ml = mnl
-            first-line = util.str-range(msg, 0, ml)
-            print('{short-hex} {first-line}')
-        }
+                ; first line of message
+                ml = msg.len-bytes()
+                mnl = util.find-byte-str(msg, 10, 0)
+                mnl >= 0 -> ml = mnl
+                first-line = util.str-range(msg, 0, ml)
+                print('{short-hex} {first-line}')
+            }
 
-        -> {
+            -> {
 
-            print('commit ' - cur-hex)
+                print('commit ' - cur-hex)
 
-            print('Author: ' - a-name - ' <' - a-email - '>')
+                print('Author: ' - a-name - ' <' - a-email - '>')
 
-            print('Date:   ' - util.i64-to-str(a-time) - ' ' - a-tz)
-            print('')
-            print('    ' - msg)
-            print('')
+                print('Date:   ' - util.i64-to-str(a-time) - ' ' - a-tz)
+                print('')
+                print('    ' - msg)
+                print('')
+            }
         }
 
         #{overflow=wrap}
@@ -392,11 +398,20 @@ cmd-init = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
-        arg == '--bare' -> bare = true
-        arg == '-q' -> {}
+        arg-idx = i + 1
+        oa-idx-0 = arg-idx
+        arg-arg = os.arg(oa-idx-0)
+        arg = arg-arg: {
+            ok -> it
 
-        -> path = arg
+            -> ''
+        }
+        {
+            arg == '--bare' -> bare = true
+            arg == '-q' -> {}
+
+            -> path = arg
+        }
     }
     cwd = os.get-wd()
     full-path = path
@@ -458,41 +473,51 @@ cmd-add = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        path = os.arg(i + 1)
-        path == '--' -> {}
+        oa-idx-1 = i + 1
+        path-arg = os.arg(oa-idx-1)
+        path = path-arg: {
+            ok -> it
 
-        path == '.' -> {
-
-            ; Add all files in current directory recursively
-            add-directory-recursive(git-dir, work-tree, work-tree, '')
+            -> ''
         }
+        {
+            path == '--' -> {}
 
-        path.starts-with('./') -> {
-            clean-path = util.str-range(path, 2, path.len())
-            clean-path.len() == 0 -> {
+            path == '.' -> {
 
-                ; path is './' — add entire work tree
+                ; Add all files in current directory recursively
                 add-directory-recursive(git-dir, work-tree, work-tree, '')
+            }
+
+            path.starts-with('./') -> {
+                clean-path = util.str-range(path, 2, path.len())
+                {
+                    clean-path.len() == 0 -> {
+
+                        ; path is './' — add entire work tree
+                        add-directory-recursive(git-dir, work-tree, work-tree, '')
+                    }
+
+                    -> {
+
+                        full-path = work-tree - '/' - clean-path
+                        add-file-or-dir(git-dir, work-tree, full-path, clean-path)
+                    }
+                }
+            }
+
+            path.starts-with('/') -> {
+
+                ; absolute path — try to add relative to work-tree
+                add-file-or-dir(git-dir, work-tree, path, path)
             }
 
             -> {
 
-                full-path = work-tree - '/' - clean-path
-                add-file-or-dir(git-dir, work-tree, full-path, clean-path)
+                ; relative path
+                full-path = work-tree - '/' - path
+                add-file-or-dir(git-dir, work-tree, full-path, path)
             }
-        }
-
-        path.starts-with('/') -> {
-
-            ; absolute path — try to add relative to work-tree
-            add-file-or-dir(git-dir, work-tree, path, path)
-        }
-
-        -> {
-
-            ; relative path
-            full-path = work-tree - '/' - path
-            add-file-or-dir(git-dir, work-tree, full-path, path)
         }
     }
 }
@@ -506,7 +531,17 @@ add-directory-recursive = (git-dir str, work-tree str, dir-path str, rel-prefix 
     fe-ok = true
     !! {
         ! fe-ok -> break
-        fname, fe-ok = fs.read-dir(dirp)
+        fname-opt = fs.read-dir(dirp)
+        fname = ''
+        fe-ok = false
+        fname-opt: {
+            ok -> {
+                fname = it
+                fe-ok = true
+            }
+
+            -> {}
+        }
         fe-ok -> {
 
             ; Inline skip check to avoid function return value issues
@@ -598,13 +633,26 @@ cmd-commit = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
+        arg-idx = i + 1
+        oa-idx-2 = arg-idx
+        arg-arg = os.arg(oa-idx-2)
+        arg = arg-arg: {
+            ok -> it
+
+            -> ''
+        }
         arg == '-m' -> {
 
             #{overflow=wrap}
             i < argc - 1 -> {
 
-                message = os.arg(i + 2)
+                oa-idx-3 = i + 2
+                message-opt = os.arg(oa-idx-3)
+                message = message-opt: {
+                    ok -> it
+
+                    -> ''
+                }
             }
         }
     }
@@ -788,13 +836,26 @@ cmd-log = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
+        arg-idx = i + 1
+        oa-idx-4 = arg-idx
+        arg-arg = os.arg(oa-idx-4)
+        arg = arg-arg: {
+            ok -> it
+
+            -> ''
+        }
         arg == '-n' -> {
 
             #{overflow=wrap}
             i < argc - 1 -> {
 
-                nstr = os.arg(i + 2)
+                oa-idx-5 = i + 2
+                nstr-opt = os.arg(oa-idx-5)
+                nstr = nstr-opt: {
+                    ok -> it
+
+                    -> ''
+                }
                 nstr.len() > 0 -> {
                     nv = 0
                     k <- [0..nstr.len()): {
@@ -1140,7 +1201,17 @@ scan-untracked = (base-dir str, dir str, index-names str, index-count i64) (untr
     fe-ok = true
     !! {
         ! fe-ok -> break
-        fname, fe-ok = fs.read-dir(dirp)
+        fname-opt = fs.read-dir(dirp)
+        fname = ''
+        fe-ok = false
+        fname-opt: {
+            ok -> {
+                fname = it
+                fe-ok = true
+            }
+
+            -> {}
+        }
         fe-ok -> {
 
             ; skip . and .. and .git
@@ -1221,13 +1292,23 @@ cmd-branch = (argc i64) {
 
     ; Check for -d (delete) flag
     argc >= 2 -> {
-        arg2 = os.arg(2)
+        arg2-opt = os.arg(2)
+        arg2 = arg2-opt: {
+            ok -> it
+
+            -> ''
+        }
         arg2 == '-d' -> {
             argc < 3 -> {
                 print('usage: git branch -d <name>')
                 return
             }
-            del-name = os.arg(3)
+            del-name-opt = os.arg(3)
+            del-name = del-name-opt: {
+                ok -> it
+
+                -> ''
+            }
             ok = refs.delete-branch(git-dir, del-name)
             {
                 ok -> print('Deleted branch {del-name}')
@@ -1239,7 +1320,12 @@ cmd-branch = (argc i64) {
     }
     {
         argc >= 2 -> {
-            name = os.arg(2)
+            name-opt1 = os.arg(2)
+            name = name-opt1: {
+                ok -> it
+
+                -> ''
+            }
             head-oid-opt = refs.read-ref(git-dir, 'HEAD')
             head-oid oid
             head-ok bool = false
@@ -1318,7 +1404,13 @@ cmd-checkout = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        a = os.arg(i + 1)
+        oa-idx-6 = i + 1
+        a-opt = os.arg(oa-idx-6)
+        a = a-opt: {
+            ok -> it
+
+            -> ''
+        }
         a == '--' -> {
             has-separator = true
 
@@ -1373,7 +1465,13 @@ cmd-checkout = (argc i64) {
         j <- [file-start..argc): {
 
             #{overflow=wrap}
-            req-file = os.arg(j + 1)
+            oa-idx-7 = j + 1
+            req-file-opt = os.arg(oa-idx-7)
+            req-file = req-file-opt: {
+                ok -> it
+
+                -> ''
+            }
 
             ; find this file in the flat list
             pos = 0
@@ -1431,7 +1529,12 @@ cmd-checkout = (argc i64) {
     }
 
     ; Branch checkout mode
-    name = os.arg(2)
+    name-opt1 = os.arg(2)
+    name = name-opt1: {
+        ok -> it
+
+        -> ''
+    }
 
     ref-name = 'refs/heads/' - name
     o-opt = refs.read-ref(git-dir, ref-name)
@@ -1499,13 +1602,23 @@ cmd-tag = (argc i64) {
 
     ; Check for -d (delete) flag
     argc >= 2 -> {
-        arg2 = os.arg(2)
+        arg2-opt = os.arg(2)
+        arg2 = arg2-opt: {
+            ok -> it
+
+            -> ''
+        }
         arg2 == '-d' -> {
             argc < 3 -> {
                 print('usage: git tag -d <name>')
                 return
             }
-            del-name = os.arg(3)
+            del-name-opt = os.arg(3)
+            del-name = del-name-opt: {
+                ok -> it
+
+                -> ''
+            }
             ok = refs.delete-tag(git-dir, del-name)
             {
                 ok -> print('Deleted tag {del-name}')
@@ -1521,18 +1634,35 @@ cmd-tag = (argc i64) {
                 print('usage: git tag -a <name> -m <message>')
                 return
             }
-            tag-name = os.arg(3)
+            tag-name-opt = os.arg(3)
+            tag-name = tag-name-opt: {
+                ok -> it
+
+                -> ''
+            }
             tag-msg = ''
             i <- [4..argc): {
 
                 #{overflow=wrap}
-                a = os.arg(i + 1)
+                oa-idx-8 = i + 1
+                a-opt = os.arg(oa-idx-8)
+                a = a-opt: {
+                    ok -> it
+
+                    -> ''
+                }
                 a == '-m' -> {
 
                     #{overflow=wrap}
                     i < argc - 1 -> {
 
-                        tag-msg = os.arg(i + 2)
+                        oa-idx-9 = i + 2
+                        tag-msg-opt = os.arg(oa-idx-9)
+                        tag-msg = tag-msg-opt: {
+                            ok -> it
+
+                            -> ''
+                        }
                     }
                 }
             }
@@ -1601,7 +1731,12 @@ cmd-tag = (argc i64) {
     }
     {
         argc >= 2 -> {
-            name = os.arg(2)
+            name-opt1 = os.arg(2)
+            name = name-opt1: {
+                ok -> it
+
+                -> ''
+            }
             head-oid-opt = refs.read-ref(git-dir, 'HEAD')
             head-oid oid
             head-ok bool = false
@@ -1662,7 +1797,12 @@ cmd-cat-file = (argc i64) {
         return
     }
     opt = os.arg(2)
-    ref = os.arg(3)
+    ref-opt = os.arg(3)
+    ref = ref-opt: {
+        ok -> it
+
+        -> ''
+    }
     o-opt = revwalk.resolve-ref(git-dir, ref)
     o oid
     ref-ok = false
@@ -1717,7 +1857,14 @@ cmd-hash-object = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
+        arg-idx = i + 1
+        oa-idx-10 = arg-idx
+        arg-arg = os.arg(oa-idx-10)
+        arg = arg-arg: {
+            ok -> it
+
+            -> ''
+        }
         arg == '-w' -> write = true
         arg != '-w' -> path = arg
     }
@@ -1815,19 +1962,21 @@ ls-tree-recurse = (git-dir str, tree-oid oid, prefix str) {
         nm = object.tree-name-raw(raw, i)
         entry-oid = object.tree-id-raw(raw, i)
         full-path = nm
-        prefix.len-bytes() > 0 -> {
-            full-path = prefix - '/' - nm
-        }
-        mode == 16384 -> {
-            ls-tree-recurse(git-dir, entry-oid, full-path)
-        }
+        {
+            prefix.len-bytes() > 0 -> {
+                full-path = prefix - '/' - nm
+            }
+            mode == 16384 -> {
+                ls-tree-recurse(git-dir, entry-oid, full-path)
+            }
 
-        -> {
-            type-name = 'blob'
-            mode == 57344 -> type-name = 'commit'
-            mode-str = octal-mode-str(mode)
-            ch = oid.oid-hex-str(entry-oid)
-            print('{mode-str} {type-name} {ch}\t{full-path}')
+            -> {
+                type-name = 'blob'
+                mode == 57344 -> type-name = 'commit'
+                mode-str = octal-mode-str(mode)
+                ch = oid.oid-hex-str(entry-oid)
+                print('{mode-str} {type-name} {ch}\t{full-path}')
+            }
         }
     }
 }
@@ -1843,7 +1992,12 @@ cmd-ls-tree = (argc i64) {
         return
     }
     recurse = false
-    arg2 = os.arg(2)
+    arg2-opt = os.arg(2)
+    arg2 = arg2-opt: {
+        ok -> it
+
+        -> ''
+    }
     arg2 == '-r' -> {
         recurse = true
         argc < 3 -> {
@@ -1851,7 +2005,12 @@ cmd-ls-tree = (argc i64) {
             return
         }
     }
-    ref = os.arg(2)
+    ref-opt = os.arg(2)
+    ref = ref-opt: {
+        ok -> it
+
+        -> ''
+    }
     recurse -> ref = os.arg(3)
     o-opt = revwalk.resolve-ref(git-dir, ref)
     o oid
@@ -1888,39 +2047,41 @@ cmd-ls-tree = (argc i64) {
             first-line-end = data.len()
             sp-c >= 0 -> first-line-end = sp-c
             first-line = util.str-range(data, 0, first-line-end)
-            first-line.starts-with('tree ') -> {
-                tree-hex = util.str-range(first-line, 5, first-line.len())
-                o-opt = oid.oid-from-hex(tree-hex)
-                o oid
-                ref-ok bool = false
-                o-opt: {
-                    ok -> {
-                        o = o-opt
-                        ref-ok = true
-                    }
+            {
+                first-line.starts-with('tree ') -> {
+                    tree-hex = util.str-range(first-line, 5, first-line.len())
+                    o-opt = oid.oid-from-hex(tree-hex)
+                    o oid
+                    ref-ok bool = false
+                    o-opt: {
+                        ok -> {
+                            o = o-opt
+                            ref-ok = true
+                        }
 
-                    nil || err -> {
+                        nil || err -> {
+                        }
+                    }
+                    ! ref-ok -> {
+                        print('fatal: could not parse tree oid')
+                        return
+                    }
+                    flat-root = o
+                    flat-root-ok = true
+                    kind, data, read-ok = object.read-loose(git-dir, o)
+                    ! read-ok -> {
+                        kind, data, read-ok = pack.read-packed-object(git-dir, o)
+                    }
+                    ! read-ok -> {
+                        print('fatal: could not read tree object')
+                        return
                     }
                 }
-                ! ref-ok -> {
-                    print('fatal: could not parse tree oid')
+
+                -> {
+                    print('fatal: commit has no tree line')
                     return
                 }
-                flat-root = o
-                flat-root-ok = true
-                kind, data, read-ok = object.read-loose(git-dir, o)
-                ! read-ok -> {
-                    kind, data, read-ok = pack.read-packed-object(git-dir, o)
-                }
-                ! read-ok -> {
-                    print('fatal: could not read tree object')
-                    return
-                }
-            }
-
-            -> {
-                print('fatal: commit has no tree line')
-                return
             }
         }
 
@@ -1996,7 +2157,12 @@ cmd-rev-parse = (argc i64) {
         print('fatal: not a git repository')
         return
     }
-    ref = os.arg(2)
+    ref-opt = os.arg(2)
+    ref = ref-opt: {
+        ok -> it
+
+        -> ''
+    }
     o-opt = revwalk.resolve-ref(git-dir, ref)
     o oid
     ref-ok = false
@@ -2068,8 +2234,18 @@ cmd-update-ref = (argc i64) {
         print('fatal: not a git repository')
         return
     }
-    ref = os.arg(2)
-    val = os.arg(3)
+    ref-opt = os.arg(2)
+    ref = ref-opt: {
+        ok -> it
+
+        -> ''
+    }
+    val-opt1 = os.arg(3)
+    val = val-opt1: {
+        ok -> it
+
+        -> ''
+    }
     o-opt = revwalk.resolve-ref(git-dir, val)
     o oid
     ref-ok = false
@@ -2122,7 +2298,12 @@ cmd-config = (argc i64) {
             return
         }
     }
-    key = os.arg(2)
+    key-opt = os.arg(2)
+    key = key-opt: {
+        ok -> it
+
+        -> ''
+    }
     dot = util.find-byte-str(key, 46, 0)
     dot < 0 -> {
         print('invalid key format, use section.key')
@@ -2134,7 +2315,12 @@ cmd-config = (argc i64) {
     skey = util.str-range(key, dot + 1, key.len())
     {
         argc >= 3 -> {
-            val = os.arg(3)
+            val-opt1 = os.arg(3)
+            val = val-opt1: {
+                ok -> it
+
+                -> ''
+            }
             config.config-set(git-dir, section, skey, val)
         }
 
@@ -2197,7 +2383,12 @@ cmd-show = (argc i64) {
         print('fatal: not a git repository')
         return
     }
-    ref = os.arg(2)
+    ref-opt = os.arg(2)
+    ref = ref-opt: {
+        ok -> it
+
+        -> ''
+    }
     o-opt = revwalk.resolve-ref(git-dir, ref)
     o oid
     ref-ok = false
@@ -2247,16 +2438,33 @@ cmd-rm = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
+        arg-idx = i + 1
+        oa-idx-11 = arg-idx
+        arg-arg = os.arg(oa-idx-11)
+        arg = arg-arg: {
+            ok -> it
+
+            -> ''
+        }
         arg == '--cached' -> cached = true
     }
-    path = os.arg(2)
+    path-arg = os.arg(2)
+    path = path-arg: {
+        ok -> it
+
+        -> ''
+    }
     path == '--cached' -> {
         argc < 3 -> {
             print('usage: git rm --cached <path>')
             return
         }
-        path = os.arg(3)
+        path-arg = os.arg(3)
+        path = path-arg: {
+            ok -> it
+
+            -> ''
+        }
     }
 
     ; Remove from index
@@ -2297,7 +2505,14 @@ cmd-reset = (argc i64) {
     i <- [1..argc): {
 
         #{overflow=wrap}
-        arg = os.arg(i + 1)
+        arg-idx = i + 1
+        oa-idx-12 = arg-idx
+        arg-arg = os.arg(oa-idx-12)
+        arg = arg-arg: {
+            ok -> it
+
+            -> ''
+        }
         arg == '--hard' -> hard = true
         arg != '--hard' -> target = arg
     }

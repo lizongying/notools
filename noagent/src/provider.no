@@ -26,11 +26,13 @@ BASE-RETRY-DELAY = 400; ms; doubled each retry (exponential backoff)
 ; unit-tested offline without any network.
 retryable = (status i64, transport-ok bool) (yes bool) {
     yes = false
-    transport-ok == false -> yes = true
+    {
+        transport-ok == false -> yes = true
 
-    -> {
-        status == 429 -> yes = true
-        status >= 500 -> yes = true
+        -> {
+            status == 429 -> yes = true
+            status >= 500 -> yes = true
+        }
     }
 }
 
@@ -145,27 +147,29 @@ parse-response = (body str) (resp messages.message, finish str, ok bool, errmsg 
 
                 ok -> {
                     arr = it
-                    arr.arr-len() <= 0 -> errmsg = 'empty choices'
+                    {
+                        arr.arr-len() <= 0 -> errmsg = 'empty choices'
 
-                    -> {
-                        c0 = arr.arr-get(0)
-                        c0: {
-                            err -> errmsg = 'no choice 0'
+                        -> {
+                            c0 = arr.arr-get(0)
+                            c0: {
+                                err -> errmsg = 'no choice 0'
 
-                            nil -> errmsg = 'no choice 0'
+                                nil -> errmsg = 'no choice 0'
 
-                            ok -> {
-                                choice = it
-                                finish = jsonx.get-str(choice, 'finish_reason')
-                                msg = jsonx.get-child(choice, 'message')
-                                msg: {
-                                    err -> errmsg = 'no message'
+                                ok -> {
+                                    choice = it
+                                    finish = jsonx.get-str(choice, 'finish_reason')
+                                    msg = jsonx.get-child(choice, 'message')
+                                    msg: {
+                                        err -> errmsg = 'no message'
 
-                                    nil -> errmsg = 'no message'
+                                        nil -> errmsg = 'no message'
 
-                                    ok -> resp = to-assistant(it)
+                                        ok -> resp = to-assistant(it)
+                                    }
+                                    ok = true
                                 }
-                                ok = true
                             }
                         }
                     }
@@ -315,58 +319,60 @@ saw-done = () (yes bool) {
 process-sse-line = (line str) {
     payload = stream.strip-data-prefix(line)
     payload != '' -> {
-        stream.is-done(payload) -> got-done = true
+        {
+            stream.is-done(payload) -> got-done = true
 
-        -> {
-            d = stream.extract-content(payload)
-            d != '' -> {
-                content-frags.push(d)
-                do-render -> io.out(d)
-            }
-            f = stream.extract-finish(payload)
-            f != '' -> finish-lst.push(f)
-            tcs = stream.delta-tool-calls(payload)
-            tcs: {
-                err -> {
+            -> {
+                d = stream.extract-content(payload)
+                d != '' -> {
+                    content-frags.push(d)
+                    do-render -> io.out(d)
                 }
+                f = stream.extract-finish(payload)
+                f != '' -> finish-lst.push(f)
+                tcs = stream.delta-tool-calls(payload)
+                tcs: {
+                    err -> {
+                    }
 
-                nil -> {
-                }
+                    nil -> {
+                    }
 
-                ok -> {
-                    arr = it
-                    m = arr.arr-len()
-                    j <- [0..m): {
-                        e = arr.arr-get(j)
-                        e: {
-                            err -> {
-                            }
+                    ok -> {
+                        arr = it
+                        m = arr.arr-len()
+                        j <- [0..m): {
+                            e = arr.arr-get(j)
+                            e: {
+                                err -> {
+                                }
 
-                            nil -> {
-                            }
+                                nil -> {
+                                }
 
-                            ok -> {
-                                idx = stream.tc-index(it)
-                                (idx >= slots) {
-                                    ids.push('')
-                                    names.push('')
-                                    argss.push('')
+                                ok -> {
+                                    idx = stream.tc-index(it)
+                                    (idx >= slots) {
+                                        ids.push('')
+                                        names.push('')
+                                        argss.push('')
+
+                                        #{overflow=wrap}
+                                        slots-opt = slots + 1
+                                        slots-opt: {
+                                            ok -> slots = it
+                                            -> slots = 0
+                                        }
+                                    }
+                                    id = stream.tc-id(it)
+                                    id != '' -> ids[idx] = id
+                                    nm = stream.tc-name(it)
+                                    nm != '' -> names[idx] = nm
+                                    ag = stream.tc-args(it)
 
                                     #{overflow=wrap}
-                                    slots-opt = slots + 1
-                                    slots-opt: {
-                                        ok -> slots = it
-                                        -> slots = 0
-                                    }
+                                    ag != '' -> argss[idx] = argss[idx] - ag
                                 }
-                                id = stream.tc-id(it)
-                                id != '' -> ids[idx] = id
-                                nm = stream.tc-name(it)
-                                nm != '' -> names[idx] = nm
-                                ag = stream.tc-args(it)
-
-                                #{overflow=wrap}
-                                ag != '' -> argss[idx] = argss[idx] - ag
                             }
                         }
                     }

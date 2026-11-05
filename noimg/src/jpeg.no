@@ -34,17 +34,19 @@
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    data.len() < 4 -> {
-        img = nil
-        return
-    }
+    {
+        data.len() < 4 -> {
+            img = nil
+            return
+        }
 
-    ; Check SOI marker
-    (data[0] & 255) == 255 && (data[1] & 255) == 216 -> {}
+        ; Check SOI marker
+        (data[0] & 255) == 255 && (data[1] & 255) == 216 -> {}
 
-    -> {
-        img = nil
-        return
+        -> {
+            img = nil
+            return
+        }
     }
 
     ; Parse JPEG segments
@@ -604,48 +606,50 @@ load = (path str) (img ?image) {
                                                             zrun = (rs >> 4) & 15
                                                             size = rs & 15
 
-                                                            size == 0 -> {
-                                                                zrun == 15 -> {
+                                                            {
+                                                                size == 0 -> {
+                                                                    zrun == 15 -> {
 
-                                                                    ; ZRL: skip 16 zeros
-                                                                    #{overflow=wrap}
-                                                                    k = k + 16
+                                                                        ; ZRL: skip 16 zeros
+                                                                        #{overflow=wrap}
+                                                                        k = k + 16
+                                                                    }
+
+                                                                    -> {
+
+                                                                        ; EOB: rest are zero
+                                                                        k = 64
+                                                                    }
                                                                 }
 
                                                                 -> {
 
-                                                                    ; EOB: rest are zero
-                                                                    k = 64
-                                                                }
-                                                            }
+                                                                    ; Skip zrun zeros
+                                                                    #{overflow=wrap}
+                                                                    k = k + zrun
 
-                                                            -> {
+                                                                    ; Read 'size' bits for the value
+                                                                    val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
+                                                                    val = jpeg-extend-val(val, size)
 
-                                                                ; Skip zrun zeros
-                                                                #{overflow=wrap}
-                                                                k = k + zrun
+                                                                    ; Place coefficient in zigzag order
+                                                                    {
+                                                                        k < 64 -> {
+                                                                            zi = jpeg-zigzag(k)
 
-                                                                ; Read 'size' bits for the value
-                                                                val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
-                                                                val = jpeg-extend-val(val, size)
-
-                                                                ; Place coefficient in zigzag order
-                                                                {
-                                                                    k < 64 -> {
-                                                                        zi = jpeg-zigzag(k)
-
-                                                                        #{index-out=zero}
-                                                                        d9v10 byte = qt[zi]
-                                                                        #{overflow=wrap}
-                                                                        block[zi]: {
-                                                                            ok -> it = (val * d9v10).to-f64()
-                                                                            -> _
+                                                                            #{index-out=zero}
+                                                                            d9v10 byte = qt[zi]
+                                                                            #{overflow=wrap}
+                                                                            block[zi]: {
+                                                                                ok -> it = (val * d9v10).to-f64()
+                                                                                -> _
+                                                                            }
                                                                         }
                                                                     }
-                                                                }
 
-                                                                #{overflow=wrap}
-                                                                k = k + 1
+                                                                    #{overflow=wrap}
+                                                                    k = k + 1
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -941,316 +945,346 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
     pos = sof-pos
     (pos < data.len()) {
         pos < data.len() -> {
-            (data[pos] & 255) != 255 -> {
-
-                #{overflow=wrap}
-                pos = pos + 1
-            }
-
-            -> {
-
-                #{overflow=wrap}
-                marker = data[pos + 1] & 255
-
-                #{overflow=wrap}
-                pos = pos + 2
-                marker == 217 -> {
-                    break
-                }
-                marker >= 208 && marker <= 215 -> {}
-                marker == 218 -> {
-
-                    ; SOS: decode one scan
-                    seg-len = jpeg-read-u16(data, pos)
+            {
+                (data[pos] & 255) != 255 -> {
 
                     #{overflow=wrap}
-                    scan-components = data[pos + 2] & 255
-                    i <- [0..scan-components): {
+                    pos = pos + 1
+                }
+
+                -> {
+
+                    #{overflow=wrap}
+                    marker = data[pos + 1] & 255
+
+                    #{overflow=wrap}
+                    pos = pos + 2
+                    marker == 217 -> {
+                        break
+                    }
+                    marker >= 208 && marker <= 215 -> {}
+                    marker == 218 -> {
+
+                        ; SOS: decode one scan
+                        seg-len = jpeg-read-u16(data, pos)
 
                         #{overflow=wrap}
-                        base = pos + 3 + i * 2
-                        cs-id = data[base] & 255
+                        scan-components = data[pos + 2] & 255
+                        i <- [0..scan-components): {
 
-                        #{overflow=wrap}
-                        cs-ta = data[base + 1] & 255
-                        ci <- [0..components): {
-                            comp-ids[ci] == cs-id -> {
-                                comp-dc-table[ci]: {
-                                    ok -> it = (cs-ta >> 4) & 15
-                                    -> _
-                                }
-                                comp-ac-table[ci]: {
-                                    ok -> it = cs-ta & 15
-                                    -> _
-                                }
-                                pcomp-idx[i]: {
-                                    ok -> it = ci
-                                    -> _
+                            #{overflow=wrap}
+                            base = pos + 3 + i * 2
+                            cs-id = data[base] & 255
+
+                            #{overflow=wrap}
+                            cs-ta = data[base + 1] & 255
+                            ci <- [0..components): {
+                                comp-ids[ci] == cs-id -> {
+                                    comp-dc-table[ci]: {
+                                        ok -> it = (cs-ta >> 4) & 15
+                                        -> _
+                                    }
+                                    comp-ac-table[ci]: {
+                                        ok -> it = cs-ta & 15
+                                        -> _
+                                    }
+                                    pcomp-idx[i]: {
+                                        ok -> it = ci
+                                        -> _
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    #{overflow=wrap}
-                    pos = pos + seg-len
-                    ss = data[pos - 3] & 255
-                    se = data[pos - 2] & 255
-                    ah-al = data[pos - 1] & 255
-                    ah = (ah-al >> 4) & 15
-                    al = ah-al & 15
-                    scan-start = pos
-                    scan-end = jpeg-find-next-marker(data, pos)
+                        #{overflow=wrap}
+                        pos = pos + seg-len
+                        ss = data[pos - 3] & 255
+                        se = data[pos - 2] & 255
+                        ah-al = data[pos - 1] & 255
+                        ah = (ah-al >> 4) & 15
+                        al = ah-al & 15
+                        scan-start = pos
+                        scan-end = jpeg-find-next-marker(data, pos)
 
-                    ; Decode this scan's entropy data into coef-all
-                    bit-pos = scan-start
-                    bit-buf = 0
-                    bit-cnt = 0
-                    my <- [0..pn-mcu-y): {
-                        mx <- [0..pn-mcu-x): {
-                            sc <- [0..scan-components): {
-                                ci = pcomp-idx[sc]
-                                qt-id = comp-qt[ci]
-                                qt []byte = qt0
-                                qt-id == 1 -> qt = qt1
-                                qt-id == 2 -> qt = qt2
-                                qt-id == 3 -> qt = qt3
+                        ; Decode this scan's entropy data into coef-all
+                        bit-pos = scan-start
+                        bit-buf = 0
+                        bit-cnt = 0
+                        my <- [0..pn-mcu-y): {
+                            mx <- [0..pn-mcu-x): {
+                                sc <- [0..scan-components): {
+                                    ci = pcomp-idx[sc]
+                                    qt-id = comp-qt[ci]
+                                    qt []byte = qt0
+                                    qt-id == 1 -> qt = qt1
+                                    qt-id == 2 -> qt = qt2
+                                    qt-id == 3 -> qt = qt3
 
-                                #{index-out=zero}
-                                dc-tid = comp-dc-table[ci]
+                                    #{index-out=zero}
+                                    dc-tid = comp-dc-table[ci]
 
-                                #{index-out=zero}
-                                ac-tid = comp-ac-table[ci]
-                                n-blk-h = comp-h[ci]
-                                n-blk-v = comp-v[ci]
+                                    #{index-out=zero}
+                                    ac-tid = comp-ac-table[ci]
+                                    n-blk-h = comp-h[ci]
+                                    n-blk-v = comp-v[ci]
 
-                                #{overflow=wrap}
-                                blocks-per-row = (ppad-w * comp-h[ci] / pmax-h) / 8
-                                by <- [0..n-blk-v): {
-                                    bx <- [0..n-blk-h): {
+                                    #{overflow=wrap}
+                                    blocks-per-row = (ppad-w * comp-h[ci] / pmax-h) / 8
+                                    by <- [0..n-blk-v): {
+                                        bx <- [0..n-blk-h): {
 
-                                        #{overflow=wrap}
-                                        blk-x = mx * n-blk-h + bx
+                                            #{overflow=wrap}
+                                            blk-x = mx * n-blk-h + bx
 
-                                        #{overflow=wrap}
-                                        blk-y = my * n-blk-v + by
+                                            #{overflow=wrap}
+                                            blk-y = my * n-blk-v + by
 
-                                        #{overflow=wrap}
-                                        cbase = ci * pplane-max + (blk-y * blocks-per-row + blk-x) * 64
-                                        ss == 0 -> {
-                                            ah == 0 -> {
-                                                prev-dc = pprev-dc-0
-                                                ci == 1 -> prev-dc = pprev-dc-1
-                                                ci == 2 -> prev-dc = pprev-dc-2
-                                                ci == 3 -> prev-dc = pprev-dc-3
-                                                dc-val, bit-pos, bit-buf, bit-cnt = jpeg-decode-dc(data, bit-pos, bit-buf, bit-cnt, dc-tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
-
-                                                #{overflow=wrap}
-                                                dc-val = dc-val + prev-dc
-                                                ci == 0 -> pprev-dc-0 = dc-val
-                                                ci == 1 -> pprev-dc-1 = dc-val
-                                                ci == 2 -> pprev-dc-2 = dc-val
-                                                ci == 3 -> pprev-dc-3 = dc-val
-
-                                                #{overflow=wrap}
-                                                coef-all[cbase]: {
-                                                    ok -> it = dc-val * (1 << al)
-                                                    -> _
-                                                }
-                                            }
-
-                                            -> {
-                                                bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
-                                                bit == 1 -> {
-
-                                                    #{index-out=zero}
-                                                    d9v11 i64 = coef-all[cbase]
-                                                    #{overflow=wrap}
-                                                    coef-all[cbase]: {
-                                                        ok -> it = d9v11 + (1 << al)
-                                                        -> _
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        -> {
-                                            ah == 0 -> {
-                                                k = ss
-                                                kg = 0
-                                                (kg < 64) {
-                                                    kg = kg + 1
-                                                    k > se -> {
-                                                        break
-                                                    }
-                                                    rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
-                                                    zrun = (rs >> 4) & 15
-                                                    size = rs & 15
-                                                    size == 0 -> {
-                                                        zrun == 15 -> {
-
-                                                            #{overflow=wrap}
-                                                            k = k + 16
-                                                        }
-
-                                                        -> {
-
-                                                            #{overflow=wrap}
-                                                            k = se + 1
-                                                        }
-                                                    }
-
-                                                    -> {
+                                            #{overflow=wrap}
+                                            cbase = ci * pplane-max + (blk-y * blocks-per-row + blk-x) * 64
+                                            {
+                                                ss == 0 -> {
+                                                    ah == 0 -> {
+                                                        prev-dc = pprev-dc-0
+                                                        ci == 1 -> prev-dc = pprev-dc-1
+                                                        ci == 2 -> prev-dc = pprev-dc-2
+                                                        ci == 3 -> prev-dc = pprev-dc-3
+                                                        dc-val, bit-pos, bit-buf, bit-cnt = jpeg-decode-dc(data, bit-pos, bit-buf, bit-cnt, dc-tid, dc-lens, dc-tables, dc-counts, dc-maxcode, dc-valptr)
 
                                                         #{overflow=wrap}
-                                                        k = k + zrun
-                                                        k > se -> {
-                                                            k = se + 1
-                                                        }
+                                                        dc-val = dc-val + prev-dc
+                                                        ci == 0 -> pprev-dc-0 = dc-val
+                                                        ci == 1 -> pprev-dc-1 = dc-val
+                                                        ci == 2 -> pprev-dc-2 = dc-val
+                                                        ci == 3 -> pprev-dc-3 = dc-val
 
-                                                        -> {
-                                                            val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
-                                                            val = jpeg-extend-val(val, size)
-                                                            k > 63 -> {
-                                                                k = se + 1
-                                                            }
-
-                                                            -> {
-                                                                zi = jpeg-zigzag(k)
-
-                                                                #{overflow=wrap}
-                                                                coef-all[cbase + zi]: {
-                                                                    ok -> it = val * (1 << al)
-                                                                    -> _
-                                                                }
-
-                                                                #{overflow=wrap}
-                                                                k = k + 1
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            -> {
-                                                p1 = 1 << al
-                                                m1 = 0 - (1 << al)
-                                                k = ss
-                                                kg = 0
-                                                (kg < 64) {
-                                                    kg = kg + 1
-                                                    k > se -> {
-                                                        break
-                                                    }
-                                                    rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
-                                                    acr = (rs >> 4) & 15
-                                                    acs = rs & 15
-                                                    acs == 0 -> {
-                                                        acr == 15 -> {
-
-                                                            #{overflow=wrap}
-                                                            k = k + 16
-                                                        }
-
-                                                        -> {
-
-                                                            #{overflow=wrap}
-                                                            k = se + 1
+                                                        #{overflow=wrap}
+                                                        coef-all[cbase]: {
+                                                            ok -> it = dc-val * (1 << al)
+                                                            -> _
                                                         }
                                                     }
 
                                                     -> {
-                                                        i2 <- [0..acr): {
+                                                        bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
+                                                        bit == 1 -> {
 
+                                                            #{index-out=zero}
+                                                            d9v11 i64 = coef-all[cbase]
                                                             #{overflow=wrap}
-                                                            kk = k + i2
-                                                            kk > se -> {}
+                                                            coef-all[cbase]: {
+                                                                ok -> it = d9v11 + (1 << al)
+                                                                -> _
+                                                            }
+                                                        }
+                                                    }
+                                                }
 
-                                                            -> {
-                                                                kk > 63 -> {}
-
-                                                                -> {
-                                                                    zi = jpeg-zigzag(kk)
-                                                                    cz = coef-all[cbase + zi]
-                                                                    cz != 0 -> {
-                                                                        bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
-                                                                        cz > 0 -> {
-                                                                            bit == 1 -> {
+                                                -> {
+                                                    {
+                                                        ah == 0 -> {
+                                                            k = ss
+                                                            kg = 0
+                                                            (kg < 64) {
+                                                                kg = kg + 1
+                                                                k > se -> {
+                                                                    break
+                                                                }
+                                                                rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
+                                                                zrun = (rs >> 4) & 15
+                                                                size = rs & 15
+                                                                {
+                                                                    size == 0 -> {
+                                                                        {
+                                                                            zrun == 15 -> {
 
                                                                                 #{overflow=wrap}
-                                                                                coef-all[cbase + zi]: {
-                                                                                    ok -> it = cz + p1
-                                                                                    -> _
-                                                                                }
+                                                                                k = k + 16
                                                                             }
 
                                                                             -> {
 
                                                                                 #{overflow=wrap}
-                                                                                coef-all[cbase + zi]: {
-                                                                                    ok -> it = cz - p1
-                                                                                    -> _
+                                                                                k = se + 1
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    -> {
+
+                                                                        #{overflow=wrap}
+                                                                        k = k + zrun
+                                                                        {
+                                                                            k > se -> {
+                                                                                k = se + 1
+                                                                            }
+
+                                                                            -> {
+                                                                                val, bit-pos, bit-buf, bit-cnt = jpeg-read-bits(data, bit-pos, bit-buf, bit-cnt, size)
+                                                                                val = jpeg-extend-val(val, size)
+                                                                                {
+                                                                                    k > 63 -> {
+                                                                                        k = se + 1
+                                                                                    }
+
+                                                                                    -> {
+                                                                                        zi = jpeg-zigzag(k)
+
+                                                                                        #{overflow=wrap}
+                                                                                        coef-all[cbase + zi]: {
+                                                                                            ok -> it = val * (1 << al)
+                                                                                            -> _
+                                                                                        }
+
+                                                                                        #{overflow=wrap}
+                                                                                        k = k + 1
+                                                                                    }
                                                                                 }
                                                                             }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        -> {
+                                                            p1 = 1 << al
+                                                            m1 = 0 - (1 << al)
+                                                            k = ss
+                                                            kg = 0
+                                                            (kg < 64) {
+                                                                kg = kg + 1
+                                                                k > se -> {
+                                                                    break
+                                                                }
+                                                                rs, bit-pos, bit-buf, bit-cnt = jpeg-decode-ac(data, bit-pos, bit-buf, bit-cnt, ac-tid, ac-lens, ac-tables, ac-counts, ac-maxcode, ac-valptr)
+                                                                acr = (rs >> 4) & 15
+                                                                acs = rs & 15
+                                                                {
+                                                                    acs == 0 -> {
+                                                                        acr == 15 -> {
+
+                                                                            #{overflow=wrap}
+                                                                            k = k + 16
                                                                         }
 
                                                                         -> {
-                                                                            bit == 1 -> {
 
-                                                                                #{overflow=wrap}
-                                                                                coef-all[cbase + zi]: {
-                                                                                    ok -> it = cz - p1
-                                                                                    -> _
+                                                                            #{overflow=wrap}
+                                                                            k = se + 1
+                                                                        }
+                                                                    }
+
+                                                                    -> {
+                                                                        i2 <- [0..acr): {
+
+                                                                            #{overflow=wrap}
+                                                                            kk = k + i2
+                                                                            {
+                                                                                kk > se -> {}
+
+                                                                                -> {
+                                                                                    {
+                                                                                        kk > 63 -> {}
+
+                                                                                        -> {
+                                                                                            zi = jpeg-zigzag(kk)
+                                                                                            cz = coef-all[cbase + zi]
+                                                                                            cz != 0 -> {
+                                                                                                bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
+                                                                                                {
+                                                                                                    cz > 0 -> {
+                                                                                                        bit == 1 -> {
+
+                                                                                                            #{overflow=wrap}
+                                                                                                            coef-all[cbase + zi]: {
+                                                                                                                ok -> it = cz + p1
+                                                                                                                -> _
+                                                                                                            }
+                                                                                                        }
+
+                                                                                                        -> {
+
+                                                                                                            #{overflow=wrap}
+                                                                                                            coef-all[cbase + zi]: {
+                                                                                                                ok -> it = cz - p1
+                                                                                                                -> _
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+
+                                                                                                    -> {
+                                                                                                        {
+                                                                                                            bit == 1 -> {
+
+                                                                                                                #{overflow=wrap}
+                                                                                                                coef-all[cbase + zi]: {
+                                                                                                                    ok -> it = cz - p1
+                                                                                                                    -> _
+                                                                                                                }
+                                                                                                            }
+
+                                                                                                            -> {
+
+                                                                                                                #{overflow=wrap}
+                                                                                                                coef-all[cbase + zi]: {
+                                                                                                                    ok -> it = cz + p1
+                                                                                                                    -> _
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
                                                                                 }
+                                                                            }
+                                                                        }
+
+                                                                        #{overflow=wrap}
+                                                                        k = k + acr
+                                                                        {
+                                                                            k > se -> {
+                                                                                k = se + 1
                                                                             }
 
                                                                             -> {
+                                                                                {
+                                                                                    k > 63 -> {
+                                                                                        k = se + 1
+                                                                                    }
 
-                                                                                #{overflow=wrap}
-                                                                                coef-all[cbase + zi]: {
-                                                                                    ok -> it = cz + p1
-                                                                                    -> _
+                                                                                    -> {
+                                                                                        bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
+                                                                                        zi = jpeg-zigzag(k)
+                                                                                        {
+                                                                                            bit == 1 -> {
+
+                                                                                                #{overflow=wrap}
+                                                                                                coef-all[cbase + zi]: {
+                                                                                                    ok -> it = p1
+                                                                                                    -> _
+                                                                                                }
+                                                                                            }
+
+                                                                                            -> {
+
+                                                                                                #{overflow=wrap}
+                                                                                                coef-all[cbase + zi]: {
+                                                                                                    ok -> it = m1
+                                                                                                    -> _
+                                                                                                }
+                                                                                            }
+                                                                                        }
+
+                                                                                        #{overflow=wrap}
+                                                                                        k = k + 1
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         }
                                                                     }
                                                                 }
-                                                            }
-                                                        }
-
-                                                        #{overflow=wrap}
-                                                        k = k + acr
-                                                        k > se -> {
-                                                            k = se + 1
-                                                        }
-
-                                                        -> {
-                                                            k > 63 -> {
-                                                                k = se + 1
-                                                            }
-
-                                                            -> {
-                                                                bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
-                                                                zi = jpeg-zigzag(k)
-                                                                bit == 1 -> {
-
-                                                                    #{overflow=wrap}
-                                                                    coef-all[cbase + zi]: {
-                                                                        ok -> it = p1
-                                                                        -> _
-                                                                    }
-                                                                }
-
-                                                                -> {
-
-                                                                    #{overflow=wrap}
-                                                                    coef-all[cbase + zi]: {
-                                                                        ok -> it = m1
-                                                                        -> _
-                                                                    }
-                                                                }
-
-                                                                #{overflow=wrap}
-                                                                k = k + 1
                                                             }
                                                         }
                                                     }
@@ -1260,19 +1294,21 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                     }
                                 }
                             }
+                            pos = scan-end
                         }
-                        pos = scan-end
-                    }
-                    -> {
-                        (marker == 192 || marker == 194 || marker == 219 || marker == 196) -> {
-                            seg-len = jpeg-read-u16(data, pos)
-
-                            #{overflow=wrap}
-                            pos = pos + seg-len
-                        }
-
                         -> {
-                            pos = pos + 2
+                            {
+                                (marker == 192 || marker == 194 || marker == 219 || marker == 196) -> {
+                                    seg-len = jpeg-read-u16(data, pos)
+
+                                    #{overflow=wrap}
+                                    pos = pos + seg-len
+                                }
+
+                                -> {
+                                    pos = pos + 2
+                                }
+                            }
                         }
                     }
                 }
@@ -1528,29 +1564,43 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                     b = data[pos] & 255
 
                     ; Skip 0xFF stuffing (FF 00 → FF)
-                    b == 255 -> {
+                    {
+                        b == 255 -> {
 
-                        #{overflow=wrap}
-                        {
-                            pos + 1 < data.len() -> {
-
-                                #{overflow=wrap}
-                                next = data[pos + 1] & 255
-                                next == 0 -> {
-
-                                    ; FF00 → stuffed FF
-                                    buf = (buf << 8) | 255
+                            #{overflow=wrap}
+                            {
+                                pos + 1 < data.len() -> {
 
                                     #{overflow=wrap}
-                                    cnt = cnt + 8
+                                    next = data[pos + 1] & 255
+                                    {
+                                        next == 0 -> {
 
-                                    #{overflow=wrap}
-                                    pos = pos + 2
+                                            ; FF00 → stuffed FF
+                                            buf = (buf << 8) | 255
+
+                                            #{overflow=wrap}
+                                            cnt = cnt + 8
+
+                                            #{overflow=wrap}
+                                            pos = pos + 2
+                                        }
+
+                                        -> {
+
+                                            ; RST marker or EOI — stop reading
+                                            buf = (buf << 8)
+
+                                            #{overflow=wrap}
+                                            cnt = cnt + 8
+
+                                            #{overflow=wrap}
+                                            pos = pos + 1
+                                        }
+                                    }
                                 }
 
                                 -> {
-
-                                    ; RST marker or EOI — stop reading
                                     buf = (buf << 8)
 
                                     #{overflow=wrap}
@@ -1560,27 +1610,17 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                     pos = pos + 1
                                 }
                             }
-
-                            -> {
-                                buf = (buf << 8)
-
-                                #{overflow=wrap}
-                                cnt = cnt + 8
-
-                                #{overflow=wrap}
-                                pos = pos + 1
-                            }
                         }
-                    }
 
-                    -> {
-                        buf = (buf << 8) | b
+                        -> {
+                            buf = (buf << 8) | b
 
-                        #{overflow=wrap}
-                        cnt = cnt + 8
+                            #{overflow=wrap}
+                            cnt = cnt + 8
 
-                        #{overflow=wrap}
-                        pos = pos + 1
+                            #{overflow=wrap}
+                            pos = pos + 1
+                        }
                     }
                 }
 
@@ -1617,20 +1657,32 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
         cnt == 0 -> {
             pos < data.len() -> {
                 b i64 = data[pos] & 255
-                b == 255 -> {
+                {
+                    b == 255 -> {
 
-                    #{overflow=wrap}
-                    {
-                        pos + 1 < data.len() -> {
-
-                            #{overflow=wrap}
-                            next = data[pos + 1] & 255
-                            next == 0 -> {
-                                buf = 255
-                                cnt = 8
+                        #{overflow=wrap}
+                        {
+                            pos + 1 < data.len() -> {
 
                                 #{overflow=wrap}
-                                pos = pos + 2
+                                next = data[pos + 1] & 255
+                                {
+                                    next == 0 -> {
+                                        buf = 255
+                                        cnt = 8
+
+                                        #{overflow=wrap}
+                                        pos = pos + 2
+                                    }
+
+                                    -> {
+                                        buf = 0
+                                        cnt = 8
+
+                                        #{overflow=wrap}
+                                        pos = pos + 1
+                                    }
+                                }
                             }
 
                             -> {
@@ -1641,23 +1693,15 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                                 pos = pos + 1
                             }
                         }
-
-                        -> {
-                            buf = 0
-                            cnt = 8
-
-                            #{overflow=wrap}
-                            pos = pos + 1
-                        }
                     }
-                }
 
-                -> {
-                    buf = b
-                    cnt = 8
+                    -> {
+                        buf = b
+                        cnt = 8
 
-                    #{overflow=wrap}
-                    pos = pos + 1
+                        #{overflow=wrap}
+                        pos = pos + 1
+                    }
                 }
             }
 
@@ -2016,63 +2060,65 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
         buf.push(qt-luma[zi])
     }
 
-    ! is-gray -> {
-        buf.push(255)
-        buf.push(219)
-        buf.push(0)
-        buf.push(67)
-        buf.push(1)
-        i <- [0..64): {
-            zi = jpeg-zigzag(i)
-            buf.push(qt-chroma[zi])
+    {
+        ! is-gray -> {
+            buf.push(255)
+            buf.push(219)
+            buf.push(0)
+            buf.push(67)
+            buf.push(1)
+            i <- [0..64): {
+                zi = jpeg-zigzag(i)
+                buf.push(qt-chroma[zi])
+            }
         }
-    }
 
-    ; --- SOF0 (Start of Frame, baseline) ---
-    is-gray -> {
-        buf.push(255)
-        buf.push(192)
-        buf.push(0)
-        buf.push(11)
-        buf.push(8)
-        buf.push((h >> 8) & 255)
-        buf.push(h & 255)
-        buf.push((w >> 8) & 255)
-        buf.push(w & 255)
-        buf.push(1)
-        buf.push(1)
-        buf.push(17)
-        buf.push(0)
-    }
-
-    -> {
-
-        ; Color JPEG: 3 components (Y, Cb, Cr)
-        ; 4:2:0: Y sampling = 0x22 (h=2,v=2), Cb/Cr = 0x11 (h=1,v=1)
-        ; 4:4:4: all components = 0x11 (h=1,v=1)
-        y-sampling = 34; 0x22 = 4:2:0
-        {
-            subsampling == 1 -> y-sampling = 17; 0x11 = 4:4:4
+        ; --- SOF0 (Start of Frame, baseline) ---
+        is-gray -> {
+            buf.push(255)
+            buf.push(192)
+            buf.push(0)
+            buf.push(11)
+            buf.push(8)
+            buf.push((h >> 8) & 255)
+            buf.push(h & 255)
+            buf.push((w >> 8) & 255)
+            buf.push(w & 255)
+            buf.push(1)
+            buf.push(1)
+            buf.push(17)
+            buf.push(0)
         }
-        buf.push(255)
-        buf.push(192)
-        buf.push(0)
-        buf.push(17)
-        buf.push(8)
-        buf.push((h >> 8) & 255)
-        buf.push(h & 255)
-        buf.push((w >> 8) & 255)
-        buf.push(w & 255)
-        buf.push(3)
-        buf.push(1)
-        buf.push(y-sampling)
-        buf.push(0)
-        buf.push(2)
-        buf.push(17)
-        buf.push(1)
-        buf.push(3)
-        buf.push(17)
-        buf.push(1)
+
+        -> {
+
+            ; Color JPEG: 3 components (Y, Cb, Cr)
+            ; 4:2:0: Y sampling = 0x22 (h=2,v=2), Cb/Cr = 0x11 (h=1,v=1)
+            ; 4:4:4: all components = 0x11 (h=1,v=1)
+            y-sampling = 34; 0x22 = 4:2:0
+            {
+                subsampling == 1 -> y-sampling = 17; 0x11 = 4:4:4
+            }
+            buf.push(255)
+            buf.push(192)
+            buf.push(0)
+            buf.push(17)
+            buf.push(8)
+            buf.push((h >> 8) & 255)
+            buf.push(h & 255)
+            buf.push((w >> 8) & 255)
+            buf.push(w & 255)
+            buf.push(3)
+            buf.push(1)
+            buf.push(y-sampling)
+            buf.push(0)
+            buf.push(2)
+            buf.push(17)
+            buf.push(1)
+            buf.push(3)
+            buf.push(17)
+            buf.push(1)
+        }
     }
 
     ; --- DHT (Huffman Tables) ---
@@ -2114,75 +2160,77 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
     jpeg-write-dht(buf, 0, 0, dc-luma-len, dc-luma-val, 12)
     jpeg-write-dht(buf, 1, 0, ac-luma-len, ac-luma-val, 162)
 
-    ! is-gray -> {
-        dc-chroma-len [16]i64 = [
-            0, 3, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 0, 0, 0, 0, 0,
-        ]
-        dc-chroma-val [12]i64 = [
-            0, 1, 2, 3, 4, 5, 6, 7,
-            8, 9, 10, 11,
-        ]
-        ac-chroma-len [16]i64 = [
-            0, 2, 1, 2, 4, 4, 3, 4,
-            7, 5, 4, 4, 0, 1, 2, 119,
-        ]
-        ac-chroma-val [162]i64 = [
-            0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
-            0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
-            0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
-            0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xd0,
-            0x15, 0x62, 0x72, 0xe1, 0xf0, 0x24, 0x83, 0x82,
-            0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25,
-            0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36,
-            0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46,
-            0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56,
-            0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66,
-            0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76,
-            0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85,
-            0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94,
-            0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
-            0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2,
-            0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba,
-            0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
-            0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8,
-            0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
-            0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
-            0xf7, 0xf8, 0xf9, 0xfa,
-        ]
-        jpeg-write-dht(buf, 0, 1, dc-chroma-len, dc-chroma-val, 12)
-        jpeg-write-dht(buf, 1, 1, ac-chroma-len, ac-chroma-val, 162)
-    }
+    {
+        ! is-gray -> {
+            dc-chroma-len [16]i64 = [
+                0, 3, 1, 1, 1, 1, 1, 1,
+                1, 1, 1, 0, 0, 0, 0, 0,
+            ]
+            dc-chroma-val [12]i64 = [
+                0, 1, 2, 3, 4, 5, 6, 7,
+                8, 9, 10, 11,
+            ]
+            ac-chroma-len [16]i64 = [
+                0, 2, 1, 2, 4, 4, 3, 4,
+                7, 5, 4, 4, 0, 1, 2, 119,
+            ]
+            ac-chroma-val [162]i64 = [
+                0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
+                0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+                0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+                0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xd0,
+                0x15, 0x62, 0x72, 0xe1, 0xf0, 0x24, 0x83, 0x82,
+                0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25,
+                0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36,
+                0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46,
+                0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56,
+                0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66,
+                0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76,
+                0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85,
+                0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94,
+                0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
+                0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2,
+                0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba,
+                0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
+                0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8,
+                0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+                0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
+                0xf7, 0xf8, 0xf9, 0xfa,
+            ]
+            jpeg-write-dht(buf, 0, 1, dc-chroma-len, dc-chroma-val, 12)
+            jpeg-write-dht(buf, 1, 1, ac-chroma-len, ac-chroma-val, 162)
+        }
 
-    ; --- SOS (Start of Scan) ---
-    is-gray -> {
-        buf.push(255)
-        buf.push(218)
-        buf.push(0)
-        buf.push(8)
-        buf.push(1)
-        buf.push(1)
-        buf.push(0)
-        buf.push(0)
-        buf.push(63)
-        buf.push(0)
-    }
+        ; --- SOS (Start of Scan) ---
+        is-gray -> {
+            buf.push(255)
+            buf.push(218)
+            buf.push(0)
+            buf.push(8)
+            buf.push(1)
+            buf.push(1)
+            buf.push(0)
+            buf.push(0)
+            buf.push(63)
+            buf.push(0)
+        }
 
-    -> {
-        buf.push(255)
-        buf.push(218)
-        buf.push(0)
-        buf.push(12)
-        buf.push(3)
-        buf.push(1)
-        buf.push(0)
-        buf.push(2)
-        buf.push(17)
-        buf.push(3)
-        buf.push(17)
-        buf.push(0)
-        buf.push(63)
-        buf.push(0)
+        -> {
+            buf.push(255)
+            buf.push(218)
+            buf.push(0)
+            buf.push(12)
+            buf.push(3)
+            buf.push(1)
+            buf.push(0)
+            buf.push(2)
+            buf.push(17)
+            buf.push(3)
+            buf.push(17)
+            buf.push(0)
+            buf.push(63)
+            buf.push(0)
+        }
     }
 
     ; --- Scan data (real DCT + Huffman encoding) ---
@@ -2332,71 +2380,73 @@ jpeg-encode-scan = (buf []byte, img image, w i64, h i64, is-gray bool, subsampli
 
     my <- [0..n-mcu-y): {
         mx <- [0..n-mcu-x): {
-            is-gray -> {
+            {
+                is-gray -> {
 
-                ; Grayscale: one 8x8 block
-                #{overflow=wrap}
-                block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 0)
-                dct = jpeg-dct-8x8(block)
-                q = jpeg-quantize(dct, qt-luma)
-                prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
-            }
+                    ; Grayscale: one 8x8 block
+                    #{overflow=wrap}
+                    block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 0)
+                    dct = jpeg-dct-8x8(block)
+                    q = jpeg-quantize(dct, qt-luma)
+                    prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
+                }
 
-            -> {
-                {
-                    subsampling == 1 -> {
+                -> {
+                    {
+                        subsampling == 1 -> {
 
-                        ; YCbCr 4:4:4: 1 Y + 1 Cb + 1 Cr per MCU (8x8)
-                        ; Y block
-                        #{overflow=wrap}
-                        block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 1)
-                        dct = jpeg-dct-8x8(block)
-                        q = jpeg-quantize(dct, qt-luma)
-                        prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
+                            ; YCbCr 4:4:4: 1 Y + 1 Cb + 1 Cr per MCU (8x8)
+                            ; Y block
+                            #{overflow=wrap}
+                            block = jpeg-read-block(img, mx * 8, my * 8, 0, w, h, 1)
+                            dct = jpeg-dct-8x8(block)
+                            q = jpeg-quantize(dct, qt-luma)
+                            prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
 
-                        ; Cb block (full resolution)
-                        #{overflow=wrap}
-                        cb-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 1)
-                        cb-dct = jpeg-dct-8x8(cb-block)
-                        cb-q = jpeg-quantize(cb-dct, qt-chroma)
-                        prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
+                            ; Cb block (full resolution)
+                            #{overflow=wrap}
+                            cb-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 1)
+                            cb-dct = jpeg-dct-8x8(cb-block)
+                            cb-q = jpeg-quantize(cb-dct, qt-chroma)
+                            prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
 
-                        ; Cr block (full resolution)
-                        #{overflow=wrap}
-                        cr-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 2)
-                        cr-dct = jpeg-dct-8x8(cr-block)
-                        cr-q = jpeg-quantize(cr-dct, qt-chroma)
-                        prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
-                    }
-
-                    -> {
-
-                        ; YCbCr 4:2:0: 4 Y blocks + 1 Cb + 1 Cr
-                        ; Process 4 Y blocks (2x2)
-                        by <- [0..2): {
-                            bx <- [0..2): {
-
-                                #{overflow=wrap}
-                                block = jpeg-read-block(img, mx * 16 + bx * 8, my * 16 + by * 8, 0, w, h, 1)
-                                dct = jpeg-dct-8x8(block)
-                                q = jpeg-quantize(dct, qt-luma)
-                                prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
-                            }
+                            ; Cr block (full resolution)
+                            #{overflow=wrap}
+                            cr-block = jpeg-read-block-444(img, mx * 8, my * 8, w, h, 2)
+                            cr-dct = jpeg-dct-8x8(cr-block)
+                            cr-q = jpeg-quantize(cr-dct, qt-chroma)
+                            prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
                         }
 
-                        ; Cb block (subsampled 16x16 -> 8x8)
-                        #{overflow=wrap}
-                        cb-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 1)
-                        cb-dct = jpeg-dct-8x8(cb-block)
-                        cb-q = jpeg-quantize(cb-dct, qt-chroma)
-                        prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
+                        -> {
 
-                        ; Cr block (subsampled 16x16 -> 8x8)
-                        #{overflow=wrap}
-                        cr-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 2)
-                        cr-dct = jpeg-dct-8x8(cr-block)
-                        cr-q = jpeg-quantize(cr-dct, qt-chroma)
-                        prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
+                            ; YCbCr 4:2:0: 4 Y blocks + 1 Cb + 1 Cr
+                            ; Process 4 Y blocks (2x2)
+                            by <- [0..2): {
+                                bx <- [0..2): {
+
+                                    #{overflow=wrap}
+                                    block = jpeg-read-block(img, mx * 16 + bx * 8, my * 16 + by * 8, 0, w, h, 1)
+                                    dct = jpeg-dct-8x8(block)
+                                    q = jpeg-quantize(dct, qt-luma)
+                                    prev-dc-y = jpeg-encode-block(buf, q, prev-dc-y, 0, bit-acc, bit-cnt)
+                                }
+                            }
+
+                            ; Cb block (subsampled 16x16 -> 8x8)
+                            #{overflow=wrap}
+                            cb-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 1)
+                            cb-dct = jpeg-dct-8x8(cb-block)
+                            cb-q = jpeg-quantize(cb-dct, qt-chroma)
+                            prev-dc-cb = jpeg-encode-block(buf, cb-q, prev-dc-cb, 1, bit-acc, bit-cnt)
+
+                            ; Cr block (subsampled 16x16 -> 8x8)
+                            #{overflow=wrap}
+                            cr-block = jpeg-read-block-420(img, mx * 16, my * 16, w, h, 2)
+                            cr-dct = jpeg-dct-8x8(cr-block)
+                            cr-q = jpeg-quantize(cr-dct, qt-chroma)
+                            prev-dc-cr = jpeg-encode-block(buf, cr-q, prev-dc-cr, 1, bit-acc, bit-cnt)
+                        }
                     }
                 }
             }
@@ -2449,45 +2499,47 @@ jpeg-read-block = (img image, ox i64, oy i64, band i64, w i64, h i64, mode i64) 
             sy = oy + y
 
             ; Clamp to image bounds
-            #{overflow=wrap}
-            sx >= w -> sx = w - 1
-
-            #{overflow=wrap}
-            sy >= h -> sy = h - 1
-            sx < 0 -> sx = 0
-            sy < 0 -> sy = 0
-
-            mode == 0 -> {
-
-                ; Grayscale: read directly
+            {
                 #{overflow=wrap}
-                v = img.data[sy * w + sx]
+                sx >= w -> sx = w - 1
 
                 #{overflow=wrap}
-                block[y * 8 + x]: {
-                    ok -> it = v - 128.0
-                    -> _
+                sy >= h -> sy = h - 1
+                sx < 0 -> sx = 0
+                sy < 0 -> sy = 0
+
+                mode == 0 -> {
+
+                    ; Grayscale: read directly
+                    #{overflow=wrap}
+                    v = img.data[sy * w + sx]
+
+                    #{overflow=wrap}
+                    block[y * 8 + x]: {
+                        ok -> it = v - 128.0
+                        -> _
+                    }
                 }
-            }
 
-            -> {
+                -> {
 
-                ; RGB: extract Y component
-                #{overflow=wrap}
-                idx = (sy * w + sx) * img.bands
-                r = img.data[idx]
+                    ; RGB: extract Y component
+                    #{overflow=wrap}
+                    idx = (sy * w + sx) * img.bands
+                    r = img.data[idx]
 
-                #{overflow=wrap}
-                g = img.data[idx + 1]
+                    #{overflow=wrap}
+                    g = img.data[idx + 1]
 
-                #{overflow=wrap}
-                b = img.data[idx + 2]
-                y-val = 0.299 * r + 0.587 * g + 0.114 * b
+                    #{overflow=wrap}
+                    b = img.data[idx + 2]
+                    y-val = 0.299 * r + 0.587 * g + 0.114 * b
 
-                #{overflow=wrap}
-                block[y * 8 + x]: {
-                    ok -> it = y-val - 128.0
-                    -> _
+                    #{overflow=wrap}
+                    block[y * 8 + x]: {
+                        ok -> it = y-val - 128.0
+                        -> _
+                    }
                 }
             }
         }
@@ -2544,16 +2596,18 @@ jpeg-read-block-420 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
 
                     #{overflow=wrap}
                     b = img.data[idx + 2]
-                    cbcr == 1 -> {
+                    {
+                        cbcr == 1 -> {
 
-                        ; Cb = -0.168736*R - 0.331264*G + 0.5*B
-                        sum = sum + (-0.168736 * r - 0.331264 * g + 0.5 * b)
-                    }
+                            ; Cb = -0.168736*R - 0.331264*G + 0.5*B
+                            sum = sum + (-0.168736 * r - 0.331264 * g + 0.5 * b)
+                        }
 
-                    -> {
+                        -> {
 
-                        ; Cr = 0.5*R - 0.418688*G - 0.081312*B
-                        sum = sum + (0.5 * r - 0.418688 * g - 0.081312 * b)
+                            ; Cr = 0.5*R - 0.418688*G - 0.081312*B
+                            sum = sum + (0.5 * r - 0.418688 * g - 0.081312 * b)
+                        }
                     }
                 }
             }
@@ -2612,23 +2666,25 @@ jpeg-read-block-444 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
 
             #{overflow=wrap}
             b = img.data[idx + 2]
-            cbcr == 1 -> {
+            {
+                cbcr == 1 -> {
 
-                ; Cb = -0.168736*R - 0.331264*G + 0.5*B
-                #{overflow=wrap}
-                block[y * 8 + x]: {
-                    ok -> it = -0.168736 * r - 0.331264 * g + 0.5 * b
-                    -> _
+                    ; Cb = -0.168736*R - 0.331264*G + 0.5*B
+                    #{overflow=wrap}
+                    block[y * 8 + x]: {
+                        ok -> it = -0.168736 * r - 0.331264 * g + 0.5 * b
+                        -> _
+                    }
                 }
-            }
 
-            -> {
+                -> {
 
-                ; Cr = 0.5*R - 0.418688*G - 0.081312*B
-                #{overflow=wrap}
-                block[y * 8 + x]: {
-                    ok -> it = 0.5 * r - 0.418688 * g - 0.081312 * b
-                    -> _
+                    ; Cr = 0.5*R - 0.418688*G - 0.081312*B
+                    #{overflow=wrap}
+                    block[y * 8 + x]: {
+                        ok -> it = 0.5 * r - 0.418688 * g - 0.081312 * b
+                        -> _
+                    }
                 }
             }
         }
@@ -2699,17 +2755,19 @@ jpeg-quantize = (dct [64]f64, qt []byte) (q [64]f64) {
         val f64 = dct[i] / qv.to-f64()
 
         ; Round to nearest integer
-        val >= 0 -> {
-            q[i]: {
-                ok -> it = (val + 0.5).floor()
-                -> _
+        {
+            val >= 0 -> {
+                q[i]: {
+                    ok -> it = (val + 0.5).floor()
+                    -> _
+                }
             }
-        }
 
-        -> {
-            q[i]: {
-                ok -> it = -(-val + 0.5).floor()
-                -> _
+            -> {
+                q[i]: {
+                    ok -> it = -(-val + 0.5).floor()
+                    -> _
+                }
             }
         }
     }
@@ -2856,64 +2914,66 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
                 val = -((-val-f + 0.5).floor()).to-i64()
             }
         }
-        val == 0 -> {
+        {
+            val == 0 -> {
 
-            #{overflow=wrap}
-            zrun = zrun + 1
-        }
+                #{overflow=wrap}
+                zrun = zrun + 1
+            }
 
-        -> {
+            -> {
 
-            ; Flush zrun of zeros (16 zeros at a time)
-            (zrun >= 16) {
+                ; Flush zrun of zeros (16 zeros at a time)
+                (zrun >= 16) {
 
-                ; ZRL code (0xF0)
-                code, code-len = jpeg-huffman-lookup-ac(240, table-id)
+                    ; ZRL code (0xF0)
+                    code, code-len = jpeg-huffman-lookup-ac(240, table-id)
+                    jpeg-bit-write(buf, acc, cnt, code, code-len)
+
+                    #{overflow=wrap}
+                    zrun = zrun - 16
+                }
+
+                ; Determine magnitude
+                mag = 0
+                v = val
+                {
+                    v < 0 -> v = -v
+                }
+                {
+                    v >= 128 -> mag = 8
+
+                    v >= 64 -> mag = 7
+
+                    v >= 32 -> mag = 6
+
+                    v >= 16 -> mag = 5
+
+                    v >= 8 -> mag = 4
+
+                    v >= 4 -> mag = 3
+
+                    v >= 2 -> mag = 2
+
+                    -> mag = 1
+                }
+
+                ; AC symbol = zrun*16 + mag
+                sym i64 = zrun << 4
+                sym = sym | mag
+                code, code-len = jpeg-huffman-lookup-ac(sym, table-id)
                 jpeg-bit-write(buf, acc, cnt, code, code-len)
 
-                #{overflow=wrap}
-                zrun = zrun - 16
+                ; Write additional bits
+                bits = val
+                val < 0 -> {
+
+                    #{overflow=wrap}
+                    bits = val + (1 << mag) - 1
+                }
+                jpeg-bit-write(buf, acc, cnt, bits, mag)
+                zrun = 0
             }
-
-            ; Determine magnitude
-            mag = 0
-            v = val
-            {
-                v < 0 -> v = -v
-            }
-            {
-                v >= 128 -> mag = 8
-
-                v >= 64 -> mag = 7
-
-                v >= 32 -> mag = 6
-
-                v >= 16 -> mag = 5
-
-                v >= 8 -> mag = 4
-
-                v >= 4 -> mag = 3
-
-                v >= 2 -> mag = 2
-
-                -> mag = 1
-            }
-
-            ; AC symbol = zrun*16 + mag
-            sym i64 = zrun << 4
-            sym = sym | mag
-            code, code-len = jpeg-huffman-lookup-ac(sym, table-id)
-            jpeg-bit-write(buf, acc, cnt, code, code-len)
-
-            ; Write additional bits
-            bits = val
-            val < 0 -> {
-
-                #{overflow=wrap}
-                bits = val + (1 << mag) - 1
-            }
-            jpeg-bit-write(buf, acc, cnt, bits, mag)
-            zrun = 0
         }
     }
 

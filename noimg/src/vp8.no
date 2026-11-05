@@ -536,15 +536,17 @@ k-new-range = () (t []i64) {
 ; one-step correction, i.e. floor(a / 2^k).
 vp8-ashr = (a i64, k i64) (r i64) {
 
-    #{overflow=wrap}
-    a >= 0 -> {
-        r = a >> k
-    }
+    {
+        #{overflow=wrap}
+        a >= 0 -> {
+            r = a >> k
+        }
 
-    -> {
-        m i64 = -a
-        m = m + ((1 << k) - 1)
-        r = -(m >> k)
+        -> {
+            m i64 = -a
+            m = m + ((1 << k) - 1)
+            r = -(m >> k)
+        }
     }
 }
 
@@ -634,13 +636,15 @@ vp8-init-br = (lo i64, size i64) (b vp8-br) {
     #{overflow=wrap}
     b.buf-end = lo + size
 
-    #{overflow=wrap}
-    size >= 8 -> {
-        b.buf-max = lo + size - 7
-    }
+    {
+        #{overflow=wrap}
+        size >= 8 -> {
+            b.buf-max = lo + size - 7
+        }
 
-    -> {
-        b.buf-max = lo
+        -> {
+            b.buf-max = lo
+        }
     }
 }
 
@@ -648,36 +652,42 @@ vp8-init-br = (lo i64, size i64) (b vp8-br) {
 vp8-load-new = (data []byte, b vp8-br) (nb vp8-br) {
     x = b
 
-    #{overflow=wrap}
-    x.buf < x.buf-max -> {
-        v = (data[x.buf] & 255)
-        v = (v << 8) | (data[x.buf + 1] & 255)
-        v = (v << 8) | (data[x.buf + 2] & 255)
-        v = (v << 8) | (data[x.buf + 3] & 255)
-        v = (v << 8) | (data[x.buf + 4] & 255)
-        v = (v << 8) | (data[x.buf + 5] & 255)
-        v = (v << 8) | (data[x.buf + 6] & 255)
-        x.value = v | (x.value << 56)
-        x.buf = x.buf + 7
-        x.bits = x.bits + 56
-    }
-
-    -> {
-        x.buf < x.buf-end -> {
-            x.value = (data[x.buf] & 255) | (x.value << 8)
-            x.buf = x.buf + 1
-            x.bits = x.bits + 8
+    {
+        #{overflow=wrap}
+        x.buf < x.buf-max -> {
+            v = (data[x.buf] & 255)
+            v = (v << 8) | (data[x.buf + 1] & 255)
+            v = (v << 8) | (data[x.buf + 2] & 255)
+            v = (v << 8) | (data[x.buf + 3] & 255)
+            v = (v << 8) | (data[x.buf + 4] & 255)
+            v = (v << 8) | (data[x.buf + 5] & 255)
+            v = (v << 8) | (data[x.buf + 6] & 255)
+            x.value = v | (x.value << 56)
+            x.buf = x.buf + 7
+            x.bits = x.bits + 56
         }
 
         -> {
-            x.eof == 0 -> {
-                x.value = x.value << 8
-                x.bits = x.bits + 8
-                x.eof = 1
-            }
+            {
+                x.buf < x.buf-end -> {
+                    x.value = (data[x.buf] & 255) | (x.value << 8)
+                    x.buf = x.buf + 1
+                    x.bits = x.bits + 8
+                }
 
-            -> {
-                x.bits = 0
+                -> {
+                    {
+                        x.eof == 0 -> {
+                            x.value = x.value << 8
+                            x.bits = x.bits + 8
+                            x.eof = 1
+                        }
+
+                        -> {
+                            x.bits = 0
+                        }
+                    }
+                }
             }
         }
     }
@@ -694,16 +704,18 @@ vp8-get-bit = (data []byte, b vp8-br, prob i64) (bit i64, nb vp8-br) {
     split = (x.range * prob) >> 8
     win = (x.value >> pos) & 4294967295
 
-    #{overflow=wrap}
-    win > split -> {
-        bit = 1
-        x.range = x.range - split
-        x.value = x.value - ((split + 1) << pos)
-    }
+    {
+        #{overflow=wrap}
+        win > split -> {
+            bit = 1
+            x.range = x.range - split
+            x.value = x.value - ((split + 1) << pos)
+        }
 
-    -> {
-        bit = 0
-        x.range = split + 1
+        -> {
+            bit = 0
+            x.range = split + 1
+        }
     }
 
     #{overflow=wrap}
@@ -732,15 +744,17 @@ vp8-get-signed = (data []byte, b vp8-br, v i64) (res i64, nb vp8-br) {
     #{overflow=wrap}
     x.bits = x.bits - 1
 
-    #{overflow=wrap}
-    win > split -> {
-        x.range = x.range - 1
-        x.value = x.value - ((split + 1) << pos)
-        res = -v
-    }
+    {
+        #{overflow=wrap}
+        win > split -> {
+            x.range = x.range - 1
+            x.value = x.value - ((split + 1) << pos)
+            res = -v
+        }
 
-    -> {
-        res = v
+        -> {
+            res = v
+        }
     }
     x.range = x.range | 1
     nb = x
@@ -817,108 +831,116 @@ vp8-get-large-value = (data []byte, b vp8-br, proba []i64, off i64) (v i64, nb v
     #{index-out=zero}
     pv = proba[off + 3]
     bit, x = vp8-get-bit(data, x, pv)
-    bit == 0 -> {
-
-        #{index-out=zero}
-        pv = proba[off + 4]
-        bit, x = vp8-get-bit(data, x, pv)
-        bit == 0 -> {
-            v = 2
-        }
-
-        -> {
-            v = 3
-
-            #{index-out=zero}
-            pv = proba[off + 5]
-            bit, x = vp8-get-bit(data, x, pv)
-
-            #{overflow=wrap}
-            v = v + bit
-        }
-    }
-
-    -> {
-
-        #{index-out=zero}
-        pv = proba[off + 6]
-        bit, x = vp8-get-bit(data, x, pv)
+    {
         bit == 0 -> {
 
             #{index-out=zero}
-            pv = proba[off + 7]
+            pv = proba[off + 4]
             bit, x = vp8-get-bit(data, x, pv)
-            bit == 0 -> {
-                v = 5
-                bit, x = vp8-get-bit(data, x, 159)
-
-                #{overflow=wrap}
-                v = v + bit
-            }
-
-            -> {
-                v = 7
-                bit, x = vp8-get-bit(data, x, 165)
-
-                #{overflow=wrap}
-                v = v + 2 * bit
-                bit, x = vp8-get-bit(data, x, 145)
-
-                #{overflow=wrap}
-                v = v + bit
-            }
-        }
-
-        -> {
-
-            #{index-out=zero}
-            pv = proba[off + 8]
-            b1 i64
-            b1, x = vp8-get-bit(data, x, pv)
-
-            #{index-out=zero}
-            pv = proba[off + 9 + b1]
-            b0 i64
-            b0, x = vp8-get-bit(data, x, pv)
-
-            cat i64 = 0
-            cat-opt = 2 * b1 + b0
-            cat-opt: {
-                ok -> {
-                    cat = it
+            {
+                bit == 0 -> {
+                    v = 2
                 }
 
                 -> {
-                    cat = 0
+                    v = 3
+
+                    #{index-out=zero}
+                    pv = proba[off + 5]
+                    bit, x = vp8-get-bit(data, x, pv)
+
+                    #{overflow=wrap}
+                    v = v + bit
                 }
             }
-            base i64 = kco[cat] #{index-out=zero}
-            i i64 = base
-            v = 0
-            t i64 = kc13[i] #{index-out=zero}
-            stop i64 = 0
-            t == 0 -> {
-                stop = 1
-            }
-            ki <- [0..12): {
-                stop == 0 -> {
-                    b3 i64
-                    b3, x = vp8-get-bit(data, x, t)
+        }
 
-                    #{overflow=wrap}
-                    v = v + v + b3
+        -> {
 
-                    #{overflow=wrap}
-                    i = i + 1
-                    t = kc13[i] #{index-out=zero}
+            #{index-out=zero}
+            pv = proba[off + 6]
+            bit, x = vp8-get-bit(data, x, pv)
+            {
+                bit == 0 -> {
+
+                    #{index-out=zero}
+                    pv = proba[off + 7]
+                    bit, x = vp8-get-bit(data, x, pv)
+                    {
+                        bit == 0 -> {
+                            v = 5
+                            bit, x = vp8-get-bit(data, x, 159)
+
+                            #{overflow=wrap}
+                            v = v + bit
+                        }
+
+                        -> {
+                            v = 7
+                            bit, x = vp8-get-bit(data, x, 165)
+
+                            #{overflow=wrap}
+                            v = v + 2 * bit
+                            bit, x = vp8-get-bit(data, x, 145)
+
+                            #{overflow=wrap}
+                            v = v + bit
+                        }
+                    }
+                }
+
+                -> {
+
+                    #{index-out=zero}
+                    pv = proba[off + 8]
+                    b1 i64
+                    b1, x = vp8-get-bit(data, x, pv)
+
+                    #{index-out=zero}
+                    pv = proba[off + 9 + b1]
+                    b0 i64
+                    b0, x = vp8-get-bit(data, x, pv)
+
+                    cat i64 = 0
+                    cat-opt = 2 * b1 + b0
+                    cat-opt: {
+                        ok -> {
+                            cat = it
+                        }
+
+                        -> {
+                            cat = 0
+                        }
+                    }
+                    base i64 = kco[cat] #{index-out=zero}
+                    i i64 = base
+                    v = 0
+                    t i64 = kc13[i] #{index-out=zero}
+                    stop i64 = 0
                     t == 0 -> {
                         stop = 1
                     }
+                    ki <- [0..12): {
+                        stop == 0 -> {
+                            b3 i64
+                            b3, x = vp8-get-bit(data, x, t)
+
+                            #{overflow=wrap}
+                            v = v + v + b3
+
+                            #{overflow=wrap}
+                            i = i + 1
+                            t = kc13[i] #{index-out=zero}
+                            t == 0 -> {
+                                stop = 1
+                            }
+                        }
+                    }
+
+                    #{overflow=wrap}
+                    v = v + 3 + (8 << cat)
                 }
             }
-
-            #{overflow=wrap}
-            v = v + 3 + (8 << cat)
         }
     }
     nb = x
@@ -998,13 +1020,15 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                 #{index-out=zero}
                 pv = proba[p]
                 bit, x = vp8-get-bit(data, x, pv)
-                bit == 0 -> {
-                    nzl = n
-                    done = 1
-                }
+                {
+                    bit == 0 -> {
+                        nzl = n
+                        done = 1
+                    }
 
-                -> {
-                    need-eob = 0
+                    -> {
+                        need-eob = 0
+                    }
                 }
             }
             done == 0 -> {
@@ -1015,77 +1039,85 @@ vp8-get-coeffs = (data []byte, b vp8-br, proba []i64, t i64, ctx i64, dq []i64, 
                 #{index-out=zero}
                 pv = proba[idx]
                 bit, x = vp8-get-bit(data, x, pv)
-                bit == 0 -> {
-
-                    #{overflow=wrap}
-                    n = n + 1
-                    n == 16 -> {
-                        nzl = 16
-                        done = 1
-                    }
-
-                    -> {
-                        p = vp8-coeff-base(t, n, 0)
-                    }
-                }
-
-                -> {
-
-                    #{overflow=wrap}
-                    pn = vp8-coeff-base(t, n + 1, 0)
-
-                    #{overflow=wrap}
-                    idx = p + 2
-
-                    #{index-out=zero}
-                    pv = proba[idx]
-                    bit, x = vp8-get-bit(data, x, pv)
-                    v = 1
-                    bit != 0 -> {
-                        v, x = vp8-get-large-value(data, x, proba, p)
+                {
+                    bit == 0 -> {
 
                         #{overflow=wrap}
-                        p = pn + 22
+                        n = n + 1
+                        {
+                            n == 16 -> {
+                                nzl = 16
+                                done = 1
+                            }
+
+                            -> {
+                                p = vp8-coeff-base(t, n, 0)
+                            }
+                        }
                     }
 
                     -> {
 
                         #{overflow=wrap}
-                        p = pn + 11
-                    }
-                    sgn, x = vp8-get-signed(data, x, v)
+                        pn = vp8-coeff-base(t, n + 1, 0)
 
-                    #{index-out=zero}
-                    scale = dq[doff]
-                    n > 0 -> {
+                        #{overflow=wrap}
+                        idx = p + 2
 
-                        #{index-out=zero, overflow=wrap}
-                        scale = dq[doff + 1]
-                    }
+                        #{index-out=zero}
+                        pv = proba[idx]
+                        bit, x = vp8-get-bit(data, x, pv)
+                        v = 1
+                        {
+                            bit != 0 -> {
+                                v, x = vp8-get-large-value(data, x, proba, p)
 
-                    #{index-out=zero}
-                    zz = kzz[n]
+                                #{overflow=wrap}
+                                p = pn + 22
+                            }
 
-                    #{overflow=wrap}
-                    out[ooff + zz]: {
-                        ok -> it = sgn * scale
-                        -> _
-                    }
+                            -> {
 
-                    #{overflow=wrap}
-                    n = n + 1
-                    n == 16 -> {
-                        nzl = 16
-                        done = 1
-                    }
+                                #{overflow=wrap}
+                                p = pn + 11
+                            }
+                        }
+                        sgn, x = vp8-get-signed(data, x, v)
 
-                    -> {
+                        #{index-out=zero}
+                        scale = dq[doff]
+                        n > 0 -> {
 
-                        ; keep p = pn+11/pn+22 (probas[1]/[2] for the new
-                        ; position n): the next EOB bit is read from p[0] with
-                        ; the context of the just-decoded coeff magnitude
-                        ; (small->1, large->2), mirroring GetCoeffsFast.
-                        need-eob = 1
+                            #{index-out=zero, overflow=wrap}
+                            scale = dq[doff + 1]
+                        }
+
+                        #{index-out=zero}
+                        zz = kzz[n]
+
+                        #{overflow=wrap}
+                        out[ooff + zz]: {
+                            ok -> it = sgn * scale
+                            -> _
+                        }
+
+                        #{overflow=wrap}
+                        n = n + 1
+                        {
+                            n == 16 -> {
+                                nzl = 16
+                                done = 1
+                            }
+
+                            -> {
+
+                                ; keep p = pn+11/pn+22 (probas[1]/[2] for the new
+                                ; position n): the next EOB bit is read from p[0] with
+                                ; the context of the just-decoded coeff magnitude
+                                ; (small->1, large->2), mirroring GetCoeffsFast.
+                                need-eob = 1
+                            }
+                        }
                     }
                 }
             }
@@ -1143,21 +1175,23 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64, use-skip 
     {
         seg[1] != 0 -> {
             segbit, x = vp8-get-bit-vec(data, x, seg, 11)
-            segbit == 0 -> {
-                segbit, x = vp8-get-bit-vec(data, x, seg, 12)
-                mb_data[mbase]: {
-                    ok -> it = segbit
-                    -> _
+            {
+                segbit == 0 -> {
+                    segbit, x = vp8-get-bit-vec(data, x, seg, 12)
+                    mb_data[mbase]: {
+                        ok -> it = segbit
+                        -> _
+                    }
                 }
-            }
 
-            -> {
-                segbit, x = vp8-get-bit-vec(data, x, seg, 13)
+                -> {
+                    segbit, x = vp8-get-bit-vec(data, x, seg, 13)
 
-                #{overflow=wrap}
-                mb_data[mbase]: {
-                    ok -> it = segbit + 2
-                    -> _
+                    #{overflow=wrap}
+                    mb_data[mbase]: {
+                        ok -> it = segbit + 2
+                        -> _
+                    }
                 }
             }
         }
@@ -1194,22 +1228,24 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64, use-skip 
         is_i4x4 == 0 -> {
             segbit, x = vp8-get-bit(data, x, 156)
             ymode = 0
-            segbit != 0 -> {
-                segbit, x = vp8-get-bit(data, x, 128)
-                ymode = 1
-                {
-                    segbit == 0 -> {
-                        ymode = 3
+            {
+                segbit != 0 -> {
+                    segbit, x = vp8-get-bit(data, x, 128)
+                    ymode = 1
+                    {
+                        segbit == 0 -> {
+                            ymode = 3
+                        }
                     }
                 }
-            }
 
-            -> {
-                segbit, x = vp8-get-bit(data, x, 163)
-                ymode = 2
-                {
-                    segbit == 0 -> {
-                        ymode = 0
+                -> {
+                    segbit, x = vp8-get-bit(data, x, 163)
+                    ymode = 2
+                    {
+                        segbit == 0 -> {
+                            ymode = 0
+                        }
                     }
                 }
             }
@@ -1252,75 +1288,89 @@ vp8-parse-intra-mode = (data []byte, b vp8-br, seg []i64, proba []i64, use-skip 
                     #{overflow=wrap}
                     pidx = (tmode * 10 + ymode) * 9
                     segbit, x = vp8-get-bit-arr(data, x, pidx)
-                    segbit == 0 -> {
-                        ymode = 0
-                    }
-
-                    -> {
-
-                        #{overflow=wrap}
-                        segbit, x = vp8-get-bit-arr(data, x, pidx + 1)
+                    {
                         segbit == 0 -> {
-                            ymode = 1
+                            ymode = 0
                         }
 
                         -> {
 
                             #{overflow=wrap}
-                            segbit, x = vp8-get-bit-arr(data, x, pidx + 2)
-                            segbit == 0 -> {
-                                ymode = 2
-                            }
-
-                            -> {
-
-                                #{overflow=wrap}
-                                segbit, x = vp8-get-bit-arr(data, x, pidx + 3)
+                            segbit, x = vp8-get-bit-arr(data, x, pidx + 1)
+                            {
                                 segbit == 0 -> {
-
-                                    #{overflow=wrap}
-                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 4)
-                                    segbit == 0 -> {
-                                        ymode = 3
-                                    }
-
-                                    -> {
-
-                                        #{overflow=wrap}
-                                        segbit, x = vp8-get-bit-arr(data, x, pidx + 5)
-                                        ymode = 5
-                                        {
-                                            segbit == 0 -> {
-                                                ymode = 4
-                                            }
-                                        }
-                                    }
+                                    ymode = 1
                                 }
 
                                 -> {
 
                                     #{overflow=wrap}
-                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 6)
-                                    segbit == 0 -> {
-                                        ymode = 6
-                                    }
-
-                                    -> {
-
-                                        #{overflow=wrap}
-                                        segbit, x = vp8-get-bit-arr(data, x, pidx + 7)
+                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 2)
+                                    {
                                         segbit == 0 -> {
-                                            ymode = 7
+                                            ymode = 2
                                         }
 
                                         -> {
 
                                             #{overflow=wrap}
-                                            segbit, x = vp8-get-bit-arr(data, x, pidx + 8)
-                                            ymode = 9
+                                            segbit, x = vp8-get-bit-arr(data, x, pidx + 3)
                                             {
                                                 segbit == 0 -> {
-                                                    ymode = 8
+
+                                                    #{overflow=wrap}
+                                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 4)
+                                                    {
+                                                        segbit == 0 -> {
+                                                            ymode = 3
+                                                        }
+
+                                                        -> {
+
+                                                            #{overflow=wrap}
+                                                            segbit, x = vp8-get-bit-arr(data, x, pidx + 5)
+                                                            ymode = 5
+                                                            {
+                                                                segbit == 0 -> {
+                                                                    ymode = 4
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                -> {
+
+                                                    #{overflow=wrap}
+                                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 6)
+                                                    {
+                                                        segbit == 0 -> {
+                                                            ymode = 6
+                                                        }
+
+                                                        -> {
+
+                                                            #{overflow=wrap}
+                                                            segbit, x = vp8-get-bit-arr(data, x, pidx + 7)
+                                                            {
+                                                                segbit == 0 -> {
+                                                                    ymode = 7
+                                                                }
+
+                                                                -> {
+
+                                                                    #{overflow=wrap}
+                                                                    segbit, x = vp8-get-bit-arr(data, x, pidx + 8)
+                                                                    ymode = 9
+                                                                    {
+                                                                        segbit == 0 -> {
+                                                                            ymode = 8
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -2549,61 +2599,65 @@ vp8-parse-segment = (data []byte, b vp8-br) (nb vp8-br, seg []i64) {
     us, x = vp8-get(data, x)
     seg[0] = us
 
-    #{overflow=wrap}
-    us != 0 -> {
-        um i64
-        um, x = vp8-get(data, x)
-        seg[1] = um
-        upd i64
-        upd, x = vp8-get(data, x)
-        upd != 0 -> {
-            ad i64
-            ad, x = vp8-get(data, x)
-            seg[2] = ad
-            s <- [0..4): {
-                g i64
-                g, x = vp8-get(data, x)
-                g != 0 -> {
-                    v i64
-                    v, x = vp8-get-signed-value(data, x, 7)
+    {
+        #{overflow=wrap}
+        us != 0 -> {
+            um i64
+            um, x = vp8-get(data, x)
+            seg[1] = um
+            upd i64
+            upd, x = vp8-get(data, x)
+            upd != 0 -> {
+                ad i64
+                ad, x = vp8-get(data, x)
+                seg[2] = ad
+                s <- [0..4): {
+                    g i64
+                    g, x = vp8-get(data, x)
+                    g != 0 -> {
+                        v i64
+                        v, x = vp8-get-signed-value(data, x, 7)
 
-                    #{overflow=wrap}
-                    seg[3 + s] = v
+                        #{overflow=wrap}
+                        seg[3 + s] = v
+                    }
+                }
+                s2 <- [0..4): {
+                    g i64
+                    g, x = vp8-get(data, x)
+                    g != 0 -> {
+                        v i64
+                        v, x = vp8-get-signed-value(data, x, 6)
+
+                        #{overflow=wrap}
+                        seg[7 + s2] = v
+                    }
                 }
             }
-            s2 <- [0..4): {
-                g i64
-                g, x = vp8-get(data, x)
-                g != 0 -> {
-                    v i64
-                    v, x = vp8-get-signed-value(data, x, 6)
+            um != 0 -> {
+                s3 <- [0..3): {
+                    g i64
+                    g, x = vp8-get(data, x)
+                    {
+                        g != 0 -> {
+                            v i64
+                            v, x = vp8-get-value(data, x, 8)
 
-                    #{overflow=wrap}
-                    seg[7 + s2] = v
+                            #{overflow=wrap}
+                            seg[11 + s3] = v
+                        }
+
+                        -> {
+                            seg[11 + s3] = 255
+                        }
+                    }
                 }
             }
         }
-        um != 0 -> {
-            s3 <- [0..3): {
-                g i64
-                g, x = vp8-get(data, x)
-                g != 0 -> {
-                    v i64
-                    v, x = vp8-get-value(data, x, 8)
 
-                    #{overflow=wrap}
-                    seg[11 + s3] = v
-                }
-
-                -> {
-                    seg[11 + s3] = 255
-                }
-            }
+        -> {
+            seg[1] = 0
         }
-    }
-
-    -> {
-        seg[1] = 0
     }
     nb = x
 }
@@ -2661,12 +2715,14 @@ vp8-parse-filter = (data []byte, b vp8-br) (nb vp8-br, filt []i64, filter-type i
     }
     filter-type = 0
     lvl != 0 -> {
-        sim != 0 -> {
-            filter-type = 1
-        }
+        {
+            sim != 0 -> {
+                filter-type = 1
+            }
 
-        -> {
-            filter-type = 2
+            -> {
+                filter-type = 2
+            }
         }
     }
     nb = x
@@ -3981,19 +4037,23 @@ vp8-pred-chroma8 = (p []i64, d i64, m i64) {
 vp8-check-mode = (mb-x i64, mb-y i64, mode i64) (r i64) {
     r = mode
     mode == 0 -> {
-        mb-x == 0 -> {
-            mb-y == 0 -> r = 6
+        {
+            mb-x == 0 -> {
+                mb-y == 0 -> r = 6
 
-            -> {
-                r = 5
+                -> {
+                    r = 5
+                }
             }
-        }
-
-        -> {
-            mb-y == 0 -> r = 4
 
             -> {
-                r = 0
+                {
+                    mb-y == 0 -> r = 4
+
+                    -> {
+                        r = 0
+                    }
+                }
             }
         }
     }
@@ -4018,12 +4078,14 @@ vp8-do-uv-transform = (bits i64, coeffs []i64, cbase i64, plane []i64, d i64) {
     a = bits & 255
     a != 0 -> {
         b = bits & 170
-        b != 0 -> {
-            vp8-transform-uv(coeffs, cbase, plane, d)
-        }
+        {
+            b != 0 -> {
+                vp8-transform-uv(coeffs, cbase, plane, d)
+            }
 
-        -> {
-            vp8-transform-dcuv(coeffs, cbase, plane, d)
+            -> {
+                vp8-transform-dcuv(coeffs, cbase, plane, d)
+            }
         }
     }
 }
@@ -5350,85 +5412,87 @@ vp8-filter-mb = (y []i64, u []i64, v []i64, ys i64, us i64, mb-x i64, mb-y i64, 
             lb = 0
         }
     }
-    ftype == 1 -> {
-        mb-x > 0 -> {
-            vp8-simple-16(y, yb, 1, ys, lb)
-        }
-        fin != 0 -> {
-            k <- [1..4): {
-
-                #{overflow=wrap}
-                pidx = yb + k * 4
-                vp8-simple-16(y, pidx, 1, ys, limit)
+    {
+        ftype == 1 -> {
+            mb-x > 0 -> {
+                vp8-simple-16(y, yb, 1, ys, lb)
             }
-        }
-        mb-y > 0 -> {
-            vp8-simple-16(y, yb, ys, 1, lb)
-        }
-        fin != 0 -> {
-            k <- [1..4): {
+            fin != 0 -> {
+                k <- [1..4): {
 
-                #{overflow=wrap}
-                pidx = yb + k * 4 * ys
-                vp8-simple-16(y, pidx, ys, 1, limit)
-            }
-        }
-    }
-
-    -> {
-        mb-x > 0 -> {
-            vp8-filter-loop26(y, yb, 1, ys, 16, lb, ilev, hev)
-            vp8-filter-loop26(u, ub, 1, us, 8, lb, ilev, hev)
-            vp8-filter-loop26(v, ub, 1, us, 8, lb, ilev, hev)
-        }
-        fin != 0 -> {
-            k <- [1..4): {
-
-                #{overflow=wrap}
-                pidx = yb + k * 4
-                vp8-filter-loop24(y, pidx, 1, ys, 16, limit, ilev, hev)
-            }
-
-            uo i64 = 0
-            uo-opt = ub + 4
-            uo-opt: {
-                ok -> {
-                    uo = it
-                }
-
-                -> {
-                    uo = 0
+                    #{overflow=wrap}
+                    pidx = yb + k * 4
+                    vp8-simple-16(y, pidx, 1, ys, limit)
                 }
             }
-            vp8-filter-loop24(u, uo, 1, us, 8, limit, ilev, hev)
-            vp8-filter-loop24(v, uo, 1, us, 8, limit, ilev, hev)
-        }
-        mb-y > 0 -> {
-            vp8-filter-loop26(y, yb, ys, 1, 16, lb, ilev, hev)
-            vp8-filter-loop26(u, ub, us, 1, 8, lb, ilev, hev)
-            vp8-filter-loop26(v, ub, us, 1, 8, lb, ilev, hev)
-        }
-        fin != 0 -> {
-            k <- [1..4): {
-
-                #{overflow=wrap}
-                pidx = yb + k * 4 * ys
-                vp8-filter-loop24(y, pidx, ys, 1, 16, limit, ilev, hev)
+            mb-y > 0 -> {
+                vp8-simple-16(y, yb, ys, 1, lb)
             }
+            fin != 0 -> {
+                k <- [1..4): {
 
-            vo i64 = 0
-            vo-opt = ub + 4 * us
-            vo-opt: {
-                ok -> {
-                    vo = it
-                }
-
-                -> {
-                    vo = 0
+                    #{overflow=wrap}
+                    pidx = yb + k * 4 * ys
+                    vp8-simple-16(y, pidx, ys, 1, limit)
                 }
             }
-            vp8-filter-loop24(u, vo, us, 1, 8, limit, ilev, hev)
-            vp8-filter-loop24(v, vo, us, 1, 8, limit, ilev, hev)
+        }
+
+        -> {
+            mb-x > 0 -> {
+                vp8-filter-loop26(y, yb, 1, ys, 16, lb, ilev, hev)
+                vp8-filter-loop26(u, ub, 1, us, 8, lb, ilev, hev)
+                vp8-filter-loop26(v, ub, 1, us, 8, lb, ilev, hev)
+            }
+            fin != 0 -> {
+                k <- [1..4): {
+
+                    #{overflow=wrap}
+                    pidx = yb + k * 4
+                    vp8-filter-loop24(y, pidx, 1, ys, 16, limit, ilev, hev)
+                }
+
+                uo i64 = 0
+                uo-opt = ub + 4
+                uo-opt: {
+                    ok -> {
+                        uo = it
+                    }
+
+                    -> {
+                        uo = 0
+                    }
+                }
+                vp8-filter-loop24(u, uo, 1, us, 8, limit, ilev, hev)
+                vp8-filter-loop24(v, uo, 1, us, 8, limit, ilev, hev)
+            }
+            mb-y > 0 -> {
+                vp8-filter-loop26(y, yb, ys, 1, 16, lb, ilev, hev)
+                vp8-filter-loop26(u, ub, us, 1, 8, lb, ilev, hev)
+                vp8-filter-loop26(v, ub, us, 1, 8, lb, ilev, hev)
+            }
+            fin != 0 -> {
+                k <- [1..4): {
+
+                    #{overflow=wrap}
+                    pidx = yb + k * 4 * ys
+                    vp8-filter-loop24(y, pidx, ys, 1, 16, limit, ilev, hev)
+                }
+
+                vo i64 = 0
+                vo-opt = ub + 4 * us
+                vo-opt: {
+                    ok -> {
+                        vo = it
+                    }
+
+                    -> {
+                        vo = 0
+                    }
+                }
+                vp8-filter-loop24(u, vo, us, 1, 8, limit, ilev, hev)
+                vp8-filter-loop24(v, vo, us, 1, 8, limit, ilev, hev)
+            }
         }
     }
 }
@@ -5877,55 +5941,57 @@ vp8-decode-frame = (data []byte, data-len i64) (rgb []byte, w i64, h i64, ok i64
             }
             tn = vp8-vec-get(tnz, mx)
             td = vp8-vec-get(tdc, mx)
-            skip == 0 -> {
+            {
+                skip == 0 -> {
 
-                #{overflow=wrap}
-                cb = mx * 384
+                    #{overflow=wrap}
+                    cb = mx * 384
 
-                #{overflow=wrap}
-                sb = sgid * 7
-                token-br, ntn, ntd, nln, nlnd, nzy, nzuv, allzero = vp8-parse-residuals(data, token-br, proba, qmat, sb, isi4, coeffs, cb, tn, td, left-nz, left-nz-dc)
-                skip = allzero
+                    #{overflow=wrap}
+                    sb = sgid * 7
+                    token-br, ntn, ntd, nln, nlnd, nzy, nzuv, allzero = vp8-parse-residuals(data, token-br, proba, qmat, sb, isi4, coeffs, cb, tn, td, left-nz, left-nz-dc)
+                    skip = allzero
 
-                #{overflow=wrap}
-                b22 = mbase + 22
+                    #{overflow=wrap}
+                    b22 = mbase + 22
 
-                #{overflow=wrap}
-                b23 = mbase + 23
-                mb-data[b22]: {
-                    ok -> it = nzy
-                    -> _
-                }
-                mb-data[b23]: {
-                    ok -> it = nzuv
-                    -> _
-                }
-                vp8-vec-set(tnz, mx, ntn)
-                vp8-vec-set(tdc, mx, ntd)
-                left-nz = nln
-                left-nz-dc = nlnd
-            }
-
-            -> {
-                vp8-vec-set(tnz, mx, 0)
-                left-nz = 0
-                isi4 == 0 -> {
-                    vp8-vec-set(tdc, mx, 0)
-                    left-nz-dc = 0
+                    #{overflow=wrap}
+                    b23 = mbase + 23
+                    mb-data[b22]: {
+                        ok -> it = nzy
+                        -> _
+                    }
+                    mb-data[b23]: {
+                        ok -> it = nzuv
+                        -> _
+                    }
+                    vp8-vec-set(tnz, mx, ntn)
+                    vp8-vec-set(tdc, mx, ntd)
+                    left-nz = nln
+                    left-nz-dc = nlnd
                 }
 
-                #{overflow=wrap}
-                b22 = mbase + 22
+                -> {
+                    vp8-vec-set(tnz, mx, 0)
+                    left-nz = 0
+                    isi4 == 0 -> {
+                        vp8-vec-set(tdc, mx, 0)
+                        left-nz-dc = 0
+                    }
 
-                #{overflow=wrap}
-                b23 = mbase + 23
-                mb-data[b22]: {
-                    ok -> it = 0
-                    -> _
-                }
-                mb-data[b23]: {
-                    ok -> it = 0
-                    -> _
+                    #{overflow=wrap}
+                    b22 = mbase + 22
+
+                    #{overflow=wrap}
+                    b23 = mbase + 23
+                    mb-data[b22]: {
+                        ok -> it = 0
+                        -> _
+                    }
+                    mb-data[b23]: {
+                        ok -> it = 0
+                        -> _
+                    }
                 }
             }
 
