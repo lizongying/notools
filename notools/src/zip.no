@@ -13,6 +13,21 @@ zw-sizes []i64
 zw-offsets []i64
 zw-crcs []i64
 
+; byte-at: extract one byte (shifted) from an i64 as a plain i64 (option unwrapped)
+; 0.4.24: `>>`/`&` yield ?i64, so unwrap here before pushing into []byte.
+byte-at = (v i64, shift i64) (b i64) {
+    sv = v >> shift: {
+        ok -> it
+
+        -> 0
+    }
+    b = sv & 255: {
+        ok -> it
+
+        -> 0
+    }
+}
+
 ; add-file: append a file's contents to the archive
 add-file = (name str, content str) {
     zw-files.push(name.copy())
@@ -106,9 +121,21 @@ finalize = () {
             -> _
         }
         nl = fname.len()
-        sz = zw-sizes[i]
-        off = zw-offsets[i]
-        crc = zw-crcs[i]
+        sz = zw-sizes[i]: {
+            ok -> it
+
+            -> 0
+        }
+        off = zw-offsets[i]: {
+            ok -> it
+
+            -> 0
+        }
+        crc = zw-crcs[i]: {
+            ok -> it
+
+            -> 0
+        }
 
         ; central directory header signature
         zw-data.push(80)
@@ -135,28 +162,26 @@ finalize = () {
         zw-data.push(0)
 
         ; crc-32
-        zw-data.push(crc & 255)
-        zw-data.push((crc >> 8) & 255)
-        zw-data.push((crc >> 16) & 255)
-        zw-data.push((crc >> 24) & 255)
+        zw-data.push(byte-at(crc, 0))
+        zw-data.push(byte-at(crc, 8))
+        zw-data.push(byte-at(crc, 16))
+        zw-data.push(byte-at(crc, 24))
 
         ; compressed size
-        zw-data.push(sz & 255)
-        zw-data.push((sz >> 8) & 255)
-        zw-data.push((sz >> 16) & 255)
-        zw-data.push((sz >> 24) & 255)
+        zw-data.push(byte-at(sz, 0))
+        zw-data.push(byte-at(sz, 8))
+        zw-data.push(byte-at(sz, 16))
+        zw-data.push(byte-at(sz, 24))
 
         ; uncompressed size
-        zw-data.push(sz & 255)
-        zw-data.push((sz >> 8) & 255)
-        zw-data.push((sz >> 16) & 255)
-        zw-data.push((sz >> 24) & 255)
+        zw-data.push(byte-at(sz, 0))
+        zw-data.push(byte-at(sz, 8))
+        zw-data.push(byte-at(sz, 16))
+        zw-data.push(byte-at(sz, 24))
 
         ; filename length
-        nl0 = nl & 255
-        nl1 = (nl >> 8) & 255
-        zw-data.push(nl0)
-        zw-data.push(nl1)
+        zw-data.push(byte-at(nl, 0))
+        zw-data.push(byte-at(nl, 8))
 
         ; extra/comment length (0)
         zw-data.push(0)
@@ -175,30 +200,29 @@ finalize = () {
         zw-data.push(0)
 
         ; local header offset
-        zw-data.push(off & 255)
-        zw-data.push((off >> 8) & 255)
-        zw-data.push((off >> 16) & 255)
-        zw-data.push((off >> 24) & 255)
+        zw-data.push(byte-at(off, 0))
+        zw-data.push(byte-at(off, 8))
+        zw-data.push(byte-at(off, 16))
+        zw-data.push(byte-at(off, 24))
 
         ; filename bytes
         j <- [0..nl): {
-            zw-data.push(fname[j])
+            fj = fname[j]: {
+                ok -> it
+
+                -> 0
+            }
+            zw-data.push(fj)
         }
     }
 
     ; EOCD record
     #{overflow=wrap}
-    cd-size = zw-data.len() - cd-start
-    cds0 = cd-size & 255
-    cds1 = (cd-size >> 8) & 255
-    cds2 = (cd-size >> 16) & 255
-    cds3 = (cd-size >> 24) & 255
-    cds0l = cd-start & 255
-    cds1l = (cd-start >> 8) & 255
-    cds2l = (cd-start >> 16) & 255
-    cds3l = (cd-start >> 24) & 255
-    n0 = n & 255
-    n1 = (n >> 8) & 255
+    cd-size = zw-data.len() - cd-start: {
+        ok -> it
+
+        -> 0
+    }
     zw-data.push(80)
     zw-data.push(75)
     zw-data.push(5)
@@ -207,18 +231,18 @@ finalize = () {
     zw-data.push(0)
     zw-data.push(0)
     zw-data.push(0)
-    zw-data.push(n0)
-    zw-data.push(n1)
-    zw-data.push(n0)
-    zw-data.push(n1)
-    zw-data.push(cds0)
-    zw-data.push(cds1)
-    zw-data.push(cds2)
-    zw-data.push(cds3)
-    zw-data.push(cds0l)
-    zw-data.push(cds1l)
-    zw-data.push(cds2l)
-    zw-data.push(cds3l)
+    zw-data.push(byte-at(n, 0))
+    zw-data.push(byte-at(n, 8))
+    zw-data.push(byte-at(n, 0))
+    zw-data.push(byte-at(n, 8))
+    zw-data.push(byte-at(cd-size, 0))
+    zw-data.push(byte-at(cd-size, 8))
+    zw-data.push(byte-at(cd-size, 16))
+    zw-data.push(byte-at(cd-size, 24))
+    zw-data.push(byte-at(cd-start, 0))
+    zw-data.push(byte-at(cd-start, 8))
+    zw-data.push(byte-at(cd-start, 16))
+    zw-data.push(byte-at(cd-start, 24))
     zw-data.push(0)
     zw-data.push(0)
 }
@@ -310,7 +334,12 @@ zip-run = () {
     }
     files []str
     i <- [3..argc): {
-        files.push(os.arg(i))
+        fa = os.arg(i): {
+            ok -> it
+
+            -> ''
+        }
+        files.push(fa)
     }
 
     create(filename, files)

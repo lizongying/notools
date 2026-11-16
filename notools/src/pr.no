@@ -23,33 +23,48 @@ pr-is-digit = (s str) (ok bool) {
 ; safe arithmetic wrappers: overflow=wrap annotations only bind at function
 ; body top level, so every +/-/* inside conditional arms must go through them.
 safe-add = (a i64, b i64) (r i64) {
-
     #{overflow=wrap}
-    r = a + b
+    r = a + b: {
+        ok -> it
+
+        -> _
+    }
 }
 
 safe-sub = (a i64, b i64) (r i64) {
-
     #{overflow=wrap}
-    r = a - b
+    r = a - b: {
+        ok -> it
+
+        -> _
+    }
 }
 
 safe-mul = (a i64, b i64) (r i64) {
-
     #{overflow=wrap}
-    r = a * b
+    r = a * b: {
+        ok -> it
+
+        -> _
+    }
 }
 
 safe-div = (a i64, b i64) (r i64) {
-
     #{overflow=wrap}
-    r = a / b
+    r = a / b: {
+        ok -> it
+
+        -> _
+    }
 }
 
 safe-mod = (a i64, b i64) (r i64) {
-
     #{overflow=wrap}
-    r = a % b
+    r = a % b: {
+        ok -> it
+
+        -> _
+    }
 }
 
 safe-slice2 = (s str, from i64, to i64) (r str) {
@@ -62,15 +77,19 @@ safe-slice2 = (s str, from i64, to i64) (r str) {
 ; `str - elem` falls onto the integer-subtraction path. These helpers pin the
 ; default to the element type so callers get a plain str / i64.
 idx-str = (v []str, i i64) (s str) {
+    s = v[i]: {
+        ok -> it
 
-    #{index-out=''}
-    s = v[i]
+        -> ''
+    }
 }
 
 idx-i64 = (v []i64, i i64) (n i64) {
+    n = v[i]: {
+        ok -> it
 
-    #{index-out=zero}
-    n = v[i]
+        -> _
+    }
 }
 
 ; safe-rest-of-option: cluster tail after the option char (from index 1)
@@ -230,7 +249,13 @@ pr-inln = (st pr-inln-state, content str) (chunk str, mor i64, eof i64) {
         ch = 0
         is-nl = false
         not-nl = false
-        inwork -> ch = content.byte(i)
+        inwork -> {
+            ch = content.byte(i): {
+                ok -> it
+
+                -> _
+            }
+        }
         inwork && ch == 10 -> is-nl = true
         inwork && ch != 10 -> not-nl = true
         beyond -> st.pos = i
@@ -570,21 +595,21 @@ pr-vert = (b pr-out, content str, time str, fname str, o pr-opts) {
             lncnt = safe-add(lncnt, 1)
             nums.push(lncnt)
         }
-        C = cells.len()
-        C == 0 -> break
+        ncells = cells.len()
+        ncells == 0 -> break
         height = o.lines
-        C < maxc -> {
-            height = safe-div(C, cl)
-            safe-mod(C, cl) != 0 -> height = safe-add(height, 1)
+        ncells < maxc -> {
+            height = safe-div(ncells, cl)
+            safe-mod(ncells, cl) != 0 -> height = safe-add(height, 1)
         }
         pr-pagehead(b, time, fname, page, o)
         i = 0
         (i < height) {
-            i >= C -> break
+            i >= ncells -> break
             lastj = 0
             j = 0
             (j < cl) {
-                safe-add(i, safe-mul(j, height)) < C -> lastj = j
+                safe-add(i, safe-mul(j, height)) < ncells -> lastj = j
                 j = safe-add(j, 1)
             }
             raw = ' '.repeat(o.offst)
@@ -642,10 +667,10 @@ pr-horz = (b pr-out, content str, time str, fname str, o pr-opts) {
             lncnt = safe-add(lncnt, 1)
             nums.push(lncnt)
         }
-        C = cells.len()
-        C == 0 -> break
-        rows = safe-div(C, cl)
-        safe-mod(C, cl) != 0 -> rows = safe-add(rows, 1)
+        ncells = cells.len()
+        ncells == 0 -> break
+        rows = safe-div(ncells, cl)
+        safe-mod(ncells, cl) != 0 -> rows = safe-add(rows, 1)
         pr-pagehead(b, time, fname, page, o)
         i = 0
         (i < rows) {
@@ -653,7 +678,7 @@ pr-horz = (b pr-out, content str, time str, fname str, o pr-opts) {
             lastj = 0
             j = 0
             (j < cl) {
-                safe-add(base, j) < C -> lastj = j
+                safe-add(base, j) < ncells -> lastj = j
                 j = safe-add(j, 1)
             }
             raw = ' '.repeat(o.offst)
@@ -861,7 +886,12 @@ pr-run = () {
         }
         i = safe-add(ix, 1)
         ix = i
-        nxt-arg = os.arg(i)
+        naopt = os.arg(i)
+        nxt-arg = naopt: {
+            ok -> it
+
+            -> ''
+        }
         al = a.len()
         one-char = al == 1
         is-plus = a.starts-with('+')
@@ -894,7 +924,11 @@ pr-run = () {
             pv = 0
             pok = false
             pl2.len() > 0 -> {
-                pv = pl2.to-i64()
+                pv = pl2.to-i64(): {
+                    ok -> it
+
+                    -> _
+                }
                 pok = pr-num-ok(pl2) && pv >= 1
             }
             ! pok -> {
@@ -909,7 +943,11 @@ pr-run = () {
             cv = 0
             cok = false
             rest.len() > 0 -> {
-                cv = rest.to-i64()
+                cv = rest.to-i64(): {
+                    ok -> it
+
+                    -> _
+                }
                 cok = pr-num-ok(rest) && cv >= 1
             }
             ! cok -> {
@@ -953,11 +991,19 @@ pr-run = () {
                     et2 = otail
                     inchb = 9
                     et2.len() > 0 && ! pr-is-digit(safe-slice2(et2, 0, 1)) -> {
-                        inchb = et2.byte(0)
+                        inchb = et2.byte(0): {
+                            ok -> it
+
+                            -> _
+                        }
                         et2 = safe-rest1(et2)
                     }
                     et2.len() > 0 && pr-is-digit(safe-slice2(et2, 0, 1)) -> {
-                        eg i64 = et2.to-i64()
+                        eg = et2.to-i64(): {
+                            ok -> it
+
+                            -> _
+                        }
                         eg < 0 -> {
                             po-flush(b)
                             eprint('pr: -e gap must be 0 or more')
@@ -978,11 +1024,19 @@ pr-run = () {
                     it2 = otail
                     ocharb = 9
                     it2.len() > 0 && ! pr-is-digit(safe-slice2(it2, 0, 1)) -> {
-                        ocharb = it2.byte(0)
+                        ocharb = it2.byte(0): {
+                            ok -> it
+
+                            -> _
+                        }
                         it2 = safe-rest1(it2)
                     }
                     it2.len() > 0 && pr-is-digit(safe-slice2(it2, 0, 1)) -> {
-                        ig i64 = it2.to-i64()
+                        ig = it2.to-i64(): {
+                            ok -> it
+
+                            -> _
+                        }
                         ig < 0 -> {
                             po-flush(b)
                             eprint('pr: -i gap must be 0 or more')
@@ -1002,7 +1056,11 @@ pr-run = () {
                     sflag = 1
                     otail.len() == 0 -> scharb = 9
                     otail.len() > 0 -> {
-                        scharb = otail.byte(0)
+                        scharb = otail.byte(0): {
+                            ok -> it
+
+                            -> _
+                        }
                         safe-rest1(otail).len() > 0 -> {
                             po-flush(b)
                             eprint('pr: invalid value for -s')
@@ -1017,7 +1075,11 @@ pr-run = () {
                 cstr == 'w' -> wflag = 1
                 cstr == 'w' && otail.len() > 0 -> {
                     wok = pr-num-ok(otail)
-                    wv i64 = otail.to-i64()
+                    wv = otail.to-i64(): {
+                        ok -> it
+
+                        -> _
+                    }
                     ! wok || wv < 1 -> {
                         po-flush(b)
                         eprint('pr: -w width must be 1 or more ')
@@ -1027,7 +1089,11 @@ pr-run = () {
                 }
                 cstr == 'l' && otail.len() > 0 -> {
                     vok = pr-lines-ok(otail)
-                    v i64 = otail.to-i64()
+                    v = otail.to-i64(): {
+                        ok -> it
+
+                        -> _
+                    }
                     ! vok || v < 1 -> {
                         po-flush(b)
                         eprint('pr: number of lines must be 1 or more')
@@ -1037,7 +1103,11 @@ pr-run = () {
                 }
                 cstr == 'o' && otail.len() > 0 -> {
                     ook = pr-num-ok(otail)
-                    ov i64 = otail.to-i64()
+                    ov = otail.to-i64(): {
+                        ok -> it
+
+                        -> _
+                    }
                     ! ook || ov < 1 -> {
                         po-flush(b)
                         eprint('pr: -o offset must be 1 or more')
@@ -1058,7 +1128,11 @@ pr-run = () {
                     nmw = 0
                     t2.len() == 0 -> nmw = 5
                     t2.len() > 0 && pr-num-ok(t2) -> {
-                        tv i64 = t2.to-i64()
+                        tv = t2.to-i64(): {
+                            ok -> it
+
+                            -> _
+                        }
                         tv < 1 -> {
                             po-flush(b)
                             eprint('pr: -n width must be 1 or more')
@@ -1073,7 +1147,13 @@ pr-run = () {
                     }
                     nmwd = nmw
                     nmcharb = 9
-                    nmch.len() > 0 -> nmcharb = nmch.byte(0)
+                    nmch.len() > 0 -> {
+                        nmcharb = nmch.byte(0): {
+                            ok -> it
+
+                            -> _
+                        }
+                    }
                 }
                 cstr != 't' && cstr != 'd' && cstr != 'f' && cstr != 'F' && cstr != 'p' && cstr != 'r' && ! valopt && ! bad-mlt -> {
                     po-flush(b)
@@ -1221,9 +1301,11 @@ pr-run = () {
     ; --- sources: file list, implicit stdin ---
     sources []str
     fi <- [0..files.len()): {
+        f = files[fi]: {
+            ok -> it
 
-        #{index-out=zero}
-        f = files[fi]
+            -> ''
+        }
         f == '-' -> sources.push('')
         f != '-' -> sources.push(f)
     }
@@ -1275,9 +1357,11 @@ pr-run = () {
         o.pgwd = pgwd
         contents []str
         mf <- [0..sources.len()): {
+            msrc = sources[mf]: {
+                ok -> it
 
-            #{index-out=zero}
-            msrc = sources[mf]
+                -> ''
+            }
             mcontent = ''
             mokc = false
             mr ?str = ''
@@ -1316,16 +1400,13 @@ pr-run = () {
     body = lines
     si = 0
     (si < sources.len()) {
-
-        #{index-out=zero}
-        src = sources[si]
-        sip1 = safe-add(si, 1)
-        snp-opt = os.arg(sip1)
-        snp = snp-opt: {
+        src = sources[si]: {
             ok -> it
 
             -> ''
         }
+        sip1 = safe-add(si, 1)
+        _ = os.arg(sip1)
         stdin-src = src == ''
         last-file = sip1 == sources.len()
         errcnt1 = safe-add(errcnt, 1)

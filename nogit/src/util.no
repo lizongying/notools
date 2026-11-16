@@ -23,10 +23,8 @@ bytes-range = (data []byte, start i64, end i64) (out str) {
 
     #{overflow=wrap}
     n = end - start
-    out str = with-len(n)
+    b []byte = with-cap-len(n, n)
     i <- [0..n): {
-
-        ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
         dvo = data[start + i]
         dv byte = 0
         dvo: {
@@ -34,8 +32,9 @@ bytes-range = (data []byte, start i64, end i64) (out str) {
 
             -> _
         }
-        out.set-byte(i, dv)
+        b[i] = dv
     }
+    out = b.slice(0, n).to-bytes-str()
 }
 
 ; bytes-to-str: convert an entire byte slice into a string (1:1 bytes)
@@ -55,21 +54,39 @@ bytes-to-str = (data []byte) (out str) {
 ; 新字串（索引「寫入」本來就是 byte 位移，與 .byte() 讀取一致）。
 str-range = (s str, start i64, end i64) (out str) {
     lb = s.len-bytes()
-    a = start
+    a i64 = start: {
+        ok -> it
+
+        -> 0
+    }
     a < 0 -> a = 0
     a > lb -> a = lb
-    e = end
+    e i64 = end: {
+        ok -> it
+
+        -> 0
+    }
     e > lb -> e = lb
 
     #{overflow=wrap}
-    n = e - a
-    n < 0 -> n = 0
-    out str = with-len(n)
-    i <- [0..n): {
+    n i64 = (e - a): {
+        ok -> it
 
-        #{overflow=wrap}
-        out.set-byte(i, s.byte(a + i))
+        -> 0
     }
+    n < 0 -> n = 0
+    b []byte = with-cap-len(n, n)
+    i <- [0..n): {
+        cbv = s.byte(a + i)
+        v byte = 0
+        cbv: {
+            ok -> v = it
+
+            -> _
+        }
+        b[i] = v
+    }
+    out = b.slice(0, n).to-bytes-str()
 }
 
 ; mkdir-seg: create a single directory segment; returns made i64 (1 if present/created, 0 on failure).
@@ -124,7 +141,11 @@ mkdir-all = (p str) (ok bool) {
         made = mkdir-seg(seg)
 
         #{overflow=wrap}
-        made-count = made-count + made
+        made-count = made-count + made: {
+            ok -> it
+
+            -> _
+        }
     }
     ok = mkdir-seg(full) != 0
     ok = ok && made-count == n
@@ -144,8 +165,11 @@ remove-tree = (p str) (ok bool) {
     kids = fs.dir-entries(p)
     i <- [0..kids.len()): {
 
-        #{index-out=zero}
-        name = kids[i]
+        name = kids[i]: {
+            ok -> it
+
+            -> ''
+        }
         child = p - '/' - name
         ok = remove-tree(child)
     }
@@ -158,17 +182,50 @@ remove-tree = (p str) (ok bool) {
 ; returns v i64: the integer value
 read-u32-be = (data []byte, pos i64) (v i64) {
 
-    #{index-out=zero}
-    v = data[pos]
+    v = data[pos]: {
+        ok -> it
+
+        -> 0
+    }
 
     #{overflow=wrap}
-    v = (v << 8) | data[pos + 1]
+    b1 i64 = data[pos + 1]: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    v = (v << 8) | b1: {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
-    v = (v << 8) | data[pos + 2]
+    b2 i64 = data[pos + 2]: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    v = (v << 8) | b2: {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
-    v = (v << 8) | data[pos + 3]
+    b3 i64 = data[pos + 3]: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    v = (v << 8) | b3: {
+        ok -> it
+
+        -> _
+    }
 }
 
 ; write-u32-be: write a big-endian 32-bit unsigned integer into a byte slice
@@ -210,11 +267,24 @@ write-u32-be = (buf []byte, pos i64, v i64) {
 ; returns v i64: value
 read-u16-be = (data []byte, pos i64) (v i64) {
 
-    #{index-out=zero}
-    v = data[pos]
+    v = data[pos]: {
+        ok -> it
+
+        -> 0
+    }
 
     #{overflow=wrap}
-    v = (v << 8) | data[pos + 1]
+    b1 i64 = data[pos + 1]: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    v = (v << 8) | b1: {
+        ok -> it
+
+        -> _
+    }
 }
 
 ; write-u16-be: write a big-endian 16-bit unsigned integer
@@ -244,9 +314,16 @@ write-u16-be = (buf []byte, pos i64, v i64) {
 find-byte = (data []byte, b byte, from i64) (pos i64) {
     pos = -1
     i <- [from..data.len()): {
-        data[i] == b -> {
-            pos = i
-            break
+        bv = data[i]
+        bv: {
+            ok -> {
+                it == b -> {
+                    pos = i
+                    break
+                }
+            }
+
+            -> _
         }
     }
 }
@@ -334,10 +411,20 @@ hex-decode = (s str) (out ?[]byte) {
     i <- [0..tmp.len()): {
 
         #{overflow=wrap}
-        hi = hexdigit(s.byte(i * 2))
+        hib = s.byte(i * 2)
+        hi = hexdigit(hib: {
+            ok -> it
+
+            -> 0
+        })
 
         #{overflow=wrap}
-        lo = hexdigit(s.byte(i * 2 + 1))
+        lob = s.byte(i * 2 + 1)
+        lo = hexdigit(lob: {
+            ok -> it
+
+            -> 0
+        })
         hi < 0 || lo < 0 -> return
         tmp[i]: {
             ok -> it = (hi << 4) | lo
@@ -358,11 +445,17 @@ hex-encode = (data []byte) (out str) {
     out str = with-len(data.len() * 2)
     i <- [0..data.len()): {
 
-        #{index-out=zero}
-        b = data[i]
+        b = data[i]: {
+            ok -> it
 
-        #{index-out=zero}
-        d9v1 str = hex-chars[(b >> 4) & 15]
+            -> 0
+        }
+
+        d9v1 str = hex-chars[(b >> 4) & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2]: {
@@ -371,8 +464,11 @@ hex-encode = (data []byte) (out str) {
             -> _
         }
 
-        #{index-out=zero}
-        d9v2 str = hex-chars[b & 15]
+        d9v2 str = hex-chars[b & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2 + 1]: {
@@ -401,7 +497,11 @@ i64-to-str = (n i64) (out str) {
         tmp.push(48 + (x % 10))
 
         #{overflow=wrap}
-        x = x / 10
+        x = x / 10: {
+            ok -> it
+
+            -> _
+        }
         x == 0 -> break
     }
     out = ''
@@ -409,8 +509,11 @@ i64-to-str = (n i64) (out str) {
     i <- [0..L): {
         cb str = with-len(1)
 
-        #{index-out=zero}
-        d9v3 byte = tmp[L - 1 - i]
+        d9v3 byte = tmp[L - 1 - i]: {
+            ok -> it
+
+            -> 0
+        }
         cb[0]: {
             ok -> it = d9v3
 
@@ -436,7 +539,11 @@ str-eq = (a str, b str) (yes bool) {
         }
 
         #{overflow=wrap}
-        i = i + 1
+        i = i + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 }
 

@@ -15,6 +15,21 @@ f64-abs = (x f64) (a f64) {
     x < 0.0 -> a = 0.0 - x
 }
 
+; num-even: is an integer even?
+; v0.4.24: std's math.even takes a union `int` parameter, and instantiating its
+; `%` for a concrete i64 lowers through the `big = bigint | i64` operator
+; overload — the emitted IR does `srem %bigint_bigint` on i64 values and the
+; LLVM verifier rejects the module (wjju8z98). The check is inlined here on the
+; concrete type instead.
+; x i64
+; returns yes bool
+num-even = (x i64) (yes bool) {
+
+    #{overflow=wrap}
+    r = x % 2
+    yes = r == 0
+}
+
 ; jvp-strtod: parse decimal numeric text into an f64
 ; s str: valid numeric text
 ; returns v f64
@@ -42,22 +57,38 @@ jvp-f64-frexp = (x f64) (frac f64, ex i64) {
         mid i64 = 0
 
         #{overflow=wrap}
-        mid = (lo + hi) / 2
+        mid = (lo + hi) / 2: {
+            ok -> it
+
+            -> _
+        }
         nsh i64 = 0
 
         #{overflow=wrap}
-        nsh = 0 - mid
+        nsh = 0 - mid: {
+            ok -> it
+
+            -> _
+        }
         m f64 = _ldexp(x, nsh)
         m < 1.0 -> hi = mid
         m >= 1.0 -> lo = mid
     }
 
     #{overflow=wrap}
-    ex = lo + 1
+    ex = lo + 1: {
+        ok -> it
+
+        -> _
+    }
     sh = 0
 
     #{overflow=wrap}
-    sh = 0 - ex
+    sh = 0 - ex: {
+        ok -> it
+
+        -> _
+    }
     frac = _ldexp(x, sh)
 }
 
@@ -86,13 +117,25 @@ dbl-harvest = (x f64, want i64) (digs str, decpt i64) {
     k = 0
 
     #{overflow=wrap}
-    k = ex - 53
+    k = ex - 53: {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
-    math.even(vi) -> {
-        vi = vi / 2
+    num-even(vi) -> {
+        vi = vi / 2: {
+            ok -> it
+
+            -> _
+        }
         ns = vi.to-str()
-        k = k + 1
+        k = k + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; scale V = ns by 2^k using exact decimal string arithmetic
@@ -134,7 +177,11 @@ str-dbl = (s str) (out str) {
 
         #{overflow=wrap}
         j = n - 1 - i
-        b i64 = s.byte(j)
+        b i64 = s.byte(j): {
+            ok -> it
+
+            -> 0
+        }
 
         d i64 = 0
         d-opt = b - 48
@@ -161,10 +208,18 @@ str-dbl = (s str) (out str) {
         }
 
         #{overflow=wrap}
-        carry = v / 10
+        carry = v / 10: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        v = v - carry * 10
+        v = v - carry * 10: {
+            ok -> it
+
+            -> _
+        }
         cd str = v.to-str()
         out = cd - out
     }
@@ -183,7 +238,11 @@ str-quint = (s str) (out str) {
 
         #{overflow=wrap}
         j = n - 1 - i
-        b i64 = s.byte(j)
+        b i64 = s.byte(j): {
+            ok -> it
+
+            -> 0
+        }
 
         d i64 = 0
         d-opt = b - 48
@@ -210,10 +269,18 @@ str-quint = (s str) (out str) {
         }
 
         #{overflow=wrap}
-        carry = v / 10
+        carry = v / 10: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        v = v - carry * 10
+        v = v - carry * 10: {
+            ok -> it
+
+            -> _
+        }
         cd str = v.to-str()
         out = cd - out
     }
@@ -241,7 +308,11 @@ jvp-shortest = (x f64) (digs str, decpt i64) {
 
     #{overflow=wrap}
     (nn > 0 && all.byte(nn - 1) == 48) {
-        nn = nn - 1
+        nn = nn - 1: {
+            ok -> it
+
+            -> _
+        }
     }
     nn == 0 -> {
         digs = '0'
@@ -272,7 +343,11 @@ jvp-shortest = (x f64) (digs str, decpt i64) {
 
                     ; 999...→1000... carry adds a digit: 0.ns × 10^(decpt+1)
                     #{overflow=wrap}
-                    ns.len-bytes() > k -> decpt = decpt + 1
+                    ns.len-bytes() > k -> decpt = decpt + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                     chosen = ns
                 }
             }
@@ -290,7 +365,11 @@ jvp-shortest = (x f64) (digs str, decpt i64) {
 
     #{overflow=wrap}
     (cl > 1 && chosen.byte(cl - 1) == 48) {
-        cl = cl - 1
+        cl = cl - 1: {
+            ok -> it
+
+            -> _
+        }
     }
     chosen = chosen[0..cl - 1]
     digs = chosen
@@ -345,7 +424,11 @@ jvp-inc-prefix = (all str, k i64) (out str) {
 
         #{overflow=wrap}
         j = k - 1 - i
-        b i64 = all.byte(j)
+        b i64 = all.byte(j): {
+            ok -> it
+
+            -> 0
+        }
 
         d i64 = 0
         d-opt = b - 48
@@ -372,10 +455,18 @@ jvp-inc-prefix = (all str, k i64) (out str) {
         }
 
         #{overflow=wrap}
-        carry = v / 10
+        carry = v / 10: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        v = v - carry * 10
+        v = v - carry * 10: {
+            ok -> it
+
+            -> _
+        }
         cd str = v.to-str()
         out = cd - out
     }
@@ -428,7 +519,11 @@ jvp-dtoa-fmt = (v f64) (out str) {
             out = out - '-'
 
             #{overflow=wrap}
-            ae = 0 - e
+            ae = 0 - e: {
+                ok -> it
+
+                -> _
+            }
         }
         e >= 0 -> out = out - '+'
         es str = ae.to-str()

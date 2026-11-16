@@ -27,6 +27,65 @@
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
+tiff-write-entry = (out []byte, tag i64, typ i64, count i64, value i64) {
+    out.push(tag & 255)
+    out.push((tag >> 8) & 255)
+    out.push(typ & 255)
+    out.push((typ >> 8) & 255)
+    out.push(count & 255)
+    out.push((count >> 8) & 255)
+    out.push((count >> 16) & 255)
+    out.push((count >> 24) & 255)
+    out.push(value & 255)
+    out.push((value >> 8) & 255)
+    out.push((value >> 16) & 255)
+    out.push((value >> 24) & 255)
+}
+
+; tiff-read-u16: read 16-bit value
+tiff-read-u16 = (data []byte, offset i64, little-endian bool) (val i64) {
+    b0 byte = data[offset]: { ok -> it
+
+        -> _ }
+    b1 byte = data[offset + 1]: { ok -> it
+
+        -> _ }
+    {
+        little-endian -> {
+            val = (b0 & 255) | ((b1 & 255) << 8)
+        }
+
+        -> {
+            val = ((b0 & 255) << 8) | (b1 & 255)
+        }
+    }
+}
+
+; tiff-read-u32: read 32-bit value
+tiff-read-u32 = (data []byte, offset i64, little-endian bool) (val i64) {
+    b0 byte = data[offset]: { ok -> it
+
+        -> _ }
+    b1 byte = data[offset + 1]: { ok -> it
+
+        -> _ }
+    b2 byte = data[offset + 2]: { ok -> it
+
+        -> _ }
+    b3 byte = data[offset + 3]: { ok -> it
+
+        -> _ }
+    {
+        little-endian -> {
+            val = (b0 & 255) | ((b1 & 255) << 8) | ((b2 & 255) << 16) | ((b3 & 255) << 24)
+        }
+
+        -> {
+            val = ((b0 & 255) << 24) | ((b1 & 255) << 16) | ((b2 & 255) << 8) | (b3 & 255)
+        }
+    }
+}
+
 ; ── Load ──
 
 ; tiff.load: load a TIFF file
@@ -41,12 +100,18 @@ load = (path str) (img ?image) {
 
     ; Check byte order
     little-endian = true
+    d0 byte = data[0]: { ok -> it
+
+        -> _ }
+    d1 byte = data[1]: { ok -> it
+
+        -> _ }
     {
-        (data[0] & 255) == 73 && (data[1] & 255) == 73 -> {
+        (d0 & 255) == 73 && (d1 & 255) == 73 -> {
             little-endian = true
         }
 
-        (data[0] & 255) == 77 && (data[1] & 255) == 77 -> {
+        (d0 & 255) == 77 && (d1 & 255) == 77 -> {
             little-endian = false
         }
 
@@ -93,10 +158,14 @@ load = (path str) (img ?image) {
         tag = tiff-read-u16(data, entry-pos, little-endian)
 
         #{overflow=wrap}
-        type = tiff-read-u16(data, entry-pos + 2, little-endian)
+        type = tiff-read-u16(data, entry-pos + 2, little-endian): { ok -> it
+
+        -> _ }
 
         #{overflow=wrap}
-        count = tiff-read-u32(data, entry-pos + 4, little-endian)
+        count = tiff-read-u32(data, entry-pos + 4, little-endian): { ok -> it
+
+        -> _ }
 
         #{overflow=wrap}
         val = tiff-read-u32(data, entry-pos + 8, little-endian)
@@ -148,8 +217,8 @@ load = (path str) (img ?image) {
 
     #{overflow=wrap}
     n = w * h * bands
-    _d []byte = with-len(n)
-    tmp = image.new-from-data(w, h, bands, _d)
+    d []byte = with-len(n)
+    tmp = image.new-from-data(w, h, bands, d)
 
     ; Copy pixel data from strip
     #{overflow=wrap}
@@ -160,7 +229,9 @@ load = (path str) (img ?image) {
             {
                 bands == samples-per-pixel -> {
                     i <- [0..n): {
-                        tmp.data[i] = data[strip-offset + i] & 255
+                        tmp.data[i] = data[strip-offset + i]: { ok -> it
+
+            -> _ } & 255
                     }
                 }
 
@@ -170,7 +241,9 @@ load = (path str) (img ?image) {
                     npix = w * h
                     i <- [0..npix): {
                         b <- [0..bands): {
-                            tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b] & 255
+                            tmp.data[i * bands + b] = data[strip-offset + i * samples-per-pixel + b]: { ok -> it
+
+            -> _ } & 255
                         }
                     }
                 }
@@ -180,40 +253,7 @@ load = (path str) (img ?image) {
     img = tmp
 }
 
-; tiff-read-u16: read 16-bit value
-; data str: file content
-; offset i64: byte offset
-; little-endian bool: byte order
-; returns val i64
-tiff-read-u16 = (data []byte, offset i64, little-endian bool) (val i64) {
-    {
-        little-endian -> {
-            val = (data[offset] & 255) | ((data[offset + 1] & 255) << 8)
-        }
-
-        -> {
-            val = ((data[offset] & 255) << 8) | (data[offset + 1] & 255)
-        }
-    }
-}
-
-; tiff-read-u32: read 32-bit value
-; data str: file content
-; offset i64: byte offset
-; little-endian bool: byte order
-; returns val i64
-tiff-read-u32 = (data []byte, offset i64, little-endian bool) (val i64) {
-    {
-        little-endian -> {
-            val = (data[offset] & 255) | ((data[offset + 1] & 255) << 8) | ((data[offset + 2] & 255) << 16) | ((data[offset + 3] & 255) << 24)
-        }
-
-        -> {
-            val = ((data[offset] & 255) << 24) | ((data[offset + 1] & 255) << 16) | ((data[offset + 2] & 255) << 8) | (data[offset + 3] & 255)
-        }
-    }
-}
-
+; tiff-write-entry: write a 12-byte IFD entry (little-endian)
 ; ── Save ──
 
 ; tiff.save: save image as baseline TIFF (uncompressed, little-endian)
@@ -244,8 +284,9 @@ save = (path str, img image) (ok bool) {
         img.bands == bands -> {
             i <- [0..w * h * bands): {
 
-                #{index-out=zero}
-                d9v1 byte = img.data[i]
+                                d9v1 byte = img.data[i]: { ok -> it
+
+                -> _ }
                 pixel-data[i]: {
                     ok -> it = d9v1
 
@@ -264,17 +305,76 @@ save = (path str, img image) (ok bool) {
                         img.bands >= 3 -> {
 
                             #{overflow=wrap}
-                            r = img.data[i * img.bands]
+                            ri = i * img.bands: {
+                                ok -> it
 
+                                -> 0
+                            }
                             #{overflow=wrap}
-                            g = img.data[i * img.bands + 1]
+                            ri1 = ri + 1: {
+                                ok -> it
 
+                                -> 0
+                            }
                             #{overflow=wrap}
-                            b = img.data[i * img.bands + 2]
+                            ri2 = ri + 2: {
+                                ok -> it
 
+                                -> 0
+                            }
+                            r = img.data[ri]: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            g = img.data[ri1]: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            b = img.data[ri2]: {
+                                ok -> it
+
+                                -> 0
+                            }
                             #{overflow=wrap}
+                            r299 = r * 299: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            #{overflow=wrap}
+                            g587 = g * 587: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            #{overflow=wrap}
+                            b114 = b * 114: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            #{overflow=wrap}
+                            tsum = r299 + g587: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            #{overflow=wrap}
+                            tsum2 = tsum + b114: {
+                                ok -> it
+
+                                -> 0
+                            }
+                            #{overflow=wrap}
+                            tm = tsum2 / 1000: {
+                                ok -> it
+
+                                -> 0
+                            }
                             pixel-data[i]: {
-                                ok -> it = (r * 299 + g * 587 + b * 114) / 1000
+                                ok -> it = tm
 
                                 -> _
                             }
@@ -282,8 +382,9 @@ save = (path str, img image) (ok bool) {
 
                         -> {
 
-                            #{index-out=zero}
-                            d9v2 byte = img.data[i * img.bands]
+                                                        d9v2 byte = img.data[i * img.bands]: { ok -> it
+
+                -> _ }
                             pixel-data[i]: {
                                 ok -> it = d9v2
 
@@ -295,8 +396,9 @@ save = (path str, img image) (ok bool) {
                     bands == 3 -> {
                         img.bands >= 3 -> {
 
-                            #{index-out=zero}
-                            d9v3 byte = img.data[i * img.bands]
+                                                        d9v3 byte = img.data[i * img.bands]: { ok -> it
+
+                -> _ }
 
                             #{overflow=wrap}
                             pixel-data[i * 3]: {
@@ -305,8 +407,9 @@ save = (path str, img image) (ok bool) {
                                 -> _
                             }
 
-                            #{index-out=zero}
-                            d9v4 byte = img.data[i * img.bands + 1]
+                                                        d9v4 byte = img.data[i * img.bands + 1]: { ok -> it
+
+                -> _ }
 
                             #{overflow=wrap}
                             pixel-data[i * 3 + 1]: {
@@ -315,8 +418,9 @@ save = (path str, img image) (ok bool) {
                                 -> _
                             }
 
-                            #{index-out=zero}
-                            d9v5 byte = img.data[i * img.bands + 2]
+                                                        d9v5 byte = img.data[i * img.bands + 2]: { ok -> it
+
+                -> _ }
 
                             #{overflow=wrap}
                             pixel-data[i * 3 + 2]: {
@@ -327,7 +431,11 @@ save = (path str, img image) (ok bool) {
                         }
 
                         img.bands == 1 -> {
-                            v = img.data[i]
+                            v = img.data[i]: {
+                                ok -> it
+
+                                -> 0
+                            }
 
                             #{overflow=wrap}
                             pixel-data[i * 3]: {
@@ -357,8 +465,9 @@ save = (path str, img image) (ok bool) {
                             {
                                 b < img.bands -> {
 
-                                    #{index-out=zero}
-                                    d9v6 byte = img.data[i * img.bands + b]
+                                                                        d9v6 byte = img.data[i * img.bands + b]: { ok -> it
+
+                -> _ }
 
                                     #{overflow=wrap}
                                     pixel-data[i * 4 + b]: {
@@ -393,7 +502,30 @@ save = (path str, img image) (ok bool) {
     pixel-offset = 0
 
     #{overflow=wrap}
-    pixel-offset = 8 + 2 + num-tags * 12 + 4
+    nt12 = num-tags * 12: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    po1 = 8 + 2: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    po2 = po1 + nt12: {
+        ok -> it
+
+        -> 0
+    }
+    #{overflow=wrap}
+    po3 = po2 + 4: {
+        ok -> it
+
+        -> 0
+    }
+    pixel-offset = po3
 
     ; Write header
     #{overflow=wrap}
@@ -456,7 +588,12 @@ save = (path str, img image) (ok bool) {
 
     ; Pixel data
     i <- [0..pixel-data.len()): {
-        buf.push(pixel-data[i])
+        pv = pixel-data[i]: {
+            ok -> it
+
+            -> 0
+        }
+        buf.push(pv)
     }
 
     ; Write file
@@ -470,31 +607,3 @@ save = (path str, img image) (ok bool) {
     ok = true
 }
 
-; tiff-write-entry: write a 12-byte IFD entry (little-endian)
-; out []byte: output buffer
-; tag i64: tag number
-; type i64: data type
-; count i64: value count
-; value i64: value
-tiff-write-entry = (out []byte, tag i64, type i64, count i64, value i64) {
-
-    ; Tag (LE 16-bit)
-    out.push(tag & 255)
-    out.push((tag >> 8) & 255)
-
-    ; Type (LE 16-bit)
-    out.push(type & 255)
-    out.push((type >> 8) & 255)
-
-    ; Count (LE 32-bit)
-    out.push(count & 255)
-    out.push((count >> 8) & 255)
-    out.push((count >> 16) & 255)
-    out.push((count >> 24) & 255)
-
-    ; Value (LE 32-bit)
-    out.push(value & 255)
-    out.push((value >> 8) & 255)
-    out.push((value >> 16) & 255)
-    out.push((value >> 24) & 255)
-}

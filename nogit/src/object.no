@@ -75,22 +75,26 @@ i64-to-octal = (n i64) (out str) {
         tmp.push(48 + (x % 8))
 
         #{overflow=wrap}
-        x = x / 8
+        x = x / 8: {
+            ok -> it
+
+            -> _
+        }
         x == 0 -> break
     }
 
     ; Concat-return so the result is safe wherever it is used.
-    out = ''
     L = tmp.len()
+    ob []byte = with-cap-len(L, L)
     i <- [0..L): {
-        cb str = with-len(1)
+        b byte = tmp[L - 1 - i]: {
+            ok -> it
 
-        ; str 基底 place-match 写丢写 + vec 裸读打包字（bug19/strfix 同类）—— set-byte 绕行
-        #{index-out=zero}
-        b byte = tmp[L - 1 - i]
-        cb.set-byte(0, b)
-        out = out - cb
+            -> 0
+        }
+        ob[i] = b
     }
+    out = ob.slice(0, L).to-bytes-str()
 }
 
 octal-to-i64 = (s str) (out i64) {
@@ -112,12 +116,18 @@ mode-is-dir = (m i64) (yes bool) {
 
 ; id-bytes: build a 20-byte string from an oid's raw bytes. Concat-return.
 id-bytes = (id oid) (out str) {
-    out = ''
+    b []byte = with-cap-len(20, 20)
     k <- [0..20): {
-        cb str = with-len(1)
-        cb.set-byte(0, id.id[k])
-        out = out - cb
+        bv = id.id[k]
+        v byte = 0
+        bv: {
+            ok -> v = it
+
+            -> _
+        }
+        b[k] = v
     }
+    out = b.slice(0, 20).to-bytes-str()
 }
 
 ; name-cmp: git's base_name_compare with the '/' rule for directories.
@@ -143,7 +153,11 @@ name-cmp = (na str, adir bool, nb str, bdir bool) (r i64) {
             }
 
             #{overflow=wrap}
-            i = i + 1
+            i = i + 1: {
+                ok -> it
+
+                -> _
+            }
         }
     }
     ca = 0
@@ -214,7 +228,11 @@ tree-entry-at = (raw str, i i64) (off i64, sp i64, nl i64) {
         off = n + 21
 
         #{overflow=wrap}
-        k = k + 1
+        k = k + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     sp = util.find-byte-str(raw, 32, off)
 
@@ -281,7 +299,11 @@ tree-count-raw = (raw str) (n i64) {
         pos = nl + 21
 
         #{overflow=wrap}
-        n = n + 1
+        n = n + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 }
 
@@ -485,7 +507,11 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
                         sub-modes = sub-modes - sms - '\n'
 
                         #{overflow=wrap}
-                        sub-count = sub-count + 1
+                        sub-count = sub-count + 1: {
+                            ok -> it
+
+                            -> _
+                        }
                     }
 
                     #{overflow=wrap}
@@ -566,7 +592,11 @@ tree-name-raw = (raw str, i i64) (s str) {
         off = nl0 + 21
 
         #{overflow=wrap}
-        k = k + 1
+        k = k + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     sp = util.find-byte-str(raw, 32, off)
 
@@ -591,7 +621,11 @@ tree-mode-raw = (raw str, i i64) (m i64) {
         off = nl0 + 21
 
         #{overflow=wrap}
-        k = k + 1
+        k = k + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     sp = util.find-byte-str(raw, 32, off)
     ms = util.str-range(raw, off, sp)
@@ -612,7 +646,11 @@ tree-id-raw = (raw str, i i64) (o oid) {
         off = nl0 + 21
 
         #{overflow=wrap}
-        k = k + 1
+        k = k + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     sp = util.find-byte-str(raw, 32, off)
 
@@ -677,7 +715,11 @@ parse-person-fields = (s str) (name str, email str, time i64, tz str) {
                 rest.byte(rpos) == 32 -> {
 
                     #{overflow=wrap}
-                    rpos = rpos + 1
+                    rpos = rpos + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
 
                 -> break
@@ -723,7 +765,11 @@ commit-encode = (c commit-info) (out str) {
         s = s - 'parent ' - ph - nl
 
         #{overflow=wrap}
-        off = off + 40
+        off = off + 40: {
+            ok -> it
+
+            -> _
+        }
     }
     al = person-line('author', c.author)
     s = s - al - nl
@@ -768,16 +814,22 @@ hex-char = (b byte) (s str) {
     lo = b & 15
     s str = with-len(2)
 
-    #{index-out=zero}
-    d9v1 str = hc[hi]
+    d9v1 str = hc[hi]: {
+        ok -> it
+
+        -> ''
+    }
     s[0]: {
         ok -> it = d9v1
 
         -> _
     }
 
-    #{index-out=zero}
-    d9v2 str = hc[lo]
+    d9v2 str = hc[lo]: {
+        ok -> it
+
+        -> ''
+    }
     s[1]: {
         ok -> it = d9v2
 
@@ -816,18 +868,29 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     hdr = oid.object-header(kind, data.len-bytes())
 
     #{overflow=wrap}
-    full str = with-len(hdr.len-bytes() + data.len-bytes())
-
-    ; set-byte: place-writes of bytes >= 0x80 into a str store code points and
-    ; consecutive writes lose high bytes (D9 bug) — corrupts the hash input
+    fullen = hdr.len-bytes() + data.len-bytes()
+    fb []byte = with-cap-len(fullen, fullen)
     i <- [0..hdr.len-bytes()): {
-        full.set-byte(i, hdr.byte(i))
+        hbv = hdr.byte(i)
+        hv byte = 0
+        hbv: {
+            ok -> hv = it
+
+            -> _
+        }
+        fb[i] = hv
     }
     i <- [0..data.len-bytes()): {
+        dbv = data.byte(i)
+        dv byte = 0
+        dbv: {
+            ok -> dv = it
 
-        #{overflow=wrap}
-        full.set-byte(hdr.len-bytes() + i, data.byte(i))
+            -> _
+        }
+        fb[hdr.len-bytes() + i] = dv
     }
+    full str = fb.slice(0, fullen).to-bytes-str()
     comp str = zlib.zlib-compress(full)
 
     ; Write the compressed object to file.
@@ -907,18 +970,7 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
     ;   00 00      = LEN=0
     ;   ff ff      = NLEN=~0
     ;   00 01 00 01 = Adler-32 of empty data (a=1, b=0 → 0x00010001)
-    warmup-data str = with-len(11)
-    warmup-data.set-byte(0, 0x78)
-    warmup-data.set-byte(1, 0x9c)
-    warmup-data.set-byte(2, 0x01)
-    warmup-data.set-byte(3, 0x00)
-    warmup-data.set-byte(4, 0x00)
-    warmup-data.set-byte(5, 0xff)
-    warmup-data.set-byte(6, 0xff)
-    warmup-data.set-byte(7, 0x00)
-    warmup-data.set-byte(8, 0x01)
-    warmup-data.set-byte(9, 0x00)
-    warmup-data.set-byte(10, 0x01)
+    warmup-data str = '\x78\x9c\x01\x00\x00\xff\xff\x00\x01\x00\x01'
     _w-opt = zlib.zlib-decompress(warmup-data)
     _ = _w-opt
 
@@ -960,14 +1012,18 @@ read-loose = (git-dir str, o oid) (kind str, data str, ok bool) {
     #{overflow=wrap}
     dlen = out-bytes.len() - start
 
-    ; set-byte 逐位元组写入：vec 基底 place-match 写在此站点静默丢数据（payload 全零），
-    ; 且 #{index-out=zero} 会把 []byte 读取降为 u64 暂存 —— 一律绕开。
-    data str = with-len(dlen)
+    dbuf []byte = with-cap-len(dlen, dlen)
     m <- [0..dlen): {
+        cbv = out.byte(start + m)
+        v byte = 0
+        cbv: {
+            ok -> v = it
 
-        #{overflow=wrap}
-        data.set-byte(m, out.byte(start + m))
+            -> _
+        }
+        dbuf[m] = v
     }
+    data str = dbuf.slice(0, dlen).to-bytes-str()
     ok = true
 }
 
@@ -1067,7 +1123,11 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     ok = true
 }
@@ -1131,7 +1191,11 @@ parse-commit-from-data = (d str) (tree-oid oid, parenthex str, a-name str, a-ema
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     ok = true
 }
@@ -1214,7 +1278,11 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str, t-name str
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     ok = true
 }
@@ -1335,7 +1403,11 @@ tree-to-flat = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, 
                 modes = modes - mode-str - '\n'
 
                 #{overflow=wrap}
-                count = count + 1
+                count = count + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
     }

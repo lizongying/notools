@@ -18,8 +18,11 @@ oid.to-hex = () (out str) {
     i <- [0..20): {
         b = .id[i]
 
-        #{index-out=zero}
-        d9v1 str = hex-chars[(b >> 4) & 15]
+        d9v1 str = hex-chars[(b >> 4) & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2]: {
@@ -28,8 +31,11 @@ oid.to-hex = () (out str) {
             -> _
         }
 
-        #{index-out=zero}
-        d9v2 str = hex-chars[b & 15]
+        d9v2 str = hex-chars[b & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2 + 1]: {
@@ -51,8 +57,11 @@ oid-hex-str = (o oid) (out str) {
         b = o.id[i]
         c1 str = with-len(1)
 
-        #{index-out=zero}
-        d9v3 str = hc[(b >> 4) & 15]
+        d9v3 str = hc[(b >> 4) & 15]: {
+            ok -> it
+
+            -> ''
+        }
         c1[0]: {
             ok -> it = d9v3
 
@@ -60,8 +69,11 @@ oid-hex-str = (o oid) (out str) {
         }
         c2 str = with-len(1)
 
-        #{index-out=zero}
-        d9v4 str = hc[b & 15]
+        d9v4 str = hc[b & 15]: {
+            ok -> it
+
+            -> ''
+        }
         c2[0]: {
             ok -> it = d9v4
 
@@ -82,7 +94,17 @@ zero-oid = () (o oid) {
 oid.eq = (o oid) (yes bool) {
     yes = true
     i <- [0..20): {
-        .id[i] != o.id[i] -> {
+        lv byte = .id[i]: {
+            ok -> it
+
+            -> 0
+        }
+        rv byte = o.id[i]: {
+            ok -> it
+
+            -> 0
+        }
+        lv != rv -> {
             yes = false
             return
         }
@@ -94,7 +116,12 @@ oid.eq = (o oid) (yes bool) {
 oid.is-zero = () (yes bool) {
     yes = true
     i <- [0..20): {
-        .id[i] != 0 -> {
+        lv byte = .id[i]: {
+            ok -> it
+
+            -> 0
+        }
+        lv != 0 -> {
             yes = false
             return
         }
@@ -113,15 +140,25 @@ oid-from-hex = (s str) (o ?oid) {
     tmp oid
     i <- [0..20): {
 
-        #{overflow=wrap}
-        c0 byte = s.byte(i * 2)
+        c0 byte = s.byte(i * 2): {
+            ok -> it
 
-        #{overflow=wrap}
-        c1 byte = s.byte(i * 2 + 1)
+            -> 0
+        }
+
+        c1 byte = s.byte(i * 2 + 1): {
+            ok -> it
+
+            -> 0
+        }
         hi = util.hexdigit(c0)
         lo = util.hexdigit(c1)
         hi < 0 || lo < 0 -> return
-        tmp.id[i] = (hi << 4) | lo
+        tmp.id[i]: {
+            ok -> it = (hi << 4) | lo
+
+            -> _
+        }
     }
     o = tmp
 }
@@ -184,48 +221,46 @@ sha1-hex = (data str) (out str) {
     z = 56 - rem
 
     #{overflow=wrap}
-    z < 0 -> z = z + 64
+    z < 0 -> z = z + 64: {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
     plen = total + z + 8
 
-    msg str = with-len(plen)
+    msgb []byte = with-cap-len(plen, plen)
 
-    ; set-byte: place-writing bytes >= 0x80 into a str stores a code point and
-    ; consecutive writes lose high bytes (D9 bug) — sha1 padding must be raw
+    ; build raw bytes: place-writing bytes >= 0x80 into a str stores a code point
+    ; and consecutive writes lose high bytes — sha1 padding must be raw bytes
     i <- [0..mlen): {
-        msg.set-byte(i, data.byte(i))
+        dbv = data.byte(i)
+        dv byte = 0
+        dbv: {
+            ok -> dv = it
+
+            -> _
+        }
+        msgb[i] = dv
     }
-    msg.set-byte(mlen, 0x80)
+    msgb[mlen] = 0x80
     i <- [0..z): {
-        msg.set-byte(mlen + 1 + i, 0)
+        msgb[mlen + 1 + i] = 0
     }
     hi = (bitlen >> 32) & 0xffffffff
     lo = bitlen & 0xffffffff
 
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 0, (hi >> 24) & 0xff)
+    msgb[mlen + 1 + z + 0] = (hi >> 24) & 0xff
+    msgb[mlen + 1 + z + 1] = (hi >> 16) & 0xff
+    msgb[mlen + 1 + z + 2] = (hi >> 8) & 0xff
+    msgb[mlen + 1 + z + 3] = hi & 0xff
+    msgb[mlen + 1 + z + 4] = (lo >> 24) & 0xff
+    msgb[mlen + 1 + z + 5] = (lo >> 16) & 0xff
+    msgb[mlen + 1 + z + 6] = (lo >> 8) & 0xff
+    msgb[mlen + 1 + z + 7] = lo & 0xff
 
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 1, (hi >> 16) & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 2, (hi >> 8) & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 3, hi & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 4, (lo >> 24) & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 5, (lo >> 16) & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 6, (lo >> 8) & 0xff)
-
-    #{overflow=wrap}
-    msg.set-byte(mlen + 1 + z + 7, lo & 0xff)
+    msg str = msgb.slice(0, plen).to-bytes-str()
 
     #{overflow=wrap}
     nchunks = plen / 64
@@ -258,8 +293,11 @@ sha1-hex = (data str) (out str) {
                 -> _
             }
 
-            #{index-out=zero}
-            d9v5 u32 = w[j]
+            d9v5 u32 = w[j]: {
+                ok -> it
+
+                -> 0
+            }
             w[j]: {
                 ok -> it = (d9v5 << 24) & mask
 
@@ -267,8 +305,11 @@ sha1-hex = (data str) (out str) {
             }
             t = (w1 << 16) & mask
 
-            #{index-out=zero}
-            d9v6 u32 = w[j]
+            d9v6 u32 = w[j]: {
+                ok -> it
+
+                -> 0
+            }
             w[j]: {
                 ok -> it = d9v6 | t
 
@@ -276,16 +317,22 @@ sha1-hex = (data str) (out str) {
             }
             t = (w2 << 8) & mask
 
-            #{index-out=zero}
-            d9v7 u32 = w[j]
+            d9v7 u32 = w[j]: {
+                ok -> it
+
+                -> 0
+            }
             w[j]: {
                 ok -> it = d9v7 | t
 
                 -> _
             }
 
-            #{index-out=zero}
-            d9v8 u32 = w[j]
+            d9v8 u32 = w[j]: {
+                ok -> it
+
+                -> 0
+            }
             w[j]: {
                 ok -> it = d9v8 | w3
 
@@ -298,8 +345,33 @@ sha1-hex = (data str) (out str) {
             ; so fold the four terms into one u32-annotated declaration. Splitting the
             ; chain across separate `v = v ^ ...` reassignments makes the checker re-widen
             ; v to i64 (u32 ^ u32 -> i64), which then trips rotl32's u32 parameter.
-            #{index-out=zero, overflow=wrap}
-            v u32 = w[j - 3] ^ w[j - 8] ^ w[j - 14] ^ w[j - 16]
+            wm3 u32 = w[j - 3]: {
+                ok -> it
+
+                -> 0
+            }
+            wm8 u32 = w[j - 8]: {
+                ok -> it
+
+                -> 0
+            }
+            wm14 u32 = w[j - 14]: {
+                ok -> it
+
+                -> 0
+            }
+            wm16 u32 = w[j - 16]: {
+                ok -> it
+
+                -> 0
+            }
+
+            #{overflow=wrap}
+            v u32 = wm3 ^ wm8 ^ wm14 ^ wm16: {
+                ok -> it
+
+                -> 0
+            }
             w[j]: {
                 ok -> it = rotl32(v, 1)
 
@@ -346,8 +418,17 @@ sha1-hex = (data str) (out str) {
             #{overflow=wrap}
             temp = temp + k
 
+            wj u32 = w[j]: {
+                ok -> it
+
+                -> 0
+            }
             #{overflow=wrap}
-            temp = temp + w[j]
+            temp = temp + wj: {
+                ok -> it
+
+                -> 0
+            }
             temp = temp & mask
             e = d
             d = c
@@ -475,8 +556,11 @@ sha1-hex = (data str) (out str) {
     i <- [0..20): {
         b = dig[i]
 
-        #{index-out=zero}
-        d9v9 str = hex-chars[(b >> 4) & 15]
+        d9v9 str = hex-chars[(b >> 4) & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2]: {
@@ -485,8 +569,11 @@ sha1-hex = (data str) (out str) {
             -> _
         }
 
-        #{index-out=zero}
-        d9v10 str = hex-chars[b & 15]
+        d9v10 str = hex-chars[b & 15]: {
+            ok -> it
+
+            -> ''
+        }
 
         #{overflow=wrap}
         out[i * 2 + 1]: {
@@ -508,18 +595,31 @@ hash-object = (kind str, data str) (o oid) {
     hdr = object-header(kind, data.len-bytes())
 
     #{overflow=wrap}
-    buf str = with-len(hdr.len-bytes() + data.len-bytes())
+    buflen = hdr.len-bytes() + data.len-bytes()
+    buf []byte = with-cap-len(buflen, buflen)
 
-    ; set-byte: place-writes of bytes >= 0x80 store code points / lose writes (D9 bug)
+    ; build raw bytes: place-writes of bytes >= 0x80 store code points / lose writes
     i <- [0..hdr.len-bytes()): {
-        buf.set-byte(i, hdr.byte(i))
+        hbv = hdr.byte(i)
+        hv byte = 0
+        hbv: {
+            ok -> hv = it
+
+            -> _
+        }
+        buf[i] = hv
     }
     i <- [0..data.len-bytes()): {
+        dbv = data.byte(i)
+        dv byte = 0
+        dbv: {
+            ok -> dv = it
 
-        #{overflow=wrap}
-        buf.set-byte(hdr.len-bytes() + i, data.byte(i))
+            -> _
+        }
+        buf[hdr.len-bytes() + i] = dv
     }
-    hx = sha1-hex(buf)
+    hx = sha1-hex(buf.slice(0, buflen).to-bytes-str())
     o-opt = oid-from-hex(hx)
     o oid
     ok = false

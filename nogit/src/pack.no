@@ -62,10 +62,18 @@ read-varint-le = (data str, pos i64) (value i64, new-pos i64) {
         value = value | ((b & 0x7f) << shift)
 
         #{overflow=wrap}
-        pos = pos + 1
+        pos = pos + 1: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        shift = shift + 7
+        shift = shift + 7: {
+            ok -> it
+
+            -> _
+        }
         (b & 0x80) == 0 -> break
     }
     new-pos = pos
@@ -93,7 +101,11 @@ apply-delta = (base str, delta str) (result ?str) {
         op = delta[pos] & 0xff
 
         #{overflow=wrap}
-        pos = pos + 1
+        pos = pos + 1: {
+            ok -> it
+
+            -> _
+        }
 
         ; high bit set = copy from base
         {
@@ -155,8 +167,11 @@ apply-delta = (base str, delta str) (result ?str) {
                     copy-off + i >= base.len-bytes() -> break
                     cs str = with-len(1)
 
-                    #{index-out=zero}
-                    d9v1 str = base[copy-off + i]
+                    d9v1 str = base[copy-off + i]: {
+                        ok -> it
+
+                        -> ''
+                    }
                     cs[0]: {
                         ok -> it = d9v1
 
@@ -175,8 +190,11 @@ apply-delta = (base str, delta str) (result ?str) {
                     pos >= delta.len-bytes() -> break
                     cs str = with-len(1)
 
-                    #{index-out=zero}
-                    d9v2 str = delta[pos]
+                    d9v2 str = delta[pos]: {
+                        ok -> it
+
+                        -> ''
+                    }
                     cs[0]: {
                         ok -> it = d9v2
 
@@ -241,7 +259,11 @@ read-pack-object-header = (data str, pos i64) (type i64, size i64, new-pos i64, 
     shift = 4
 
     #{overflow=wrap}
-    pos = pos + 1
+    pos = pos + 1: {
+        ok -> it
+
+        -> _
+    }
     !! {
         (b & 0x80) == 0 -> break
         pos >= data.len-bytes() -> return
@@ -249,10 +271,18 @@ read-pack-object-header = (data str, pos i64) (type i64, size i64, new-pos i64, 
         size = size | ((b & 0x7f) << shift)
 
         #{overflow=wrap}
-        shift = shift + 7
+        shift = shift + 7: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        pos = pos + 1
+        pos = pos + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     new-pos = pos
     ok = true
@@ -268,7 +298,11 @@ read-ofs-delta-base = (data str, pos i64) (offset i64, new-pos i64, ok bool) {
     offset = b & 0x7f
 
     #{overflow=wrap}
-    pos = pos + 1
+    pos = pos + 1: {
+        ok -> it
+
+        -> _
+    }
     !! {
         (b & 0x80) == 0 -> break
         pos >= data.len-bytes() -> return
@@ -276,7 +310,11 @@ read-ofs-delta-base = (data str, pos i64) (offset i64, new-pos i64, ok bool) {
         offset = ((offset + 1) << 7) | (b & 0x7f)
 
         #{overflow=wrap}
-        pos = pos + 1
+        pos = pos + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     new-pos = pos
     ok = true
@@ -450,10 +488,18 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
     }
 
     ; binary search for the target oid in the sorted oid table
-    target-bytes str = with-len(20)
+    tb []byte = with-cap-len(20, 20)
     k <- [0..20): {
-        target-bytes.set-byte(k, target.id[k])
+        bv = target.id[k]
+        v byte = 0
+        bv: {
+            ok -> v = it
+
+            -> _
+        }
+        tb[k] = v
     }
+    target-bytes str = tb.slice(0, 20).to-bytes-str()
 
     lo = 0
 
@@ -499,7 +545,11 @@ find-in-idx = (idx-path str, target oid) (offset ?i64) {
         }
 
         #{overflow=wrap}
-        cmp < 0 -> lo = mid + 1
+        cmp < 0 -> lo = mid + 1: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
         cmp > 0 -> hi = mid - 1
@@ -639,18 +689,7 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
     ! hdr-ok -> return
 
     ; Bug 18 warmup for zlib
-    warmup-data str = with-len(11)
-    warmup-data.set-byte(0, 0x78)
-    warmup-data.set-byte(1, 0x9c)
-    warmup-data.set-byte(2, 0x01)
-    warmup-data.set-byte(3, 0x00)
-    warmup-data.set-byte(4, 0x00)
-    warmup-data.set-byte(5, 0xff)
-    warmup-data.set-byte(6, 0xff)
-    warmup-data.set-byte(7, 0x00)
-    warmup-data.set-byte(8, 0x01)
-    warmup-data.set-byte(9, 0x00)
-    warmup-data.set-byte(10, 0x01)
+    warmup-data str = '\x78\x9c\x01\x00\x00\xff\xff\x00\x01\x00\x01'
     _w-opt = zlib.zlib-decompress(warmup-data)
     _ = _w-opt
 
@@ -688,7 +727,11 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
                 }
 
                 #{overflow=wrap}
-                pos = pos + 20
+                pos = pos + 20: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
 
@@ -734,11 +777,16 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
                         x = s
                         !! {
                             r = x % 10
-                            cs str = with-len(1)
 
                             #{overflow=wrap}
+                            dv i64 = 48 + r: {
+                                ok -> it
+
+                                -> _
+                            }
+                            cs str = with-len(1)
                             cs[0]: {
-                                ok -> it = 48 + r
+                                ok -> it = dv
 
                                 -> _
                             }
@@ -760,8 +808,11 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
                     full str = with-len(hdr.len-bytes() + decompressed.len())
                     j <- [0..hdr.len-bytes()): {
 
-                        #{index-out=zero}
-                        d9v3 str = hdr[j]
+                        d9v3 str = hdr[j]: {
+                            ok -> it
+
+                            -> ''
+                        }
                         full[j]: {
                             ok -> it = d9v3
 
@@ -770,8 +821,11 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
                     }
                     j <- [0..decompressed.len()): {
 
-                        #{index-out=zero}
-                        d9v4 str = decompressed[j]
+                        d9v4 str = decompressed[j]: {
+                            ok -> it
+
+                            -> ''
+                        }
 
                         #{overflow=wrap}
                         full[hdr.len-bytes() + j]: {
@@ -819,7 +873,11 @@ scan-pack-for-oid = (pack-path str, target oid) (offset ?i64) {
         }
 
         #{overflow=wrap}
-        pos = comp-start + consumed
+        pos = comp-start + consumed: {
+            ok -> it
+
+            -> _
+        }
     }
 }
 
@@ -855,18 +913,7 @@ read-packed-object = (git-dir str, o oid) (kind str, data str, ok bool) {
     }
 
     ; Bug 18 warmup for zlib
-    warmup-data str = with-len(11)
-    warmup-data.set-byte(0, 0x78)
-    warmup-data.set-byte(1, 0x9c)
-    warmup-data.set-byte(2, 0x01)
-    warmup-data.set-byte(3, 0x00)
-    warmup-data.set-byte(4, 0x00)
-    warmup-data.set-byte(5, 0xff)
-    warmup-data.set-byte(6, 0xff)
-    warmup-data.set-byte(7, 0x00)
-    warmup-data.set-byte(8, 0x01)
-    warmup-data.set-byte(9, 0x00)
-    warmup-data.set-byte(10, 0x01)
+    warmup-data str = '\x78\x9c\x01\x00\x00\xff\xff\x00\x01\x00\x01'
     _w-opt = zlib.zlib-decompress(warmup-data)
     _ = _w-opt
 

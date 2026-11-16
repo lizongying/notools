@@ -75,12 +75,10 @@ with-call = (content str, id str, name str, args str) (m messages.message) {
 
 serialize = (msgs []messages.message) (out str) {
     out = '['
-    n = msgs.len()
-    i <- [0..n): {
-
-        #{index-out=zero}
-        m = msgs[i]
-        i > 0 -> out = out - ','
+    first = true
+    m <- msgs: {
+        ! first -> out = out - ','
+        first = false
         out = out - serialize-one(m)
     }
     out = out - ']'
@@ -104,12 +102,10 @@ serialize-one = (m messages.message) (out str) {
 
 serialize-tool-calls = (calls []tool-call) (out str) {
     out = '['
-    n = calls.len()
-    i <- [0..n): {
-
-        #{index-out=zero}
-        c = calls[i]
-        i > 0 -> out = out - ','
+    first = true
+    c <- calls: {
+        ! first -> out = out - ','
+        first = false
         out = out - serialize-one-call(c)
     }
     out = out - ']'
@@ -130,11 +126,14 @@ serialize-one-call = (c tool-call) (out str) {
 
 count-chars = (msgs []messages.message) (total i64) {
     total = 0
-    n = msgs.len()
-    i <- [0..n): {
+    m <- msgs: {
 
-        #{index-out=zero, overflow=wrap}
-        total = total + msgs[i].content.len-bytes()
+        #{overflow=wrap}
+        total = total + m.content.len-bytes(): {
+            ok -> it
+
+            -> _
+        }
     }
 }
 
@@ -144,11 +143,8 @@ count-chars = (msgs []messages.message) (total i64) {
 
 append = (msgs []messages.message, m messages.message) (out []messages.message) {
     out = with-len(0)
-    n = msgs.len()
-    i <- [0..n): {
-
-        #{index-out=zero}
-        out.push(msgs[i])
+    x <- msgs: {
+        out.push(x)
     }
     out.push(m)
 }
@@ -164,29 +160,47 @@ append = (msgs []messages.message, m messages.message) (out []messages.message) 
 chunk-size = (msgs []messages.message, i i64) (sz i64) {
     n = msgs.len()
     sz = 1
+    is-asst-tc = false
+    msgs[i]: {
+        ok -> is-asst-tc = it.role == 'assistant' && it.tool-calls.len() > 0
 
-    #{index-out=zero}
-    is-asst-tc = msgs[i].role == 'assistant' && msgs[i].tool-calls.len() > 0
+        -> _
+    }
     is-asst-tc -> {
 
         #{overflow=wrap}
-        k0 = i + 1
+        k0 = i + 1: {
+            ok -> it
+
+            -> 0
+        }
         cnt = 0
         stop = false
         j <- [k0..n): {
+            is-tool = false
+            msgs[j]: {
+                ok -> is-tool = it.role == 'tool'
 
-            #{index-out=zero}
-            is-tool = msgs[j].role == 'tool'
+                -> _
+            }
             stop == false -> is-tool -> {
 
                 #{overflow=wrap}
-                cnt = cnt + 1
+                cnt = cnt + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
             stop == false -> is-tool == false -> stop = true
         }
 
         #{overflow=wrap}
-        sz = cnt + 1
+        sz = cnt + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 }
 
@@ -195,10 +209,13 @@ remove-range = (msgs []messages.message, from i64, to i64) (out []messages.messa
     out = with-len(0)
     n = msgs.len()
     i <- [0..n): {
+        i < from || i >= to -> {
+            msgs[i]: {
+                ok -> out.push(it)
 
-        #{index-out=zero}
-        i < from -> out.push(msgs[i])
-        i >= to -> out.push(msgs[i])
+                -> _
+            }
+        }
     }
 }
 
@@ -211,11 +228,8 @@ remove-range = (msgs []messages.message, from i64, to i64) (out []messages.messa
 
 trim-to-budget = (msgs []messages.message, budget i64) (out []messages.message) {
     out = with-len(0)
-    n = msgs.len()
-    i <- [0..n): {
-
-        #{index-out=zero}
-        out.push(msgs[i])
+    x <- msgs: {
+        out.push(x)
     }
     (count-chars(out) > budget) {
         cur-len = out.len()
@@ -238,8 +252,12 @@ remove-at = (msgs []messages.message, idx i64) (out []messages.message) {
     out = with-len(0)
     n = msgs.len()
     i <- [0..n): {
+        i != idx -> {
+            msgs[i]: {
+                ok -> out.push(it)
 
-        #{index-out=zero}
-        i != idx -> out.push(msgs[i])
+                -> _
+            }
+        }
     }
 }

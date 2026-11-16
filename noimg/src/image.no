@@ -53,8 +53,8 @@ new = (w i64, h i64, b i64) (img image) {
             n = 0
         }
     }
-    _d []byte = with-len(n)
-    img.data = _d
+    d []byte = with-len(n)
+    img.data = d
 }
 
 ; new-from-data: create image wrapping existing data
@@ -79,19 +79,20 @@ new-from-data = (w i64, h i64, b i64, data []byte) (img image) {
     ; own the pixel buffer: copy the read-only input vec into a fresh vec so the
     ; returned image never aliases the caller's buffer (which is freed on return)
     n = data.len()
-    _d []byte = with-len(n)
+    d []byte = with-len(n)
     i <- [0..n): {
 
         ; place-match 内 RHS 裸读仍是打包 option（bug19）——先两段式暂存再写
-        #{index-out=zero}
-        b byte = data[i]
-        _d[i]: {
+        b byte = data[i]: { ok -> it
+
+            -> _ }
+        d[i]: {
             ok -> it = b
 
             -> _
         }
     }
-    img.data = _d
+    img.data = d
 }
 
 ; ── Pixel access ──
@@ -142,17 +143,29 @@ set-pixel = (img image, x i64, y i64, band i64, v i64) {
 
             #{overflow=wrap}
             idx = ((y * img.width + x) * img.bands + band) * 2
-            img.data[idx] = v & 255
+            img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
             #{overflow=wrap}
-            img.data[idx + 1] = (v >> 8) & 255
+            img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
         }
 
         -> {
 
             #{overflow=wrap}
             idx = (y * img.width + x) * img.bands + band
-            img.data[idx] = v & 255
+            img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
         }
     }
 }
@@ -176,9 +189,11 @@ copy = (img image) (out image) {
     out.yoffset = img.yoffset
 
     #{overflow=wrap}
-    n i64 = img.width * img.height * img.bands * img.depth
-    _d []byte = with-len(n)
-    out.data = _d
+    n i64 = img.width * img.height * img.bands * img.depth: { ok -> it
+
+        -> _ }
+    d []byte = with-len(n)
+    out.data = d
     i <- [0..n): {
         out.data[i] = img.data[i]
     }
@@ -209,16 +224,28 @@ fill = (img image, v i64) {
 
                 #{overflow=wrap}
                 idx = i * 2
-                img.data[idx] = v & 255
+                img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (v >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
             }
         }
 
         -> {
             i <- [0..n): {
-                img.data[i] = v & 255
+                img.data[i]: {
+                ok -> it = v & 255
+
+                -> _
+            }
             }
         }
     }
@@ -247,16 +274,31 @@ invert = (img image) {
                 val = lo | (hi << 8)
 
                 val = (65535 - val) & 255
-                img.data[idx] = val & 255
+                img.data[idx]: {
+                ok -> it = val & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (val >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (val >> 8) & 255
+
+                -> _
+            }
             }
         }
 
         -> {
             i <- [0..n): {
-                img.data[i] = (255 - img.data[i]) & 255
+                di byte = img.data[i]: { ok -> it
+
+                    -> _ }
+                img.data[i]: {
+                ok -> it = (255 - di) & 255
+
+                -> _
+            }
             }
         }
     }
@@ -289,10 +331,18 @@ add-const = (img image, c i64) {
                 v = (lo | (hi << 8)) + c
                 v > mx-v -> v = (mx-v) & 255
                 v < 0 -> v = 0
-                img.data[idx] = v & 255
+                img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (v >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
             }
         }
 
@@ -300,10 +350,19 @@ add-const = (img image, c i64) {
             i <- [0..n): {
 
                 #{overflow=wrap}
-                v = img.data[i] + c
+                vi i64 = img.data[i]: { ok -> it
+
+                -> _ }
+                v = vi + c: { ok -> it
+
+                -> _ }
                 v > 255 -> v = 255
                 v < 0 -> v = 0
-                img.data[i] = v & 255
+                img.data[i]: {
+                ok -> it = v & 255
+
+                -> _
+            }
             }
         }
     }
@@ -341,7 +400,9 @@ avg = (img image) (avg i64) {
             i <- [0..n): {
 
                 #{overflow=wrap}
-                sum = sum + img.data[i]
+                sum = img.data[i]: { ok -> sum + it
+
+                -> sum }
             }
         }
     }
@@ -381,7 +442,10 @@ min-val = (img image) (mn i64) {
         -> {
             mn = 255
             i <- [0..n): {
-                img.data[i] < mn -> mn = img.data[i]
+                di = img.data[i]: { ok -> it
+
+                -> _ }
+                di < mn -> mn = di
             }
         }
     }
@@ -417,7 +481,10 @@ max-val = (img image) (mx i64) {
         -> {
             mx = 0
             i <- [0..n): {
-                img.data[i] > mx -> mx = img.data[i]
+                di = img.data[i]: { ok -> it
+
+                -> _ }
+                di > mx -> mx = di
             }
         }
     }
@@ -450,10 +517,18 @@ sub-const = (img image, c i64) {
                 #{overflow=wrap}
                 v = (lo | (hi << 8)) - c
                 v < 0 -> v = 0
-                img.data[idx] = v & 255
+                img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (v >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
             }
         }
 
@@ -461,9 +536,18 @@ sub-const = (img image, c i64) {
             i <- [0..n): {
 
                 #{overflow=wrap}
-                v = img.data[i] - c
+                vi i64 = img.data[i]: { ok -> it
+
+                -> _ }
+                v = vi - c: { ok -> it
+
+                -> _ }
                 v < 0 -> v = 0
-                img.data[i] = v & 255
+                img.data[i]: {
+                ok -> it = v & 255
+
+                -> _
+            }
             }
         }
     }
@@ -496,10 +580,18 @@ mul-const = (img image, factor i64) {
                 v = (lo | (hi << 8)) * factor / 1000
                 v > mx-v -> v = (mx-v) & 255
                 v < 0 -> v = 0
-                img.data[idx] = v & 255
+                img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (v >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
             }
         }
 
@@ -507,10 +599,16 @@ mul-const = (img image, factor i64) {
             i <- [0..n): {
 
                 #{overflow=wrap}
-                v = img.data[i] * factor / 1000
+                v = img.data[i]: { ok -> it * factor / 1000
+
+                -> _ }
                 v > 255 -> v = 255
                 v < 0 -> v = 0
-                img.data[i] = v & 255
+                img.data[i]: {
+                ok -> it = v & 255
+
+                -> _
+            }
             }
         }
     }
@@ -534,17 +632,29 @@ clamp = (img image, mn i64, mx i64) {
 
                 #{overflow=wrap}
                 idx = i * 2
-                lo i64 = img.data[idx]
+                lo i64 = img.data[idx]: { ok -> it
+
+                -> _ }
 
                 #{overflow=wrap}
-                hi i64 = img.data[idx + 1]
+                hi i64 = img.data[idx + 1]: { ok -> it
+
+                -> _ }
                 v i64 = lo | (hi << 8)
                 v < mn -> v = mn
                 v > mx -> v = mx
-                img.data[idx] = v & 255
+                img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
                 #{overflow=wrap}
-                img.data[idx + 1] = (v >> 8) & 255
+                img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
             }
         }
 
@@ -552,10 +662,16 @@ clamp = (img image, mn i64, mx i64) {
 
             ; U8 path: direct data access for performance
             i <- [0..n): {
-                v i64 = img.data[i]
+                v i64 = img.data[i]: { ok -> it
+
+                -> _ }
                 v < mn -> v = mn
                 v > mx -> v = mx
-                img.data[i] = v & 255
+                img.data[i]: {
+                ok -> it = v & 255
+
+                -> _
+            }
             }
         }
     }
@@ -604,8 +720,8 @@ add-alpha = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d []byte = with-len(npix * 4)
-    out = image.new-from-data(img.width, img.height, 4, _d)
+    d []byte = with-len(npix * 4)
+    out = image.new-from-data(img.width, img.height, 4, d)
     i <- [0..npix): {
         {
             img.bands >= 3 -> {
@@ -673,8 +789,8 @@ remove-alpha = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d []byte = with-len(npix * 3)
-    out = image.new-from-data(img.width, img.height, 3, _d)
+    d []byte = with-len(npix * 3)
+    out = image.new-from-data(img.width, img.height, 3, d)
     i <- [0..npix): {
 
         #{overflow=wrap}
@@ -707,7 +823,9 @@ remove-alpha = (img image) (out image) {
 n-pixels = (img image) (n i64) {
 
     #{overflow=wrap}
-    n = img.width * img.height
+    n = img.width * img.height: { ok -> it
+
+        -> _ }
 }
 
 ; n-bytes: return total data byte count
@@ -720,7 +838,9 @@ n-bytes = (img image) (n i64) {
     }
 
     #{overflow=wrap}
-    n = img.width * img.height * img.bands * d
+    n = img.width * img.height * img.bands * d: { ok -> it
+
+        -> _ }
 }
 
 ; image.is-u8: check if image is 8-bit
@@ -785,8 +905,8 @@ new-u16 = (w i64, h i64, b i64) (img image) {
             n = 0
         }
     }
-    _d []byte = with-len(n)
-    img.data = _d
+    d []byte = with-len(n)
+    img.data = d
 }
 
 ; image.get-pixel-u16: get a 16-bit pixel value
@@ -822,10 +942,18 @@ set-pixel-u16 = (img image, x i64, y i64, band i64, v i64) {
     {
         v > 65535 -> v = 65535
     }
-    img.data[idx] = v & 255
+    img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
     #{overflow=wrap}
-    img.data[idx + 1] = (v >> 8) & 255
+    img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
 }
 
 ; image.u8-to-u16: convert 8-bit image to 16-bit
@@ -846,10 +974,18 @@ u8-to-u16 = (img image) (out image) {
 
         #{overflow=wrap}
         u16 = v * 257
-        out.data[idx] = u16 & 255
+        out.data[idx]: {
+                ok -> it = u16 & 255
+
+                -> _
+            }
 
         #{overflow=wrap}
-        out.data[idx + 1] = (u16 >> 8) & 255
+        out.data[idx + 1]: {
+                ok -> it = (u16 >> 8) & 255
+
+                -> _
+            }
     }
 }
 
@@ -863,8 +999,8 @@ u16-to-u8 = (img image) (out image) {
     npix = img.width * img.height
 
     #{overflow=wrap}
-    _d []byte = with-len(npix * img.bands)
-    out = image.new-from-data(img.width, img.height, img.bands, _d)
+    d []byte = with-len(npix * img.bands)
+    out = image.new-from-data(img.width, img.height, img.bands, d)
     out.depth = 1
     out.format = 0
     i <- [0..npix * img.bands): {
@@ -897,10 +1033,18 @@ fill-u16 = (img image, v i64) {
 
         #{overflow=wrap}
         idx = i * 2
-        img.data[idx] = v & 255
+        img.data[idx]: {
+                ok -> it = v & 255
+
+                -> _
+            }
 
         #{overflow=wrap}
-        img.data[idx + 1] = (v >> 8) & 255
+        img.data[idx + 1]: {
+                ok -> it = (v >> 8) & 255
+
+                -> _
+            }
     }
 }
 
@@ -921,10 +1065,18 @@ invert-u16 = (img image) {
         val = lo | (hi << 8)
 
         val = (65535 - val) & 255
-        img.data[idx] = val & 255
+        img.data[idx]: {
+                ok -> it = val & 255
+
+                -> _
+            }
 
         #{overflow=wrap}
-        img.data[idx + 1] = (val >> 8) & 255
+        img.data[idx + 1]: {
+                ok -> it = (val >> 8) & 255
+
+                -> _
+            }
     }
 }
 

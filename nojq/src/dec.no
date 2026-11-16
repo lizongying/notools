@@ -45,8 +45,16 @@ bic-at = (s str, j i64, w str) (ok bool) {
         k <- [0..lj): {
 
             #{overflow=wrap}
-            a i64 = s.byte(j + k)
-            b i64 = w.byte(k)
+            a i64 = s.byte(j + k): {
+                ok -> it
+
+                -> 0
+            }
+            b i64 = w.byte(k): {
+                ok -> it
+
+                -> 0
+            }
 
             au i64 = 0
             au-opt = a + 32
@@ -97,7 +105,11 @@ dec-valid = (s str) (ok bool) {
     nb i64 = s.len-bytes()
     nb == 0 || nb > 999999999 -> return
     i = 0
-    c0 i64 = s.byte(0)
+    c0 i64 = s.byte(0): {
+        ok -> it
+
+        -> 0
+    }
     c0 == 45 || c0 == 43 -> i = 1
 
     ; scan the decimal part: digits with at most one dot
@@ -107,17 +119,29 @@ dec-valid = (s str) (ok bool) {
 
     #{overflow=wrap}
     (j < nb && (s.byte(j) >= 48 && s.byte(j) <= 57 || s.byte(j) == 46 && ! dot)) {
-        c i64 = s.byte(j)
+        c i64 = s.byte(j): {
+            ok -> it
+
+            -> 0
+        }
         c == 46 -> dot = true
         c != 46 -> has = true
-        j = j + 1
+        j = j + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     ! has -> {
 
         ; no digits: only [sign]([s]nan zeros? | inf | infinity) parses
         j < nb && ! dot -> {
             k i64 = j
-            c i64 = s.byte(k)
+            c i64 = s.byte(k): {
+                ok -> it
+
+                -> 0
+            }
 
             k1 i64 = 0
             k1-opt = k + 1
@@ -146,7 +170,11 @@ dec-valid = (s str) (ok bool) {
                 (p < nb && s.byte(p) == 48) {
 
                     #{overflow=wrap}
-                    p = p + 1
+                    p = p + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
                 p == nb -> ok = true
             }
@@ -157,7 +185,11 @@ dec-valid = (s str) (ok bool) {
     has -> {
         j == nb -> ok = true
         j < nb -> {
-            c i64 = s.byte(j)
+            c i64 = s.byte(j): {
+                ok -> it
+
+                -> 0
+            }
             c == 101 || c == 69 -> {
                 p i64 = 0
                 p-opt = j + 1
@@ -171,7 +203,11 @@ dec-valid = (s str) (ok bool) {
                     }
                 }
                 p < nb -> {
-                    cp i64 = s.byte(p)
+                    cp i64 = s.byte(p): {
+                        ok -> it
+
+                        -> 0
+                    }
 
                     p1 i64 = 0
                     p1-opt = p + 1
@@ -190,13 +226,36 @@ dec-valid = (s str) (ok bool) {
 
                 #{overflow=wrap}
                 (p < nb && s.byte(p) >= 48 && s.byte(p) <= 57) {
-                    p = p + 1
-                    dc = dc + 1
+                    p = p + 1: {
+                        ok -> it
+
+                        -> _
+                    }
+                    dc = dc + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
                 dc >= 1 && p == nb -> ok = true
             }
         }
     }
+}
+
+; dec-odd: is a decimal digit odd (1/3/5/7/9)?
+; v0.4.24: std's math.odd takes a union `int` parameter, and instantiating its
+; `%` for a concrete i64 lowers through the `big = bigint | i64` operator
+; overload — the emitted IR does `srem %bigint_bigint` on i64 values and the
+; LLVM verifier rejects the module (wjju8z98). The check is spelled out here on
+; the concrete type instead.
+; x i64
+; returns yes bool
+dec-odd = (x i64) (yes bool) {
+
+    #{overflow=wrap}
+    r = x % 2
+    yes = r != 0
 }
 
 ; dec-inc-str: decimal digit string + 1 (carry propagation)
@@ -211,8 +270,16 @@ dec-inc-str = (t str) (out str) {
         #{overflow=wrap}
         j i64 = n - 1 - idx
         v i64 = t.byte(j) - 48 + carry
-        carry = v / 10
-        v = v - carry * 10
+        carry = v / 10: {
+            ok -> it
+
+            -> _
+        }
+        v = v - carry * 10: {
+            ok -> it
+
+            -> _
+        }
         cd str = v.to-str()
         out = cd - out
     }
@@ -245,7 +312,11 @@ dec-parse = (s str) (d dec-num) {
 
     #{overflow=wrap}
     i < nb -> {
-        c0 i64 = s.byte(i)
+        c0 i64 = s.byte(i): {
+            ok -> it
+
+            -> 0
+        }
         c0 < 48 || c0 > 57 -> c0 != 46 -> {
             k i64 = i
 
@@ -276,7 +347,11 @@ dec-parse = (s str) (d dec-num) {
                 (p < nb && s.byte(p) == 48) {
 
                     #{overflow=wrap}
-                    p = p + 1
+                    p = p + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
                 p == nb -> {
                     d.is-nan = true
@@ -300,7 +375,11 @@ dec-parse = (s str) (d dec-num) {
     #{overflow=wrap}
     (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
         int-part = int-part - s[i..i]
-        i = i + 1
+        i = i + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; fraction
@@ -309,12 +388,20 @@ dec-parse = (s str) (d dec-num) {
     #{overflow=wrap}
     i < nb -> {
         s.byte(i) == 46 -> {
-            i = i + 1
+            i = i + 1: {
+                ok -> it
+
+                -> _
+            }
 
             #{overflow=wrap}
             (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
                 frac-part = frac-part - s[i..i]
-                i = i + 1
+                i = i + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
     }
@@ -325,24 +412,48 @@ dec-parse = (s str) (d dec-num) {
 
     #{overflow=wrap}
     i < nb -> {
-        c i64 = s.byte(i)
+        c i64 = s.byte(i): {
+            ok -> it
+
+            -> 0
+        }
         c == 101 || c == 69 -> {
-            i = i + 1
+            i = i + 1: {
+                ok -> it
+
+                -> _
+            }
             esign i64 = 1
 
             #{overflow=wrap}
             i < nb -> {
-                c2 i64 = s.byte(i)
+                c2 i64 = s.byte(i): {
+                    ok -> it
+
+                    -> 0
+                }
                 c2 == 45 -> {
                     esign = -1
-                    i = i + 1
+                    i = i + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
-                c2 == 43 -> i = i + 1
+                c2 == 43 -> i = i + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
 
             #{overflow=wrap}
             (i + 1 < nb && s.byte(i) == 48) {
-                i = i + 1
+                i = i + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
             p0 i64 = i
             ev i64 = 0
@@ -350,17 +461,37 @@ dec-parse = (s str) (d dec-num) {
 
             #{overflow=wrap}
             (i < nb && s.byte(i) >= 48 && s.byte(i) <= 57) {
-                c2 i64 = s.byte(i)
-                ev = ev * 10 + (c2 - 48)
-                i = i + 1
+                c2 i64 = s.byte(i): {
+                    ok -> it
+
+                    -> 0
+                }
+                ev = ev * 10 + (c2 - 48): {
+                    ok -> it
+
+                    -> _
+                }
+                i = i + 1: {
+                    ok -> it
+
+                    -> _
+                }
 
                 #{overflow=wrap}
-                dc = dc + 1
+                dc = dc + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
             dc >= 10 -> {
                 dc > 10 || s.byte(p0) > 49 -> ev = DEC-EXPCAP
             }
-            e = ev * esign
+            e = ev * esign: {
+                ok -> it
+
+                -> _
+            }
         }
     }
 
@@ -372,8 +503,16 @@ dec-parse = (s str) (d dec-num) {
 
     #{overflow=wrap}
     (j < nall && all.byte(j) == 48) {
-        lead = j + 1
-        j = j + 1
+        lead = j + 1: {
+            ok -> it
+
+            -> _
+        }
+        j = j + 1: {
+            ok -> it
+
+            -> _
+        }
     }
     keep = ''
     i <- [lead..all.len-bytes()): {
@@ -409,12 +548,20 @@ dec-parse = (s str) (d dec-num) {
     d.digits != '0' -> d.exp < etiny -> {
 
         #{overflow=wrap}
-        adjust i64 = etiny - d.exp
+        adjust i64 = etiny - d.exp: {
+            ok -> it
+
+            -> _
+        }
         dl <= adjust -> {
 
             ; whole coefficient dropped: rounds away from zero only when it
             ; exceeds 5×10^(dl-1) (an exact half never rounds up: kept 0 is even)
-            f i64 = d.digits.byte(0)
+            f i64 = d.digits.byte(0): {
+                ok -> it
+
+                -> 0
+            }
             up bool = false
             f > 53 -> up = true
             f == 53 -> {
@@ -445,7 +592,11 @@ dec-parse = (s str) (d dec-num) {
                 }
             }
             head str = d.digits[0..want - 1]
-            f i64 = d.digits.byte(want)
+            f i64 = d.digits.byte(want): {
+                ok -> it
+
+                -> 0
+            }
             up bool = false
             f > 53 -> up = true
 
@@ -458,7 +609,7 @@ dec-parse = (s str) (d dec-num) {
                 anynz -> up = true
                 ! anynz -> {
                     lsd i64 = head.byte(want - 1) - 48
-                    math.odd(lsd) -> up = true
+                    dec-odd(lsd) -> up = true
                 }
             }
             up -> head = dec-inc-str(head)
@@ -524,7 +675,11 @@ dec-to-str = (d dec-num) (out str) {
         adjust < 0 -> {
 
             #{overflow=wrap}
-            ae = 0 - adjust
+            ae = 0 - adjust: {
+                ok -> it
+
+                -> _
+            }
             out = out - '-'
         }
         adjust >= 0 -> out = out - '+'
@@ -598,7 +753,11 @@ dec-round17 = (d dec-num) (out dec-num) {
 
     ; round up iff rest > 5000.., or == 5000.. and last kept digit is odd
     up = 0
-    r0 i64 = rest.byte(0)
+    r0 i64 = rest.byte(0): {
+        ok -> it
+
+        -> 0
+    }
     r0 > 53 -> up = 1
 
     #{overflow=wrap}
@@ -613,7 +772,7 @@ dec-round17 = (d dec-num) (out dec-num) {
         allzero -> {
             last str = head[keep - 1..keep - 1]
             lv i64 = last.byte(0) - 48
-            math.odd(lv) -> up = 1
+            dec-odd(lv) -> up = 1
         }
         ! allzero -> up = 1
     }
@@ -621,7 +780,11 @@ dec-round17 = (d dec-num) (out dec-num) {
     #{overflow=wrap}
     up == 0 -> {
         out.digits = head
-        out.exp = d.exp + (dl - keep)
+        out.exp = d.exp + (dl - keep): {
+            ok -> it
+
+            -> _
+        }
         return
     }
 
@@ -652,11 +815,19 @@ dec-round17 = (d dec-num) (out dec-num) {
     out.digits = res
 
     #{overflow=wrap}
-    out.exp = d.exp + (dl - keep)
+    out.exp = d.exp + (dl - keep): {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
     res.len-bytes() > keep -> {
-        out.exp = out.exp - 1
+        out.exp = out.exp - 1: {
+            ok -> it
+
+            -> _
+        }
     }
 }
 
@@ -675,19 +846,19 @@ dec-from-digits = (s str) (out bigint) {
             -> 48
         }
         d i64 = b - 48
-        out = out._mul-i64(10)
-        out = out._add-i64(d)
+        out = out.mul-bigint(bigint.from-i64(10))
+        out = out.add-bigint(bigint.from-i64(d))
     }
 }
 
-; dec-pow10: 10^n as a positive bigint (n >= 0). mul-i64 by 10 cannot
+; dec-pow10: 10^n as a positive bigint (n >= 0). mul-bigint by 10 cannot
 ; overflow a 32-bit limb pair, so linear multiplication is exact here.
 ; n i64
 ; returns b bigint
 dec-pow10 = (n i64) (b bigint) {
     b = bigint.from-i64(1)
     i <- [0..n): {
-        b = b._mul-i64(10)
+        b = b.mul-bigint(bigint.from-i64(10))
     }
 }
 
@@ -697,7 +868,7 @@ dec-pow10 = (n i64) (b bigint) {
 dec-pow2 = (n i64) (b bigint) {
     b = bigint.from-i64(1)
     i <- [0..n): {
-        b = b._mul-i64(2)
+        b = b.mul-bigint(bigint.from-i64(2))
     }
 }
 
@@ -721,7 +892,11 @@ dec-bitlen = (b bigint) (n i64) {
             t2 > 0 -> {
 
                 #{overflow=wrap}
-                bl = bl + 1
+                bl = bl + 1: {
+                    ok -> it
+
+                    -> _
+                }
                 t2 = t2 >> 1
             }
         }
@@ -785,7 +960,11 @@ dec-cmp = (a dec-num, b dec-num) (r i64) {
     }
 
     #{overflow=wrap}
-    a.neg -> r = 0 - r
+    a.neg -> r = 0 - r: {
+        ok -> it
+
+        -> _
+    }
 }
 
 ; dec-to-f64: correctly-rounded f64 of a decimal literal after the 17-digit
@@ -836,7 +1015,11 @@ dec-to-f64 = (d dec-num) (v f64) {
     #{overflow=wrap}
     e < 0 -> {
         n = n.mul-bigint(dec-pow2(1075))
-        e = e - 1075
+        e = e - 1075: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; value == n × 2^e now, n >= 1, e <= 0 in the fraction branch
@@ -882,7 +1065,11 @@ dec-round64 = (n bigint, e i64) (v f64) {
         #{overflow=wrap}
         cmp-r > 0 -> {
             m = m.add-bigint(bigint.from-i64(1))
-            bits = bits + 1
+            bits = bits + 1: {
+                ok -> it
+
+                -> _
+            }
         }
 
         #{overflow=wrap}
@@ -890,7 +1077,11 @@ dec-round64 = (n bigint, e i64) (v f64) {
             odd i64 = m.limbs[0] & 1
             odd == 1 -> {
                 m = m.add-bigint(bigint.from-i64(1))
-                bits = bits + 1
+                bits = bits + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
     }
@@ -977,7 +1168,11 @@ dec-ldexp-int = (v f64, s i64) (out f64) {
     s < 0 -> {
 
         #{overflow=wrap}
-        mag = 0 - s
+        mag = 0 - s: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; powers 2^(2^k) for k = 0..10 are exact in f64 (up to 2^1024 → inf
@@ -993,8 +1188,11 @@ dec-ldexp-int = (v f64, s i64) (out f64) {
     #{overflow=wrap}
     k <- [1..11): {
 
-        #{index-out=zero}
-        d9v1 f64 = pw[k - 1]
+        d9v1 f64 = pw[k - 1]: {
+            ok -> it
+
+            -> 0.0
+        }
         pw[k]: {
             ok -> it = d9v1 * d9v1
 
@@ -1012,8 +1210,13 @@ dec-ldexp-int = (v f64, s i64) (out f64) {
         take = acc & 1
         acc = acc >> 1
         take == 1 -> {
-            s > 0 -> out = out * pw[idx]
-            s < 0 -> out = out / pw[idx]
+            pv f64 = pw[idx]: {
+                ok -> it
+
+                -> 0.0
+            }
+            s > 0 -> out = out * pv
+            s < 0 -> out = out / pv
         }
     }
     s == 0 -> out = v

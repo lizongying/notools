@@ -14,8 +14,9 @@
 
 ; byte-to-str: wrap a single byte value into a 1-byte string
 byte-to-str = (b byte) (s str) {
-    s = with-len(1)
-    s[0] = b
+    buf []byte = with-cap-len(1, 1)
+    buf[0] = b
+    s = buf.slice(0, 1).to-bytes-str()
 }
 
 ; adler32: Adler-32 checksum (RFC 1950) of a byte-string
@@ -27,7 +28,11 @@ adler32 = (data str) (sum i64) {
     b = 0
     i <- [0..data.len-bytes()): {
         a = (a + data.byte(i)) % mod
-        b = (b + a) % mod
+        b = (b + a) % mod: {
+            ok -> it
+
+            -> _
+        }
     }
     sum = ((b << 16) | a) & 0xffffffff
 }
@@ -83,29 +88,40 @@ zlib-compress = (data str) (out str) {
         nlen-hi byte = len-hi ^ 0xff
 
         ; write LEN and NLEN
-        ; NOTE: consecutive place-writes into a str with-len() LOSE bytes >= 0x80
-        ; (compiler D9 bug — see tmp/nolang-bugs); set-byte writes correctly.
-        ln str = with-len(4)
-        ln.set-byte(0, len-lo)
-        ln.set-byte(1, len-hi)
-        ln.set-byte(2, nlen-lo)
-        ln.set-byte(3, nlen-hi)
-        out = out - ln
+        lb []byte = with-cap-len(4, 4)
+        lb[0] = len-lo
+        lb[1] = len-hi
+        lb[2] = nlen-lo
+        lb[3] = nlen-hi
+        out = out - lb.slice(0, 4).to-bytes-str()
 
         ; write data bytes
-        ; set-byte: place-writing a byte >= 0x80 into a str stores a CODE POINT
-        ; (UTF-8 re-encoding on concat corrupts binary data) — D9/str semantics bug
+        blk []byte = with-cap-len(blen, blen)
         i <- [0..blen): {
-            bs str = with-len(1)
-            bs.set-byte(0, data.byte(pos + i))
-            out = out - bs
+            bv = data.byte(pos + i)
+            v byte = 0
+            bv: {
+                ok -> v = it
+
+                -> _
+            }
+            blk[i] = v
+        }
+        out = out - blk.slice(0, blen).to-bytes-str()
+
+        #{overflow=wrap}
+        pos = pos + blen: {
+            ok -> it
+
+            -> _
         }
 
         #{overflow=wrap}
-        pos = pos + blen
+        rem = rem - blen: {
+            ok -> it
 
-        #{overflow=wrap}
-        rem = rem - blen
+            -> _
+        }
         rem <= 0 -> break
     }
 
@@ -115,12 +131,12 @@ zlib-compress = (data str) (out str) {
     a1 byte = (adler >> 16) & 0xff
     a2 byte = (adler >> 8) & 0xff
     a3 byte = adler & 0xff
-    adler-str str = with-len(4)
-    adler-str.set-byte(0, a0)
-    adler-str.set-byte(1, a1)
-    adler-str.set-byte(2, a2)
-    adler-str.set-byte(3, a3)
-    out = out - adler-str
+    ab []byte = with-cap-len(4, 4)
+    ab[0] = a0
+    ab[1] = a1
+    ab[2] = a2
+    ab[3] = a3
+    out = out - ab.slice(0, 4).to-bytes-str()
 }
 
 ; zlib-decompress: decompress a zlib stream
@@ -180,26 +196,13 @@ zlib-decompress = (data str) (out ?str) {
             return
         }
 
-        ; Manual []byte to str conversion to ensure correct byte values
-        ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
-        res str = with-len(decomp-bytes.len())
-        i <- [0..decomp-bytes.len()): {
-            dvb = decomp-bytes[i]
-            dv byte = 0
-            dvb: {
-                ok -> dv = it
-
-                -> _
-            }
-            res.set-byte(i, dv)
-        }
-        out = res
+        out = decomp-bytes.to-bytes-str()
         return
     }
 
     ; Fall back to std gzip module (for gzip format data)
     data-bytes = data.to-bytes()
-    decomp-bytes = gzip.gzip-decompress(data-bytes)
+    decomp-bytes = gzip.decompress(data-bytes)
     decomp-bytes.len() == 0 -> {
 
         ; decompression returned empty — could be legitimate empty data
@@ -211,20 +214,7 @@ zlib-decompress = (data str) (out ?str) {
         return
     }
 
-    ; Manual []byte to str conversion to ensure correct byte values
-    ; set-byte: multi-write place-match into a str loses bytes >= 0x80 (D9 bug)
-    res str = with-len(decomp-bytes.len())
-    i <- [0..decomp-bytes.len()): {
-        dvb = decomp-bytes[i]
-        dv byte = 0
-        dvb: {
-            ok -> dv = it
-
-            -> _
-        }
-        res.set-byte(i, dv)
-    }
-    out = res
+    out = decomp-bytes.to-bytes-str()
 }
 
 ; zlib-decompress-stored: decompress stored-blocks-only zlib stream
@@ -238,35 +228,51 @@ zlib-decompress-stored = (data str) (out ?str) {
     ; single pass: extract payload bytes from each stored block
     p = 2
     built = ''
+    bad = false
     !! {
         p >= data.len-bytes() -> break
         bfinal = data.byte(p) & 1
         btype = (data.byte(p) >> 1) & 3
-        btype != 0 -> {
-            return
-        }
+        btype != 0 -> bad = true
+        bad -> break
 
         #{overflow=wrap}
-        p = p + 1
+        p = p + 1: {
+            ok -> it
+
+            -> 0
+        }
         len = data.byte(p) | (data.byte(p + 1) << 8)
 
         #{overflow=wrap}
-        p = p + 4
+        p = p + 4: {
+            ok -> it
 
-        ; extract payload byte by byte via byte-to-str
+            -> 0
+        }
         i <- [0..len): {
-
             #{overflow=wrap}
-            built = built - byte-to-str(data.byte(p + i))
+            bv = data.byte(p + i)
+            bc byte = bv: {
+                ok -> it
+
+                -> 0
+            }
+            bs str = byte-to-str(bc)
+            built = built - bs
         }
 
         #{overflow=wrap}
-        p = p + len
+        p = p + len: {
+            ok -> it
+
+            -> 0
+        }
         bfinal == 1 -> break
     }
+    bad -> return
     out = built
 }
-
 ; zlib-consumed-stored: calculate consumed bytes for a stored-block-only zlib stream.
 ; Returns 0 if the stream contains non-stored blocks.
 ; data str: a zlib stream starting at offset 0
@@ -284,17 +290,29 @@ zlib-consumed-stored = (data str) (consumed i64) {
         btype != 0 -> return
 
         #{overflow=wrap}
-        p = p + 1
+        p = p + 1: {
+            ok -> it
+
+            -> _
+        }
         blk-len = (data.byte(p) & 0xff) | ((data.byte(p + 1) & 0xff) << 8)
 
         #{overflow=wrap}
-        p = p + 4 + blk-len
+        p = p + 4 + blk-len: {
+            ok -> it
+
+            -> _
+        }
         bfinal == 1 -> break
     }
 
     ; p now points to the Adler-32 (4 bytes)
     #{overflow=wrap}
-    consumed = p + 4
+    consumed = p + 4: {
+        ok -> it
+
+        -> _
+    }
 }
 
 ; zlib-consumed-binary-search: find the consumed length of a zlib stream
@@ -353,7 +371,11 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
         lo >= hi -> break
 
         #{overflow=wrap}
-        mid = (lo + hi) / 2
+        mid = (lo + hi) / 2: {
+            ok -> it
+
+            -> _
+        }
 
         ; Check if mid bytes is enough by trying stored-block scan first
         #{overflow=wrap}

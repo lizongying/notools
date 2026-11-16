@@ -29,7 +29,11 @@ uncompress-cmd = () {
                     eprint('uncompress: ' - f - ': No such file')
 
                     #{overflow=wrap}
-                    i = i + 1
+                    i = i + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                     continue
                 }
                 content []byte
@@ -50,7 +54,11 @@ uncompress-cmd = () {
                     eprint('uncompress: ' - f - ': not in compressed format')
 
                     #{overflow=wrap}
-                    i = i + 1
+                    i = i + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                     continue
                 }
 
@@ -73,7 +81,11 @@ uncompress-cmd = () {
         }
 
         #{overflow=wrap}
-        i = i + 1
+        i = i + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 
     {
@@ -110,13 +122,28 @@ lzw-decompress = (data []byte) (out []byte) {
         data-len < 3 -> return
 
         ; Verify magic header
-        data[0] != 31 -> return
+        d0 = data[0]: {
+            ok -> it
 
-        data[1] != 157 -> return
+            -> 0
+        }
+        d0 != 31 -> return
+
+        d1 = data[1]: {
+            ok -> it
+
+            -> 0
+        }
+        d1 != 157 -> return
     }
 
     ; Parse flags
-    flags = data[2] & 255
+    d2 = data[2]: {
+        ok -> it
+
+        -> 0
+    }
+    flags = d2 & 255
     max-bits = (flags >> 5) & 7
     block-mode = (flags >> 4) & 1
     {
@@ -130,7 +157,11 @@ lzw-decompress = (data []byte) (out []byte) {
     j <- [0..max-bits): {
 
         #{overflow=wrap}
-        max-codes = max-codes * 2
+        max-codes = max-codes * 2: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; Dictionary: prefix[code], suffix[code]
@@ -173,13 +204,26 @@ lzw-decompress = (data []byte) (out []byte) {
 
         ; Fill bit buffer
         (bit-count < cur-bits && pos < data-len) {
-            bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+            dp = data[pos]: {
+                ok -> it
+
+                -> 0
+            }
+            bit-buf = bit-buf | ((dp & 255) << bit-count)
 
             #{overflow=wrap}
-            bit-count = bit-count + 8
+            bit-count = bit-count + 8: {
+                ok -> it
+
+                -> _
+            }
 
             #{overflow=wrap}
-            pos = pos + 1
+            pos = pos + 1: {
+                ok -> it
+
+                -> _
+            }
         }
         bit-count < cur-bits -> break
 
@@ -188,10 +232,18 @@ lzw-decompress = (data []byte) (out []byte) {
         bit-buf = bit-buf >> cur-bits
 
         #{overflow=wrap}
-        bit-count = bit-count - cur-bits
+        bit-count = bit-count - cur-bits: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        codes-read = codes-read + 1
+        codes-read = codes-read + 1: {
+            ok -> it
+
+            -> _
+        }
 
         ; Handle CLEAR code
         {
@@ -205,20 +257,37 @@ lzw-decompress = (data []byte) (out []byte) {
                     #{overflow=wrap}
                     skip-bits = pad * cur-bits
                     (bit-count < skip-bits && pos < data-len) {
-                        bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+                        dp = data[pos]: {
+                            ok -> it
+
+                            -> 0
+                        }
+                        bit-buf = bit-buf | ((dp & 255) << bit-count)
 
                         #{overflow=wrap}
-                        bit-count = bit-count + 8
+                        bit-count = bit-count + 8: {
+                            ok -> it
+
+                            -> _
+                        }
 
                         #{overflow=wrap}
-                        pos = pos + 1
+                        pos = pos + 1: {
+                            ok -> it
+
+                            -> _
+                        }
                     }
                     consume = skip-bits
                     consume > bit-count -> consume = bit-count
                     bit-buf = bit-buf >> consume
 
                     #{overflow=wrap}
-                    bit-count = bit-count - consume
+                    bit-count = bit-count - consume: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
 
                 ; Reset dictionary
@@ -242,38 +311,87 @@ lzw-decompress = (data []byte) (out []byte) {
 
                     ; Follow prefix chain from old-code to get first byte
                     tc = old-code
-                    (prefix[tc] != -1) {
+                    pt = prefix[tc]: {
+                        ok -> it
 
-                        #{index-out=zero}
-                        tc = prefix[tc]
+                        -> -1
+                    }
+                    (pt != -1) {
+                        tc = pt
+                        pt = prefix[tc]: {
+                            ok -> it
+
+                            -> -1
+                        }
                     }
 
-                    #{index-out=zero}
-                    fb = suffix[tc]
+                    fb = suffix[tc]: {
+                        ok -> it
+
+                        -> 0
+                    }
 
                     ; Build string: old_string + first_byte
                     tc = old-code
                     stack.push(fb)
-                    (prefix[tc] != -1) {
-                        stack.push(suffix[tc])
+                    pt = prefix[tc]: {
+                        ok -> it
 
-                        #{index-out=zero}
-                        tc = prefix[tc]
+                        -> -1
                     }
-                    stack.push(suffix[tc])
+                    (pt != -1) {
+                        stc = suffix[tc]: {
+                            ok -> it
+
+                            -> 0
+                        }
+                        stack.push(stc)
+
+                        tc = pt
+                        pt = prefix[tc]: {
+                            ok -> it
+
+                            -> -1
+                        }
+                    }
+                    stc2 = suffix[tc]: {
+                        ok -> it
+
+                        -> 0
+                    }
+                    stack.push(stc2)
                 }
             }
 
             -> {
 
                 ; Normal case: code is in dictionary
-                (prefix[c] != -1) {
-                    stack.push(suffix[c])
+                pc = prefix[c]: {
+                    ok -> it
 
-                    #{index-out=zero}
-                    c = prefix[c]
+                    -> -1
                 }
-                stack.push(suffix[c])
+                (pc != -1) {
+                    sc = suffix[c]: {
+                        ok -> it
+
+                        -> 0
+                    }
+                    stack.push(sc)
+
+                    c = pc
+                    pc = prefix[c]: {
+                        ok -> it
+
+                        -> -1
+                    }
+                }
+                sc2 = suffix[c]: {
+                    ok -> it
+
+                    -> 0
+                }
+                stack.push(sc2)
             }
         }
 
@@ -281,12 +399,21 @@ lzw-decompress = (data []byte) (out []byte) {
         fi <- [0..stack.len()): {
 
             #{overflow=wrap}
-            out.push(stack[stack.len() - 1 - fi])
+            se = stack[stack.len() - 1 - fi]: {
+                ok -> it
+
+                -> 0
+            }
+            out.push(se)
         }
 
         ; Get first byte of output
-        #{index-out=zero, overflow=wrap}
-        first-byte = stack[stack.len() - 1]
+        #{overflow=wrap}
+        first-byte = stack[stack.len() - 1]: {
+            ok -> it
+
+            -> 0
+        }
 
         ; Add to dictionary
         {
@@ -303,7 +430,11 @@ lzw-decompress = (data []byte) (out []byte) {
                 }
 
                 #{overflow=wrap}
-                next-code = next-code + 1
+                next-code = next-code + 1: {
+                    ok -> it
+
+                    -> _
+                }
 
                 ; Check code width increase
                 next-code == (1 << cur-bits) -> {
@@ -317,24 +448,45 @@ lzw-decompress = (data []byte) (out []byte) {
                             #{overflow=wrap}
                             skip-bits = pad * cur-bits
                             (bit-count < skip-bits && pos < data-len) {
-                                bit-buf = bit-buf | ((data[pos] & 255) << bit-count)
+                                dp = data[pos]: {
+                                    ok -> it
+
+                                    -> 0
+                                }
+                                bit-buf = bit-buf | ((dp & 255) << bit-count)
 
                                 #{overflow=wrap}
-                                bit-count = bit-count + 8
+                                bit-count = bit-count + 8: {
+                                    ok -> it
+
+                                    -> _
+                                }
 
                                 #{overflow=wrap}
-                                pos = pos + 1
+                                pos = pos + 1: {
+                                    ok -> it
+
+                                    -> _
+                                }
                             }
                             consume = skip-bits
                             consume > bit-count -> consume = bit-count
                             bit-buf = bit-buf >> consume
 
                             #{overflow=wrap}
-                            bit-count = bit-count - consume
+                            bit-count = bit-count - consume: {
+                                ok -> it
+
+                                -> _
+                            }
                         }
 
                         #{overflow=wrap}
-                        cur-bits = cur-bits + 1
+                        cur-bits = cur-bits + 1: {
+                            ok -> it
+
+                            -> _
+                        }
                         codes-read = 0
                     }
                 }

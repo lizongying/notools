@@ -40,30 +40,29 @@ index-entry {
 ; local helpers
 ; ═══════════════════════════════════════════════
 
-; write-u32-be-str: write a big-endian 32-bit int as 4 bytes into a str at pos
-; (helper for building index content)
-i64-to-byte-at = (buf str, pos i64, v i64) {
-    buf.set-byte(pos, v & 0xff)
+; build a 1-byte string from the low byte of v
+i64-to-byte-at = (v i64) (out str) {
+    b []byte = with-cap-len(1, 1)
+    b[0] = v & 0xff
+    out = b.slice(0, 1).to-bytes-str()
 }
 
-i64-to-u32-be-at = (buf str, pos i64, v i64) {
-    buf.set-byte(pos, (v >> 24) & 0xff)
-
-    #{overflow=wrap}
-    buf.set-byte(pos + 1, (v >> 16) & 0xff)
-
-    #{overflow=wrap}
-    buf.set-byte(pos + 2, (v >> 8) & 0xff)
-
-    #{overflow=wrap}
-    buf.set-byte(pos + 3, v & 0xff)
+; build a big-endian 32-bit int as a 4-byte string
+i64-to-u32-be-at = (v i64) (out str) {
+    b []byte = with-cap-len(4, 4)
+    b[0] = (v >> 24) & 0xff
+    b[1] = (v >> 16) & 0xff
+    b[2] = (v >> 8) & 0xff
+    b[3] = v & 0xff
+    out = b.slice(0, 4).to-bytes-str()
 }
 
-i64-to-u16-be-at = (buf str, pos i64, v i64) {
-    buf.set-byte(pos, (v >> 8) & 0xff)
-
-    #{overflow=wrap}
-    buf.set-byte(pos + 1, v & 0xff)
+; build a big-endian 16-bit int as a 2-byte string
+i64-to-u16-be-at = (v i64) (out str) {
+    b []byte = with-cap-len(2, 2)
+    b[0] = (v >> 8) & 0xff
+    b[1] = v & 0xff
+    out = b.slice(0, 2).to-bytes-str()
 }
 
 ; read-u32-be-local: read big-endian 32-bit from a str at offset
@@ -169,36 +168,62 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
 
         ; skip ctime(8), mtime(8), dev(4), ino(4) = 24 bytes
         #{overflow=wrap}
-        pos = pos + 24
+        pos = pos + 24: {
+            ok -> it
+
+            -> _
+        }
 
         ; mode (4 bytes BE)
         mode-val i64
         mode-val = read-u32-be-local(content, pos)
 
         #{overflow=wrap}
-        pos = pos + 4
+        pos = pos + 4: {
+            ok -> it
+
+            -> _
+        }
 
         ; skip uid(4), gid(4), size(4) = 12 bytes
         #{overflow=wrap}
-        pos = pos + 12
+        pos = pos + 12: {
+            ok -> it
 
-        ; sha1 (20 bytes)
-        oid-bytes str = with-len(20)
-        k <- [0..20): {
-
-            #{overflow=wrap}
-            oid-bytes.set-byte(k, content.byte(pos + k))
+            -> _
         }
 
+        ; sha1 (20 bytes)
+        ob []byte = with-cap-len(20, 20)
+        k <- [0..20): {
+            cbv = content.byte(pos + k)
+            v byte = 0
+            cbv: {
+                ok -> v = it
+
+                -> _
+            }
+            ob[k] = v
+        }
+        oid-bytes str = ob.slice(0, 20).to-bytes-str()
+
         #{overflow=wrap}
-        pos = pos + 20
+        pos = pos + 20: {
+            ok -> it
+
+            -> _
+        }
 
         ; flags (2 bytes BE) — lower 12 bits = name length
         flags i64
         flags = read-u16-be-local(content, pos)
 
         #{overflow=wrap}
-        pos = pos + 2
+        pos = pos + 2: {
+            ok -> it
+
+            -> _
+        }
         name-len = flags & 0xfff
 
         ; name (name-len bytes, then NUL, then padding)
@@ -214,8 +239,11 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
             b = oid-bytes.byte(j)
             c1 str = with-len(1)
 
-            #{index-out=zero}
-            d9v1 str = hc[(b >> 4) & 15]
+            d9v1 str = hc[(b >> 4) & 15]: {
+                ok -> it
+
+                -> ''
+            }
             c1[0]: {
                 ok -> it = d9v1
 
@@ -223,8 +251,11 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
             }
             c2 str = with-len(1)
 
-            #{index-out=zero}
-            d9v2 str = hc[b & 15]
+            d9v2 str = hc[b & 15]: {
+                ok -> it
+
+                -> ''
+            }
             c2[0]: {
                 ok -> it = d9v2
 
@@ -242,21 +273,41 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         ; advance past name + NUL
         ; pad entry length to 8-byte boundary
         #{overflow=wrap}
-        entry-start = pos - 62
+        entry-start = pos - 62: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        entry-len = 62 + name-len + 1
+        entry-len = 62 + name-len + 1: {
+            ok -> it
+
+            -> _
+        }
         rem = entry-len % 8
 
         #{overflow=wrap}
-        rem > 0 -> entry-len = entry-len + (8 - rem)
+        rem > 0 -> entry-len = entry-len + (8 - rem): {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        pos = entry-start + entry-len
+        pos = entry-start + entry-len: {
+            ok -> it
+
+            -> _
+        }
         pos > content.len-bytes() -> {
 
             #{overflow=wrap}
-            count = i + 1
+            count = i + 1: {
+                ok -> it
+
+                -> _
+            }
             break
         }
     }
@@ -312,34 +363,70 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
         pos + 62 > content.len-bytes() -> return
 
         #{overflow=wrap}
-        pos = pos + 24; skip ctime/mtime/dev/ino
+        pos = pos + 24: {
+            ok -> it
+
+            -> _
+        }; skip ctime/mtime/dev/ino
 
         #{overflow=wrap}
-        pos = pos + 4; skip mode
+        pos = pos + 4: {
+            ok -> it
+
+            -> _
+        }; skip mode
 
         #{overflow=wrap}
-        pos = pos + 12; skip uid/gid/size
+        pos = pos + 12: {
+            ok -> it
+
+            -> _
+        }; skip uid/gid/size
 
         #{overflow=wrap}
-        pos = pos + 20; skip sha1
+        pos = pos + 20: {
+            ok -> it
+
+            -> _
+        }; skip sha1
         flags = read-u16-be-local(content, pos)
 
         #{overflow=wrap}
-        pos = pos + 2
+        pos = pos + 2: {
+            ok -> it
+
+            -> _
+        }
         skip-name-len = flags & 0xfff
 
         #{overflow=wrap}
-        entry-start = pos - 62
+        entry-start = pos - 62: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        entry-len = 62 + skip-name-len + 1
+        entry-len = 62 + skip-name-len + 1: {
+            ok -> it
+
+            -> _
+        }
         rem = entry-len % 8
 
         #{overflow=wrap}
-        rem > 0 -> entry-len = entry-len + (8 - rem)
+        rem > 0 -> entry-len = entry-len + (8 - rem): {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        pos = entry-start + entry-len
+        pos = entry-start + entry-len: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; now at entry idx
@@ -347,14 +434,26 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
     pos + 62 > content.len-bytes() -> return
 
     #{overflow=wrap}
-    pos = pos + 24; skip ctime/mtime/dev/ino
+    pos = pos + 24: {
+        ok -> it
+
+        -> _
+    }; skip ctime/mtime/dev/ino
     mode = read-u32-be-local(content, pos)
 
     #{overflow=wrap}
-    pos = pos + 4
+    pos = pos + 4: {
+        ok -> it
+
+        -> _
+    }
 
     #{overflow=wrap}
-    pos = pos + 12; skip uid/gid/size
+    pos = pos + 12: {
+        ok -> it
+
+        -> _
+    }; skip uid/gid/size
 
     ; read oid
     tmp oid
@@ -366,11 +465,19 @@ read-index-entry-at = (git-dir str, idx i64) (name str, o oid, mode i64, ok bool
     o = tmp
 
     #{overflow=wrap}
-    pos = pos + 20
+    pos = pos + 20: {
+        ok -> it
+
+        -> _
+    }
     flags = read-u16-be-local(content, pos)
 
     #{overflow=wrap}
-    pos = pos + 2
+    pos = pos + 2: {
+        ok -> it
+
+        -> _
+    }
     name-len = flags & 0xfff
 
     #{overflow=wrap}
@@ -414,13 +521,11 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
     out = out - sig
 
     ; version 2
-    ver str = with-len(4)
-    i64-to-u32-be-at(ver, 0, 2)
+    ver str = i64-to-u32-be-at(2)
     out = out - ver
 
     ; entry count
-    cnt str = with-len(4)
-    i64-to-u32-be-at(cnt, 0, count)
+    cnt str = i64-to-u32-be-at(count)
     out = out - cnt
 
     ; parse names, modes, oids from flat strings
@@ -481,13 +586,11 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         }
 
         ; ctime(8) — use mtime as ctime (Nolang has no stat-ctime)
-        ct8 str = with-len(8)
-        i64-to-u32-be-at(ct8, 0, st-mtime)
+        ct8 str = i64-to-u32-be-at(st-mtime) - '\x00\x00\x00\x00'
         out = out - ct8
 
         ; mtime(8)
-        mt8 str = with-len(8)
-        i64-to-u32-be-at(mt8, 0, st-mtime)
+        mt8 str = i64-to-u32-be-at(st-mtime) - '\x00\x00\x00\x00'
         out = out - mt8
 
         ; dev(4) — 0 (not available in Nolang stdlib)
@@ -498,37 +601,40 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         out = out - zero4
 
         ; mode(4)
-        mode-bytes str = with-len(4)
-        i64-to-u32-be-at(mode-bytes, 0, mode-val)
+        mode-bytes str = i64-to-u32-be-at(mode-val)
         out = out - mode-bytes
 
         ; uid(4)
-        uid-bytes str = with-len(4)
-        i64-to-u32-be-at(uid-bytes, 0, st-uid)
+        uid-bytes str = i64-to-u32-be-at(st-uid)
         out = out - uid-bytes
 
         ; gid(4)
-        gid-bytes str = with-len(4)
-        i64-to-u32-be-at(gid-bytes, 0, st-gid)
+        gid-bytes str = i64-to-u32-be-at(st-gid)
         out = out - gid-bytes
 
         ; size(4)
-        size-bytes str = with-len(4)
-        i64-to-u32-be-at(size-bytes, 0, st-size)
+        size-bytes str = i64-to-u32-be-at(st-size)
         out = out - size-bytes
 
         ; sha1(20)
-        oid-bytes str = with-len(20)
+        ob []byte = with-cap-len(20, 20)
         k <- [0..20): {
-            oid-bytes.set-byte(k, entry-oid.id[k])
+            ebv = entry-oid.id[k]
+            v byte = 0
+            ebv: {
+                ok -> v = it
+
+                -> _
+            }
+            ob[k] = v
         }
+        oid-bytes str = ob.slice(0, 20).to-bytes-str()
         out = out - oid-bytes
 
         ; flags(2) — name length in lower 12 bits
         name-len = nm.len-bytes()
         name-len > 0xfff -> name-len = 0xfff
-        flags-bytes str = with-len(2)
-        i64-to-u16-be-at(flags-bytes, 0, name-len)
+        flags-bytes str = i64-to-u16-be-at(name-len)
         out = out - flags-bytes
 
         ; name + NUL
@@ -563,10 +669,18 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 
         ; advance positions for next entry
         #{overflow=wrap}
-        name-pos = nl + 1
+        name-pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        mode-pos = nl2 + 1
+        mode-pos = nl2 + 1: {
+            ok -> it
+
+            -> _
+        }
     }
 
     ; SHA-1 trailer — hash the entire content built so far
@@ -583,9 +697,9 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
         c1 = trailer-hex[k * 2 + 1]
         hi = util.hexdigit(c0)
         lo = util.hexdigit(c1)
-        tb str = with-len(1)
-        tb.set-byte(0, (hi << 4) | lo)
-        out = out - tb
+        tb []byte = with-cap-len(1, 1)
+        tb[0] = (hi << 4) | lo
+        out = out - tb.slice(0, 1).to-bytes-str()
     }
 
     ; write byte-by-byte (stride-safe)
@@ -636,7 +750,11 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                     nl-k = find-newline-local(names, np)
 
                     #{overflow=wrap}
-                    np = nl-k + 1
+                    np = nl-k + 1: {
+                        ok -> it
+
+                        -> _
+                    }
                 }
                 nj-end = find-newline-local(names, np)
                 nj-name = names[np..nj-end)
@@ -652,7 +770,11 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                         nl-b = find-newline-local(names, bp)
 
                         #{overflow=wrap}
-                        bp = nl-b + 1
+                        bp = nl-b + 1: {
+                            ok -> it
+
+                            -> _
+                        }
                     }
                     bj-end = find-newline-local(names, bp)
                     bj-name = names[bp..bj-end)
@@ -672,7 +794,11 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                 nl-k = find-newline-local(names, np)
 
                 #{overflow=wrap}
-                np = nl-k + 1
+                np = nl-k + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
             nj-end = find-newline-local(names, np)
             nj-name = names[np..nj-end)
@@ -686,7 +812,11 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                 ml-k = find-newline-local(modes-str, mp)
 
                 #{overflow=wrap}
-                mp = ml-k + 1
+                mp = ml-k + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
             mj-end = find-newline-local(modes-str, mp)
             nj-mode = modes-str[mp..mj-end)
@@ -729,7 +859,11 @@ name-cmp-index = (a str, b str) (r i64) {
             }
 
             #{overflow=wrap}
-            i = i + 1
+            i = i + 1: {
+                ok -> it
+
+                -> _
+            }
         }
     }
     la < lb -> r = -1
@@ -789,7 +923,11 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
                 new-modes = new-modes - mode-str - '\n'
 
                 #{overflow=wrap}
-                new-count = new-count + 1
+                new-count = new-count + 1: {
+                    ok -> it
+
+                    -> _
+                }
                 found = true
             }
 
@@ -803,16 +941,28 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
                 new-modes = new-modes - old-ms - '\n'
 
                 #{overflow=wrap}
-                new-count = new-count + 1
+                new-count = new-count + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
 
         ; advance positions
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        mode-pos = mnl2 + 1
+        mode-pos = mnl2 + 1: {
+            ok -> it
+
+            -> _
+        }
         nl >= ri-names.len() -> break
     }
 
@@ -825,7 +975,11 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
             new-modes = new-modes - mode-str - '\n'
 
             #{overflow=wrap}
-            new-count = new-count + 1
+            new-count = new-count + 1: {
+                ok -> it
+
+                -> _
+            }
         }
     }
 
@@ -882,16 +1036,28 @@ index-remove = (git-dir str, path str) (ok bool) {
                 new-modes = new-modes - old-ms - '\n'
 
                 #{overflow=wrap}
-                new-count = new-count + 1
+                new-count = new-count + 1: {
+                    ok -> it
+
+                    -> _
+                }
             }
         }
 
         ; advance positions
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> _
+        }
 
         #{overflow=wrap}
-        mode-pos = mnl2 + 1
+        mode-pos = mnl2 + 1: {
+            ok -> it
+
+            -> _
+        }
         nl >= ri-names.len() -> break
     }
 
