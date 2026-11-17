@@ -25,6 +25,17 @@
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
+; 0.4.24 下 data[i] 返回 ?byte，且 value-match 只能作赋值右值顶层：
+; 把「索引读取 + mask」收成具体 i64，避免 match 嵌在比较 / 位运算 / 实参里。
+jpeg-byte = (d []byte, i i64) (b i64) {
+    v = d[i]: {
+        ok -> it
+
+        -> 0
+    }
+    b = v & 255
+}
+
 ; ── Load ──
 
 ; jpeg.load: load a baseline JPEG file (8-bit, Huffman coded)
@@ -41,11 +52,7 @@ load = (path str) (img ?image) {
         }
 
         ; Check SOI marker
-        ((data[0]: { ok -> it
-
-    -> 0 }) & 255) == 255 && ((data[1]: { ok -> it
-
-    -> 0 }) & 255) == 216 -> {
+        jpeg-byte(data, 0) == 255 && jpeg-byte(data, 1) == 216 -> {
         }
 
         -> {
@@ -96,27 +103,27 @@ load = (path str) (img ?image) {
     (pos < data.len()) {
         pos < data.len() -> {
             {
-                ((data[pos]: { ok -> it
-
-    -> 0 }) & 255) != 255 -> {
+                jpeg-byte(data, pos) != 255 -> {
 
                     #{overflow=wrap}
-                    pos = pos + 1: { ok -> it
+                    pos = pos + 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
 
                 -> {
 
                     #{overflow=wrap}
-                    marker = (data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255
+                    marker = jpeg-byte(data, pos + 1)
 
                     #{overflow=wrap}
-                    pos = pos + 2: { ok -> it
+                    pos = pos + 2: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                     {
                         marker == 0 -> pos = pos
 
@@ -148,9 +155,7 @@ load = (path str) (img ?image) {
                             seg-len = jpeg-read-u16(data, pos)
 
                             #{overflow=wrap}
-                            precision = (data[pos + 2]: { ok -> it
-
-    -> 0 }) & 255
+                            precision = jpeg-byte(data, pos + 2)
 
                             #{overflow=wrap}
                             h = jpeg-read-u16(data, pos + 3)
@@ -159,17 +164,17 @@ load = (path str) (img ?image) {
                             w = jpeg-read-u16(data, pos + 5)
 
                             #{overflow=wrap}
-                            components = (data[pos + 7]: { ok -> it
-
-    -> 0 }) & 255
+                            components = jpeg-byte(data, pos + 7)
                             ci <- [0..components): {
 
                                 #{overflow=wrap}
                                 base = pos + 8 + ci * 3
 
-                                d9v1 byte = data[base]: { ok -> it
+                                d9v1 byte = data[base]: {
+                                    ok -> it
 
-                                    -> 0 }
+                                    -> 0
+                                }
                                 comp-ids[ci]: {
                                     ok -> it = d9v1 & 255
 
@@ -177,9 +182,7 @@ load = (path str) (img ?image) {
                                 }
 
                                 #{overflow=wrap}
-                                c-hv = (data[base + 1]: { ok -> it
-
-    -> 0 }) & 255
+                                c-hv = jpeg-byte(data, base + 1)
                                 comp-h[ci]: {
                                     ok -> it = (c-hv >> 4) & 15
 
@@ -191,9 +194,11 @@ load = (path str) (img ?image) {
                                     -> _
                                 }
 
-                                d9v2 byte = data[base + 2]: { ok -> it
+                                d9v2 byte = data[base + 2]: {
+                                    ok -> it
 
-                                    -> 0 }
+                                    -> 0
+                                }
                                 comp-qt[ci]: {
                                     ok -> it = d9v2 & 255
 
@@ -202,9 +207,11 @@ load = (path str) (img ?image) {
                             }
 
                             #{overflow=wrap}
-                            pos = pos + seg-len: { ok -> it
+                            pos = pos + seg-len: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
 
                         marker == 196 -> {
@@ -213,18 +220,18 @@ load = (path str) (img ?image) {
                             seg-len = jpeg-read-u16(data, pos)
 
                             #{overflow=wrap}
-                            ht-pos = pos + 2: { ok -> it
+                            ht-pos = pos + 2: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
 
                             #{overflow=wrap}
                             (ht-pos < pos + seg-len) {
 
                                 #{overflow=wrap}
                                 ht-pos < pos + seg-len -> {
-                                    tc-th = (data[ht-pos]: { ok -> it
-
-    -> 0 }) & 255
+                                    tc-th = jpeg-byte(data, ht-pos)
                                     table-class = (tc-th >> 4) & 15
                                     table-id = tc-th & 15
 
@@ -236,9 +243,7 @@ load = (path str) (img ?image) {
                                     i <- [0..16): {
 
                                         #{overflow=wrap}
-                                        cnt = (data[ht-pos + i]: { ok -> it
-
-    -> 0 }) & 255
+                                        cnt = jpeg-byte(data, ht-pos + i)
                                         {
                                             table-class == 0 -> {
 
@@ -262,9 +267,11 @@ load = (path str) (img ?image) {
                                         }
 
                                         #{overflow=wrap}
-                                        total-symbols = total-symbols + cnt: { ok -> it
+                                        total-symbols = total-symbols + cnt: {
+                                            ok -> it
 
-    -> _ }
+                                            -> _
+                                        }
                                     }
 
                                     #{overflow=wrap}
@@ -274,10 +281,11 @@ load = (path str) (img ?image) {
                                     {
                                         table-class == 0 -> {
                                             i <- [0..total-symbols): {
+                                                d9v3 byte = data[ht-pos + i]: {
+                                                    ok -> it
 
-                                                d9v3 byte = data[ht-pos + i]: { ok -> it
-
-                                                    -> 0 }
+                                                    -> 0
+                                                }
 
                                                 #{overflow=wrap}
                                                 dc-tables[table-id * 256 + i]: {
@@ -295,10 +303,11 @@ load = (path str) (img ?image) {
 
                                         -> {
                                             i <- [0..total-symbols): {
+                                                d9v4 byte = data[ht-pos + i]: {
+                                                    ok -> it
 
-                                                d9v4 byte = data[ht-pos + i]: { ok -> it
-
-                                                    -> 0 }
+                                                    -> 0
+                                                }
 
                                                 #{overflow=wrap}
                                                 ac-tables[table-id * 256 + i]: {
@@ -321,9 +330,11 @@ load = (path str) (img ?image) {
                             }
 
                             #{overflow=wrap}
-                            pos = pos + seg-len: { ok -> it
+                            pos = pos + seg-len: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
 
                         marker == 219 -> {
@@ -332,18 +343,18 @@ load = (path str) (img ?image) {
                             seg-len = jpeg-read-u16(data, pos)
 
                             #{overflow=wrap}
-                            qt-pos = pos + 2: { ok -> it
+                            qt-pos = pos + 2: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
 
                             #{overflow=wrap}
                             (qt-pos < pos + seg-len) {
 
                                 #{overflow=wrap}
                                 qt-pos < pos + seg-len -> {
-                                    pq = (data[qt-pos]: { ok -> it
-
-    -> 0 }) & 255
+                                    pq = jpeg-byte(data, qt-pos)
                                     precision = (pq >> 4) & 15
                                     table-id = pq & 15
 
@@ -357,10 +368,11 @@ load = (path str) (img ?image) {
                                                 zi = jpeg-zigzag(i)
                                                 {
                                                     table-id == 0 -> {
+                                                        d9v5 byte = data[qt-pos + i]: {
+                                                            ok -> it
 
-                                                        d9v5 byte = data[qt-pos + i]: { ok -> it
-
-                                                            -> 0 }
+                                                            -> 0
+                                                        }
                                                         qt0[zi]: {
                                                             ok -> it = d9v5 & 255
 
@@ -369,10 +381,11 @@ load = (path str) (img ?image) {
                                                     }
 
                                                     table-id == 1 -> {
+                                                        d9v6 byte = data[qt-pos + i]: {
+                                                            ok -> it
 
-                                                        d9v6 byte = data[qt-pos + i]: { ok -> it
-
-                                                            -> 0 }
+                                                            -> 0
+                                                        }
                                                         qt1[zi]: {
                                                             ok -> it = d9v6 & 255
 
@@ -381,10 +394,11 @@ load = (path str) (img ?image) {
                                                     }
 
                                                     table-id == 2 -> {
+                                                        d9v7 byte = data[qt-pos + i]: {
+                                                            ok -> it
 
-                                                        d9v7 byte = data[qt-pos + i]: { ok -> it
-
-                                                            -> 0 }
+                                                            -> 0
+                                                        }
                                                         qt2[zi]: {
                                                             ok -> it = d9v7 & 255
 
@@ -393,10 +407,11 @@ load = (path str) (img ?image) {
                                                     }
 
                                                     table-id == 3 -> {
+                                                        d9v8 byte = data[qt-pos + i]: {
+                                                            ok -> it
 
-                                                        d9v8 byte = data[qt-pos + i]: { ok -> it
-
-                                                            -> 0 }
+                                                            -> 0
+                                                        }
                                                         qt3[zi]: {
                                                             ok -> it = d9v8 & 255
 
@@ -421,9 +436,11 @@ load = (path str) (img ?image) {
                             }
 
                             #{overflow=wrap}
-                            pos = pos + seg-len: { ok -> it
+                            pos = pos + seg-len: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
 
                         marker == 218 -> {
@@ -441,27 +458,24 @@ load = (path str) (img ?image) {
                                 seg-len = jpeg-read-u16(data, pos)
 
                                 #{overflow=wrap}
-                                scan-components = (data[pos + 2]: { ok -> it
-
-    -> 0 }) & 255
+                                scan-components = jpeg-byte(data, pos + 2)
                                 i <- [0..scan-components): {
 
                                     #{overflow=wrap}
                                     base = pos + 3 + i * 2
-                                    cs-id = (data[base]: { ok -> it
-
-    -> 0 }) & 255
+                                    cs-id = jpeg-byte(data, base)
 
                                     #{overflow=wrap}
-                                    cs-ta = (data[base + 1]: { ok -> it
-
-    -> 0 }) & 255
+                                    cs-ta = jpeg-byte(data, base + 1)
 
                                     ; Find component index
                                     ci <- [0..components): {
-                                        (comp-ids[ci]: { ok -> it
+                                        cid = comp-ids[ci]: {
+                                            ok -> it
 
-    -> 0 }) == cs-id -> {
+                                            -> 0
+                                        }
+                                        cid == cs-id -> {
                                             comp-dc-table[ci]: {
                                                 ok -> it = (cs-ta >> 4) & 15
 
@@ -477,9 +491,11 @@ load = (path str) (img ?image) {
                                 }
 
                                 #{overflow=wrap}
-                                pos = pos + seg-len: { ok -> it
+                                pos = pos + seg-len: {
+                                    ok -> it
 
-    -> _ }
+                                    -> _
+                                }
 
                                 ; Now at scan data — decode
                                 {
@@ -506,20 +522,22 @@ load = (path str) (img ?image) {
 
                                 ; Build DC decode tables
                                 ti <- [0..4): {
+                                    dcnt = dc-counts[ti]: {
+                                        ok -> it
 
-                                    #{overflow=wrap}
-                                    jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, (dc-counts[ti]: { ok -> it
-
-    -> 0 }), dc-maxcode, ti * 16, dc-valptr, ti * 16)
+                                        -> 0
+                                    }
+                                    jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, dcnt, dc-maxcode, ti * 16, dc-valptr, ti * 16)
                                 }
 
                                 ; Build AC decode tables
                                 ti <- [0..4): {
+                                    acnt = ac-counts[ti]: {
+                                        ok -> it
 
-                                    #{overflow=wrap}
-                                    jpeg-build-huff-table(ac-lens, ti * 16, ac-tables, ti * 256, (ac-counts[ti]: { ok -> it
-
-    -> 0 }), ac-maxcode, ti * 16, ac-valptr, ti * 16)
+                                        -> 0
+                                    }
+                                    jpeg-build-huff-table(ac-lens, ti * 16, ac-tables, ti * 256, acnt, ac-maxcode, ti * 16, ac-valptr, ti * 16)
                                 }
 
                                 ; Determine output bands
@@ -528,8 +546,8 @@ load = (path str) (img ?image) {
 
                                 ; Create output image
                                 #{overflow=wrap}
-                                _d []byte = with-len(w * h * bands)
-                                tmp = image.new-from-data(w, h, bands, _d)
+                                dbuf []byte = with-len(w * h * bands)
+                                tmp = image.new-from-data(w, h, bands, dbuf)
 
                                 ; MCU dimensions
                                 ; Max H/V sampling factors determine MCU size
@@ -537,23 +555,23 @@ load = (path str) (img ?image) {
                                 max-v = 1
                                 ci <- [0..components): {
                                     {
-                                        (comp-h[ci]: { ok -> it
+                                        chv = comp-h[ci]: {
+                                            ok -> it
 
-    -> 0 }) > max-h -> {
-
-                                            max-h = comp-h[ci]: { ok -> it
-
-                                                -> 0 }
+                                            -> 0
+                                        }
+                                        chv > max-h -> {
+                                            max-h = chv
                                         }
                                     }
                                     {
-                                        (comp-v[ci]: { ok -> it
+                                        cvv = comp-v[ci]: {
+                                            ok -> it
 
-    -> 0 }) > max-v -> {
-
-                                            max-v = comp-v[ci]: { ok -> it
-
-                                                -> 0 }
+                                            -> 0
+                                        }
+                                        cvv > max-v -> {
+                                            max-v = cvv
                                         }
                                     }
                                 }
@@ -624,13 +642,17 @@ load = (path str) (img ?image) {
                                             qt-id == 3 -> qt = qt3
 
                                             ; Get Huffman table IDs
-                                            dc-tid = comp-dc-table[ci]: { ok -> it
+                                            dc-tid = comp-dc-table[ci]: {
+                                                ok -> it
 
-                                                -> 0 }
+                                                -> 0
+                                            }
 
-                                            ac-tid = comp-ac-table[ci]: { ok -> it
+                                            ac-tid = comp-ac-table[ci]: {
+                                                ok -> it
 
-                                                -> 0 }
+                                                -> 0
+                                            }
 
                                             ; Number of blocks for this component in this MCU
                                             n-blk-h = comp-h[ci]
@@ -669,9 +691,11 @@ load = (path str) (img ?image) {
                                                     ci == 3 -> prev-dc-3 = dc-val
 
                                                     ; DC coefficient goes to position [0,0]
-                                    d9v9 byte = qt[0]: { ok -> it
+                                                    d9v9 byte = qt[0]: {
+                                                        ok -> it
 
-                                        -> 0 }
+                                                        -> 0
+                                                    }
                                                     block[0]: {
                                                         ok -> it = (dc-val * d9v9).to-f64()
 
@@ -694,9 +718,11 @@ load = (path str) (img ?image) {
 
                                                                         ; ZRL: skip 16 zeros
                                                                         #{overflow=wrap}
-                                                                        k = k + 16: { ok -> it
+                                                                        k = k + 16: {
+                                                                            ok -> it
 
-    -> _ }
+                                                                            -> _
+                                                                        }
                                                                     }
 
                                                                     -> {
@@ -721,9 +747,11 @@ load = (path str) (img ?image) {
                                                                         k < 64 -> {
                                                                             zi = jpeg-zigzag(k)
 
-                                                                            d9v10 byte = qt[zi]: { ok -> it
+                                                                            d9v10 byte = qt[zi]: {
+                                                                                ok -> it
 
-                                                                                -> 0 }
+                                                                                -> 0
+                                                                            }
                                                                             block[zi]: {
                                                                                 ok -> it = (val * d9v10).to-f64()
 
@@ -733,9 +761,11 @@ load = (path str) (img ?image) {
                                                                     }
 
                                                                     #{overflow=wrap}
-                                                                    k = k + 1: { ok -> it
+                                                                    k = k + 1: {
+                                                                        ok -> it
 
-    -> _ }
+                                                                        -> _
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -769,11 +799,12 @@ load = (path str) (img ?image) {
                                                     ; Write 8x8 block to component buffer
                                                     py <- [0..8): {
                                                         px <- [0..8): {
+                                                            pxv f64 = pixels[py * 8 + px]: {
+                                                                ok -> it
 
-                                                            #{overflow=wrap}
-                                                            v f64 = (pixels[py * 8 + px]: { ok -> it
-
-    -> 0.0 }) + 128.0
+                                                                -> 0.0
+                                                            }
+                                                            v f64 = pxv + 128.0
                                                             v < 0.0 -> v = 0.0
                                                             v > 255.0 -> v = 255.0
 
@@ -810,10 +841,12 @@ load = (path str) (img ?image) {
                                             #{overflow=wrap}
                                             sx = i - sy * w
 
-                                            #{overflow=wrap}
-                                            tmp.data[i] = (comp-data-0[sy * comp-w0 + sx]: { ok -> it
+                                            cdv = comp-data-0[sy * comp-w0 + sx]: {
+                                                ok -> it
 
-    -> 0 }) & 255
+                                                -> 0
+                                            }
+                                            tmp.data[i] = cdv & 255
                                         }
                                     }
 
@@ -824,12 +857,16 @@ load = (path str) (img ?image) {
                                         ; Component 0 (Y): h0, v0
                                         ; Component 1 (Cb): h1, v1
                                         ; Component 2 (Cr): h2, v2
-                                        h0 i64 = comp-h[0]: { ok -> it
+                                        h0 i64 = comp-h[0]: {
+                                            ok -> it
 
-    -> 0 }
-                                        v0 i64 = comp-v[0]: { ok -> it
+                                            -> 0
+                                        }
+                                        v0 i64 = comp-v[0]: {
+                                            ok -> it
 
-    -> 0 }
+                                            -> 0
+                                        }
                                         h1 = comp-h[1]
                                         v1 = comp-v[1]
                                         h2 = comp-h[2]
@@ -907,9 +944,11 @@ load = (path str) (img ?image) {
                             seg-len = jpeg-read-u16(data, pos)
 
                             #{overflow=wrap}
-                            pos = pos + seg-len: { ok -> it
+                            pos = pos + seg-len: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
                     }
                 }
@@ -935,9 +974,7 @@ load = (path str) (img ?image) {
 jpeg-find-next-marker = (data []byte, pos i64) (marker-pos i64) {
     n = data.len()
     (pos < n) {
-        b = (data[pos]: { ok -> it
-
-    -> 0 }) & 255
+        b = jpeg-byte(data, pos)
         b == 255 -> {
             np i64 = 0
             np-opt = pos + 1
@@ -951,9 +988,7 @@ jpeg-find-next-marker = (data []byte, pos i64) (marker-pos i64) {
                 }
             }
             np < n -> {
-                nb = (data[np]: { ok -> it
-
-    -> 0 }) & 255
+                nb = jpeg-byte(data, np)
                 nb != 0 && nb != 255 -> {
                     marker-pos = pos
                     return
@@ -962,9 +997,11 @@ jpeg-find-next-marker = (data []byte, pos i64) (marker-pos i64) {
         }
 
         #{overflow=wrap}
-        pos = pos + 1: { ok -> it
+        pos = pos + 1: {
+            ok -> it
 
-    -> _ }
+            -> _
+        }
     }
     marker-pos = n
 }
@@ -980,23 +1017,23 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
     pmax-v = 1
     ci <- [0..components): {
         {
-            (comp-h[ci]: { ok -> it
+            chv = comp-h[ci]: {
+                ok -> it
 
-    -> 0 }) > pmax-h -> {
-
-                pmax-h = comp-h[ci]: { ok -> it
-
-                    -> 0 }
+                -> 0
+            }
+            chv > pmax-h -> {
+                pmax-h = chv
             }
         }
         {
-            (comp-v[ci]: { ok -> it
+            cvv = comp-v[ci]: {
+                ok -> it
 
-    -> 0 }) > pmax-v -> {
-
-                pmax-v = comp-v[ci]: { ok -> it
-
-                    -> 0 }
+                -> 0
+            }
+            cvv > pmax-v -> {
+                pmax-v = cvv
             }
         }
     }
@@ -1040,18 +1077,20 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
     #{overflow=wrap}
     ac-valptr []i64 = with-len(4 * 16)
     ti <- [0..4): {
+        dcnt = dc-counts[ti]: {
+            ok -> it
 
-        #{overflow=wrap}
-        jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, (dc-counts[ti]: { ok -> it
-
-    -> 0 }), dc-maxcode, ti * 16, dc-valptr, ti * 16)
+            -> 0
+        }
+        jpeg-build-huff-table(dc-lens, ti * 16, dc-tables, ti * 256, dcnt, dc-maxcode, ti * 16, dc-valptr, ti * 16)
     }
     ti <- [0..4): {
+        acnt = ac-counts[ti]: {
+            ok -> it
 
-        #{overflow=wrap}
-        jpeg-build-huff-table(ac-lens, ti * 16, ac-tables, ti * 256, (ac-counts[ti]: { ok -> it
-
-    -> 0 }), ac-maxcode, ti * 16, ac-valptr, ti * 16)
+            -> 0
+        }
+        jpeg-build-huff-table(ac-lens, ti * 16, ac-tables, ti * 256, acnt, ac-maxcode, ti * 16, ac-valptr, ti * 16)
     }
 
     ; Re-walk the file from the SOF marker, decoding every SOS scan.
@@ -1059,27 +1098,27 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
     (pos < data.len()) {
         pos < data.len() -> {
             {
-                ((data[pos]: { ok -> it
-
-    -> 0 }) & 255) != 255 -> {
+                jpeg-byte(data, pos) != 255 -> {
 
                     #{overflow=wrap}
-                    pos = pos + 1: { ok -> it
+                    pos = pos + 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
 
                 -> {
 
                     #{overflow=wrap}
-                    marker = (data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255
+                    marker = jpeg-byte(data, pos + 1)
 
                     #{overflow=wrap}
-                    pos = pos + 2: { ok -> it
+                    pos = pos + 2: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                     marker == 217 -> {
                         break
                     }
@@ -1090,25 +1129,22 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                         seg-len = jpeg-read-u16(data, pos)
 
                         #{overflow=wrap}
-                        scan-components = (data[pos + 2]: { ok -> it
-
-    -> 0 }) & 255
+                        scan-components = jpeg-byte(data, pos + 2)
                         i <- [0..scan-components): {
 
                             #{overflow=wrap}
                             base = pos + 3 + i * 2
-                            cs-id = (data[base]: { ok -> it
-
-    -> 0 }) & 255
+                            cs-id = jpeg-byte(data, base)
 
                             #{overflow=wrap}
-                            cs-ta = (data[base + 1]: { ok -> it
-
-    -> 0 }) & 255
+                            cs-ta = jpeg-byte(data, base + 1)
                             ci <- [0..components): {
-                                (comp-ids[ci]: { ok -> it
+                                cid = comp-ids[ci]: {
+                                    ok -> it
 
-    -> 0 }) == cs-id -> {
+                                    -> 0
+                                }
+                                cid == cs-id -> {
                                     comp-dc-table[ci]: {
                                         ok -> it = (cs-ta >> 4) & 15
 
@@ -1129,18 +1165,14 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                         }
 
                         #{overflow=wrap}
-                        pos = pos + seg-len: { ok -> it
+                        pos = pos + seg-len: {
+                            ok -> it
 
-    -> _ }
-                        ss = (data[pos - 3]: { ok -> it
-
-    -> 0 }) & 255
-                        se = (data[pos - 2]: { ok -> it
-
-    -> 0 }) & 255
-                        ah-al = (data[pos - 1]: { ok -> it
-
-    -> 0 }) & 255
+                            -> _
+                        }
+                        ss = jpeg-byte(data, pos - 3)
+                        se = jpeg-byte(data, pos - 2)
+                        ah-al = jpeg-byte(data, pos - 1)
                         ah = (ah-al >> 4) & 15
                         al = ah-al & 15
                         scan-start = pos
@@ -1160,20 +1192,28 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                     qt-id == 2 -> qt = qt2
                                     qt-id == 3 -> qt = qt3
 
-                                    dc-tid = comp-dc-table[ci]: { ok -> it
+                                    dc-tid = comp-dc-table[ci]: {
+                                        ok -> it
 
-                                        -> 0 }
+                                        -> 0
+                                    }
 
-                                    ac-tid = comp-ac-table[ci]: { ok -> it
+                                    ac-tid = comp-ac-table[ci]: {
+                                        ok -> it
 
-                                        -> 0 }
+                                        -> 0
+                                    }
                                     n-blk-h = comp-h[ci]
                                     n-blk-v = comp-v[ci]
 
-                                    #{overflow=wrap}
-                                    blocks-per-row = (ppad-w * (comp-h[ci]: { ok -> it
+                                    chv2 = comp-h[ci]: {
+                                        ok -> it
 
-    -> 0 }) / pmax-h) / 8
+                                        -> 0
+                                    }
+
+                                    #{overflow=wrap}
+                                    blocks-per-row = (ppad-w * chv2 / pmax-h) / 8
                                     by <- [0..n-blk-v): {
                                         bx <- [0..n-blk-h): {
 
@@ -1201,11 +1241,16 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                         ci == 2 -> pprev-dc-2 = dc-val
                                                         ci == 3 -> pprev-dc-3 = dc-val
 
-                                                        #{overflow=wrap}
-                                                        coef-all[cbase]: {
-                                                            ok -> it = (dc-val * (1 << al)): { ok -> it
+                                                        al-pow = 1 << al
 
-    -> 0 }
+                                                        #{overflow=wrap}
+                                                        dc-scaled = dc-val * al-pow: {
+                                                            ok -> it
+
+                                                            -> 0
+                                                        }
+                                                        coef-all[cbase]: {
+                                                            ok -> it = dc-scaled
 
                                                             -> _
                                                         }
@@ -1214,16 +1259,22 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                     -> {
                                                         bit, bit-pos, bit-buf, bit-cnt = jpeg-read-1-bit(data, bit-pos, bit-buf, bit-cnt)
                                                         bit == 1 -> {
+                                                            d9v11 i64 = coef-all[cbase]: {
+                                                                ok -> it
 
-                                                            d9v11 i64 = coef-all[cbase]: { ok -> it
+                                                                -> 0
+                                                            }
 
-                                                                -> 0 }
+                                                            al-pow2 = 1 << al
 
                                                             #{overflow=wrap}
-                                                            coef-all[cbase]: {
-                                                                ok -> it = (d9v11 + (1 << al)): { ok -> it
+                                                            dc-step = d9v11 + al-pow2: {
+                                                                ok -> it
 
-    -> 0 }
+                                                                -> 0
+                                                            }
+                                                            coef-all[cbase]: {
+                                                                ok -> it = dc-step
 
                                                                 -> _
                                                             }
@@ -1237,9 +1288,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                             k = ss
                                                             kg = 0
                                                             (kg < 64) {
-                                                                kg = kg + 1: { ok -> it
+                                                                kg = kg + 1: {
+                                                                    ok -> it
 
-    -> _ }
+                                                                    -> _
+                                                                }
                                                                 k > se -> {
                                                                     break
                                                                 }
@@ -1252,17 +1305,21 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                             zrun == 15 -> {
 
                                                                                 #{overflow=wrap}
-                                                                                k = k + 16: { ok -> it
+                                                                                k = k + 16: {
+                                                                                    ok -> it
 
-    -> _ }
+                                                                                    -> _
+                                                                                }
                                                                             }
 
                                                                             -> {
 
                                                                                 #{overflow=wrap}
-                                                                                k = se + 1: { ok -> it
+                                                                                k = se + 1: {
+                                                                                    ok -> it
 
-    -> _ }
+                                                                                    -> _
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
@@ -1273,9 +1330,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                         k = k + zrun
                                                                         {
                                                                             k > se -> {
-                                                                                k = se + 1: { ok -> it
+                                                                                k = se + 1: {
+                                                                                    ok -> it
 
-    -> _ }
+                                                                                    -> _
+                                                                                }
                                                                             }
 
                                                                             -> {
@@ -1283,27 +1342,36 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                                 val = jpeg-extend-val(val, size)
                                                                                 {
                                                                                     k > 63 -> {
-                                                                                        k = se + 1: { ok -> it
+                                                                                        k = se + 1: {
+                                                                                            ok -> it
 
-    -> _ }
+                                                                                            -> _
+                                                                                        }
                                                                                     }
 
                                                                                     -> {
                                                                                         zi = jpeg-zigzag(k)
 
-                                                                                        #{overflow=wrap}
-                                                                                        coef-all[cbase + zi]: {
-                                                                                            ok -> it = (val * (1 << al)): { ok -> it
+                                                                                        al-pow3 = 1 << al
 
-    -> 0 }
+                                                                                        #{overflow=wrap}
+                                                                                        ac-scaled = val * al-pow3: {
+                                                                                            ok -> it
+
+                                                                                            -> 0
+                                                                                        }
+                                                                                        coef-all[cbase + zi]: {
+                                                                                            ok -> it = ac-scaled
 
                                                                                             -> _
                                                                                         }
 
                                                                                         #{overflow=wrap}
-                                                                                        k = k + 1: { ok -> it
+                                                                                        k = k + 1: {
+                                                                                            ok -> it
 
-    -> _ }
+                                                                                            -> _
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }
@@ -1319,9 +1387,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                             k = ss
                                                             kg = 0
                                                             (kg < 64) {
-                                                                kg = kg + 1: { ok -> it
+                                                                kg = kg + 1: {
+                                                                    ok -> it
 
-    -> _ }
+                                                                    -> _
+                                                                }
                                                                 k > se -> {
                                                                     break
                                                                 }
@@ -1333,17 +1403,21 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                         acr == 15 -> {
 
                                                                             #{overflow=wrap}
-                                                                            k = k + 16: { ok -> it
+                                                                            k = k + 16: {
+                                                                                ok -> it
 
-    -> _ }
+                                                                                -> _
+                                                                            }
                                                                         }
 
                                                                         -> {
 
                                                                             #{overflow=wrap}
-                                                                            k = se + 1: { ok -> it
+                                                                            k = se + 1: {
+                                                                                ok -> it
 
-    -> _ }
+                                                                                -> _
+                                                                            }
                                                                         }
                                                                     }
 
@@ -1372,9 +1446,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
 
                                                                                                             #{overflow=wrap}
                                                                                                             coef-all[cbase + zi]: {
-                                                                                                                ok -> it = (cz + p1): { ok -> it
+                                                                                                                ok -> it = (cz + p1): {
+                                                                                                                    ok -> it
 
-    -> 0 }
+                                                                                                                    -> 0
+                                                                                                                }
 
                                                                                                                 -> _
                                                                                                             }
@@ -1384,9 +1460,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
 
                                                                                                             #{overflow=wrap}
                                                                                                             coef-all[cbase + zi]: {
-                                                                                                                ok -> it = (cz - p1): { ok -> it
+                                                                                                                ok -> it = (cz - p1): {
+                                                                                                                    ok -> it
 
-    -> 0 }
+                                                                                                                    -> 0
+                                                                                                                }
 
                                                                                                                 -> _
                                                                                                             }
@@ -1399,9 +1477,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
 
                                                                                                                 #{overflow=wrap}
                                                                                                                 coef-all[cbase + zi]: {
-                                                                                                                    ok -> it = (cz - p1): { ok -> it
+                                                                                                                    ok -> it = (cz - p1): {
+                                                                                                                        ok -> it
 
-    -> 0 }
+                                                                                                                        -> 0
+                                                                                                                    }
 
                                                                                                                     -> _
                                                                                                                 }
@@ -1411,9 +1491,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
 
                                                                                                                 #{overflow=wrap}
                                                                                                                 coef-all[cbase + zi]: {
-                                                                                                                    ok -> it = (cz + p1): { ok -> it
+                                                                                                                    ok -> it = (cz + p1): {
+                                                                                                                        ok -> it
 
-    -> 0 }
+                                                                                                                        -> 0
+                                                                                                                    }
 
                                                                                                                     -> _
                                                                                                                 }
@@ -1432,17 +1514,21 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                         k = k + acr
                                                                         {
                                                                             k > se -> {
-                                                                                k = se + 1: { ok -> it
+                                                                                k = se + 1: {
+                                                                                    ok -> it
 
-    -> _ }
+                                                                                    -> _
+                                                                                }
                                                                             }
 
                                                                             -> {
                                                                                 {
                                                                                     k > 63 -> {
-                                                                                        k = se + 1: { ok -> it
+                                                                                        k = se + 1: {
+                                                                                            ok -> it
 
-    -> _ }
+                                                                                            -> _
+                                                                                        }
                                                                                     }
 
                                                                                     -> {
@@ -1471,9 +1557,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                                                                         }
 
                                                                                         #{overflow=wrap}
-                                                                                        k = k + 1: { ok -> it
+                                                                                        k = k + 1: {
+                                                                                            ok -> it
 
-    -> _ }
+                                                                                            -> _
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }
@@ -1497,15 +1585,19 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                                     seg-len = jpeg-read-u16(data, pos)
 
                                     #{overflow=wrap}
-                                    pos = pos + seg-len: { ok -> it
+                                    pos = pos + seg-len: {
+                                        ok -> it
 
-    -> _ }
+                                        -> _
+                                    }
                                 }
 
                                 -> {
-                                    pos = pos + 2: { ok -> it
+                                    pos = pos + 2: {
+                                        ok -> it
 
-    -> _ }
+                                        -> _
+                                    }
                                 }
                             }
                         }
@@ -1519,12 +1611,16 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
     bands = 3
     components == 1 -> bands = 1
 
-    #{overflow=wrap}
-    cw0 = ppad-w * (comp-h[0]: { ok -> it
+    chv0 = comp-h[0]: {
+        ok -> it
 
-    -> 0 }) / pmax-h
-    _d []byte = with-len(w * h * bands)
-    tmp = image.new-from-data(w, h, bands, _d)
+        -> 0
+    }
+
+    #{overflow=wrap}
+    cw0 = ppad-w * chv0 / pmax-h
+    dbuf []byte = with-len(w * h * bands)
+    tmp = image.new-from-data(w, h, bands, dbuf)
     ci <- [0..components): {
         qt-id = comp-qt[ci]
         qt []byte = qt0
@@ -1532,24 +1628,33 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
         qt-id == 2 -> qt = qt2
         qt-id == 3 -> qt = qt3
 
+        chv3 = comp-h[ci]: {
+            ok -> it
+
+            -> 0
+        }
+        cvv3 = comp-v[ci]: {
+            ok -> it
+
+            -> 0
+        }
+
         #{overflow=wrap}
-        cw = ppad-w * (comp-h[ci]: { ok -> it
-
-    -> 0 }) / pmax-h
+        cw = ppad-w * chv3 / pmax-h
 
         #{overflow=wrap}
-        ch = ppad-h * (comp-v[ci]: { ok -> it
-
-    -> 0 }) / pmax-v
+        ch = ppad-h * cvv3 / pmax-v
 
         #{overflow=wrap}
         n-blocks-x = cw / 8
 
         #{overflow=wrap}
         n-blocks-y = ch / 8
-        blocks-per-row = n-blocks-x: { ok -> it
+        blocks-per-row = n-blocks-x: {
+            ok -> it
 
-    -> _ }
+            -> _
+        }
         by <- [0..n-blocks-y): {
             bx <- [0..n-blocks-x): {
 
@@ -1566,14 +1671,17 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 ]
                 zi <- [0..64): {
+                    d9v12 i64 = coef-all[ci * pplane-max + base2 + zi]: {
+                        ok -> it
 
-                    d9v12 i64 = coef-all[ci * pplane-max + base2 + zi]: { ok -> it
+                        -> 0
+                    }
 
-                        -> 0 }
+                    d9v13 byte = qt[zi]: {
+                        ok -> it
 
-                    d9v13 byte = qt[zi]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                     block[zi]: {
                         ok -> it = (d9v12 * (d9v13 & 255)).to-f64()
 
@@ -1593,11 +1701,12 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                 jpeg-idct-8x8(block, pixels)
                 py <- [0..8): {
                     px <- [0..8): {
+                        pxv2 f64 = pixels[py * 8 + px]: {
+                            ok -> it
 
-                        #{overflow=wrap}
-                        v f64 = (pixels[py * 8 + px]: { ok -> it
-
-    -> 0.0 }) + 128.0
+                            -> 0.0
+                        }
+                        v f64 = pxv2 + 128.0
                         v < 0.0 -> v = 0.0
                         v > 255.0 -> v = 255.0
 
@@ -1629,33 +1738,47 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                 #{overflow=wrap}
                 sx = i - sy * w
 
-                tmp.data[i] = (pcomp-data-all[sy * cw0 + sx]: { ok -> it
+                pcv = pcomp-data-all[sy * cw0 + sx]: {
+                    ok -> it
 
-                    -> 0 }) & 255
+                    -> 0
+                }
+                tmp.data[i] = pcv & 255
             }
         }
 
         -> {
-            h0 i64 = comp-h[0]: { ok -> it
+            h0 i64 = comp-h[0]: {
+                ok -> it
 
-    -> 0 }
-            v0 i64 = comp-v[0]: { ok -> it
+                -> 0
+            }
+            v0 i64 = comp-v[0]: {
+                ok -> it
 
-    -> 0 }
+                -> 0
+            }
             h1 = comp-h[1]
             v1 = comp-v[1]
             h2 = comp-h[2]
             v2 = comp-v[2]
 
+            chv4 = comp-h[1]: {
+                ok -> it
+
+                -> 0
+            }
+            chv5 = comp-h[2]: {
+                ok -> it
+
+                -> 0
+            }
+
             #{overflow=wrap}
-            cw1 = ppad-w * (comp-h[1]: { ok -> it
-
-    -> 0 }) / pmax-h
+            cw1 = ppad-w * chv4 / pmax-h
 
             #{overflow=wrap}
-            cw2 = ppad-w * (comp-h[2]: { ok -> it
-
-    -> 0 }) / pmax-h
+            cw2 = ppad-w * chv5 / pmax-h
             i <- [0..w * h): {
 
                 #{overflow=wrap}
@@ -1664,9 +1787,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                 #{overflow=wrap}
                 sx = i - sy * w
 
-                y-val = pcomp-data-all[sy * cw0 + sx]: { ok -> it
+                y-val = pcomp-data-all[sy * cw0 + sx]: {
+                    ok -> it
 
-                    -> 0 }
+                    -> 0
+                }
 
                 #{overflow=wrap}
                 cb-x = sx * h1 / pmax-h
@@ -1674,9 +1799,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                 #{overflow=wrap}
                 cb-y = sy * v1 / pmax-v
 
-                cb-val = pcomp-data-all[1 * pplane-max + cb-y * cw1 + cb-x]: { ok -> it
+                cb-val = pcomp-data-all[1 * pplane-max + cb-y * cw1 + cb-x]: {
+                    ok -> it
 
-                    -> 0 }
+                    -> 0
+                }
 
                 #{overflow=wrap}
                 cr-x = sx * h2 / pmax-h
@@ -1684,9 +1811,11 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
                 #{overflow=wrap}
                 cr-y = sy * v2 / pmax-v
 
-                cr-val = pcomp-data-all[2 * pplane-max + cr-y * cw2 + cr-x]: { ok -> it
+                cr-val = pcomp-data-all[2 * pplane-max + cr-y * cw2 + cr-x]: {
+                    ok -> it
 
-                    -> 0 }
+                    -> 0
+                }
                 yf f64 = 0.0 + y-val
                 cbf f64 = 0.0 + cb-val - 128
                 crf f64 = 0.0 + cr-val - 128
@@ -1732,10 +1861,11 @@ jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset 
     code = 0
     idx = 0
     l <- [0..16): {
+        cnt = lens[lens-offset + l]: {
+            ok -> it
 
-        cnt = lens[lens-offset + l]: { ok -> it
-
-            -> 0 }
+            -> 0
+        }
         {
             cnt == 0 -> {
 
@@ -1752,9 +1882,11 @@ jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset 
                 ; maxcode for this length
                 #{overflow=wrap}
                 maxcode[mc-off + l]: {
-                    ok -> it = (code + cnt - 1): { ok -> it
+                    ok -> it = (code + cnt - 1): {
+                        ok -> it
 
-    -> 0 }
+                        -> 0
+                    }
 
                     -> _
                 }
@@ -1768,14 +1900,18 @@ jpeg-build-huff-table = (lens []byte, lens-offset i64, vals []byte, vals-offset 
                 }
 
                 #{overflow=wrap}
-                code = code + cnt: { ok -> it
+                code = code + cnt: {
+                    ok -> it
 
-    -> _ }
+                    -> _
+                }
 
                 #{overflow=wrap}
-                idx = idx + cnt: { ok -> it
+                idx = idx + cnt: {
+                    ok -> it
 
-    -> _ }
+                    -> _
+                }
             }
         }
         code = code << 1
@@ -1796,9 +1932,7 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
         cnt < n -> {
             {
                 pos < data.len() -> {
-                    b = (data[pos]: { ok -> it
-
-    -> 0 }) & 255
+                    b = jpeg-byte(data, pos)
 
                     ; Skip 0xFF stuffing (FF 00 → FF)
                     {
@@ -1809,9 +1943,7 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                 pos + 1 < data.len() -> {
 
                                     #{overflow=wrap}
-                                    next = (data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255
+                                    next = jpeg-byte(data, pos + 1)
                                     {
                                         next == 0 -> {
 
@@ -1819,14 +1951,18 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                             buf = (buf << 8) | 255
 
                                             #{overflow=wrap}
-                                            cnt = cnt + 8: { ok -> it
+                                            cnt = cnt + 8: {
+                                                ok -> it
 
-    -> _ }
+                                                -> _
+                                            }
 
                                             #{overflow=wrap}
-                                            pos = pos + 2: { ok -> it
+                                            pos = pos + 2: {
+                                                ok -> it
 
-    -> _ }
+                                                -> _
+                                            }
                                         }
 
                                         -> {
@@ -1835,14 +1971,18 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                             buf = (buf << 8)
 
                                             #{overflow=wrap}
-                                            cnt = cnt + 8: { ok -> it
+                                            cnt = cnt + 8: {
+                                                ok -> it
 
-    -> _ }
+                                                -> _
+                                            }
 
                                             #{overflow=wrap}
-                                            pos = pos + 1: { ok -> it
+                                            pos = pos + 1: {
+                                                ok -> it
 
-    -> _ }
+                                                -> _
+                                            }
                                         }
                                     }
                                 }
@@ -1851,14 +1991,18 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                                     buf = (buf << 8)
 
                                     #{overflow=wrap}
-                                    cnt = cnt + 8: { ok -> it
+                                    cnt = cnt + 8: {
+                                        ok -> it
 
-    -> _ }
+                                        -> _
+                                    }
 
                                     #{overflow=wrap}
-                                    pos = pos + 1: { ok -> it
+                                    pos = pos + 1: {
+                                        ok -> it
 
-    -> _ }
+                                        -> _
+                                    }
                                 }
                             }
                         }
@@ -1867,14 +2011,18 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                             buf = (buf << 8) | b
 
                             #{overflow=wrap}
-                            cnt = cnt + 8: { ok -> it
+                            cnt = cnt + 8: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
 
                             #{overflow=wrap}
-                            pos = pos + 1: { ok -> it
+                            pos = pos + 1: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
                     }
                 }
@@ -1885,9 +2033,11 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
                     buf = (buf << 8)
 
                     #{overflow=wrap}
-                    cnt = cnt + 8: { ok -> it
+                    cnt = cnt + 8: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
             }
         }
@@ -1897,9 +2047,11 @@ jpeg-read-bits = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-p
     val = (buf >> (cnt - n)) & ((1 << n) - 1)
 
     #{overflow=wrap}
-    cnt = cnt - n: { ok -> it
+    cnt = cnt - n: {
+        ok -> it
 
-    -> _ }
+        -> _
+    }
     new-pos = pos
     new-buf = buf
     new-cnt = cnt
@@ -1915,9 +2067,7 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
     {
         cnt == 0 -> {
             pos < data.len() -> {
-                b i64 = (data[pos]: { ok -> it
-
-    -> 0 }) & 255
+                b i64 = jpeg-byte(data, pos)
                 {
                     b == 255 -> {
 
@@ -1926,18 +2076,18 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                             pos + 1 < data.len() -> {
 
                                 #{overflow=wrap}
-                                next = (data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255
+                                next = jpeg-byte(data, pos + 1)
                                 {
                                     next == 0 -> {
                                         buf = 255
                                         cnt = 8
 
                                         #{overflow=wrap}
-                                        pos = pos + 2: { ok -> it
+                                        pos = pos + 2: {
+                                            ok -> it
 
-    -> _ }
+                                            -> _
+                                        }
                                     }
 
                                     -> {
@@ -1945,9 +2095,11 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                                         cnt = 8
 
                                         #{overflow=wrap}
-                                        pos = pos + 1: { ok -> it
+                                        pos = pos + 1: {
+                                            ok -> it
 
-    -> _ }
+                                            -> _
+                                        }
                                     }
                                 }
                             }
@@ -1957,9 +2109,11 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                                 cnt = 8
 
                                 #{overflow=wrap}
-                                pos = pos + 1: { ok -> it
+                                pos = pos + 1: {
+                                    ok -> it
 
-    -> _ }
+                                    -> _
+                                }
                             }
                         }
                     }
@@ -1969,9 +2123,11 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
                         cnt = 8
 
                         #{overflow=wrap}
-                        pos = pos + 1: { ok -> it
+                        pos = pos + 1: {
+                            ok -> it
 
-    -> _ }
+                            -> _
+                        }
                     }
                 }
             }
@@ -1985,9 +2141,11 @@ jpeg-read-1-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i64
     val = (buf >> (cnt - 1)) & 1
 
     #{overflow=wrap}
-    cnt = cnt - 1: { ok -> it
+    cnt = cnt - 1: {
+        ok -> it
 
-    -> _ }
+        -> _
+    }
     new-pos = pos
     new-buf = buf
     new-cnt = cnt
@@ -2015,13 +2173,17 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
             code = (code << 1) | bit
 
             #{overflow=wrap}
-            l = l + 1: { ok -> it
+            l = l + 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
 
-            mc = maxcode[tid * 16 + l - 1]: { ok -> it
+            mc = maxcode[tid * 16 + l - 1]: {
+                ok -> it
 
-                -> 0 }
+                -> 0
+            }
             {
                 mc != -1 && code <= mc -> {
                     found = true
@@ -2032,10 +2194,11 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
 
     {
         found -> {
+            vp = valptr[tid * 16 + l - 1]: {
+                ok -> it
 
-            vp = valptr[tid * 16 + l - 1]: { ok -> it
-
-                -> 0 }
+                -> 0
+            }
 
             ; symbol = vals[vp + (code - first_code_of_length)]
             ; first_code_of_length = maxcode[tid*16+l-1] - counts_in_this_len + 1
@@ -2061,21 +2224,29 @@ jpeg-decode-huff = (data []byte, pos i64, buf i64, cnt i64, tid i64, lens []byte
             ; We have valptr[vp] pointing to start of this length's symbols.
             ; The number of symbols of this length = lens[tid*16+l-1]
             ; first_code = maxcode - lens[tid*16+l-1] + 1
-            cnt-len = lens[tid * 16 + l - 1]: { ok -> it
+            cnt-len = lens[tid * 16 + l - 1]: {
+                ok -> it
 
-                -> 0 }
+                -> 0
+            }
+
+            mc = maxcode[tid * 16 + l - 1]: {
+                ok -> it
+
+                -> 0
+            }
 
             #{overflow=wrap}
-            first-code = (maxcode[tid * 16 + l - 1]: { ok -> it
-
-    -> 0 }) - cnt-len + 1
+            first-code = mc - cnt-len + 1
 
             #{overflow=wrap}
             idx = code - first-code
 
-            sym = vals[tid * 256 + vp + idx]: { ok -> it
+            sym = vals[tid * 256 + vp + idx]: {
+                ok -> it
 
-                -> 0 }
+                -> 0
+            }
         }
 
         -> {
@@ -2192,10 +2363,12 @@ jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
                     cv = 1.0
                     v == 0 -> cv = inv-sqrt2
 
-                    #{overflow=wrap}
-                    sum = sum + cu * cv * (block[v * 8 + u]: { ok -> it
+                    bv = block[v * 8 + u]: {
+                        ok -> it
 
-    -> 0.0 }) * (pi / 16.0 * (2 * x + 1) * u).cos() * (pi / 16.0 * (2 * y + 1) * v).cos()
+                        -> 0.0
+                    }
+                    sum = sum + cu * cv * bv * (pi / 16.0 * (2 * x + 1) * u).cos() * (pi / 16.0 * (2 * y + 1) * v).cos()
                 }
             }
 
@@ -2214,11 +2387,9 @@ jpeg-idct-8x8 = (block [64]f64, out [64]f64) {
 ; pos i64: position
 ; returns val i64
 jpeg-read-u16 = (data []byte, pos i64) (val i64) {
-    val = (((data[pos]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255)
+    hi = jpeg-byte(data, pos) << 8
+    lo = jpeg-byte(data, pos + 1)
+    val = hi | lo
 }
 
 ; jpeg-zigzag: JPEG zigzag order lookup
@@ -2236,9 +2407,11 @@ jpeg-zigzag = (i i64) (zi i64) {
         53, 60, 61, 54, 47, 55, 62, 63,
     ]
 
-    zi = zigzag[i]: { ok -> it
+    zi = zigzag[i]: {
+        ok -> it
 
-        -> 0 }
+        -> 0
+    }
 }
 
 ; ── Save ──
@@ -2362,7 +2535,12 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
             }
         }
 
-        ; --- SOF0 (Start of Frame, baseline) ---
+        -> {
+        }
+    }
+
+    ; --- SOF0 (Start of Frame, baseline) ---
+    {
         is-gray -> {
             buf.push(255)
             buf.push(192)
@@ -2490,7 +2668,12 @@ jpeg-save-impl = (path str, img image, quality i64, subsampling i64) (ok bool) {
             jpeg-write-dht(buf, 1, 1, ac-chroma-len, ac-chroma-val, 162)
         }
 
-        ; --- SOS (Start of Scan) ---
+        -> {
+        }
+    }
+
+    ; --- SOS (Start of Scan) ---
+    {
         is-gray -> {
             buf.push(255)
             buf.push(218)
@@ -2558,9 +2741,12 @@ jpeg-build-qt = (base [64]i64, quality i64) (qt []byte) {
     }
     q < 0.01 -> q = 0.01
     i <- [0..64): {
-        v f64 = (base[i]: { ok -> it
+        bv3 = base[i]: {
+            ok -> it
 
-    -> 0 }).to-f64()
+            -> 0
+        }
+        v f64 = bv3.to-f64()
         v = v * q
         v < 1.0 -> v = 1.0
         v > 255.0 -> v = 255.0
@@ -2583,21 +2769,54 @@ jpeg-build-qt = (base [64]i64, quality i64) (qt []byte) {
 jpeg-write-dht = (buf []byte, table-class i64, table-id i64, lens [16]i64, vals []i64, n-vals i64) {
 
     #{overflow=wrap}
-    seg-len = 2 + 1 + 16 + n-vals
+    seg-len-opt = 2 + 1 + 16 + n-vals
+    seg-len = seg-len-opt: {
+        ok -> it
+
+        -> 0
+    }
+    sh = (seg-len >> 8) & 255
+    sl = seg-len & 255
+
+    #{overflow=wrap}
+    tco = (table-class << 4) + table-id
+    tc = tco: {
+        ok -> it
+
+        -> 0
+    }
     buf.push(255)
     buf.push(196)
-    buf.push((seg-len >> 8) & 255)
-    buf.push(seg-len & 255)
-    buf.push((table-class << 4) | table-id)
+    buf.push(sh)
+    buf.push(sl)
+    buf.push(tc)
     i <- [0..16): {
-        buf.push((lens[i]: { ok -> it
+        lv i64 = lens[i]: {
+            ok -> it
 
-    -> 0 }) & 255)
+            -> 0
+        }
+        lb-opt = lv & 255
+        lb i64 = lb-opt: {
+            ok -> it
+
+            -> 0
+        }
+        buf.push(lb)
     }
     i <- [0..n-vals): {
-        buf.push((vals[i]: { ok -> it
+        vv i64 = vals[i]: {
+            ok -> it
 
-    -> 0 }) & 255)
+            -> 0
+        }
+        vb-opt = vv & 255
+        vb i64 = vb-opt: {
+            ok -> it
+
+            -> 0
+        }
+        buf.push(vb)
     }
 }
 
@@ -2611,21 +2830,25 @@ jpeg-bit-write = (buf []byte, acc i64, cnt i64, bits i64, n i64) {
     acc = (acc << n) | (bits & ((1 << n) - 1))
 
     #{overflow=wrap}
-    cnt = cnt + n: { ok -> it
+    cnt = cnt + n: {
+        ok -> it
 
-    -> _ }
+        -> _
+    }
     {
         cnt >= 8 -> {
             byte = (acc >> (cnt - 8)) & 255
             buf.push(byte)
 
             #{overflow=wrap}
-            cnt = cnt - 8: { ok -> it
+            cnt = cnt - 8: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
             {
                 byte == 255 -> {
-                    buf.push(0)
+                    buf.push(vb)
                 }
             }
         }
@@ -2803,17 +3026,21 @@ jpeg-read-block = (img image, ox i64, oy i64, band i64, w i64, h i64, mode i64) 
                 sx >= w -> {
 
                     #{overflow=wrap}
-                    sx = w - 1: { ok -> it
+                    sx = w - 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
 
                 sy >= h -> {
 
                     #{overflow=wrap}
-                    sy = h - 1: { ok -> it
+                    sy = h - 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
 
                 sx < 0 -> sx = 0
@@ -2828,9 +3055,11 @@ jpeg-read-block = (img image, ox i64, oy i64, band i64, w i64, h i64, mode i64) 
 
                     #{overflow=wrap}
                     block[y * 8 + x]: {
-                        ok -> it = (v - 128.0): { ok -> it
+                        ok -> it = (v - 128.0): {
+                            ok -> it
 
-    -> 0.0 }
+                            -> 0.0
+                        }
 
                         -> _
                     }
@@ -2896,14 +3125,18 @@ jpeg-read-block-420 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
                     sy = oy + y * 2 + dy
 
                     #{overflow=wrap}
-                    sx >= w -> sx = w - 1: { ok -> it
+                    sx >= w -> sx = w - 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
 
                     #{overflow=wrap}
-                    sy >= h -> sy = h - 1: { ok -> it
+                    sy >= h -> sy = h - 1: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                     sx < 0 -> sx = 0
                     sy < 0 -> sy = 0
 
@@ -2971,14 +3204,18 @@ jpeg-read-block-444 = (img image, ox i64, oy i64, w i64, h i64, cbcr i64) (block
             sy = oy + y
 
             #{overflow=wrap}
-            sx >= w -> sx = w - 1: { ok -> it
+            sx >= w -> sx = w - 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
 
             #{overflow=wrap}
-            sy >= h -> sy = h - 1: { ok -> it
+            sy >= h -> sy = h - 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
             sx < 0 -> sx = 0
             sy < 0 -> sy = 0
 
@@ -3044,11 +3281,12 @@ jpeg-dct-8x8 = (block [64]f64) (out [64]f64) {
             sum = 0.0
             x <- [0..8): {
                 y <- [0..8): {
+                    bv2 = block[y * 8 + x]: {
+                        ok -> it
 
-                    #{overflow=wrap}
-                    sum = sum + (block[y * 8 + x]: { ok -> it
-
-    -> 0.0 }) * (3.14159265 / 16.0 * (2 * x + 1) * u).cos() * (3.14159265 / 16.0 * (2 * y + 1) * v).cos()
+                        -> 0.0
+                    }
+                    sum = sum + bv2 * (3.14159265 / 16.0 * (2 * x + 1) * u).cos() * (3.14159265 / 16.0 * (2 * y + 1) * v).cos()
                 }
             }
 
@@ -3078,14 +3316,18 @@ jpeg-quantize = (dct [64]f64, qt []byte) (q [64]f64) {
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     ]
     i <- [0..64): {
+        qv = qt[i]: {
+            ok -> it
 
-        qv = qt[i]: { ok -> it
-
-            -> 0 }
+            -> 0
+        }
         qv == 0 -> qv = 1
-        val f64 = (dct[i]: { ok -> it
+        dv = dct[i]: {
+            ok -> it
 
-    -> 0.0 }) / i64.to-f64(byte.to-i64(qv))
+            -> 0.0
+        }
+        val f64 = dv / i64.to-f64(byte.to-i64(qv))
 
         ; Round to nearest integer
         {
@@ -3132,9 +3374,11 @@ jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, 
     i <- [0..64): {
         zi = jpeg-zigzag(i)
 
-        d9v14 f64 = q[zi]: { ok -> it
+        d9v14 f64 = q[zi]: {
+            ok -> it
 
-            -> 0.0 }
+            -> 0.0
+        }
         zigzag-vals[i]: {
             ok -> it = d9v14
 
@@ -3143,16 +3387,15 @@ jpeg-encode-block = (buf []byte, q [64]f64, prev-dc i64, table-id i64, acc i64, 
     }
 
     ; DC coefficient (differential)
-    dc-val i64 = (((zigzag-vals[0]: { ok -> it
+    z0 = zigzag-vals[0]: {
+        ok -> it
 
-        -> 0.0 }) + 0.5).floor()).to-i64()
+        -> 0.0
+    }
+    dc-val i64 = ((z0 + 0.5).floor()).to-i64()
     {
-        (zigzag-vals[0]: { ok -> it
-
-            -> 0.0 }) < 0 -> {
-            dc-val = -((-(zigzag-vals[0]: { ok -> it
-
-                -> 0.0 }) + 0.5).floor()).to-i64()
+        z0 < 0 -> {
+            dc-val = -((-z0 + 0.5).floor()).to-i64()
         }
     }
 
@@ -3249,9 +3492,11 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
     ; Run-length encoding
     zrun = 0
     k <- [1..64): {
-        val-f f64 = zz[k]: { ok -> it
+        val-f f64 = zz[k]: {
+            ok -> it
 
-    -> 0.0 }
+            -> 0.0
+        }
         val i64 = ((val-f + 0.5).floor()).to-i64()
         {
             val-f < 0 -> {
@@ -3262,9 +3507,11 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
             val == 0 -> {
 
                 #{overflow=wrap}
-                zrun = zrun + 1: { ok -> it
+                zrun = zrun + 1: {
+                    ok -> it
 
-    -> _ }
+                    -> _
+                }
             }
 
             -> {
@@ -3277,9 +3524,11 @@ jpeg-encode-ac = (buf []byte, zz [64]f64, table-id i64, acc i64, cnt i64) {
                     jpeg-bit-write(buf, acc, cnt, code, code-len)
 
                     #{overflow=wrap}
-                    zrun = zrun - 16: { ok -> it
+                    zrun = zrun - 16: {
+                        ok -> it
 
-    -> _ }
+                        -> _
+                    }
                 }
 
                 ; Determine magnitude
@@ -3371,34 +3620,38 @@ jpeg-huffman-lookup-dc = (mag i64, table-id i64) (code i64, code-len i64) {
         cnt = 0
         {
             table-id == 0 -> {
+                cnt = luma-len[l - 1]: {
+                    ok -> it
 
-                cnt = luma-len[l - 1]: { ok -> it
-
-                    -> 0 }
+                    -> 0
+                }
             }
 
             -> {
+                cnt = chroma-len[l - 1]: {
+                    ok -> it
 
-                cnt = chroma-len[l - 1]: { ok -> it
-
-                    -> 0 }
+                    -> 0
+                }
             }
         }
         c <- [0..cnt): {
             v = 0
             {
                 table-id == 0 -> {
+                    v = luma-val[idx]: {
+                        ok -> it
 
-                    v = luma-val[idx]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                 }
 
                 -> {
+                    v = chroma-val[idx]: {
+                        ok -> it
 
-                    v = chroma-val[idx]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                 }
             }
             v == mag -> {
@@ -3408,14 +3661,18 @@ jpeg-huffman-lookup-dc = (mag i64, table-id i64) (code i64, code-len i64) {
             }
 
             #{overflow=wrap}
-            huff-code = huff-code + 1: { ok -> it
+            huff-code = huff-code + 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
 
             #{overflow=wrap}
-            idx = idx + 1: { ok -> it
+            idx = idx + 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
         }
         huff-code = huff-code << 1
     }
@@ -3495,34 +3752,38 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
         cnt = 0
         {
             table-id == 0 -> {
+                cnt = luma-len[l - 1]: {
+                    ok -> it
 
-                cnt = luma-len[l - 1]: { ok -> it
-
-                    -> 0 }
+                    -> 0
+                }
             }
 
             -> {
+                cnt = chroma-len[l - 1]: {
+                    ok -> it
 
-                cnt = chroma-len[l - 1]: { ok -> it
-
-                    -> 0 }
+                    -> 0
+                }
             }
         }
         c <- [0..cnt): {
             v = 0
             {
                 table-id == 0 -> {
+                    v = luma-val[idx]: {
+                        ok -> it
 
-                    v = luma-val[idx]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                 }
 
                 -> {
+                    v = chroma-val[idx]: {
+                        ok -> it
 
-                    v = chroma-val[idx]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                 }
             }
             v == sym -> {
@@ -3531,14 +3792,18 @@ jpeg-huffman-lookup-ac = (sym i64, table-id i64) (code i64, code-len i64) {
             }
 
             #{overflow=wrap}
-            huff-code = huff-code + 1: { ok -> it
+            huff-code = huff-code + 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
 
             #{overflow=wrap}
-            idx = idx + 1: { ok -> it
+            idx = idx + 1: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
         }
         huff-code = huff-code << 1
     }

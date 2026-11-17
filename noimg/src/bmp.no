@@ -28,37 +28,86 @@
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
 
+; 0.4.24 下索引读取返回 ?byte，value-match 只能作赋值右值顶层：
+; 把「读取 + mask」收成具体 i64。
+bmp-byte = (d []byte, i i64) (v i64) {
+    b = d[i]: {
+        ok -> it
+
+        -> 0
+    }
+    v = b & 255
+}
+
 ; ---- little-endian readers ----
 bmp-u32 = (d []byte, o i64) (v i64) {
+
     #{overflow=wrap}
-    o1 = o + 1: { ok -> it
+    o1-opt = o + 1
+    o1 = o1-opt: {
+        ok -> it
 
-        -> 0 }
+        -> 0
+    }
+
     #{overflow=wrap}
-    o2 = o + 2: { ok -> it
+    o2-opt = o + 2
+    o2 = o2-opt: {
+        ok -> it
 
-        -> 0 }
+        -> 0
+    }
+
     #{overflow=wrap}
-    o3 = o + 3: { ok -> it
+    o3-opt = o + 3
+    o3 = o3-opt: {
+        ok -> it
 
-        -> 0 }
-    v = (d[o]: { ok -> it
+        -> 0
+    }
+    b0 = d[o]: {
+        ok -> it
 
-        -> 0 } & 255) | ((d[o1]: { ok -> it
+        -> 0
+    }
+    b1 = d[o1]: {
+        ok -> it
 
-        -> 0 } & 255) << 8) | ((d[o2]: { ok -> it
+        -> 0
+    }
+    b2 = d[o2]: {
+        ok -> it
 
-        -> 0 } & 255) << 16) | ((d[o3]: { ok -> it
+        -> 0
+    }
+    b3 = d[o3]: {
+        ok -> it
 
-        -> 0 } & 255) << 24)
+        -> 0
+    }
+    v = (b0 & 255) | ((b1 & 255) << 8) | ((b2 & 255) << 16) | ((b3 & 255) << 24)
 }
 
 bmp-u16 = (d []byte, o i64) (v i64) {
-    v = (d[o]: { ok -> it
 
-        -> 0 } & 255) | ((d[o + 1]: { ok -> it
+    #{overflow=wrap}
+    on-opt = o + 1
+    on = on-opt: {
+        ok -> it
 
-        -> 0 } & 255) << 8)
+        -> 0
+    }
+    b0 = d[o]: {
+        ok -> it
+
+        -> 0
+    }
+    b1 = d[on]: {
+        ok -> it
+
+        -> 0
+    }
+    v = (b0 & 255) | ((b1 & 255) << 8)
 }
 
 ; extract an 8-bit channel value from a packed pixel `px` given a mask
@@ -74,9 +123,11 @@ bmp-extract = (px i64, mask i64) (out i64) {
     i <- [shift..32): {
         {
             ((mask >> i) & 1) == 1 -> {
-                bits = bits + 1: { ok -> it
+                bits = bits + 1: {
+                    ok -> it
 
-            -> 0 }
+                    -> 0
+                }
             }
 
             -> break
@@ -94,9 +145,11 @@ bmp-extract = (px i64, mask i64) (out i64) {
             max = (1 << bits) - 1
 
             #{overflow=wrap}
-            out = val * 255 / max: { ok -> it
+            out = val * 255 / max: {
+                ok -> it
 
-            -> 0 }
+                -> 0
+            }
         }
     }
 }
@@ -109,17 +162,13 @@ bmp-extract = (px i64, mask i64) (out i64) {
 bmp-pal-idx = (d []byte, row-start i64, x i64, bpp i64) (idx i64) {
     {
         bpp == 8 -> {
-            idx = d[row-start + x]: { ok -> it
-
-            -> 0 } & 255
+            idx = bmp-byte(d, row-start + x)
         }
 
         -> {
             {
                 bpp == 4 -> {
-                    byte = d[row-start + (x >> 1)]: { ok -> it
-
-            -> 0 } & 255
+                    byte = bmp-byte(d, row-start + (x >> 1))
                     {
                         (x & 1) == 0 -> {
                             idx = (byte >> 4) & 15
@@ -132,9 +181,7 @@ bmp-pal-idx = (d []byte, row-start i64, x i64, bpp i64) (idx i64) {
                 }
 
                 -> {
-                    byte = d[row-start + (x >> 3)]: { ok -> it
-
-            -> 0 } & 255
+                    byte = bmp-byte(d, row-start + (x >> 3))
                     bit = 7 - (x & 7)
                     idx = (byte >> bit) & 1
                 }
@@ -145,12 +192,16 @@ bmp-pal-idx = (d []byte, row-start i64, x i64, bpp i64) (idx i64) {
 
 load = (path str) (img ?image) {
     data = fs.read-file(path)
-    m0 byte = data[0]: { ok -> it
+    m0 byte = data[0]: {
+        ok -> it
 
-        -> 0 }
-    m1 byte = data[1]: { ok -> it
+        -> 0
+    }
+    m1 byte = data[1]: {
+        ok -> it
 
-        -> 0 }
+        -> 0
+    }
     {
         data.len() < 54 -> {
             img = nil
@@ -181,9 +232,11 @@ load = (path str) (img ?image) {
     h > 2147483647 -> {
 
         #{overflow=wrap}
-        h = 4294967296 - h: { ok -> it
+        h = 4294967296 - h: {
+            ok -> it
 
-        -> 0 }
+            -> 0
+        }
         top-down = true
     }
 
@@ -277,9 +330,11 @@ load = (path str) (img ?image) {
         }
     }
     data-offset < min-off -> {
-        pix-off = min-off: { ok -> it
+        pix-off = min-off: {
+            ok -> it
 
-        -> 0 }
+            -> 0
+        }
     }
 
     bands = 3
@@ -309,25 +364,25 @@ load = (path str) (img ?image) {
             i <- [0..rle-cap): {
                 {
                     cy < h && pos + 1 < data.len() -> {
-                        b0 = data[pos]: { ok -> it
-
-                        -> 0 } & 255
-                        b1 = data[pos + 1]: { ok -> it
-
-                        -> 0 } & 255
+                        b0 = bmp-byte(data, pos)
+                        b1 = bmp-byte(data, pos + 1)
 
                         #{overflow=wrap}
-                        pos = pos + 2: { ok -> it
+                        pos = pos + 2: {
+                            ok -> it
 
-                        -> 0 }
+                            -> 0
+                        }
                         {
                             b0 == 0 -> {
                                 b1 == 0 -> {
 
                                     ; end of line: move to start of next row
-                                    cy = cy + 1: { ok -> it
+                                    cy = cy + 1: {
+                                        ok -> it
 
-                                    -> 0 }
+                                        -> 0
+                                    }
                                     cx = 0
                                 }
 
@@ -340,27 +395,29 @@ load = (path str) (img ?image) {
                                 b1 == 2 -> {
 
                                     ; delta (skip pixels)
-                                    dx = data[pos]: { ok -> it
-
-                        -> 0 } & 255
-                                    dy = data[pos + 1]: { ok -> it
-
-                        -> 0 } & 255
+                                    dx = bmp-byte(data, pos)
+                                    dy = bmp-byte(data, pos + 1)
 
                                     #{overflow=wrap}
-                                    pos = pos + 2: { ok -> it
+                                    pos = pos + 2: {
+                                        ok -> it
 
-                        -> 0 }
-
-                                    #{overflow=wrap}
-                                    cx = cx + dx: { ok -> it
-
-                                    -> 0 }
+                                        -> 0
+                                    }
 
                                     #{overflow=wrap}
-                                    cy = cy + dy: { ok -> it
+                                    cx = cx + dx: {
+                                        ok -> it
 
-                                    -> 0 }
+                                        -> 0
+                                    }
+
+                                    #{overflow=wrap}
+                                    cy = cy + dy: {
+                                        ok -> it
+
+                                        -> 0
+                                    }
                                 }
 
                                 b1 >= 3 -> {
@@ -373,7 +430,6 @@ load = (path str) (img ?image) {
                                             ; RLE8: one palette index per byte
                                             p <- [0..b1): {
                                                 cx < w && cy < h -> {
-
                                                     d9v1 byte = data[pos + p]: {
                                                         ok -> it
 
@@ -387,19 +443,25 @@ load = (path str) (img ?image) {
                                                 }
 
                                                 #{overflow=wrap}
-                                                cx = cx + 1: { ok -> it
+                                                cx = cx + 1: {
+                                                    ok -> it
 
-                                                -> 0 }
+                                                    -> 0
+                                                }
                                             }
 
                                             #{overflow=wrap}
-                                            pos = pos + b1: { ok -> it
+                                            pos = pos + b1: {
+                                                ok -> it
 
-                                            -> 0 }
+                                                -> 0
+                                            }
                                             (b1 & 1) == 1 -> {
-                                                pos = pos + 1: { ok -> it
+                                                pos = pos + 1: {
+                                                    ok -> it
 
-                                            -> 0 }
+                                                    -> 0
+                                                }
                                             }
                                         }
 
@@ -407,9 +469,7 @@ load = (path str) (img ?image) {
 
                                             ; RLE4: two nibbles per byte (b1 = pixel count)
                                             p <- [0..b1): {
-                                                byte = data[pos + (p >> 1)]: { ok -> it
-
-                        -> 0 } & 255
+                                                byte = bmp-byte(data, pos + (p >> 1))
                                                 {
                                                     (p & 1) == 0 -> {
 
@@ -437,9 +497,11 @@ load = (path str) (img ?image) {
                                                 }
 
                                                 #{overflow=wrap}
-                                                cx = cx + 1: { ok -> it
+                                                cx = cx + 1: {
+                                                    ok -> it
 
-                                                -> 0 }
+                                                    -> 0
+                                                }
                                             }
 
                                             ; bytes consumed = ceil(b1 / 2)
@@ -480,9 +542,11 @@ load = (path str) (img ?image) {
                                         }
 
                                         #{overflow=wrap}
-                                        cx = cx + 1: { ok -> it
+                                        cx = cx + 1: {
+                                            ok -> it
 
-                                                -> 0 }
+                                            -> 0
+                                        }
                                     }
                                 }
 
@@ -499,9 +563,11 @@ load = (path str) (img ?image) {
                                         }
 
                                         #{overflow=wrap}
-                                        cx = cx + 1: { ok -> it
+                                        cx = cx + 1: {
+                                            ok -> it
 
-                                                -> 0 }
+                                            -> 0
+                                        }
                                     }
                                 }
                             }
@@ -523,21 +589,18 @@ load = (path str) (img ?image) {
                 x <- [0..w): {
 
                     #{overflow=wrap}
-                    idx = rle-idx[src-y * w + x]: { ok -> it
+                    ridx = rle-idx[src-y * w + x]: {
+                        ok -> it
 
-                    -> 0 } & 255
+                        -> 0
+                    }
+                    idx = ridx & 255
 
                     #{overflow=wrap}
                     po = pal-off + idx * 4
-                    r = data[po + 2]: { ok -> it
-
-                    -> 0 } & 255
-                    g = data[po + 1]: { ok -> it
-
-                    -> 0 } & 255
-                    b = data[po]: { ok -> it
-
-                    -> 0 } & 255
+                    r = bmp-byte(data, po + 2)
+                    g = bmp-byte(data, po + 1)
+                    b = bmp-byte(data, po)
 
                     #{overflow=wrap}
                     dst = (y * w + x) * bands
@@ -573,30 +636,16 @@ load = (path str) (img ?image) {
                     b = 0
                     a = 255
                     bpp == 24 -> {
-                        b = data[p]: { ok -> it
-
-                        -> 0 } & 255
-                        g = data[p + 1]: { ok -> it
-
-                        -> 0 } & 255
-                        r = data[p + 2]: { ok -> it
-
-                        -> 0 } & 255
+                        b = bmp-byte(data, p)
+                        g = bmp-byte(data, p + 1)
+                        r = bmp-byte(data, p + 2)
                     }
 
                     bpp == 32 && compression == 0 -> {
-                        b = data[p]: { ok -> it
-
-                        -> 0 } & 255
-                        g = data[p + 1]: { ok -> it
-
-                        -> 0 } & 255
-                        r = data[p + 2]: { ok -> it
-
-                        -> 0 } & 255
-                        a = data[p + 3]: { ok -> it
-
-                        -> 0 } & 255
+                        b = bmp-byte(data, p)
+                        g = bmp-byte(data, p + 1)
+                        r = bmp-byte(data, p + 2)
+                        a = bmp-byte(data, p + 3)
                     }
 
                     bpp == 32 && compression == 3 -> {
@@ -621,15 +670,9 @@ load = (path str) (img ?image) {
 
                         #{overflow=wrap}
                         po = pal-off + idx * 4
-                        b = data[po]: { ok -> it
-
-                    -> 0 } & 255
-                        g = data[po + 1]: { ok -> it
-
-                    -> 0 } & 255
-                        r = data[po + 2]: { ok -> it
-
-                    -> 0 } & 255
+                        b = bmp-byte(data, po)
+                        g = bmp-byte(data, po + 1)
+                        r = bmp-byte(data, po + 2)
                     }
 
                     #{overflow=wrap}
@@ -682,10 +725,10 @@ save = (path str, img image) (ok bool) {
     #{overflow=wrap}
     image-size-opt = row-padded * h
     image-size = 0
-    image-size-opt: {
-        ok -> image-size = it
+    image-size = image-size-opt: {
+        ok -> it
 
-        -> image-size = 0
+        -> 0
     }
 
     file-size = 0
@@ -796,13 +839,25 @@ save = (path str, img image) (ok bool) {
 
             #{overflow=wrap}
             src-idx = (src-y * w + x) * img.bands
-            r = img.data[src-idx]
+            r = img.data[src-idx]: {
+                ok -> it
+
+                -> 0
+            }
 
             #{overflow=wrap}
-            g = img.data[src-idx + 1]
+            g = img.data[src-idx + 1]: {
+                ok -> it
+
+                -> 0
+            }
 
             #{overflow=wrap}
-            b = img.data[src-idx + 2]
+            b = img.data[src-idx + 2]: {
+                ok -> it
+
+                -> 0
+            }
             buf.push(b)
             buf.push(g)
             buf.push(r)
@@ -811,7 +866,12 @@ save = (path str, img image) (ok bool) {
                     img.bands >= 4 -> {
 
                         #{overflow=wrap}
-                        buf.push(img.data[src-idx + 3])
+                        px-a = img.data[src-idx + 3]: {
+                            ok -> it
+
+                            -> 0
+                        }
+                        buf.push(px-a)
                     }
 
                     -> {

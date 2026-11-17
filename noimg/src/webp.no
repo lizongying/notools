@@ -7,11 +7,13 @@
 ;
 ; NOTE: VP8 (lossy) decoding is NOT supported — load() returns nil for lossy WebP.
 
+# /noimg/src/image
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
 # /noimg/src/image.copy
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
+# /noimg/src/vp8
 # /noimg/src/vp8.vp8-decode-frame
 
 ; ── VP8L Bit Reader ──
@@ -25,7 +27,8 @@ webp-ashr = (a i64, k i64) (r i64) {
         a >= 0 -> {
 
             #{overflow=wrap}
-            r = a / d: {
+            r-o = a / d
+            r i64 = r-o: {
                 ok -> it
 
                 -> 0
@@ -46,7 +49,8 @@ webp-s8 = (v i64) (s i64) {
         s > 127 -> {
 
             #{overflow=wrap}
-            s = s - 256: {
+            s-o = s - 256
+            s i64 = s-o: {
                 ok -> it
 
                 -> 0
@@ -57,14 +61,18 @@ webp-s8 = (v i64) (s i64) {
 
 ; webp-avg2: (a + b) / 2 with option-arithmetic unwrapped
 webp-avg2 = (a i64, b i64) (r i64) {
+
     #{overflow=wrap}
-    s = a + b: {
+    s-o = a + b
+    s = s-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    h = s / 2: {
+    h-o = s / 2
+    h = h-o: {
         ok -> it
 
         -> 0
@@ -74,20 +82,26 @@ webp-avg2 = (a i64, b i64) (r i64) {
 
 ; webp-addsub2: avg + (avg - b) / 2 (ClampAddSubtractHalf core, unclamped)
 webp-addsub2 = (avg i64, b i64) (r i64) {
+
     #{overflow=wrap}
-    d = avg - b: {
+    d-o = avg - b
+    d = d-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    h = d / 2: {
+    h-o = d / 2
+    h = h-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    s = avg + h: {
+    s-o = avg + h
+    s = s-o: {
         ok -> it
 
         -> 0
@@ -97,14 +111,18 @@ webp-addsub2 = (avg i64, b i64) (r i64) {
 
 ; webp-addsub-full: l + t - tl (ClampAddSubtractFull core, unclamped)
 webp-addsub-full = (l i64, t i64, tl i64) (r i64) {
+
     #{overflow=wrap}
-    s = l + t: {
+    s-o = l + t
+    s = s-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    d = s - tl: {
+    d-o = s - tl
+    d = d-o: {
         ok -> it
 
         -> 0
@@ -113,37 +131,52 @@ webp-addsub-full = (l i64, t i64, tl i64) (r i64) {
 }
 
 ; webp-byte-at: data[idx] & 255 as a plain i64 (index must be concrete i64)
+; webp-u8-add-mod: (a + b) & 255, isolated in a function to work around a
+; Nolang codegen bug where inline option-unwrapped additions in deeply nested
+; loop bodies (option-match array reads feeding the operands) yield 0.
+webp-u8-add-mod = (a i64, b i64) (r i64) {
+
+    #{overflow=wrap}
+    sum = a + b
+    sum2 = sum: {
+        ok -> it
+
+        -> 0
+    }
+    r = sum2 & 255
+}
+
 webp-byte-at = (data []byte, idx i64) (b i64) {
     dv = data[idx]: {
         ok -> it
 
         -> 0
     }
-    #{overflow=wrap}
-    mv = dv & 255: {
-        ok -> it
-
-        -> 0
-    }
-    b = mv
+    b = dv & 255
 }
 
 ; webp-ceil-div: ceil(v / d) with option-arithmetic unwrapped
 webp-ceil-div = (v i64, d i64) (r i64) {
+
     #{overflow=wrap}
-    dm1 = d - 1: {
+    dm1-o = d - 1
+    dm1 = dm1-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    num = v + dm1: {
+    num-o = v + dm1
+    num = num-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    q = num / d: {
+    q-o = num / d
+    q = q-o: {
         ok -> it
 
         -> 0
@@ -163,21 +196,12 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
 
                         -> 0
                     }
-                    #{overflow=wrap}
-                    bm = db & 255: {
-                        ok -> it
+                    b = db & 255
+                    sh = b << cnt
 
-                        -> 0
-                    }
-                    b = bm
                     #{overflow=wrap}
-                    sh = b << cnt: {
-                        ok -> it
-
-                        -> 0
-                    }
-                    #{overflow=wrap}
-                    bv = buf | sh: {
+                    bv-o = buf + sh
+                    bv i64 = bv-o: {
                         ok -> it
 
                         -> 0
@@ -185,7 +209,8 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
                     buf = bv
 
                     #{overflow=wrap}
-                    c8 = cnt + 8: {
+                    c8-o = cnt + 8
+                    c8 i64 = c8-o: {
                         ok -> it
 
                         -> 0
@@ -193,7 +218,8 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
                     cnt = c8
 
                     #{overflow=wrap}
-                    p1 = pos + 1: {
+                    p1-o = pos + 1
+                    p1 i64 = p1-o: {
                         ok -> it
 
                         -> 0
@@ -204,7 +230,8 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
                 -> {
 
                     #{overflow=wrap}
-                    c8b = cnt + 8: {
+                    c8b-o = cnt + 8
+                    c8b i64 = c8b-o: {
                         ok -> it
 
                         -> 0
@@ -214,28 +241,21 @@ webp-br-read = (data []byte, pos i64, buf i64, cnt i64, n i64) (val i64, new-pos
             }
         }
     }
+    one-shifted = 1 << n
+
     #{overflow=wrap}
-    msk = (1 << n) - 1: {
+    msk-opt = one-shifted - 1
+    msk = msk-opt: {
         ok -> it
 
         -> 0
     }
-    #{overflow=wrap}
-    val = buf & msk: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    bsr = buf >> n: {
-        ok -> it
-
-        -> 0
-    }
-    buf = bsr
+    val = buf & msk
+    buf = buf >> n
 
     #{overflow=wrap}
-    cn = cnt - n: {
+    cn-o = cnt - n
+    cn = cn-o: {
         ok -> it
 
         -> 0
@@ -257,17 +277,12 @@ webp-br-read-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i6
 
                     -> 0
                 }
-                #{overflow=wrap}
-                bv2 = db2 & 255: {
-                    ok -> it
-
-                    -> 0
-                }
-                buf = bv2
+                buf = db2 & 255
                 cnt = 8
 
                 #{overflow=wrap}
-                p1b = pos + 1: {
+                p1b-o = pos + 1
+                p1b i64 = p1b-o: {
                     ok -> it
 
                     -> 0
@@ -281,22 +296,12 @@ webp-br-read-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i6
             }
         }
     }
-    #{overflow=wrap}
-    val = buf & 1: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    bsr2 = buf >> 1: {
-        ok -> it
-
-        -> 0
-    }
-    buf = bsr2
+    val = buf & 1
+    buf = buf >> 1
 
     #{overflow=wrap}
-    cn2 = cnt - 1: {
+    cn2-o = cnt - 1
+    cn2 = cn2-o: {
         ok -> it
 
         -> 0
@@ -317,7 +322,6 @@ webp-br-read-bit = (data []byte, pos i64, buf i64, cnt i64) (val i64, new-pos i6
 ; out-count []byte: count per length 1..15
 webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-first []byte, out-count []byte) {
     i <- [0..n-symbols): {
-
         cl = code-lens[i]: {
             ok -> it
 
@@ -325,7 +329,6 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         }
         {
             cl > 0 -> {
-
                 d9v1 = out-count[cl]: {
                     ok -> it
 
@@ -333,7 +336,8 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
                 }
 
                 #{overflow=wrap}
-                inc1 = d9v1 + 1: {
+                inc1-o = d9v1 + 1
+                inc1 i64 = inc1-o: {
                     ok -> it
 
                     -> 0
@@ -358,17 +362,19 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
 
             -> 0
         }
+
         #{overflow=wrap}
-        fcs = (fc + oc-l) << 1: {
+        fcs0-o = fc + oc-l
+        fcs0 i64 = fcs0-o: {
             ok -> it
 
             -> 0
         }
+        fcs = fcs0 << 1
         fc = fcs
     }
     next-code []byte = with-len(16)
     ln-l <- [1..16): {
-
         d9v2 = out-first[ln-l]: {
             ok -> it
 
@@ -381,7 +387,6 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         }
     }
     si <- [0..n-symbols): {
-
         cl = code-lens[si]: {
             ok -> it
 
@@ -389,7 +394,6 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
         }
         {
             cl > 0 -> {
-
                 d9v3 = next-code[cl]: {
                     ok -> it
 
@@ -409,7 +413,8 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
                 }
 
                 #{overflow=wrap}
-                inc4 = d9v4 + 1: {
+                inc4-o = d9v4 + 1
+                inc4 i64 = inc4-o: {
                     ok -> it
 
                     -> 0
@@ -424,6 +429,33 @@ webp-build-huff-codes = (code-lens []byte, n-symbols i64, out-codes []byte, out-
     }
 }
 
+; webp-huff-single-sym: report the single symbol and whether a table has at
+; most one nonzero code length.
+webp-huff-single-sym = (lens []byte, n i64) (sym i64, single bool) {
+    cnt = 0
+    sym = 0
+    i <- [0..n): {
+        v = lens[i]: {
+            ok -> it
+
+            -> 0
+        }
+        v > 0 -> {
+
+            #{overflow=wrap}
+            c-o = cnt + 1
+            c i64 = c-o: {
+                ok -> it
+
+                -> 0
+            }
+            cnt = c
+            sym = i
+        }
+    }
+    single = cnt <= 1
+}
+
 ; webp-huff-decode: decode one Huffman symbol
 ; returns sym i64, new-pos i64, new-buf i64, new-cnt i64
 webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte, count []byte, data []byte, pos i64, buf i64, cnt i64) (sym i64, new-pos i64, new-buf i64, new-cnt i64) {
@@ -433,7 +465,6 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
     nonzero = 0
     only-sym = 0
     sc <- [0..n-symbols): {
-
         cls = code-lens[sc]: {
             ok -> it
 
@@ -443,7 +474,8 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
             cls > 0 -> {
 
                 #{overflow=wrap}
-                nz = nonzero + 1: {
+                nz-o = nonzero + 1
+                nz i64 = nz-o: {
                     ok -> it
 
                     -> 0
@@ -468,22 +500,21 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
             ln-l = 1
             (! found && ln-l <= 15) {
                 ! found && ln-l <= 15 -> {
-                    bit, pos, buf, cnt = webp-br-read-bit(data, pos, buf, cnt)
+                    bit, tp, tb, tc = webp-br-read-bit(data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
+                    cs = code << 1
+
                     #{overflow=wrap}
-                    cs = code << 1: {
+                    co-o = cs + bit
+                    co-o: {
                         ok -> it
 
                         -> 0
                     }
-                    #{overflow=wrap}
-                    co = cs | bit: {
-                        ok -> it
-
-                        -> 0
-                    }
-                    code = co
-
-                    cnt-l = count[ln-l]: {
+                    code = co cnt-l
+                    count[ln-l]: {
                         ok -> it
 
                         -> 0
@@ -493,14 +524,18 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
 
                         -> 0
                     }
+
                     #{overflow=wrap}
-                    fpc = first-l + cnt-l: {
+                    fpc-o = first-l + cnt-l
+                    fpc i64 = fpc-o: {
                         ok -> it
 
                         -> 0
                     }
+
                     #{overflow=wrap}
-                    upper = fpc - 1: {
+                    upper-o = fpc - 1
+                    upper i64 = upper-o: {
                         ok -> it
 
                         -> 0
@@ -509,7 +544,8 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
                         cnt-l > 0 && code >= first-l && code <= upper -> {
 
                             #{overflow=wrap}
-                            off = code - first-l: {
+                            off-o = code - first-l
+                            off i64 = off-o: {
                                 ok -> it
 
                                 -> 0
@@ -531,7 +567,8 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
                                     }
 
                                     #{overflow=wrap}
-                                    cinc = c + 1: {
+                                    cinc-o = c + 1
+                                    cinc i64 = cinc-o: {
                                         ok -> it
 
                                         -> 0
@@ -543,7 +580,8 @@ webp-huff-decode = (code-lens []byte, n-symbols i64, codes []byte, first []byte,
                     }
 
                     #{overflow=wrap}
-                    linc = ln-l + 1: {
+                    linc-o = ln-l + 1
+                    linc i64 = linc-o: {
                         ok -> it
 
                         -> 0
@@ -568,22 +606,37 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
     ; Faithful port of libwebp ReadHuffmanCode + ReadHuffmanCodeLengths
     ; (src/dec/vp8l_dec.c). Produces n-syms code lengths for one Huffman table.
     code-lens []byte = with-len(n-syms)
-    simple, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+    simple, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+    pos = tp
+    buf = tb
+    cnt = tc
 
     {
         simple == 1 -> {
 
             ; Simple code: 1 or 2 symbols, each of code length 1.
-            sym-count-flag, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
-            first-len-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+            sym-count-flag, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+            pos = tp
+            buf = tb
+            cnt = tc
+            first-len-code, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+            pos = tp
+            buf = tb
+            cnt = tc
             sym1 = 0
             {
                 first-len-code == 0 -> {
-                    sym1, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+                    sym1, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
                 }
 
                 -> {
-                    sym1, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
+                    sym1, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 8)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
                 }
             }
             {
@@ -597,7 +650,10 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
             }
             {
                 sym-count-flag == 1 -> {
-                    sym2, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
+                    sym2, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 8)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
                     {
                         sym2 >= 0 && sym2 < n-syms -> {
                             code-lens[sym2]: {
@@ -617,7 +673,10 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
             ; 19-entry code-length tree (NUM_CODE_LENGTH_CODES). num_codes is
             ; 4 + ReadBits(4); the per-code 3-bit lengths are stored at the
             ; permuted index kCodeLengthCodeOrder[i].
-            num-codes, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 4)
+            num-codes, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 4)
+            pos = tp
+            buf = tb
+            cnt = tc
 
             #{overflow=wrap}
             num-codes = num-codes + 4
@@ -722,7 +781,10 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
 
             meta-lens []byte = with-len(19)
             mi <- [0..num-codes): {
-                ml, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                ml, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+                pos = tp
+                buf = tb
+                cnt = tc
 
                 ko = k-order[mi]: {
                     ok -> it
@@ -740,16 +802,53 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
             meta-count []byte = with-len(16)
             webp-build-huff-codes(meta-lens, 19, meta-codes, meta-first, meta-count)
 
+            ; Use the flat i64 first/count table decoder (same one used for the
+            ; main image) for the 19-symbol code-length tree. The []byte variant
+            ; above mis-decodes non-simple trees in this build.
+            meta-first-64 []i64 = with-len(16)
+            meta-count-64 []i64 = with-len(16)
+            mi2 <- [0..16): {
+                mf = meta-first[mi2]: {
+                    ok -> it
+
+                    -> 0
+                }
+                mc = meta-count[mi2]: {
+                    ok -> it
+
+                    -> 0
+                }
+                meta-first-64[mi2]: {
+                    ok -> it = mf
+
+                    -> _
+                }
+                meta-count-64[mi2]: {
+                    ok -> it = mc
+
+                    -> _
+                }
+            }
+
             ; Optional max-symbol ("use length") field caps how many code lengths follow.
             max-symbol = n-syms
-            use-len, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+            use-len, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+            pos = tp
+            buf = tb
+            cnt = tc
             {
                 use-len == 1 -> {
-                    len-bits-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                    len-bits-code, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
 
                     #{overflow=wrap}
                     length-nbits = 2 + 2 * len-bits-code
-                    ms-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, length-nbits)
+                    ms-val, tp, tb, tc = webp-br-read(data, pos, buf, cnt, length-nbits)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
 
                     #{overflow=wrap}
                     max-symbol = 2 + ms-val
@@ -768,13 +867,17 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
                         -> {
 
                             #{overflow=wrap}
-                            mdec = max-symbol - 1: {
+                            mdec-o = max-symbol - 1
+                            mdec i64 = mdec-o: {
                                 ok -> it
 
                                 -> 0
                             }
                             max-symbol = mdec
-                            msym, pos, buf, cnt = webp-huff-decode(meta-lens, 19, meta-codes, meta-first, meta-count, data, pos, buf, cnt)
+                            msym, tp, tb, tc = webp-huff-decode-off(meta-lens, 0, 19, meta-first-64, 0, meta-count-64, 0, data, pos, buf, cnt)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
                             {
                                 msym < 16 -> {
 
@@ -791,7 +894,8 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
                                     }
 
                                     #{overflow=wrap}
-                                    sidx-inc = sym-idx + 1: {
+                                    sidx-inc-o = sym-idx + 1
+                                    sidx-inc i64 = sidx-inc-o: {
                                         ok -> it
 
                                         -> 0
@@ -825,7 +929,10 @@ webp-decode-meta-huff = (data []byte, pos i64, buf i64, cnt i64, n-syms i64) (ou
                                             fill = 0
                                         }
                                     }
-                                    ext, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, eb)
+                                    ext, tp, tb, tc = webp-br-read(data, pos, buf, cnt, eb)
+                                    pos = tp
+                                    buf = tb
+                                    cnt = tc
 
                                     #{overflow=wrap}
                                     repeat = ext + ro
@@ -923,7 +1030,8 @@ webp-build-huff-codes-off = (lens []byte, loff i64, n i64, codes []byte, coff i6
             cl > 0 -> {
 
                 #{overflow=wrap}
-                ki = koff + cl: {
+                ki-o = koff + cl
+                ki i64 = ki-o: {
                     ok -> it
 
                     -> 0
@@ -935,7 +1043,8 @@ webp-build-huff-codes-off = (lens []byte, loff i64, n i64, codes []byte, coff i6
                 }
 
                 #{overflow=wrap}
-                inc5 = d9v5 + 1: {
+                inc5-o = d9v5 + 1
+                inc5 i64 = inc5-o: {
                     ok -> it
 
                     -> 0
@@ -957,31 +1066,34 @@ webp-build-huff-codes-off = (lens []byte, loff i64, n i64, codes []byte, coff i6
 
             -> _
         }
+
         #{overflow=wrap}
         cfl = count[koff + ln-l]: {
             ok -> it
 
             -> 0
         }
+
         #{overflow=wrap}
-        fcs = (fc + cfl) << 1: {
+        fcs0-o = fc + cfl
+        fcs0 i64 = fcs0-o: {
             ok -> it
 
             -> 0
         }
+        fcs = fcs0 << 1
         fc = fcs
     }
     next-code []byte = with-len(16)
     ln-l <- [1..16): {
-
-        #{overflow=wrap}
         d9v6 = first[foff + ln-l]: {
             ok -> it
 
             -> 0
         }
-        next-code[L]: {
-            ok -> it = d9v6 & 255
+        nc-v = d9v6 & 255
+        next-code[ln-l]: {
+            ok -> it = nc-v
 
             -> _
         }
@@ -996,7 +1108,6 @@ webp-build-huff-codes-off = (lens []byte, loff i64, n i64, codes []byte, coff i6
         }
         {
             cl > 0 -> {
-
                 d9v7 = next-code[cl]: {
                     ok -> it
 
@@ -1017,7 +1128,8 @@ webp-build-huff-codes-off = (lens []byte, loff i64, n i64, codes []byte, coff i6
                 }
 
                 #{overflow=wrap}
-                inc8 = d9v8 + 1: {
+                inc8-o = d9v8 + 1
+                inc8 i64 = inc8-o: {
                     ok -> it
 
                     -> 0
@@ -1048,7 +1160,8 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
             lsc > 0 -> {
 
                 #{overflow=wrap}
-                nz = nonzero + 1: {
+                nz-o = nonzero + 1
+                nz i64 = nz-o: {
                     ok -> it
 
                     -> 0
@@ -1073,8 +1186,11 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
             ln-l = 1
             (! found && ln-l <= 15) {
                 ! found && ln-l <= 15 -> {
-                    bit, pos, buf, cnt = webp-br-read-bit(data, pos, buf, cnt)
-                    code = (code << 1) | bit
+                    bit, tp, tb, tc = webp-br-read-bit(data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
+                    code = (code << 1) + bit
 
                     #{overflow=wrap}
                     cnt-l = count[koff + ln-l]: {
@@ -1082,14 +1198,17 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
 
                         -> 0
                     }
+
                     #{overflow=wrap}
                     fst-l = first[foff + ln-l]: {
                         ok -> it
 
                         -> 0
                     }
+
                     #{overflow=wrap}
-                    hi = fst-l + cnt-l - 1: {
+                    hi-o = fst-l + cnt-l - 1
+                    hi i64 = hi-o: {
                         ok -> it
 
                         -> 0
@@ -1098,7 +1217,8 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
                         cnt-l > 0 && code >= fst-l && code <= hi -> {
 
                             #{overflow=wrap}
-                            offset = code - fst-l: {
+                            offset-o = code - fst-l
+                            offset i64 = offset-o: {
                                 ok -> it
 
                                 -> 0
@@ -1122,7 +1242,8 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
                                         }
 
                                         #{overflow=wrap}
-                                        nc = c + 1: {
+                                        nc-o = c + 1
+                                        nc i64 = nc-o: {
                                             ok -> it
 
                                             -> 0
@@ -1135,7 +1256,8 @@ webp-huff-decode-off = (lens []byte, loff i64, n i64, first []i64, foff i64, cou
                     }
 
                     #{overflow=wrap}
-                    n-l = ln-l + 1: {
+                    n-l-o = ln-l + 1
+                    n-l i64 = n-l-o: {
                         ok -> it
 
                         -> 0
@@ -1191,69 +1313,52 @@ webp-cc-insert = (cc-cache []byte, cc-size i64, argb []byte, pixel i64) {
                 sz < cc-size -> {
 
                     #{overflow=wrap}
-                    hbi = hb + 1: {
+                    hbi-o = hb + 1
+                    hbi i64 = hbi-o: {
                         ok -> it
 
                         -> 0
                     }
                     hb = hbi
-                    #{overflow=wrap}
-                    sz2 = sz << 1: {
-                        ok -> it
-
-                        -> 0
-                    }
-                    sz = sz2
+                    sz = sz << 1
                 }
             }
+            a24 = a0 << 24
+            r16 = r0 << 16
+            g8 = g0 << 8
+
             #{overflow=wrap}
-            a24 = a0 << 24: {
+            ar1-o = a24 + r16
+            ar1 i64 = ar1-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            r16 = r0 << 16: {
+            ar2-o = ar1 + g8
+            ar2 i64 = ar2-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            g8 = g0 << 8: {
+            argb32-o = ar2 + b0
+            argb32 i64 = argb32-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            ar1 = a24 | r16: {
+            prodm-o = argb32 * 506832829
+            prodm i64 = prodm-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            ar2 = ar1 | g8: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            argb32 = ar2 | b0: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            prodm = argb32 * 506832829: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            prod = prodm & 4294967295: {
-                ok -> it
-
-                -> 0
-            }
+            prod = prodm & 4294967295
 
             #{overflow=wrap}
             shift = 32 - hb
@@ -1305,11 +1410,17 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     sub-argb []byte = with-len(sub-n * 4)
 
     ; Color cache config
-    cc-used, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+    cc-used, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+    pos = tp
+    buf = tb
+    cnt = tc
     cc-size = 0
     {
         cc-used == 1 -> {
-            cc-bits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 4)
+            cc-bits, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 4)
+            pos = tp
+            buf = tb
+            cnt = tc
             cc-size = 1 << cc-bits
         }
     }
@@ -1318,7 +1429,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     ts0 = 0
 
     #{overflow=wrap}
-    ts0v = 280 + cc-size: {
+    ts0v-o = 280 + cc-size
+    ts0v = ts0v-o: {
         ok -> it
 
         -> 0
@@ -1332,10 +1444,16 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
     huff-img []byte = with-len(0)
     {
         allow-meta -> {
-            meta-bit, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+            meta-bit, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+            pos = tp
+            buf = tb
+            cnt = tc
             {
                 meta-bit == 1 -> {
-                    hp, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                    hp, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
 
                     #{overflow=wrap}
                     huff-bits = 2 + hp
@@ -1344,7 +1462,10 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
 
                     #{overflow=wrap}
                     hi-n = huff-xsize * huff-ysize
-                    hi-argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, huff-xsize, huff-ysize, false)
+                    hi-argb, tp, tb, tc = webp-decode-argb-image(data, pos, buf, cnt, huff-xsize, huff-ysize, false)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
                     huff-img = with-len(hi-n)
                     hi <- [0..hi-n): {
 
@@ -1363,7 +1484,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         }
 
                         #{overflow=wrap}
-                        gi = h-r * 256 + h-g: {
+                        gi-o = h-r * 256 + h-g
+                        gi i64 = gi-o: {
                             ok -> it
 
                             -> 0
@@ -1377,7 +1499,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                             gi >= n-groups -> {
 
                                 #{overflow=wrap}
-                                ng1 = gi + 1: {
+                                ng1-o = gi + 1
+                                ng1 i64 = ng1-o: {
                                     ok -> it
 
                                     -> 0
@@ -1461,23 +1584,38 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
         #{overflow=wrap}
         gf = g * 16
 
-        tl0, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, ts0)
+        tl0, tp, tb, tc = webp-decode-meta-huff(data, pos, buf, cnt, ts0)
+        pos = tp
+        buf = tb
+        cnt = tc
         webp-fill-lens(lens-0, gb0, tl0)
         webp-build-huff-codes-off(lens-0, gb0, ts0, codes-0, gb0, first-0, gf, count-0, gf)
 
-        tl1, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        tl1, tp, tb, tc = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        pos = tp
+        buf = tb
+        cnt = tc
         webp-fill-lens(lens-1, gb1, tl1)
         webp-build-huff-codes-off(lens-1, gb1, 256, codes-1, gb1, first-1, gf, count-1, gf)
 
-        tl2, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        tl2, tp, tb, tc = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        pos = tp
+        buf = tb
+        cnt = tc
         webp-fill-lens(lens-2, gb1, tl2)
         webp-build-huff-codes-off(lens-2, gb1, 256, codes-2, gb1, first-2, gf, count-2, gf)
 
-        tl3, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        tl3, tp, tb, tc = webp-decode-meta-huff(data, pos, buf, cnt, 256)
+        pos = tp
+        buf = tb
+        cnt = tc
         webp-fill-lens(lens-3, gb1, tl3)
         webp-build-huff-codes-off(lens-3, gb1, 256, codes-3, gb1, first-3, gf, count-3, gf)
 
-        tl4, pos, buf, cnt = webp-decode-meta-huff(data, pos, buf, cnt, 40)
+        tl4, tp, tb, tc = webp-decode-meta-huff(data, pos, buf, cnt, 40)
+        pos = tp
+        buf = tb
+        cnt = tc
         webp-fill-lens(lens-4, gb4, tl4)
         webp-build-huff-codes-off(lens-4, gb4, 40, codes-4, gb4, first-4, gf, count-4, gf)
     }
@@ -2121,7 +2259,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
             }
 
             #{overflow=wrap}
-            lb0v = gidx * ts0: {
+            lb0v-o = gidx * ts0
+            lb0v i64 = lb0v-o: {
                 ok -> it
 
                 -> 0
@@ -2129,7 +2268,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
             lb0 = lb0v
 
             #{overflow=wrap}
-            lb1v = gidx * 256: {
+            lb1v-o = gidx * 256
+            lb1v i64 = lb1v-o: {
                 ok -> it
 
                 -> 0
@@ -2137,7 +2277,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
             lb1 = lb1v
 
             #{overflow=wrap}
-            lb4v = gidx * 40: {
+            lb4v-o = gidx * 40
+            lb4v i64 = lb4v-o: {
                 ok -> it
 
                 -> 0
@@ -2145,22 +2286,35 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
             lb4 = lb4v
 
             #{overflow=wrap}
-            lfv = gidx * 16: {
+            lfv-o = gidx * 16
+            lfv i64 = lfv-o: {
                 ok -> it
 
                 -> 0
             }
             lf = lfv
 
-            green, pos, buf, cnt = webp-huff-decode-off(lens-0, lb0, ts0, first-0, lf, count-0, lf, data, pos, buf, cnt)
+            green, tp, tb, tc = webp-huff-decode-off(lens-0, lb0, ts0, first-0, lf, count-0, lf, data, pos, buf, cnt)
+            pos = tp
+            buf = tb
+            cnt = tc
 
             {
                 green < 256 -> {
 
                     ; Literal: R from tree1, B from tree2, A from tree3
-                    red, pos, buf, cnt = webp-huff-decode-off(lens-1, lb1, 256, first-1, lf, count-1, lf, data, pos, buf, cnt)
-                    blue, pos, buf, cnt = webp-huff-decode-off(lens-2, lb1, 256, first-2, lf, count-2, lf, data, pos, buf, cnt)
-                    alpha, pos, buf, cnt = webp-huff-decode-off(lens-3, lb1, 256, first-3, lf, count-3, lf, data, pos, buf, cnt)
+                    red, tp, tb, tc = webp-huff-decode-off(lens-1, lb1, 256, first-1, lf, count-1, lf, data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
+                    blue, tp, tb, tc = webp-huff-decode-off(lens-2, lb1, 256, first-2, lf, count-2, lf, data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
+                    alpha, tp, tb, tc = webp-huff-decode-off(lens-3, lb1, 256, first-3, lf, count-3, lf, data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
 
                     #{overflow=wrap}
                     sub-argb[px * 4]: {
@@ -2192,7 +2346,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                     webp-cc-insert(cc-cache, cc-size, sub-argb, px)
 
                     #{overflow=wrap}
-                    px1 = px + 1: {
+                    px1-o = px + 1
+                    px1 i64 = px1-o: {
                         ok -> it
 
                         -> 0
@@ -2214,7 +2369,10 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         }
 
                         -> {
-                            lp-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, lp-extra)
+                            lp-val, tp, tb, tc = webp-br-read(data, pos, buf, cnt, lp-extra)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
                             lp-offset = (2 + (lp & 1)) << lp-extra
 
                             #{overflow=wrap}
@@ -2223,25 +2381,26 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                     }
 
                     ; distance symbol from tree4 -> GetCopyDistance -> PlaneCodeToDistance
-                    dsym, pos, buf, cnt = webp-huff-decode-off(lens-4, lb4, 40, first-4, lf, count-4, lf, data, pos, buf, cnt)
+                    dsym, tp, tb, tc = webp-huff-decode-off(lens-4, lb4, 40, first-4, lf, count-4, lf, data, pos, buf, cnt)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
+
                     #{overflow=wrap}
-                    dm2 = dsym - 2: {
+                    dm2-o = dsym - 2
+                    dm2 i64 = dm2-o: {
                         ok -> it
 
                         -> 0
                     }
-                    #{overflow=wrap}
-                    d-extra = dm2 >> 1: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    d-extra = dm2 >> 1
                     dist-code = 0
                     {
                         dsym < 4 -> {
 
                             #{overflow=wrap}
-                            dc1 = dsym + 1: {
+                            dc1-o = dsym + 1
+                            dc1 i64 = dc1-o: {
                                 ok -> it
 
                                 -> 0
@@ -2250,33 +2409,32 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         }
 
                         -> {
-                            d-val, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, d-extra)
+                            d-val, tp, tb, tc = webp-br-read(data, pos, buf, cnt, d-extra)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
+                            one = dsym & 1
+
                             #{overflow=wrap}
-                            one = dsym & 1: {
+                            two-o = 2 + one
+                            two i64 = two-o: {
                                 ok -> it
 
                                 -> 0
                             }
+                            d-offset = two << d-extra
+
                             #{overflow=wrap}
-                            two = 2 + one: {
+                            dop1-o = d-offset + 1
+                            dop1 i64 = dop1-o: {
                                 ok -> it
 
                                 -> 0
                             }
-                            #{overflow=wrap}
-                            d-offset = two << d-extra: {
-                                ok -> it
 
-                                -> 0
-                            }
                             #{overflow=wrap}
-                            dop1 = d-offset + 1: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            dop2 = dop1 + d-val: {
+                            dop2-o = dop1 + d-val
+                            dop2 i64 = dop2-o: {
                                 ok -> it
 
                                 -> 0
@@ -2289,7 +2447,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         dist-code > 120 -> {
 
                             #{overflow=wrap}
-                            d120 = dist-code - 120: {
+                            d120-o = dist-code - 120
+                            d120 i64 = d120-o: {
                                 ok -> it
 
                                 -> 0
@@ -2300,7 +2459,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                         -> {
 
                             #{overflow=wrap}
-                            dcm1 = dist-code - 1: {
+                            dcm1-o = dist-code - 1
+                            dcm1 i64 = dcm1-o: {
                                 ok -> it
 
                                 -> 0
@@ -2310,34 +2470,28 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
 
                                 -> 0
                             }
+                            yoff = dc >> 4
+                            dcf = dc & 0xf
+
                             #{overflow=wrap}
-                            yoff = dc >> 4: {
+                            xoff-o = 8 - dcf
+                            xoff i64 = xoff-o: {
                                 ok -> it
 
                                 -> 0
                             }
 
                             #{overflow=wrap}
-                            dcf = dc & 0xf: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            xoff = 8 - dcf: {
+                            prod-o = yoff * img-w
+                            prod i64 = prod-o: {
                                 ok -> it
 
                                 -> 0
                             }
 
                             #{overflow=wrap}
-                            prod = yoff * img-w: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            dist = prod + xoff: {
+                            dist-o = prod + xoff
+                            dist i64 = dist-o: {
                                 ok -> it
 
                                 -> 0
@@ -2416,7 +2570,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                     }
 
                     #{overflow=wrap}
-                    pxl = px + length: {
+                    pxl-o = px + length
+                    pxl i64 = pxl-o: {
                         ok -> it
 
                         -> 0
@@ -2490,7 +2645,8 @@ webp-decode-argb-image = (data []byte, pos i64, buf i64, cnt i64, img-w i64, img
                     webp-cc-insert(cc-cache, cc-size, sub-argb, px)
 
                     #{overflow=wrap}
-                    px1b = px + 1: {
+                    px1b-o = px + 1
+                    px1b i64 = px1b-o: {
                         ok -> it
 
                         -> 0
@@ -2543,10 +2699,22 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     cnt = 0
 
     ; Skip header: width(14), height(14), alpha(1), version(3) = 32 bits
-    hdr-w, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
-    hdr-h, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 14)
-    alpha-bit, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
-    vp8l-version, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+    hdr-w, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 14)
+    pos = tp
+    buf = tb
+    cnt = tc
+    hdr-h, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 14)
+    pos = tp
+    buf = tb
+    cnt = tc
+    alpha-bit, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+    pos = tp
+    buf = tb
+    cnt = tc
+    vp8l-version, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+    pos = tp
+    buf = tb
+    cnt = tc
 
     ; Read transforms (up to 4)
     ; Store transform parameters
@@ -2587,14 +2755,20 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     tf-more = true
     (tf-more && n-transforms < 4) {
         tf-more && n-transforms < 4 -> {
-            used, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 1)
+            used, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 1)
+            pos = tp
+            buf = tb
+            cnt = tc
             {
                 used == 0 -> {
                     tf-more = false
                 }
 
                 -> {
-                    ttype, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 2)
+                    ttype, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 2)
+                    pos = tp
+                    buf = tb
+                    cnt = tc
                     transform-types[n-transforms]: {
                         ok -> it = ttype
 
@@ -2602,7 +2776,8 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    nt1 = n-transforms + 1: {
+                    nt1-o = n-transforms + 1
+                    nt1 i64 = nt1-o: {
                         ok -> it
 
                         -> 0
@@ -2614,7 +2789,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ; Predictor/Cross-color: read 3-bit block-size field.
                             ; Per libwebp: bits = MIN_TRANSFORM_BITS(2) + ReadBits(3);
                             ; block = 1 << bits; transform image is subsampled by block.
-                            pbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                            pbits, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
 
                             #{overflow=wrap}
                             pred-blk = 2 + pbits
@@ -2629,7 +2807,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             pred-h = webp-ceil-div(h, pred-block)
 
                             ; Decode the predictor sub-image as ARGB
-                            pred-argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, pred-w, pred-h, false)
+                            pred-argb, tp, tb, tc = webp-decode-argb-image(data, pos, buf, cnt, pred-w, pred-h, false)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
 
                             ; Extract the green channel (byte offset +2) as the predictor
                             ; mode, masked to low nibble per libwebp
@@ -2660,7 +2841,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ;   R channel (offset +1) = red_to_blue
                             ;   G channel (offset +2) = green_to_blue
                             ;   B channel (offset +3) = green_to_red
-                            cbits, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 3)
+                            cbits, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 3)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
 
                             #{overflow=wrap}
                             ct-blk = 2 + cbits
@@ -2675,7 +2859,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ct-h = webp-ceil-div(h, ct-block)
 
                             ; Decode the color transform sub-image as ARGB
-                            ct-img, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h, false)
+                            ct-img, tp, tb, tc = webp-decode-argb-image(data, pos, buf, cnt, ct-w, ct-h, false)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
                         }
 
                         ttype == 2 -> {
@@ -2691,7 +2878,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ; Main image decodes at subsampled width; the palette
                             ; itself is a VP8L sub-image of size num_colors x 1,
                             ; then delta-expanded (ExpandColorMap) to 1<<bpp entries.
-                            psize-code, pos, buf, cnt = webp-br-read(data, pos, buf, cnt, 8)
+                            psize-code, tp, tb, tc = webp-br-read(data, pos, buf, cnt, 8)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
 
                             #{overflow=wrap}
                             ci-palette-size = psize-code + 1
@@ -2722,7 +2912,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ci-present = true
 
                             ; palette = VP8L sub-image (num_colors x 1)
-                            ci-pargb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, ci-palette-size, 1, false)
+                            ci-pargb, tp, tb, tc = webp-decode-argb-image(data, pos, buf, cnt, ci-palette-size, 1, false)
+                            pos = tp
+                            buf = tb
+                            cnt = tc
 
                             ; ExpandColorMap: entry0 copied; entry i = entry i-1 +
                             ; palette delta byte (mod 256); tail zeroed to black.
@@ -2772,7 +2965,8 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ei <- [4..ci-palette-size * 4): {
 
                                 #{overflow=wrap}
-                                em4 = ei - 4: {
+                                em4-o = ei - 4
+                                em4 i64 = em4-o: {
                                     ok -> it
 
                                     -> 0
@@ -2787,14 +2981,9 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
                                     -> 0
                                 }
-                                #{overflow=wrap}
-                                dv = pe + pa: {
-                                    ok -> it
-
-                                    -> 0
-                                }
+                                dm = webp-u8-add-mod(pe, pa)
                                 ci-palette[ei]: {
-                                    ok -> it = dv & 255
+                                    ok -> it = dm
 
                                     -> _
                                 }
@@ -2822,7 +3011,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
             decode-w = ci-decode-w
         }
     }
-    argb, pos, buf, cnt = webp-decode-argb-image(data, pos, buf, cnt, decode-w, h, true)
+    argb, tp, tb, tc = webp-decode-argb-image(data, pos, buf, cnt, decode-w, h, true)
+    pos = tp
+    buf = tb
+    cnt = tc
 
     ; Apply color-indexing inverse FIRST (it is always the last transform read,
     ; hence first applied in reverse). Expands subsampled argb -> full-width argb.
@@ -2955,7 +3147,6 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     mode = 0
                     {
                         blk-idx < pred-img.len() -> {
-
                             mode = pred-img[blk-idx]: {
                                 ok -> it
 
@@ -3461,16 +3652,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sa = d9v18 + pred-a: {
+                    sa-o = d9v18 + pred-a
+                    sa i64 = sa-o: {
                         ok -> it
 
                         -> 0
                     }
-                    va = sa & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    va = sa & 255
                     argb[pi * 4]: {
                         ok -> it = va
 
@@ -3484,16 +3672,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sr = d9v19 + pred-r: {
+                    sr-o = d9v19 + pred-r
+                    sr i64 = sr-o: {
                         ok -> it
 
                         -> 0
                     }
-                    vr = sr & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    vr = sr & 255
                     argb[pi * 4 + 1]: {
                         ok -> it = vr
 
@@ -3507,16 +3692,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sg = d9v20 + pred-g: {
+                    sg-o = d9v20 + pred-g
+                    sg i64 = sg-o: {
                         ok -> it
 
                         -> 0
                     }
-                    vg = sg & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    vg = sg & 255
                     argb[pi * 4 + 2]: {
                         ok -> it = vg
 
@@ -3530,16 +3712,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sb = d9v21 + pred-b: {
+                    sb-o = d9v21 + pred-b
+                    sb i64 = sb-o: {
                         ok -> it
 
                         -> 0
                     }
-                    vb2 = sb & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    vb2 = sb & 255
                     argb[pi * 4 + 3]: {
                         ok -> it = vb2
 
@@ -3616,8 +3795,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             ; Convert to signed: values 128..255 → -128..-1
                             rtb = raw-r
                             rtb > 127 -> {
+
                                 #{overflow=wrap}
-                                rtbv = rtb - 256: {
+                                rtbv-o = rtb - 256
+                                rtbv i64 = rtbv-o: {
                                     ok -> it
 
                                     -> 0
@@ -3626,8 +3807,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             }
                             gtb = raw-g
                             gtb > 127 -> {
+
                                 #{overflow=wrap}
-                                gtbv = gtb - 256: {
+                                gtbv-o = gtb - 256
+                                gtbv i64 = gtbv-o: {
                                     ok -> it
 
                                     -> 0
@@ -3636,8 +3819,10 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                             }
                             gtr = raw-b
                             gtr > 127 -> {
+
                                 #{overflow=wrap}
-                                gtrv = gtr - 256: {
+                                gtrv-o = gtr - 256
+                                gtrv i64 = gtrv-o: {
                                     ok -> it
 
                                     -> 0
@@ -3722,16 +3907,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sr2 = d9v22 + g: {
+                    sr2-o = d9v22 + g
+                    sr2 i64 = sr2-o: {
                         ok -> it
 
                         -> 0
                     }
-                    vr2 = sr2 & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    vr2 = sr2 & 255
                     argb[pi * 4 + 1]: {
                         ok -> it = vr2
 
@@ -3745,16 +3927,13 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
                     }
 
                     #{overflow=wrap}
-                    sb2 = d9v23 + g: {
+                    sb2-o = d9v23 + g
+                    sb2 i64 = sb2-o: {
                         ok -> it
 
                         -> 0
                     }
-                    vb3 = sb2 & 255: {
-                        ok -> it
-
-                        -> 0
-                    }
+                    vb3 = sb2 & 255
                     argb[pi * 4 + 3]: {
                         ok -> it = vb3
 
@@ -3888,8 +4067,6 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
 
 ; webp-read-u32-le: read 32-bit little-endian
 webp-read-u32-le = (data []byte, pos i64) (val i64) {
-
-    #{overflow=wrap}
     b0 = data[pos]: {
         ok -> it
 
@@ -3917,12 +4094,7 @@ webp-read-u32-le = (data []byte, pos i64) (val i64) {
         -> 0
     }
 
-    acc = (b0 & 255) | ((b1 & 255) << 8) | ((b2 & 255) << 16) | ((b3 & 255) << 24)
-    acc: {
-        ok -> val = it
-
-        -> val = 0
-    }
+    val = (b0 & 255) | ((b1 & 255) << 8) | ((b2 & 255) << 16) | ((b3 & 255) << 24)
 }
 
 ; webp-parse-vp8: parse VP8 lossy bitstream header for dimensions
@@ -3933,28 +4105,28 @@ webp-parse-vp8 = (data []byte, pos i64, size i64) (w i64, h i64) {
     #{overflow=wrap}
     pos + 10 > data.len() -> return
     tag0 = webp-byte-at(data, pos)
-    #{overflow=wrap}
-    kf = tag0 & 1: {
-        ok -> it
-
-        -> 0
-    }
-    key-frame = kf != 0
+    key-frame = (tag0 & 1) != 0
     ! key-frame -> return
+
     #{overflow=wrap}
-    p3 = pos + 3: {
+    p3-o = pos + 3
+    p3 = p3-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    p4 = pos + 4: {
+    p4-o = pos + 4
+    p4 = p4-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    p5 = pos + 5: {
+    p5-o = pos + 5
+    p5 = p5-o: {
         ok -> it
 
         -> 0
@@ -3964,26 +4136,34 @@ webp-parse-vp8 = (data []byte, pos i64, size i64) (w i64, h i64) {
     b5 = webp-byte-at(data, p5)
     {
         b3 == 157 && b4 == 1 && b5 == 42 -> {
+
             #{overflow=wrap}
-            p6 = pos + 6: {
+            p6-o = pos + 6
+            p6 i64 = p6-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            p7 = pos + 7: {
+            p7-o = pos + 7
+            p7 i64 = p7-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            p8 = pos + 8: {
+            p8-o = pos + 8
+            p8 i64 = p8-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            p9 = pos + 9: {
+            p9-o = pos + 9
+            p9 i64 = p9-o: {
                 ok -> it
 
                 -> 0
@@ -3992,42 +4172,26 @@ webp-parse-vp8 = (data []byte, pos i64, size i64) (w i64, h i64) {
             b7 = webp-byte-at(data, p7)
             b8 = webp-byte-at(data, p8)
             b9 = webp-byte-at(data, p9)
+            b7s = b7 << 8
+
             #{overflow=wrap}
-            b7s = b7 << 8: {
+            wv-o = b6 + b7s
+            wv i64 = wv-o: {
                 ok -> it
 
                 -> 0
             }
+            b9s = b9 << 8
+
             #{overflow=wrap}
-            wv = b6 | b7s: {
+            hv-o = b8 + b9s
+            hv i64 = hv-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            b9s = b9 << 8: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            hv = b8 | b9s: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            w13 = wv & 16383: {
-                ok -> it
-
-                -> 0
-            }
-            #{overflow=wrap}
-            h13 = hv & 16383: {
-                ok -> it
-
-                -> 0
-            }
+            w13 = wv & 16383
+            h13 = hv & 16383
             w = w13
             h = h13
         }
@@ -4051,25 +4215,32 @@ webp-parse-vp8l = (data []byte, pos i64, size i64) (w i64, h i64) {
     }
 
     #{overflow=wrap}
-    p1 = pos + 1: {
+    p1-o = pos + 1
+    p1 = p1-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    p2 = pos + 2: {
+    p2-o = pos + 2
+    p2 = p2-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    p3 = pos + 3: {
+    p3-o = pos + 3
+    p3 = p3-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    p4 = pos + 4: {
+    p4-o = pos + 4
+    p4 = p4-o: {
         ok -> it
 
         -> 0
@@ -4079,69 +4250,49 @@ webp-parse-vp8l = (data []byte, pos i64, size i64) (w i64, h i64) {
     b3 = webp-byte-at(data, p3)
     b4 = webp-byte-at(data, p4)
 
-    #{overflow=wrap}
-    b2m = b2 & 63: {
-        ok -> it
+    b2m = b2 & 63
+    b2s = b2m << 8
 
-        -> 0
-    }
     #{overflow=wrap}
-    b2s = b2m << 8: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    wor = b1 | b2s: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    wv = wor + 1: {
+    wor-o = b1 + b2s
+    wor = wor-o: {
         ok -> it
 
         -> 0
     }
 
     #{overflow=wrap}
-    b2h = b2 >> 6: {
+    wv-o = wor + 1
+    wv = wv-o: {
         ok -> it
 
         -> 0
     }
+
+    b2h = b2 >> 6
+    b3s = b3 << 2
+    b4m = b4 & 15
+    b4s = b4m << 10
+
     #{overflow=wrap}
-    b3s = b3 << 2: {
+    hor1-o = b2h + b3s
+    hor1 = hor1-o: {
         ok -> it
 
         -> 0
     }
+
     #{overflow=wrap}
-    b4m = b4 & 15: {
+    hor2-o = hor1 + b4s
+    hor2 = hor2-o: {
         ok -> it
 
         -> 0
     }
-    #{overflow=wrap}
-    b4s = b4m << 10: {
-        ok -> it
 
-        -> 0
-    }
     #{overflow=wrap}
-    hor1 = b2h | b3s: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    hor2 = hor1 | b4s: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    hv = hor2 + 1: {
+    hv-o = hor2 + 1
+    hv = hv-o: {
         ok -> it
 
         -> 0
@@ -4158,19 +4309,14 @@ webp-vp8l-alpha-flag = (data []byte, pos i64) (has-alpha bool) {
     pos + 5 > data.len() -> return
 
     #{overflow=wrap}
-    p4a = pos + 4: {
+    p4a-o = pos + 4
+    p4a = p4a-o: {
         ok -> it
 
         -> 0
     }
     b4a = webp-byte-at(data, p4a)
-    #{overflow=wrap}
-    am = b4a & 16: {
-        ok -> it
-
-        -> 0
-    }
-    has-alpha = am != 0
+    has-alpha = (b4a & 16) != 0
 }
 
 ; ── Encoder helpers (VP8L lossless, libwebp-interoperable) ──
@@ -4180,32 +4326,21 @@ webp-vp8l-alpha-flag = (data []byte, pos i64) (has-alpha bool) {
 ; out []byte: output byte stream (mutated via push)
 ; returns new-buf i64, new-cnt i64
 webp-enc-write-bits = (buf i64, cnt i64, out []byte, val i64, n i64) (new-buf i64, new-cnt i64) {
+    ones = 1 << n
+
     #{overflow=wrap}
-    ones = 1 << n: {
+    onesm-o = ones - 1
+    onesm = onesm-o: {
         ok -> it
 
         -> 0
     }
-    #{overflow=wrap}
-    onesm = ones - 1: {
-        ok -> it
+    vm = val & onesm
+    vl = vm << cnt
 
-        -> 0
-    }
     #{overflow=wrap}
-    vm = val & onesm: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    vl = vm << cnt: {
-        ok -> it
-
-        -> 0
-    }
-    #{overflow=wrap}
-    buf2 = buf | vl: {
+    buf2-o = buf + vl
+    buf2 = buf2-o: {
         ok -> it
 
         -> 0
@@ -4213,30 +4348,20 @@ webp-enc-write-bits = (buf i64, cnt i64, out []byte, val i64, n i64) (new-buf i6
     buf = buf2
 
     #{overflow=wrap}
-    cntnew = cnt + n: {
+    cntnew-o = cnt + n
+    cntnew = cntnew-o: {
         ok -> it
 
         -> 0
     }
     cnt = cntnew
     cnt >= 8 -> {
-        #{overflow=wrap}
-        b255 = buf & 255: {
-            ok -> it
-
-            -> 0
-        }
-        out.push(b255)
-        #{overflow=wrap}
-        b8 = buf >> 8: {
-            ok -> it
-
-            -> 0
-        }
-        buf = b8
+        out.push(buf & 255)
+        buf = buf >> 8
 
         #{overflow=wrap}
-        c8 = cnt - 8: {
+        c8-o = cnt - 8
+        c8 i64 = c8-o: {
             ok -> it
 
             -> 0
@@ -4255,15 +4380,12 @@ webp-enc-canonical = (lens []i64, codes []i64) {
     n-sym = lens.len()
     count []i64 = with-len(16)
     si <- [0..n-sym): {
-
-        #{overflow=wrap}
         ls = lens[si]: {
             ok -> it
 
             -> 0
         }
 
-        #{overflow=wrap}
         d9v24 byte = count[ls]: {
             ok -> it
 
@@ -4271,7 +4393,8 @@ webp-enc-canonical = (lens []i64, codes []i64) {
         }
 
         #{overflow=wrap}
-        nv = d9v24 + 1: {
+        nv-o = d9v24 + 1
+        nv i64 = nv-o: {
             ok -> it
 
             -> 0
@@ -4295,45 +4418,35 @@ webp-enc-canonical = (lens []i64, codes []i64) {
 
             -> 0
         }
+
         #{overflow=wrap}
-        csum = code + ck: {
+        csum-o = code + ck
+        csum i64 = csum-o: {
             ok -> it
 
             -> 0
         }
-        #{overflow=wrap}
-        csh = csum << 1: {
-            ok -> it
-
-            -> 0
-        }
-        code = csh
+        code = csum << 1
     }
     si <- [0..n-sym): {
-
-        #{overflow=wrap}
         cl = lens[si]: {
             ok -> it
 
             -> 0
         }
         cl > 0 -> {
-
-            #{overflow=wrap}
             d9v25 byte = next-code[cl]: {
                 ok -> it
 
                 -> 0
             }
 
-            #{overflow=wrap}
             codes[si]: {
                 ok -> it = d9v25
 
                 -> _
             }
 
-            #{overflow=wrap}
             d9v26 byte = next-code[cl]: {
                 ok -> it
 
@@ -4341,7 +4454,8 @@ webp-enc-canonical = (lens []i64, codes []i64) {
             }
 
             #{overflow=wrap}
-            nv2 = d9v26 + 1: {
+            nv2-o = d9v26 + 1
+            nv2 i64 = nv2-o: {
                 ok -> it
 
                 -> 0
@@ -4376,7 +4490,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
     lw []i64 = with-len(n-sym)
     n-leaves = 0
     si <- [0..n-sym): {
-
         {
             fs = freq[si]: {
                 ok -> it
@@ -4403,7 +4516,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                 }
 
                 #{overflow=wrap}
-                nlv1 = n-leaves + 1: {
+                nlv1-o = n-leaves + 1
+                nlv1 i64 = nlv1-o: {
                     ok -> it
 
                     -> 0
@@ -4414,7 +4528,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
     }
     n-leaves == 0 -> return
     n-leaves == 1 -> {
-
         s0 = lsym[0]: {
             ok -> it
 
@@ -4437,7 +4550,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
     nl []i64 = with-len(max-nodes)
     nr []i64 = with-len(max-nodes)
     i <- [0..n-leaves): {
-
         d9v28 i64 = lw[i]: {
             ok -> it
 
@@ -4475,7 +4587,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             ; first smallest
             m1 = 0
             k <- [1..na): {
-
                 {
                     ak = act[k]: {
                         ok -> it
@@ -4523,7 +4634,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             }
 
             #{overflow=wrap}
-            nad = na - 1: {
+            nad-o = na - 1
+            nad i64 = nad-o: {
                 ok -> it
 
                 -> 0
@@ -4533,7 +4645,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             ; second smallest
             m2 = 0
             k <- [1..na): {
-
                 {
                     ak2 = act[k]: {
                         ok -> it
@@ -4581,7 +4692,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             }
 
             #{overflow=wrap}
-            nad = na - 1: {
+            nad-o = na - 1
+            nad i64 = nad-o: {
                 ok -> it
 
                 -> 0
@@ -4602,7 +4714,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             }
 
             #{overflow=wrap}
-            nsum = d9v31 + d9v32: {
+            nsum-o = d9v31 + d9v32
+            nsum i64 = nsum-o: {
                 ok -> it
 
                 -> 0
@@ -4629,7 +4742,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             }
 
             #{overflow=wrap}
-            nai = na + 1: {
+            nai-o = na + 1
+            nai i64 = nai-o: {
                 ok -> it
 
                 -> 0
@@ -4637,7 +4751,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
             na = nai
 
             #{overflow=wrap}
-            nni = nn + 1: {
+            nni-o = nn + 1
+            nni i64 = nni-o: {
                 ok -> it
 
                 -> 0
@@ -4654,7 +4769,7 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
     st-d []i64 = with-len(max-nodes + 2)
     sp = 0
 
-    d9v33 i64 = act[0]: {
+    d9v33 = act[0]: {
         ok -> it
 
         -> 0
@@ -4671,7 +4786,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
     }
 
     #{overflow=wrap}
-    spi = sp + 1: {
+    spi-o = sp + 1
+    spi = spi-o: {
         ok -> it
 
         -> 0
@@ -4681,7 +4797,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
         sp > 0 -> {
 
             #{overflow=wrap}
-            spd = sp - 1: {
+            spd-o = sp - 1
+            spd i64 = spd-o: {
                 ok -> it
 
                 -> 0
@@ -4724,7 +4841,6 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                 }
 
                 -> {
-
                     d9v34 i64 = nl[nd]: {
                         ok -> it
 
@@ -4738,7 +4854,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                     }
 
                     #{overflow=wrap}
-                    dp1 = dp + 1: {
+                    dp1-o = dp + 1
+                    dp1 i64 = dp1-o: {
                         ok -> it
 
                         -> 0
@@ -4750,7 +4867,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                     }
 
                     #{overflow=wrap}
-                    spi2 = sp + 1: {
+                    spi2-o = sp + 1
+                    spi2 i64 = spi2-o: {
                         ok -> it
 
                         -> 0
@@ -4770,7 +4888,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                     }
 
                     #{overflow=wrap}
-                    dp2 = dp + 1: {
+                    dp2-o = dp + 1
+                    dp2 i64 = dp2-o: {
                         ok -> it
 
                         -> 0
@@ -4782,7 +4901,8 @@ webp-enc-huff-lens = (freq []i64, max-len i64, lens []i64) {
                     }
 
                     #{overflow=wrap}
-                    spi2 = sp + 1: {
+                    spi2-o = sp + 1
+                    spi2 i64 = spi2-o: {
                         ok -> it
 
                         -> 0
@@ -4803,7 +4923,6 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
     i = 0
     (i < n) {
         i < n -> {
-
             v = lens[i]: {
                 ok -> it
 
@@ -4818,7 +4937,8 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
                 scanning && rlen < 6 -> {
 
                     #{overflow=wrap}
-                    niv = i + rlen: {
+                    niv-o = i + rlen
+                    niv i64 = niv-o: {
                         ok -> it
 
                         -> 0
@@ -4834,7 +4954,8 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
                         ni < n && nv == v -> {
 
                             #{overflow=wrap}
-                            rli = rlen + 1: {
+                            rli-o = rlen + 1
+                            rli i64 = rli-o: {
                                 ok -> it
 
                                 -> 0
@@ -4850,7 +4971,8 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
             }
 
             #{overflow=wrap}
-            im1v = i - 1: {
+            im1v-o = i - 1
+            im1v i64 = im1v-o: {
                 ok -> it
 
                 -> 0
@@ -4892,7 +5014,8 @@ webp-enc-build-cl-seq = (lens []i64, seq-sym []i64, seq-extra []i64, seq-nextra 
             }
 
             #{overflow=wrap}
-            ir = i + rlen: {
+            ir-o = i + rlen
+            ir i64 = ir-o: {
                 ok -> it
 
                 -> 0
@@ -4917,6 +5040,132 @@ webp-enc-write-code = (buf i64, cnt i64, out []byte, code i64, n i64) (new-buf i
     new-cnt = cnt
 }
 
+; webp-enc-write-tree-fixed: non-simple VP8L Huffman block that uses a fixed
+; 4-bit code-length alphabet (symbols 0..15, all length 4). No RLE symbols are
+; used; every code length is emitted directly. Larger but unambiguous.
+webp-enc-write-tree-fixed = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, new-cnt i64) {
+    n = lens.len()
+    buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
+    buf, cnt = webp-enc-write-bits(buf, cnt, out, 15, 4)
+    k-order-fixed []i64 = with-len(19)
+    k-order-fixed[0]: {
+        ok -> it = 17
+
+        -> _
+    }
+    k-order-fixed[1]: {
+        ok -> it = 18
+
+        -> _
+    }
+    k-order-fixed[2]: {
+        ok -> it = 0
+
+        -> _
+    }
+    k-order-fixed[3]: {
+        ok -> it = 1
+
+        -> _
+    }
+    k-order-fixed[4]: {
+        ok -> it = 2
+
+        -> _
+    }
+    k-order-fixed[5]: {
+        ok -> it = 3
+
+        -> _
+    }
+    k-order-fixed[6]: {
+        ok -> it = 4
+
+        -> _
+    }
+    k-order-fixed[7]: {
+        ok -> it = 5
+
+        -> _
+    }
+    k-order-fixed[8]: {
+        ok -> it = 16
+
+        -> _
+    }
+    k-order-fixed[9]: {
+        ok -> it = 6
+
+        -> _
+    }
+    k-order-fixed[10]: {
+        ok -> it = 7
+
+        -> _
+    }
+    k-order-fixed[11]: {
+        ok -> it = 8
+
+        -> _
+    }
+    k-order-fixed[12]: {
+        ok -> it = 9
+
+        -> _
+    }
+    k-order-fixed[13]: {
+        ok -> it = 10
+
+        -> _
+    }
+    k-order-fixed[14]: {
+        ok -> it = 11
+
+        -> _
+    }
+    k-order-fixed[15]: {
+        ok -> it = 12
+
+        -> _
+    }
+    k-order-fixed[16]: {
+        ok -> it = 13
+
+        -> _
+    }
+    k-order-fixed[17]: {
+        ok -> it = 14
+
+        -> _
+    }
+    k-order-fixed[18]: {
+        ok -> it = 15
+
+        -> _
+    }
+    mi <- [0..19): {
+        ko = k-order-fixed[mi]: {
+            ok -> it
+
+            -> 0
+        }
+        clen i64 = 0
+        ko <= 15 -> clen = 4
+        buf, cnt = webp-enc-write-bits(buf, cnt, out, clen, 3)
+    }
+    buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
+    k <- [0..n): {
+        lv = lens[k]: {
+            ok -> it
+
+            -> 0
+        }
+        buf, cnt = webp-enc-write-code(buf, cnt, out, lv, 4)
+    }
+    new-buf = buf
+    new-cnt = cnt
+}
+
 ; webp-enc-write-tree: write one prefix code's code lengths as a
 ; spec-correct VP8L Huffman-code block (mirrors webp-decode-meta-huff).
 ; Simple code (1 bit flag + <=2 symbols of length 1) when the tree has <=2
@@ -4931,7 +5180,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
     s2 = 0
     all-one = true
     k <- [0..n): {
-
         cl = lens[k]: {
             ok -> it
 
@@ -4941,7 +5189,8 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
             cl > 0 -> {
 
                 #{overflow=wrap}
-                nzci = nzc + 1: {
+                nzci-o = nzc + 1
+                nzci i64 = nzci-o: {
                     ok -> it
 
                     -> 0
@@ -4957,6 +5206,16 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
                     cl != 1 -> all-one = false
                 }
             }
+        }
+    }
+    {
+        nzc > 2 || ! all-one -> {
+            nb i64 = 0
+            nc i64 = 0
+            nb, nc = webp-enc-write-tree-fixed(buf, cnt, out, lens)
+            new-buf = nb
+            new-cnt = nc
+            return
         }
     }
     {
@@ -5000,8 +5259,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
 
             cl-freq []i64 = with-len(19)
             i <- [0..seq-sym.len()): {
-
-                #{overflow=wrap}
                 svi = seq-sym[i]: {
                     ok -> it
 
@@ -5014,7 +5271,8 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
                 }
 
                 #{overflow=wrap}
-                nv = d9v36 + 1: {
+                nv-o = d9v36 + 1
+                nv i64 = nv-o: {
                     ok -> it
 
                     -> 0
@@ -5031,7 +5289,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
             ndist = 0
             last-used = 0
             k <- [0..19): {
-
                 cfk = cl-freq[k]: {
                     ok -> it
 
@@ -5040,7 +5297,8 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
                 cfk > 0 -> {
 
                     #{overflow=wrap}
-                    ndi = ndist + 1: {
+                    ndi-o = ndist + 1
+                    ndi i64 = ndi-o: {
                         ok -> it
 
                         -> 0
@@ -5063,7 +5321,8 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
                     }
 
                     #{overflow=wrap}
-                    nvf = d9v37 + 1: {
+                    nvf-o = d9v37 + 1
+                    nvf i64 = nvf-o: {
                         ok -> it
 
                         -> 0
@@ -5184,7 +5443,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
             ; num_codes = 19 -> stored as (19 - 4) in 4 bits
             buf, cnt = webp-enc-write-bits(buf, cnt, out, 15, 4)
             mi <- [0..19): {
-
                 ko = k-order[mi]: {
                     ok -> it
 
@@ -5202,7 +5460,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
             ; use-length = 0 (all n symbols follow)
             buf, cnt = webp-enc-write-bits(buf, cnt, out, 0, 1)
             i <- [0..seq-sym.len()): {
-
                 s = seq-sym[i]: {
                     ok -> it
 
@@ -5226,7 +5483,6 @@ webp-enc-write-tree = (buf i64, cnt i64, out []byte, lens []i64) (new-buf i64, n
                     -> 0
                 }
                 sne > 0 -> {
-
                     sxe = seq-extra[i]: {
                         ok -> it
 
@@ -5259,7 +5515,8 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         k <- [0..4096): {
 
             #{overflow=wrap}
-            bk = base + k: {
+            bk-o = base + k
+            bk i64 = bk-o: {
                 ok -> it
 
                 -> 0
@@ -5278,7 +5535,6 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         tree-codes []i64 = with-len(4096)
         webp-enc-canonical(tree-lens, tree-codes)
         k <- [0..4096): {
-
             d9v39 i64 = tree-codes[k]: {
                 ok -> it
 
@@ -5286,7 +5542,8 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
             }
 
             #{overflow=wrap}
-            bk2 = base + k: {
+            bk2-o = base + k
+            bk2 i64 = bk2-o: {
                 ok -> it
 
                 -> 0
@@ -5302,7 +5559,6 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
 
     ; pixel data: green first, then red/blue/alpha through tree (green >> 3) % 5
     i <- [0..npix): {
-
         gv = g[i]: {
             ok -> it
 
@@ -5316,7 +5572,8 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         base = sel * 4096
 
         #{overflow=wrap}
-        gidx = base + gv: {
+        gidx-o = base + gv
+        gidx i64 = gidx-o: {
             ok -> it
 
             -> 0
@@ -5340,13 +5597,16 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        rb1 = base + 256: {
+        rb1-o = base + 256
+        rb1 i64 = rb1-o: {
             ok -> it
 
             -> 0
         }
+
         #{overflow=wrap}
-        ridx = rb1 + rv: {
+        ridx-o = rb1 + rv
+        ridx i64 = ridx-o: {
             ok -> it
 
             -> 0
@@ -5370,13 +5630,16 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        bb1 = base + 512: {
+        bb1-o = base + 512
+        bb1 i64 = bb1-o: {
             ok -> it
 
             -> 0
         }
+
         #{overflow=wrap}
-        bidx = bb1 + bv: {
+        bidx-o = bb1 + bv
+        bidx i64 = bidx-o: {
             ok -> it
 
             -> 0
@@ -5394,7 +5657,6 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
         buf, cnt = webp-enc-write-bits(buf, cnt, out, acb, lb)
         {
             has-alpha -> {
-
                 av = a[i]: {
                     ok -> it
 
@@ -5402,13 +5664,16 @@ webp-enc-write-entropy = (buf i64, cnt i64, out []byte, main-w i64, npix i64, g 
                 }
 
                 #{overflow=wrap}
-                ab1 = base + 768: {
+                ab1-o = base + 768
+                ab1 i64 = ab1-o: {
                     ok -> it
 
                     -> 0
                 }
+
                 #{overflow=wrap}
-                aidx = ab1 + av: {
+                aidx-o = ab1 + av
+                aidx i64 = aidx-o: {
                     ok -> it
 
                     -> 0
@@ -5483,7 +5748,8 @@ load = (path str) (img ?image) {
             fourcc = data.slice(pos, pos + 4).to-bytes-str()
 
             #{overflow=wrap}
-            sp4 = pos + 4: {
+            sp4-o = pos + 4
+            sp4 i64 = sp4-o: {
                 ok -> it
 
                 -> 0
@@ -5492,7 +5758,8 @@ load = (path str) (img ?image) {
             chunk-size = webp-read-u32-le(data, size-pos)
 
             #{overflow=wrap}
-            cdp8 = pos + 8: {
+            cdp8-o = pos + 8
+            cdp8 i64 = cdp8-o: {
                 ok -> it
 
                 -> 0
@@ -5501,53 +5768,61 @@ load = (path str) (img ?image) {
             {
                 fourcc == 'VP8X' -> {
                     {
+
                         #{overflow=wrap}
-                        cdp10 = chunk-data-pos + 10: {
+                        cdp10-o = chunk-data-pos + 10
+                        cdp10 i64 = cdp10-o: {
                             ok -> it
 
                             -> 0
                         }
                         cdp10 <= data.len() -> {
                             b0x = webp-byte-at(data, chunk-data-pos)
+                            has-alpha = (b0x & 16) != 0
+
                             #{overflow=wrap}
-                            am = b0x & 16: {
+                            c4-o = chunk-data-pos + 4
+                            c4 i64 = c4-o: {
                                 ok -> it
 
                                 -> 0
                             }
-                            has-alpha = am != 0
+
                             #{overflow=wrap}
-                            c4 = chunk-data-pos + 4: {
+                            c5-o = chunk-data-pos + 5
+                            c5 i64 = c5-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            c5 = chunk-data-pos + 5: {
+                            c6-o = chunk-data-pos + 6
+                            c6 i64 = c6-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            c6 = chunk-data-pos + 6: {
+                            c7-o = chunk-data-pos + 7
+                            c7 i64 = c7-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            c7 = chunk-data-pos + 7: {
+                            c8b-o = chunk-data-pos + 8
+                            c8b i64 = c8b-o: {
                                 ok -> it
 
                                 -> 0
                             }
-                            #{overflow=wrap}
-                            c8b = chunk-data-pos + 8: {
-                                ok -> it
 
-                                -> 0
-                            }
                             #{overflow=wrap}
-                            c9 = chunk-data-pos + 9: {
+                            c9-o = chunk-data-pos + 9
+                            c9 i64 = c9-o: {
                                 ok -> it
 
                                 -> 0
@@ -5558,62 +5833,54 @@ load = (path str) (img ?image) {
                             d7 = webp-byte-at(data, c7)
                             d8b = webp-byte-at(data, c8b)
                             d9 = webp-byte-at(data, c9)
+                            d5s = d5 << 8
+                            d6s = d6 << 16
+
                             #{overflow=wrap}
-                            d5s = d5 << 8: {
+                            cw1-o = d4 + d5s
+                            cw1 i64 = cw1-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            d6s = d6 << 16: {
+                            cw2-o = cw1 + d6s
+                            cw2 i64 = cw2-o: {
                                 ok -> it
 
                                 -> 0
                             }
+                            d8s = d8b << 8
+                            d9s = d9 << 16
+
                             #{overflow=wrap}
-                            cw1 = d4 | d5s: {
+                            ch1-o = d7 + d8s
+                            ch1 i64 = ch1-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            cw2 = cw1 | d6s: {
+                            ch2-o = ch1 + d9s
+                            ch2 i64 = ch2-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            d8s = d8b << 8: {
+                            wp1-o = cw2 + 1
+                            wp1 i64 = wp1-o: {
                                 ok -> it
 
                                 -> 0
                             }
-                            #{overflow=wrap}
-                            d9s = d9 << 16: {
-                                ok -> it
 
-                                -> 0
-                            }
                             #{overflow=wrap}
-                            ch1 = d7 | d8s: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            ch2 = ch1 | d9s: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            wp1 = cw2 + 1: {
-                                ok -> it
-
-                                -> 0
-                            }
-                            #{overflow=wrap}
-                            hp1 = ch2 + 1: {
+                            hp1-o = ch2 + 1
+                            hp1 i64 = hp1-o: {
                                 ok -> it
 
                                 -> 0
@@ -5650,7 +5917,6 @@ load = (path str) (img ?image) {
                         #{overflow=wrap}
                         vdbuf []byte = with-len(dw * dh * 3)
                         vk <- [0..dw * dh * 3): {
-
                             d9v40 byte = rgb[vk]: {
                                 ok -> it
 
@@ -5669,22 +5935,19 @@ load = (path str) (img ?image) {
             }
 
             #{overflow=wrap}
-            pn = chunk-data-pos + chunk-size: {
+            pn-o = chunk-data-pos + chunk-size
+            pn i64 = pn-o: {
                 ok -> it
 
                 -> 0
             }
             pos = pn
-            #{overflow=wrap}
-            csm = chunk-size & 1: {
-                ok -> it
-
-                -> 0
-            }
+            csm = chunk-size & 1
             csm != 0 -> {
 
                 #{overflow=wrap}
-                pp1 = pos + 1: {
+                pp1-o = pos + 1
+                pp1 i64 = pp1-o: {
                     ok -> it
 
                     -> 0
@@ -5709,7 +5972,6 @@ load = (path str) (img ?image) {
     #{overflow=wrap}
     dbuf []byte = with-len(w * h * bands)
     i <- [0..w * h * bands): {
-
         d9v41 byte = pixels[i]: {
             ok -> it
 
@@ -5755,7 +6017,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     freq-a []i64 = with-len(ts-c)
     freq-d []i64 = with-len(ts-d)
     i <- [0..npix): {
-
         gi = g[i]: {
             ok -> it
 
@@ -5768,7 +6029,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        nv42 = d9v42 + 1: {
+        nv42-o = d9v42 + 1
+        nv42 i64 = nv42-o: {
             ok -> it
 
             -> 0
@@ -5791,7 +6053,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        nv43 = d9v43 + 1: {
+        nv43-o = d9v43 + 1
+        nv43 i64 = nv43-o: {
             ok -> it
 
             -> 0
@@ -5814,7 +6077,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        nv44 = d9v44 + 1: {
+        nv44-o = d9v44 + 1
+        nv44 i64 = nv44-o: {
             ok -> it
 
             -> 0
@@ -5837,7 +6101,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
 
         #{overflow=wrap}
-        nv45 = d9v45 + 1: {
+        nv45-o = d9v45 + 1
+        nv45 i64 = nv45-o: {
             ok -> it
 
             -> 0
@@ -5872,7 +6137,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     ; distinct symbol counts (<=1 => decoder reads 0 bits for that channel)
     nz-g = 0
     i <- [0..ts-g): {
-
         lgi = len-g[i]: {
             ok -> it
 
@@ -5881,7 +6145,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         lgi > 0 -> {
 
             #{overflow=wrap}
-            nzg = nz-g + 1: {
+            nzg-o = nz-g + 1
+            nzg i64 = nzg-o: {
                 ok -> it
 
                 -> 0
@@ -5891,7 +6156,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     }
     nz-r = 0
     i <- [0..ts-c): {
-
         lri = len-r[i]: {
             ok -> it
 
@@ -5900,7 +6164,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         lri > 0 -> {
 
             #{overflow=wrap}
-            nzr = nz-r + 1: {
+            nzr-o = nz-r + 1
+            nzr i64 = nzr-o: {
                 ok -> it
 
                 -> 0
@@ -5910,7 +6175,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     }
     nz-b = 0
     i <- [0..ts-c): {
-
         lbi = len-b[i]: {
             ok -> it
 
@@ -5919,7 +6183,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         lbi > 0 -> {
 
             #{overflow=wrap}
-            nzb = nz-b + 1: {
+            nzb-o = nz-b + 1
+            nzb i64 = nzb-o: {
                 ok -> it
 
                 -> 0
@@ -5929,7 +6194,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     }
     nz-a = 0
     i <- [0..ts-c): {
-
         lai = len-a[i]: {
             ok -> it
 
@@ -5938,7 +6202,8 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         lai > 0 -> {
 
             #{overflow=wrap}
-            nza = nz-a + 1: {
+            nza-o = nz-a + 1
+            nza i64 = nza-o: {
                 ok -> it
 
                 -> 0
@@ -5958,7 +6223,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
     i <- [0..npix): {
         {
             nz-g > 1 -> {
-
                 gv = g[i]: {
                     ok -> it
 
@@ -5980,7 +6244,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
         {
             nz-r > 1 -> {
-
                 rv = r[i]: {
                     ok -> it
 
@@ -6002,7 +6265,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
         {
             nz-b > 1 -> {
-
                 bv = b[i]: {
                     ok -> it
 
@@ -6024,7 +6286,6 @@ webp-enc-write-subimage = (buf i64, cnt i64, out []byte, sub-w i64, npix i64, g 
         }
         {
             nz-a > 1 -> {
-
                 av = a[i]: {
                     ok -> it
 
@@ -6073,7 +6334,8 @@ save = (path str, img image) (ok bool) {
         o = i * img.bands
 
         #{overflow=wrap}
-        o1 = o + 1: {
+        o1-o = o + 1
+        o1 i64 = o1-o: {
             ok -> it
 
             -> 0
@@ -6101,7 +6363,8 @@ save = (path str, img image) (ok bool) {
         }
 
         #{overflow=wrap}
-        o2 = o + 2: {
+        o2-o = o + 2
+        o2 i64 = o2-o: {
             ok -> it
 
             -> 0
@@ -6120,7 +6383,8 @@ save = (path str, img image) (ok bool) {
             has-alpha -> {
 
                 #{overflow=wrap}
-                o3 = o + 3: {
+                o3-o = o + 3
+                o3 i64 = o3-o: {
                     ok -> it
 
                     -> 0
@@ -6214,7 +6478,6 @@ save = (path str, img image) (ok bool) {
 
                 -> {
                     pal-count < 256 -> {
-
                         d9v50 i64 = r0[i]: {
                             ok -> it
 
@@ -6269,7 +6532,8 @@ save = (path str, img image) (ok bool) {
                         }
 
                         #{overflow=wrap}
-                        pci = pal-count + 1: {
+                        pci-o = pal-count + 1
+                        pci i64 = pci-o: {
                             ok -> it
 
                             -> 0
@@ -6308,7 +6572,6 @@ save = (path str, img image) (ok bool) {
         sum-raw = 0
         sum-sg = 0
         i <- [0..npix): {
-
             ri = r0[i]: {
                 ok -> it
 
@@ -6324,16 +6587,18 @@ save = (path str, img image) (ok bool) {
 
                 -> 0
             }
+
             #{overflow=wrap}
-            drv = ri - 128: {
+            drv-o = ri - 128
+            drv i64 = drv-o: {
                 ok -> it
 
                 -> 0
             }
             dr = drv
             dr < 0 -> {
-                #{overflow=wrap}
-                drn = -dr: {
+                drn-o = -dr
+                drn i64 = drn-o: {
                     ok -> it
 
                     -> 0
@@ -6342,15 +6607,16 @@ save = (path str, img image) (ok bool) {
             }
 
             #{overflow=wrap}
-            dbv = bi - 128: {
+            dbv-o = bi - 128
+            dbv i64 = dbv-o: {
                 ok -> it
 
                 -> 0
             }
             db = dbv
             db < 0 -> {
-                #{overflow=wrap}
-                dbn = -db: {
+                dbn-o = -db
+                dbn i64 = dbn-o: {
                     ok -> it
 
                     -> 0
@@ -6359,13 +6625,16 @@ save = (path str, img image) (ok bool) {
             }
 
             #{overflow=wrap}
-            sr1 = sum-raw + dr: {
+            sr1-o = sum-raw + dr
+            sr1 i64 = sr1-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            sr2 = sr1 + db: {
+            sr2-o = sr1 + db
+            sr2 i64 = sr2-o: {
                 ok -> it
 
                 -> 0
@@ -6373,15 +6642,16 @@ save = (path str, img image) (ok bool) {
             sum-raw = sr2
 
             #{overflow=wrap}
-            dgv = ri - gi: {
+            dgv-o = ri - gi
+            dgv i64 = dgv-o: {
                 ok -> it
 
                 -> 0
             }
             dg = dgv
             dg < 0 -> {
-                #{overflow=wrap}
-                dgn = -dg: {
+                dgn-o = -dg
+                dgn i64 = dgn-o: {
                     ok -> it
 
                     -> 0
@@ -6390,15 +6660,16 @@ save = (path str, img image) (ok bool) {
             }
 
             #{overflow=wrap}
-            db2v = bi - gi: {
+            db2v-o = bi - gi
+            db2v i64 = db2v-o: {
                 ok -> it
 
                 -> 0
             }
             db2 = db2v
             db2 < 0 -> {
-                #{overflow=wrap}
-                db2n = -db2: {
+                db2n-o = -db2
+                db2n i64 = db2n-o: {
                     ok -> it
 
                     -> 0
@@ -6407,13 +6678,16 @@ save = (path str, img image) (ok bool) {
             }
 
             #{overflow=wrap}
-            ss1 = sum-sg + dg: {
+            ss1-o = sum-sg + dg
+            ss1 i64 = ss1-o: {
                 ok -> it
 
                 -> 0
             }
+
             #{overflow=wrap}
-            ss2 = ss1 + db2: {
+            ss2-o = ss1 + db2
+            ss2 i64 = ss2-o: {
                 ok -> it
 
                 -> 0
@@ -6471,13 +6745,16 @@ save = (path str, img image) (ok bool) {
                         sx < w -> {
 
                             #{overflow=wrap}
-                            sw = sy * w: {
+                            sw-o = sy * w
+                            sw i64 = sw-o: {
                                 ok -> it
 
                                 -> 0
                             }
+
                             #{overflow=wrap}
-                            sidx = sw + sx: {
+                            sidx-o = sw + sx
+                            sidx i64 = sidx-o: {
                                 ok -> it
 
                                 -> 0
@@ -6526,7 +6803,6 @@ save = (path str, img image) (ok bool) {
             {
                 sg-enabled -> {
                     i <- [0..npix): {
-
                         d9v54 i64 = r0[i]: {
                             ok -> it
 
@@ -6540,17 +6816,13 @@ save = (path str, img image) (ok bool) {
                         }
 
                         #{overflow=wrap}
-                        rr = d9v54 - d9v55: {
+                        rr-o = d9v54 - d9v55
+                        rr i64 = rr-o: {
                             ok -> it
 
                             -> 0
                         }
-                        #{overflow=wrap}
-                        rr8 = rr & 255: {
-                            ok -> it
-
-                            -> 0
-                        }
+                        rr8 = rr & 255
                         enc-r[i]: {
                             ok -> it = rr8
 
@@ -6570,17 +6842,13 @@ save = (path str, img image) (ok bool) {
                         }
 
                         #{overflow=wrap}
-                        bb = d9v56 - d9v57: {
+                        bb-o = d9v56 - d9v57
+                        bb i64 = bb-o: {
                             ok -> it
 
                             -> 0
                         }
-                        #{overflow=wrap}
-                        bb8 = bb & 255: {
-                            ok -> it
-
-                            -> 0
-                        }
+                        bb8 = bb & 255
                         enc-b[i]: {
                             ok -> it = bb8
 
@@ -6591,7 +6859,6 @@ save = (path str, img image) (ok bool) {
 
                 -> {
                     i <- [0..npix): {
-
                         d9v58 i64 = r0[i]: {
                             ok -> it
 
@@ -6619,7 +6886,6 @@ save = (path str, img image) (ok bool) {
                 }
             }
             i <- [0..npix): {
-
                 d9v60 i64 = g0[i]: {
                     ok -> it
 
@@ -6662,7 +6928,6 @@ save = (path str, img image) (ok bool) {
     freq-a []i64 = with-len(ts-c)
     freq-d []i64 = with-len(ts-d)
     i <- [0..enc-n): {
-
         egi = enc-g[i]: {
             ok -> it
 
@@ -6675,7 +6940,8 @@ save = (path str, img image) (ok bool) {
         }
 
         #{overflow=wrap}
-        nv62 = d9v62 + 1: {
+        nv62-o = d9v62 + 1
+        nv62 i64 = nv62-o: {
             ok -> it
 
             -> 0
@@ -6698,7 +6964,8 @@ save = (path str, img image) (ok bool) {
         }
 
         #{overflow=wrap}
-        nv63 = d9v63 + 1: {
+        nv63-o = d9v63 + 1
+        nv63 i64 = nv63-o: {
             ok -> it
 
             -> 0
@@ -6721,7 +6988,8 @@ save = (path str, img image) (ok bool) {
         }
 
         #{overflow=wrap}
-        nv64 = d9v64 + 1: {
+        nv64-o = d9v64 + 1
+        nv64 i64 = nv64-o: {
             ok -> it
 
             -> 0
@@ -6744,7 +7012,8 @@ save = (path str, img image) (ok bool) {
         }
 
         #{overflow=wrap}
-        nv65 = d9v65 + 1: {
+        nv65-o = d9v65 + 1
+        nv65 i64 = nv65-o: {
             ok -> it
 
             -> 0
@@ -6779,7 +7048,6 @@ save = (path str, img image) (ok bool) {
     ; distinct symbol counts (<=1 => decoder reads 0 bits for that channel)
     nz-g = 0
     i <- [0..ts-g): {
-
         lgi = len-g[i]: {
             ok -> it
 
@@ -6788,7 +7056,8 @@ save = (path str, img image) (ok bool) {
         lgi > 0 -> {
 
             #{overflow=wrap}
-            nzg = nz-g + 1: {
+            nzg-o = nz-g + 1
+            nzg i64 = nzg-o: {
                 ok -> it
 
                 -> 0
@@ -6798,7 +7067,6 @@ save = (path str, img image) (ok bool) {
     }
     nz-r = 0
     i <- [0..ts-c): {
-
         lri = len-r[i]: {
             ok -> it
 
@@ -6807,7 +7075,8 @@ save = (path str, img image) (ok bool) {
         lri > 0 -> {
 
             #{overflow=wrap}
-            nzr = nz-r + 1: {
+            nzr-o = nz-r + 1
+            nzr i64 = nzr-o: {
                 ok -> it
 
                 -> 0
@@ -6817,7 +7086,6 @@ save = (path str, img image) (ok bool) {
     }
     nz-b = 0
     i <- [0..ts-c): {
-
         lbi = len-b[i]: {
             ok -> it
 
@@ -6826,7 +7094,8 @@ save = (path str, img image) (ok bool) {
         lbi > 0 -> {
 
             #{overflow=wrap}
-            nzb = nz-b + 1: {
+            nzb-o = nz-b + 1
+            nzb i64 = nzb-o: {
                 ok -> it
 
                 -> 0
@@ -6836,7 +7105,6 @@ save = (path str, img image) (ok bool) {
     }
     nz-a = 0
     i <- [0..ts-c): {
-
         lai = len-a[i]: {
             ok -> it
 
@@ -6845,7 +7113,8 @@ save = (path str, img image) (ok bool) {
         lai > 0 -> {
 
             #{overflow=wrap}
-            nza = nz-a + 1: {
+            nza-o = nz-a + 1
+            nza i64 = nza-o: {
                 ok -> it
 
                 -> 0
@@ -6930,7 +7199,6 @@ save = (path str, img image) (ok bool) {
             -> _
         }
         j <- [1..pal-count): {
-
             d9v70 i64 = pal-g[j]: {
                 ok -> it
 
@@ -6938,7 +7206,8 @@ save = (path str, img image) (ok bool) {
             }
 
             #{overflow=wrap}
-            jm1 = j - 1: {
+            jm1-o = j - 1
+            jm1 i64 = jm1-o: {
                 ok -> it
 
                 -> 0
@@ -6948,18 +7217,15 @@ save = (path str, img image) (ok bool) {
 
                 -> 0
             }
+
             #{overflow=wrap}
-            dg = d9v70 - d9v71: {
+            dg-o = d9v70 - d9v71
+            dg i64 = dg-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            dg8 = dg & 255: {
-                ok -> it
-
-                -> 0
-            }
+            dg8 = dg & 255
             pal-sub-g[j]: {
                 ok -> it = dg8
 
@@ -6977,18 +7243,15 @@ save = (path str, img image) (ok bool) {
 
                 -> 0
             }
+
             #{overflow=wrap}
-            dr2 = d9v72 - d9v73: {
+            dr2-o = d9v72 - d9v73
+            dr2 i64 = dr2-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            dr8 = dr2 & 255: {
-                ok -> it
-
-                -> 0
-            }
+            dr8 = dr2 & 255
             pal-sub-r[j]: {
                 ok -> it = dr8
 
@@ -7006,18 +7269,15 @@ save = (path str, img image) (ok bool) {
 
                 -> 0
             }
+
             #{overflow=wrap}
-            db2 = d9v74 - d9v75: {
+            db2-o = d9v74 - d9v75
+            db2 i64 = db2-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            db8 = db2 & 255: {
-                ok -> it
-
-                -> 0
-            }
+            db8 = db2 & 255
             pal-sub-b[j]: {
                 ok -> it = db8
 
@@ -7035,18 +7295,15 @@ save = (path str, img image) (ok bool) {
 
                 -> 0
             }
+
             #{overflow=wrap}
-            da2 = d9v76 - d9v77: {
+            da2-o = d9v76 - d9v77
+            da2 i64 = da2-o: {
                 ok -> it
 
                 -> 0
             }
-            #{overflow=wrap}
-            da8 = da2 & 255: {
-                ok -> it
-
-                -> 0
-            }
+            da8 = da2 & 255
             pal-sub-a[j]: {
                 ok -> it = da8
 
@@ -7091,7 +7348,6 @@ save = (path str, img image) (ok bool) {
     i <- [0..enc-n): {
         {
             nz-g > 1 -> {
-
                 gv = enc-g[i]: {
                     ok -> it
 
@@ -7113,7 +7369,6 @@ save = (path str, img image) (ok bool) {
         }
         {
             nz-r > 1 -> {
-
                 rv = enc-r[i]: {
                     ok -> it
 
@@ -7135,7 +7390,6 @@ save = (path str, img image) (ok bool) {
         }
         {
             nz-b > 1 -> {
-
                 bv = enc-b[i]: {
                     ok -> it
 
@@ -7157,7 +7411,6 @@ save = (path str, img image) (ok bool) {
         }
         {
             nz-a > 1 -> {
-
                 av = enc-a[i]: {
                     ok -> it
 
@@ -7204,7 +7457,12 @@ save = (path str, img image) (ok bool) {
     }
 
     #{overflow=wrap}
-    sz = filesize - 8
+    sz-opt = filesize - 8
+    sz = sz-opt: {
+        ok -> it
+
+        -> 0
+    }
     buf []byte = with-cap(filesize)
     buf.push(82); R
     buf.push(73); I
@@ -7227,7 +7485,6 @@ save = (path str, img image) (ok bool) {
     buf.push((payload-len >> 16) & 255)
     buf.push((payload-len >> 24) & 255)
     i <- [0..payload-len): {
-
         vb = vp8l-out[i]: {
             ok -> it
 

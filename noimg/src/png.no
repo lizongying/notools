@@ -12,12 +12,48 @@
 ;   Ancillary chunks: tEXt, tRNS, gAMA, etc.
 
 ; PNG signature bytes
+
 # /noimg/src/image.new
 # /noimg/src/image.new-from-data
 # /noimg/src/image.new-u16
 # /noimg/src/image.copy
 # /noimg/src/image.get-pixel
 # /noimg/src/image.set-pixel
+
+; png-byte-at: read data[o + delta] as a concrete i64
+png-byte-at = (d []byte, o i64, delta i64) (v i64) {
+
+    #{overflow=wrap}
+    idx-opt = o + delta
+    idx = idx-opt: {
+        ok -> it
+
+        -> 0
+    }
+    v = d[idx]: {
+        ok -> it
+
+        -> 0
+    }
+}
+
+; png-u32: big-endian u32 at data[o]
+png-u32 = (d []byte, o i64) (v i64) {
+    v = (png-byte-at(d, o, 0) << 24) | (png-byte-at(d, o, 1) << 16) | (png-byte-at(d, o, 2) << 8) | png-byte-at(d, o, 3)
+}
+
+; png-u32-at: big-endian u32 at data[o + delta]
+png-u32-at = (d []byte, o i64, delta i64) (v i64) {
+
+    #{overflow=wrap}
+    base-opt = o + delta
+    base = base-opt: {
+        ok -> it
+
+        -> 0
+    }
+    v = png-u32(d, base)
+}
 
 ; ── CRC32 ──
 ; CRC-32 (IEEE 802.3) using bitwise computation
@@ -31,11 +67,7 @@
 png-crc32 = (data []byte, start i64, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
-
-        #{overflow=wrap}
-        b = (data[start + i]: { ok -> it
-
-    -> 0 }) & 255
+        b = png-byte-at(data, start, i)
         crc = crc ^ b
         j <- [0..8): {
             {
@@ -68,15 +100,7 @@ load = (path str) (img ?image) {
         }
 
         ; Check PNG signature
-        ((data[0]: { ok -> it
-
-    -> 0 }) & 255) == 137 && ((data[1]: { ok -> it
-
-    -> 0 }) & 255) == 80 && ((data[2]: { ok -> it
-
-    -> 0 }) & 255) == 78 && ((data[3]: { ok -> it
-
-    -> 0 }) & 255) == 71 -> {
+        png-byte-at(data, 0, 0) == 137 && png-byte-at(data, 0, 1) == 80 && png-byte-at(data, 0, 2) == 78 && png-byte-at(data, 0, 3) == 71 -> {
         }
 
         -> {
@@ -108,114 +132,68 @@ load = (path str) (img ?image) {
             }
 
             ; Read chunk length (big-endian 32-bit)
-            chunk-len = (((data[pos]: { ok -> it
-
-    -> 0 }) & 255) << 24) | (((data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255) << 16) | (((data[pos + 2]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((data[pos + 3]: { ok -> it
-
-    -> 0 }) & 255)
+            chunk-len = png-u32(data, pos)
 
             #{overflow=wrap}
-            pos = pos + 4: { ok -> it
+            pos = pos + 4: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
 
-            ; Read chunk type (4 bytes)
-            chunk-type = data.slice(pos, pos + 4).to-bytes-str()
+            ; Read chunk type (4 bytes) as byte comparisons
+            is-ihdr = png-byte-at(data, pos, 0) == 73 && png-byte-at(data, pos, 1) == 72 && png-byte-at(data, pos, 2) == 68 && png-byte-at(data, pos, 3) == 82
+            is-idat = png-byte-at(data, pos, 0) == 73 && png-byte-at(data, pos, 1) == 68 && png-byte-at(data, pos, 2) == 65 && png-byte-at(data, pos, 3) == 84
+            is-plte = png-byte-at(data, pos, 0) == 80 && png-byte-at(data, pos, 1) == 76 && png-byte-at(data, pos, 2) == 84 && png-byte-at(data, pos, 3) == 69
+            is-trns = png-byte-at(data, pos, 0) == 116 && png-byte-at(data, pos, 1) == 82 && png-byte-at(data, pos, 2) == 78 && png-byte-at(data, pos, 3) == 83
+            is-iend = png-byte-at(data, pos, 0) == 73 && png-byte-at(data, pos, 1) == 69 && png-byte-at(data, pos, 2) == 78 && png-byte-at(data, pos, 3) == 68
 
             #{overflow=wrap}
-            pos = pos + 4: { ok -> it
+            pos = pos + 4: {
+                ok -> it
 
-    -> _ }
-            chunk-type == 'IHDR' -> {
+                -> _
+            }
+            is-ihdr -> {
 
                 ; IHDR: width(4) height(4) bitdepth(1) colortype(1) compression(1) filter(1) interlace(1)
-                w = (((data[pos]: { ok -> it
-
-    -> 0 }) & 255) << 24) | (((data[pos + 1]: { ok -> it
-
-    -> 0 }) & 255) << 16) | (((data[pos + 2]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((data[pos + 3]: { ok -> it
-
-    -> 0 }) & 255)
-                h = (((data[pos + 4]: { ok -> it
-
-    -> 0 }) & 255) << 24) | (((data[pos + 5]: { ok -> it
-
-    -> 0 }) & 255) << 16) | (((data[pos + 6]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((data[pos + 7]: { ok -> it
-
-    -> 0 }) & 255)
-
-                #{overflow=wrap}
-                bit-depth = (data[pos + 8]: { ok -> it
-
-    -> 0 }) & 255
-
-                #{overflow=wrap}
-                color-type = (data[pos + 9]: { ok -> it
-
-    -> 0 }) & 255
-
-                #{overflow=wrap}
-                compression = (data[pos + 10]: { ok -> it
-
-    -> 0 }) & 255
-
-                #{overflow=wrap}
-                filter = (data[pos + 11]: { ok -> it
-
-    -> 0 }) & 255
-
-                #{overflow=wrap}
-                interlace = (data[pos + 12]: { ok -> it
-
-    -> 0 }) & 255
+                w = png-u32(data, pos)
+                h = png-u32-at(data, pos, 4)
+                bit-depth = png-byte-at(data, pos, 8)
+                color-type = png-byte-at(data, pos, 9)
+                compression = png-byte-at(data, pos, 10)
+                filter = png-byte-at(data, pos, 11)
+                interlace = png-byte-at(data, pos, 12)
             }
-            chunk-type == 'IDAT' -> {
+            is-idat -> {
 
                 ; Append to idat-data
                 i <- [0..chunk-len): {
-
-                    #{overflow=wrap}
-                    idat-data.push((data[pos + i]: { ok -> it
-
-    -> 0 }) & 255)
+                    idat-data.push(png-byte-at(data, pos, i))
                 }
             }
-            chunk-type == 'PLTE' -> {
+            is-plte -> {
                 has-palette = true
                 i <- [0..chunk-len): {
-
-                    #{overflow=wrap}
-                    palette.push((data[pos + i]: { ok -> it
-
-    -> 0 }) & 255)
+                    palette.push(png-byte-at(data, pos, i))
                 }
             }
-            chunk-type == 'tRNS' -> {
+            is-trns -> {
                 has-trns = true
                 i <- [0..chunk-len): {
-
-                    #{overflow=wrap}
-                    trns.push((data[pos + i]: { ok -> it
-
-    -> 0 }) & 255)
+                    trns.push(png-byte-at(data, pos, i))
                 }
             }
-            chunk-type == 'IEND' -> {
+            is-iend -> {
                 break
             }
 
             #{overflow=wrap}
-            pos = pos + chunk-len + 4: { ok -> it
+            pos = pos + chunk-len + 4: {
+                ok -> it
 
-    -> _ }
+                -> _
+            }
         }
     }
     {
@@ -338,18 +316,18 @@ load = (path str) (img ?image) {
                 ; 15w45dqk：#{overflow=wrap} 结果仍是 ?i64，两段式解包后才能给 i64 变量
                 pw-opt = (w - sx-start + sx-step - 1) / sx-step
                 pass-w i64 = 0
-                pw-opt: {
-                    ok -> pass-w = it
+                pass-w = pw-opt: {
+                    ok -> it
 
-                    -> pass-w = 0
+                    -> 0
                 }
 
                 ph-opt = (h - sy-start + sy-step - 1) / sy-step
                 pass-h i64 = 0
-                ph-opt: {
-                    ok -> pass-h = it
+                pass-h = ph-opt: {
+                    ok -> it
 
-                    -> pass-h = 0
+                    -> 0
                 }
 
                 {
@@ -404,10 +382,11 @@ load = (path str) (img ?image) {
                             ; Copy current row
                             pass-cur []byte = with-len(pass-stride)
                             pi <- [0..pass-stride): {
+                                d9v1 byte = raw[raw-pos + 1 + pi]: {
+                                    ok -> it
 
-                                d9v1 byte = raw[raw-pos + 1 + pi]: { ok -> it
-
-                                    -> 0 }
+                                    -> 0
+                                }
 
                                 pass-cur[pi]: {
                                     ok -> it = d9v1
@@ -424,14 +403,17 @@ load = (path str) (img ?image) {
 
                                 filter-type == 1 -> {
                                     pi <- [bytes-per-pixel..pass-stride): {
+                                        d9v2 byte = pass-cur[pi]: {
+                                            ok -> it
 
-                                        d9v2 byte = pass-cur[pi]: { ok -> it
+                                            -> 0
+                                        }
 
-                                            -> 0 }
+                                        d9v3 byte = pass-cur[pi - bytes-per-pixel]: {
+                                            ok -> it
 
-                                        d9v3 byte = pass-cur[pi - bytes-per-pixel]: { ok -> it
-
-                                            -> 0 }
+                                            -> 0
+                                        }
 
                                         #{overflow=wrap}
                                         pass-cur[pi]: {
@@ -444,14 +426,17 @@ load = (path str) (img ?image) {
 
                                 filter-type == 2 -> {
                                     pi <- [0..pass-stride): {
+                                        d9v4 byte = pass-cur[pi]: {
+                                            ok -> it
 
-                                        d9v4 byte = pass-cur[pi]: { ok -> it
+                                            -> 0
+                                        }
 
-                                            -> 0 }
+                                        d9v5 byte = pass-prev[pi]: {
+                                            ok -> it
 
-                                        d9v5 byte = pass-prev[pi]: { ok -> it
-
-                                            -> 0 }
+                                            -> 0
+                                        }
 
                                         #{overflow=wrap}
                                         pass-cur[pi]: {
@@ -466,25 +451,31 @@ load = (path str) (img ?image) {
                                     pi <- [0..pass-stride): {
                                         left = 0
                                         pi >= bytes-per-pixel -> {
+                                            left = pass-cur[pi - bytes-per-pixel]: {
+                                                ok -> it
 
-                                            left = pass-cur[pi - bytes-per-pixel]: { ok -> it
-
-                                                -> 0 }
+                                                -> 0
+                                            }
                                         }
 
-                                        above = pass-prev[pi]: { ok -> it
+                                        above = pass-prev[pi]: {
+                                            ok -> it
 
-                                            -> 0 }
+                                            -> 0
+                                        }
 
-                                        d9v6 byte = pass-cur[pi]: { ok -> it
+                                        d9v6 byte = pass-cur[pi]: {
+                                            ok -> it
 
-                                            -> 0 }
+                                            -> 0
+                                        }
 
-                                        #{overflow=wrap}
                                         pass-cur[pi]: {
-                                            ok -> it = (d9v6 + (left + above) / 2): { ok -> it
+                                            ok -> it = (d9v6 + (left + above) / 2): {
+                                                ok -> it
 
-    -> 0 }
+                                                -> 0
+                                            }
 
                                             -> _
                                         }
@@ -495,21 +486,25 @@ load = (path str) (img ?image) {
                                     pi <- [0..pass-stride): {
                                         left = 0
                                         pi >= bytes-per-pixel -> {
+                                            left = pass-cur[pi - bytes-per-pixel]: {
+                                                ok -> it
 
-                                            left = pass-cur[pi - bytes-per-pixel]: { ok -> it
-
-                                                -> 0 }
+                                                -> 0
+                                            }
                                         }
 
-                                        above = pass-prev[pi]: { ok -> it
+                                        above = pass-prev[pi]: {
+                                            ok -> it
 
-                                            -> 0 }
+                                            -> 0
+                                        }
                                         above-left = 0
                                         pi >= bytes-per-pixel -> {
+                                            above-left = pass-prev[pi - bytes-per-pixel]: {
+                                                ok -> it
 
-                                            above-left = pass-prev[pi - bytes-per-pixel]: { ok -> it
-
-                                                -> 0 }
+                                                -> 0
+                                            }
                                         }
 
                                         #{overflow=wrap}
@@ -547,15 +542,18 @@ load = (path str) (img ?image) {
                                             }
                                         }
 
-                                        d9v7 byte = pass-cur[pi]: { ok -> it
+                                        d9v7 byte = pass-cur[pi]: {
+                                            ok -> it
 
-                                            -> 0 }
+                                            -> 0
+                                        }
 
-                                        #{overflow=wrap}
                                         pass-cur[pi]: {
-                                            ok -> it = (d9v7 + predictor): { ok -> it
+                                            ok -> it = (d9v7 + predictor): {
+                                                ok -> it
 
-    -> 0 }
+                                                -> 0
+                                            }
 
                                             -> _
                                         }
@@ -580,17 +578,23 @@ load = (path str) (img ?image) {
                                                     #{overflow=wrap}
                                                     dst = (img-y * w + img-x) * 3
 
-                                                    tmp.data[dst] = (palette[idx * 3]: { ok -> it
+                                                    tmp.data[dst] = (palette[idx * 3]: {
+                                                        ok -> it
 
-                                                        -> 0 })
+                                                        -> 0
+                                                    })
 
-                                                    tmp.data[dst + 1] = (palette[idx * 3 + 1]: { ok -> it
+                                                    tmp.data[dst + 1] = (palette[idx * 3 + 1]: {
+                                                        ok -> it
 
-                                                        -> 0 })
+                                                        -> 0
+                                                    })
 
-                                                    tmp.data[dst + 2] = (palette[idx * 3 + 2]: { ok -> it
+                                                    tmp.data[dst + 2] = (palette[idx * 3 + 2]: {
+                                                        ok -> it
 
-                                                        -> 0 })
+                                                        -> 0
+                                                    })
                                                 }
                                             }
                                         }
@@ -618,10 +622,11 @@ load = (path str) (img ?image) {
 
                             ; Save current row as prev
                             pi <- [0..pass-stride): {
+                                d9v8 byte = pass-cur[pi]: {
+                                    ok -> it
 
-                                d9v8 byte = pass-cur[pi]: { ok -> it
-
-                                    -> 0 }
+                                    -> 0
+                                }
                                 pass-prev[pi]: {
                                     ok -> it = d9v8
 
@@ -630,9 +635,11 @@ load = (path str) (img ?image) {
                             }
 
                             #{overflow=wrap}
-                            raw-pos = raw-pos + pass-row-len: { ok -> it
+                            raw-pos = raw-pos + pass-row-len: {
+                                ok -> it
 
-    -> _ }
+                                -> _
+                            }
                         }
                     }
                 }
@@ -671,10 +678,11 @@ load = (path str) (img ?image) {
                 ; Copy current row
                 cur-row []byte = with-len(stride)
                 i <- [0..stride): {
+                    d9v9 byte = raw[row-start + 1 + i]: {
+                        ok -> it
 
-                    d9v9 byte = raw[row-start + 1 + i]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
 
                     cur-row[i]: {
                         ok -> it = d9v9
@@ -693,14 +701,17 @@ load = (path str) (img ?image) {
 
                         ; Sub: raw + left
                         x <- [bytes-per-pixel..stride): {
+                            d9v10 byte = cur-row[x]: {
+                                ok -> it
 
-                            d9v10 byte = cur-row[x]: { ok -> it
+                                -> 0
+                            }
 
-                                -> 0 }
+                            d9v11 byte = cur-row[x - bytes-per-pixel]: {
+                                ok -> it
 
-                            d9v11 byte = cur-row[x - bytes-per-pixel]: { ok -> it
-
-                                -> 0 }
+                                -> 0
+                            }
 
                             #{overflow=wrap}
                             cur-row[x]: {
@@ -715,14 +726,17 @@ load = (path str) (img ?image) {
 
                         ; Up: raw + above
                         x <- [0..stride): {
+                            d9v12 byte = cur-row[x]: {
+                                ok -> it
 
-                            d9v12 byte = cur-row[x]: { ok -> it
+                                -> 0
+                            }
 
-                                -> 0 }
+                            d9v13 byte = prev-row[x]: {
+                                ok -> it
 
-                            d9v13 byte = prev-row[x]: { ok -> it
-
-                                -> 0 }
+                                -> 0
+                            }
 
                             #{overflow=wrap}
                             cur-row[x]: {
@@ -739,25 +753,31 @@ load = (path str) (img ?image) {
                         x <- [0..stride): {
                             left = 0
                             x >= bytes-per-pixel -> {
+                                left = cur-row[x - bytes-per-pixel]: {
+                                    ok -> it
 
-                                left = cur-row[x - bytes-per-pixel]: { ok -> it
-
-                                    -> 0 }
+                                    -> 0
+                                }
                             }
 
-                            above = prev-row[x]: { ok -> it
+                            above = prev-row[x]: {
+                                ok -> it
 
-                                -> 0 }
+                                -> 0
+                            }
 
-                            d9v14 byte = cur-row[x]: { ok -> it
+                            d9v14 byte = cur-row[x]: {
+                                ok -> it
 
-                                -> 0 }
+                                -> 0
+                            }
 
-                            #{overflow=wrap}
                             cur-row[x]: {
-                                ok -> it = (d9v14 + (left + above) / 2): { ok -> it
+                                ok -> it = (d9v14 + (left + above) / 2): {
+                                    ok -> it
 
-    -> 0 }
+                                    -> 0
+                                }
 
                                 -> _
                             }
@@ -770,21 +790,25 @@ load = (path str) (img ?image) {
                         x <- [0..stride): {
                             left = 0
                             x >= bytes-per-pixel -> {
+                                left = cur-row[x - bytes-per-pixel]: {
+                                    ok -> it
 
-                                left = cur-row[x - bytes-per-pixel]: { ok -> it
-
-                                    -> 0 }
+                                    -> 0
+                                }
                             }
 
-                            above = prev-row[x]: { ok -> it
+                            above = prev-row[x]: {
+                                ok -> it
 
-                                -> 0 }
+                                -> 0
+                            }
                             above-left = 0
                             x >= bytes-per-pixel -> {
+                                above-left = prev-row[x - bytes-per-pixel]: {
+                                    ok -> it
 
-                                above-left = prev-row[x - bytes-per-pixel]: { ok -> it
-
-                                    -> 0 }
+                                    -> 0
+                                }
                             }
 
                             ; Paeth predictor
@@ -823,15 +847,18 @@ load = (path str) (img ?image) {
                                 }
                             }
 
-                            d9v15 byte = cur-row[x]: { ok -> it
+                            d9v15 byte = cur-row[x]: {
+                                ok -> it
 
-                                -> 0 }
+                                -> 0
+                            }
 
-                            #{overflow=wrap}
                             cur-row[x]: {
-                                ok -> it = (d9v15 + predictor): { ok -> it
+                                ok -> it = (d9v15 + predictor): {
+                                    ok -> it
 
-    -> 0 }
+                                    -> 0
+                                }
 
                                 -> _
                             }
@@ -852,19 +879,13 @@ load = (path str) (img ?image) {
                                 idx * 3 + 2 < palette.len() -> {
 
                                     #{overflow=wrap}
-                                    image.set-pixel(tmp, x, y, 0, palette[idx * 3]: { ok -> it
-
-    -> 0 })
+                                    image.set-pixel(tmp, x, y, 0, png-byte-at(palette, idx * 3, 0))
 
                                     #{overflow=wrap}
-                                    image.set-pixel(tmp, x, y, 1, palette[idx * 3 + 1]: { ok -> it
-
-    -> 0 })
+                                    image.set-pixel(tmp, x, y, 1, png-byte-at(palette, idx * 3 + 1, 0))
 
                                     #{overflow=wrap}
-                                    image.set-pixel(tmp, x, y, 2, palette[idx * 3 + 2]: { ok -> it
-
-    -> 0 })
+                                    image.set-pixel(tmp, x, y, 2, png-byte-at(palette, idx * 3 + 2, 0))
                                 }
                             }
                         }
@@ -876,18 +897,12 @@ load = (path str) (img ?image) {
                         x <- [0..w): {
                             {
                                 is-u16 -> {
-                                    v = ((cur-row[x * 2]: { ok -> it
-
-    -> 0 }) & 255) << 8 | ((cur-row[x * 2 + 1]: { ok -> it
-
-    -> 0 }) & 255)
+                                    v i64 = (png-byte-at(cur-row, x * 2, 0) << 8) | png-byte-at(cur-row, x * 2 + 1, 0)
                                     image.set-pixel(tmp, x, y, 0, v)
                                 }
 
                                 -> {
-                                    image.set-pixel(tmp, x, y, 0, cur-row[x]: { ok -> it
-
-    -> 0 })
+                                    image.set-pixel(tmp, x, y, 0, png-byte-at(cur-row, x, 0))
                                 }
                             }
                         }
@@ -900,20 +915,14 @@ load = (path str) (img ?image) {
                             b <- [0..bands): {
                                 {
                                     is-u16 -> {
-                                        v = ((cur-row[x * bytes-per-pixel + b * 2]: { ok -> it
-
-    -> 0 }) & 255) << 8 | ((cur-row[x * bytes-per-pixel + b * 2 + 1]: { ok -> it
-
-    -> 0 }) & 255)
+                                        v i64 = (png-byte-at(cur-row, x * bytes-per-pixel + b * 2, 0) << 8) | png-byte-at(cur-row, x * bytes-per-pixel + b * 2 + 1, 0)
                                         image.set-pixel(tmp, x, y, b, v)
                                     }
 
                                     -> {
 
                                         #{overflow=wrap}
-                                        image.set-pixel(tmp, x, y, b, cur-row[x * bands + b]: { ok -> it
-
-    -> 0 })
+                                        image.set-pixel(tmp, x, y, b, png-byte-at(cur-row, x * bands + b, 0))
                                     }
                                 }
                             }
@@ -923,10 +932,11 @@ load = (path str) (img ?image) {
 
                 ; Save current row as prev
                 i <- [0..stride): {
+                    d9v16 byte = cur-row[i]: {
+                        ok -> it
 
-                    d9v16 byte = cur-row[i]: { ok -> it
-
-                        -> 0 }
+                        -> 0
+                    }
                     prev-row[i]: {
                         ok -> it = d9v16
 
@@ -946,11 +956,7 @@ load = (path str) (img ?image) {
                 ; Pixels matching this value get alpha=0, others alpha=255
                 {
                     trns.len() >= 2 -> {
-                        trns-val = (((trns[0]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((trns[1]: { ok -> it
-
-    -> 0 }) & 255)
+                        trns-val i64 = (png-byte-at(trns, 0, 0) << 8) | png-byte-at(trns, 1, 0)
 
                         ; Create RGBA image
                         rgba-img = image.new(w, h, 4)
@@ -990,21 +996,9 @@ load = (path str) (img ?image) {
                 ; Pixels matching get alpha=0, others alpha=255
                 {
                     trns.len() >= 6 -> {
-                        trns-r = (((trns[0]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((trns[1]: { ok -> it
-
-    -> 0 }) & 255)
-                        trns-g = (((trns[2]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((trns[3]: { ok -> it
-
-    -> 0 }) & 255)
-                        trns-b = (((trns[4]: { ok -> it
-
-    -> 0 }) & 255) << 8) | ((trns[5]: { ok -> it
-
-    -> 0 }) & 255)
+                        trns-r i64 = (png-byte-at(trns, 0, 0) << 8) | png-byte-at(trns, 1, 0)
+                        trns-g i64 = (png-byte-at(trns, 2, 0) << 8) | png-byte-at(trns, 3, 0)
+                        trns-b i64 = (png-byte-at(trns, 4, 0) << 8) | png-byte-at(trns, 5, 0)
                         rgba-img = image.new(w, h, 4)
                         i <- [0..w * h): {
 
@@ -1077,18 +1071,13 @@ load = (path str) (img ?image) {
 
                                 #{overflow=wrap}
                                 {
-                                    (palette[pi * 3]: { ok -> it
-
-    -> 0 }) == r && (palette[pi * 3 + 1]: { ok -> it
-
-    -> 0 }) == g && (palette[pi * 3 + 2]: { ok -> it
-
-    -> 0 }) == b -> {
+                                    png-byte-at(palette, pi * 3, 0) == r && png-byte-at(palette, pi * 3 + 1, 0) == g && png-byte-at(palette, pi * 3 + 2, 0) == b -> {
                                         pi < trns.len() -> {
+                                            a = trns[pi]: {
+                                                ok -> it
 
-                                            a = trns[pi]: { ok -> it
-
-                                                -> 0 }
+                                                -> 0
+                                            }
                                         }
                                     }
                                 }
@@ -1131,20 +1120,22 @@ png-adler32 = (data []byte) (sum i64) {
     i <- [0..data.len()): {
 
         #{overflow=wrap}
-        a = (a + ((data[i]: { ok -> it
-
-    -> 0 }) & 255)) % 65521
+        a = (a + png-byte-at(data, i, 0)) % 65521
 
         #{overflow=wrap}
-        b = (b + a) % 65521: { ok -> it
+        b = (b + a) % 65521: {
+            ok -> it
 
-    -> _ }
+            -> _
+        }
     }
 
     #{overflow=wrap}
-    sum = b * 65536 + a: { ok -> it
+    sum = b * 65536 + a: {
+        ok -> it
 
-    -> _ }
+        -> _
+    }
 }
 
 ; png-zlib-compress: wrap raw DEFLATE stored blocks in a zlib container
@@ -1157,9 +1148,7 @@ png-zlib-compress = (data []byte) (out []byte) {
     out.push(120); 0x78 CMF: deflate, 32K window
     out.push(1); 0x01 FLG: check bits valid, fastest level
     i <- [0..deflated.len()): {
-        out.push(deflated[i]: { ok -> it
-
-    -> 0 })
+        out.push(png-byte-at(deflated, i, 0))
     }
     out.push((ad >> 24) & 255)
     out.push((ad >> 16) & 255)
@@ -1174,11 +1163,7 @@ png-zlib-compress = (data []byte) (out []byte) {
 png-zlib-decompress = (data []byte) (out []byte) {
     is-gzip = false
     data.len() >= 2 -> {
-        ((data[0]: { ok -> it
-
-    -> 0 }) & 255) == 31 && ((data[1]: { ok -> it
-
-    -> 0 }) & 255) == 139 -> {
+        png-byte-at(data, 0, 0) == 31 && png-byte-at(data, 1, 0) == 139 -> {
             is-gzip = true
         }
     }
@@ -1403,14 +1388,14 @@ save = (path str, img image) (ok bool) {
     buf.push(10)
 
     ; IHDR chunk (13 bytes data)
-    png-write-chunk(buf, 'IHDR', png-build-ihdr(img.width, img.height, bit-depth, color-type))
+    png-write-chunk(buf, 73, 72, 68, 82, png-build-ihdr(img.width, img.height, bit-depth, color-type))
 
     ; IDAT chunk
-    png-write-chunk-raw(buf, 'IDAT', compressed)
+    png-write-chunk-raw(buf, 73, 68, 65, 84, compressed)
 
     ; IEND chunk (0 bytes data)
     iend-data []byte = with-cap(0)
-    png-write-chunk(buf, 'IEND', iend-data)
+    png-write-chunk(buf, 73, 69, 78, 68, iend-data)
 
     ; Write file
     wfd = fs.open-write(path)
@@ -1430,171 +1415,139 @@ save = (path str, img image) (ok bool) {
 ; color-type i64: color type
 ; returns data []byte
 png-build-ihdr = (w i64, h i64, bit-depth i64, color-type i64) (data []byte) {
-    data []byte = with-len(13)
-    data[0]: {
-        ok -> it = (w >> 24) & 255
-
-        -> _
-    }
-    data[1]: {
-        ok -> it = (w >> 16) & 255
-
-        -> _
-    }
-    data[2]: {
-        ok -> it = (w >> 8) & 255
-
-        -> _
-    }
-    data[3]: {
-        ok -> it = w & 255
-
-        -> _
-    }
-    data[4]: {
-        ok -> it = (h >> 24) & 255
-
-        -> _
-    }
-    data[5]: {
-        ok -> it = (h >> 16) & 255
-
-        -> _
-    }
-    data[6]: {
-        ok -> it = (h >> 8) & 255
-
-        -> _
-    }
-    data[7]: {
-        ok -> it = h & 255
-
-        -> _
-    }
-    data[8]: {
-        ok -> it = bit-depth & 255
-
-        -> _
-    }
-    data[9]: {
-        ok -> it = color-type & 255
-
-        -> _
-    }
-
-    ; compression (zlib)
-    data[10]: {
-        ok -> it = 0
-
-        -> _
-    }
-
-    ; filter (adaptive)
-    data[11]: {
-        ok -> it = 0
-
-        -> _
-    }
-
-    ; interlace (none)
-    data[12]: {
-        ok -> it = 0
-
-        -> _
-    }
+    data = with-cap(13)
+    w0 = (w >> 24) & 255
+    w1 = (w >> 16) & 255
+    w2 = (w >> 8) & 255
+    w3 = w & 255
+    h0 = (h >> 24) & 255
+    h1 = (h >> 16) & 255
+    h2 = (h >> 8) & 255
+    h3 = h & 255
+    bd = bit-depth & 255
+    ct = color-type & 255
+    data.push(w0)
+    data.push(w1)
+    data.push(w2)
+    data.push(w3)
+    data.push(h0)
+    data.push(h1)
+    data.push(h2)
+    data.push(h3)
+    data.push(bd)
+    data.push(ct)
+    data.push(0)
+    data.push(0)
+    data.push(0)
 }
 
 ; png-write-chunk: write a chunk to output buffer (with CRC)
 ; out []byte: output buffer
 ; type-str str: 4-char chunk type
 ; data []byte: chunk data
-png-write-chunk = (out []byte, type-str str, data []byte) {
+png-write-chunk = (out []byte, t0 i64, t1 i64, t2 i64, t3 i64, data []byte) {
 
     ; Length (big-endian)
     len = data.len()
-    out.push((len >> 24) & 255)
-    out.push((len >> 16) & 255)
-    out.push((len >> 8) & 255)
-    out.push(len & 255)
+    l0 i64 = (len >> 24) & 255
+    l1 i64 = (len >> 16) & 255
+    l2 i64 = (len >> 8) & 255
+    l3 i64 = len & 255
+    out.push(l0)
+    out.push(l1)
+    out.push(l2)
+    out.push(l3)
 
     ; Type
-    type-bytes = type-str.to-bytes()
-    i <- [0..4): {
-        out.push(type-bytes[i]: { ok -> it
-
-    -> 0 })
-    }
+    out.push(t0)
+    out.push(t1)
+    out.push(t2)
+    out.push(t3)
 
     ; Data
     i <- [0..data.len()): {
-        out.push(data[i]: { ok -> it
+        dv i64 = data[i]: {
+            ok -> it
 
-    -> 0 })
+            -> 0
+        }
+        out.push(dv)
     }
 
     ; CRC (over type + data)
-    crc-data = type-str.to-bytes()
-
     ; Build a combined buffer for CRC
     #{overflow=wrap}
     combined []byte = with-cap(4 + data.len())
-    i <- [0..4): {
-        combined.push(type-bytes[i]: { ok -> it
-
-    -> 0 })
-    }
+    combined.push(t0)
+    combined.push(t1)
+    combined.push(t2)
+    combined.push(t3)
     i <- [0..data.len()): {
-        combined.push(data[i]: { ok -> it
+        dv i64 = data[i]: {
+            ok -> it
 
-    -> 0 })
+            -> 0
+        }
+        combined.push(dv)
     }
     crc = png-crc32-combined(combined, combined.len())
-    out.push((crc >> 24) & 255)
-    out.push((crc >> 16) & 255)
-    out.push((crc >> 8) & 255)
-    out.push(crc & 255)
+    c0 i64 = (crc >> 24) & 255
+    c1 i64 = (crc >> 16) & 255
+    c2 i64 = (crc >> 8) & 255
+    c3 i64 = crc & 255
+    out.push(c0)
+    out.push(c1)
+    out.push(c2)
+    out.push(c3)
 }
 
 ; png-write-chunk-raw: write chunk from raw []byte data
 ; out []byte: output buffer
 ; type-str str: chunk type
 ; data []byte: chunk data (already byte array)
-png-write-chunk-raw = (out []byte, type-str str, data []byte) {
+png-write-chunk-raw = (out []byte, t0 i64, t1 i64, t2 i64, t3 i64, data []byte) {
     len = data.len()
     out.push((len >> 24) & 255)
     out.push((len >> 16) & 255)
     out.push((len >> 8) & 255)
     out.push(len & 255)
-    type-bytes = type-str.to-bytes()
-    i <- [0..4): {
-        out.push(type-bytes[i]: { ok -> it
-
-    -> 0 })
-    }
+    out.push(t0)
+    out.push(t1)
+    out.push(t2)
+    out.push(t3)
     i <- [0..data.len()): {
-        out.push(data[i]: { ok -> it
+        dv i64 = data[i]: {
+            ok -> it
 
-    -> 0 })
+            -> 0
+        }
+        out.push(dv)
     }
 
     ; CRC
     #{overflow=wrap}
     combined []byte = with-cap(4 + data.len())
-    i <- [0..4): {
-        combined.push(type-bytes[i]: { ok -> it
-
-    -> 0 })
-    }
+    combined.push(t0)
+    combined.push(t1)
+    combined.push(t2)
+    combined.push(t3)
     i <- [0..data.len()): {
-        combined.push(data[i]: { ok -> it
+        dv i64 = data[i]: {
+            ok -> it
 
-    -> 0 })
+            -> 0
+        }
+        combined.push(dv)
     }
     crc = png-crc32-combined(combined, combined.len())
-    out.push((crc >> 24) & 255)
-    out.push((crc >> 16) & 255)
-    out.push((crc >> 8) & 255)
-    out.push(crc & 255)
+    c0 i64 = (crc >> 24) & 255
+    c1 i64 = (crc >> 16) & 255
+    c2 i64 = (crc >> 8) & 255
+    c3 i64 = crc & 255
+    out.push(c0)
+    out.push(c1)
+    out.push(c2)
+    out.push(c3)
 }
 
 ; png-crc32-combined: compute CRC32 from a []byte buffer (bitwise)
@@ -1604,10 +1557,11 @@ png-write-chunk-raw = (out []byte, type-str str, data []byte) {
 png-crc32-combined = (data []byte, len i64) (crc i64) {
     crc = 4294967295
     i <- [0..len): {
+        b = data[i]: {
+            ok -> it
 
-        b = data[i]: { ok -> it
-
-            -> 0 }
+            -> 0
+        }
         crc = crc ^ b
         j <- [0..8): {
             {

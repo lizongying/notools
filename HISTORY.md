@@ -12,6 +12,13 @@
 - refactor: remove redundant overflow annotations and explicit type annotations
 - docs(design): mark the unified option-migration document as review-complete
 - refactor(release): drop the dirty-tree blocker and use the history section as the commit message
+- fix(checker): include nested block statements in filterByExports
+- fix(projects): resolve implicit option-unwrap compile errors in subprojects
+- fix(compiler-issues): convert C-style comments to semicolon comments
+- fix(notools): improve module safety and restore the eprint diagnostic in timeout
+- refactor(notools): migrate index writes to option form and replace set-byte usage
+- docs(skills): update stdlib docs and skill references for noml format and syntax changes
+- fix(noimg): repair VP8L color-index decode for multi-color WebP images
 
 ## v0.1.33
 
