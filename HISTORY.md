@@ -21,6 +21,9 @@
 - fix(noimg): repair VP8L color-index decode for multi-color WebP images
 - fix(nogit): adapt oid hex encoding and SHA-1 helpers to v0.4.27 option and char semantics
 - fix(nogit): simplify string range slicing with plain integer bounds
+- fix(nogit): bind value-match results to locals before passing them to hexdigit
+- fix(noimg): unwrap co-o option into a variable to avoid the co coroutine keyword
+- fix(notools): gate timeout-run by platform and stub it on Windows for waitpid-nohang
 
 ## v0.1.33
 
