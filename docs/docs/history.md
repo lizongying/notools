@@ -15,7 +15,7 @@ sidebar_position: 2
 - fix(noimg): replace removed number width-cast functions with f64/i64 to-i64/to-f64 methods
 - fix(nojq): rename a colliding variable in main and move bi-code into the parser module for codegen
 - fix(nonpm): bind indexed vec reads to plain locals so fs.is-dir and is-file marshal correctly
-- fix(ci): repoint build-nolang to main and bump the pinned compiler to v0.4.18
+- fix(ci): repoint build-nolang to main and bump the pinned compiler to v0.4.27
 - refactor: remove redundant overflow annotations and explicit type annotations
 - docs(design): mark the unified option-migration document as review-complete
 - refactor(release): drop the dirty-tree blocker and use the history section as the commit message
@@ -26,6 +26,8 @@ sidebar_position: 2
 - refactor(notools): migrate index writes to option form and replace set-byte usage
 - docs(skills): update stdlib docs and skill references for noml format and syntax changes
 - fix(noimg): repair VP8L color-index decode for multi-color WebP images
+- fix(nogit): adapt oid hex encoding and SHA-1 helpers to v0.4.27 option and char semantics
+- fix(nogit): simplify string range slicing with plain integer bounds
 
 ## v0.1.33
 
