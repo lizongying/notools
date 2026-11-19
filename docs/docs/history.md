@@ -7,6 +7,12 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.35
+
+- fix(notools): repair md5 digest returning 32 control bytes by replacing str option index writes with string concatenation in md5x
+- fix(notools): apply the same str index-write fix to sha1x/sha224x/sha256x/sha384x/sha512x hex output
+- fix(notools): use std crypto sha384-hex/sha512-hex for sha384, sha384sum and hmac-sha512 to bypass a legacy u64 compression bug
+
 ## v0.1.34
 
 - feat(std): promote exit from the os module to a global builtin
