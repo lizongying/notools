@@ -2678,9 +2678,19 @@ webp-decode-vp8l = (data []byte, vp8l-pos i64, w i64, h i64, has-alpha bool) (pi
     bands = 3
     has-alpha -> bands = 4
 
-    ; ARGB buffer (4 bytes per pixel internally)
+    ; Bound the ARGB allocation by the compressed input size. A crafted
+    ; VP8L header claiming 65535x65535 would otherwise request >16GB.
     #{overflow=wrap}
-    argb []byte = with-len(n-pixels * 4)
+    argb-len = n-pixels * 4
+    #{overflow=wrap}
+    argb-limit = data.len() * 64 + 67108864
+    argb-len > argb-limit -> {
+        pixels = with-cap(0)
+        return
+    }
+
+    ; ARGB buffer (4 bytes per pixel internally)
+    argb []byte = with-len(argb-len)
 
     ; Bit reader: start after 0x2F signature byte
     pos = 0
@@ -5914,8 +5924,24 @@ load = (path str) (img ?image) {
                     {
 
                         #{overflow=wrap}
-                        vdbuf []byte = with-len(dw * dh * 3)
-                        vk <- [0..dw * dh * 3): {
+                        vdbuf-len = dw * dh * 3
+
+                        ; Only trust dw/dh if the decoded RGB buffer really
+                        ; holds that many bytes; otherwise vp8-decode-frame
+                        ; returned bogus/bomb dimensions.
+                        vdbuf-len != rgb.len() -> {
+                            img = nil
+                            return
+                        }
+                        #{overflow=wrap}
+                        vdbuf-limit = data.len() * 64 + 67108864
+                        vdbuf-len > vdbuf-limit -> {
+                            img = nil
+                            return
+                        }
+
+                        vdbuf []byte = with-len(vdbuf-len)
+                        vk <- [0..vdbuf-len): {
                             d9v40 byte = rgb[vk]: {
                                 ok -> it
 
@@ -5964,13 +5990,23 @@ load = (path str) (img ?image) {
         }
     }
 
+    ; Bound the output allocation by input length before with-len(w*h*bands).
+    #{overflow=wrap}
+    dbuf-len = w * h * bands
+    #{overflow=wrap}
+    dbuf-limit = data.len() * 64 + 67108864
+    dbuf-len > dbuf-limit -> {
+        img = nil
+        return
+    }
+
     ; Decode VP8L lossless bitstream
     pixels = webp-decode-vp8l(data, vp8l-pos, w, h, has-alpha)
 
     ; Build image from decoded pixel data
     #{overflow=wrap}
-    dbuf []byte = with-len(w * h * bands)
-    i <- [0..w * h * bands): {
+    dbuf []byte = with-len(dbuf-len)
+    i <- [0..dbuf-len): {
         d9v41 byte = pixels[i]: {
             ok -> it
 

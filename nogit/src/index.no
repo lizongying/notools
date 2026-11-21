@@ -88,6 +88,25 @@ find-newline-local = (s str, from i64) (pos i64) {
     pos < 0 -> pos = s.len-bytes()
 }
 
+; G-10: byte-range via fixed-index str writes (§6.6 safe) instead of
+; util.str-range's []byte scratch, which non-deterministically bad-copies
+; some byte ranges (verified: str-range returns all-zero / SIGBUS on index
+; content while .byte() on the same offsets is correct).
+byte-range-str = (s str, a i64, n i64) (out str) {
+    cs []char
+    i <- [0..n): {
+        cbv = s.byte(a + i)
+        v i32 = 0
+        cbv: {
+            ok -> v = it
+
+            -> _
+        }
+        cs.push(v)
+    }
+    out = str.from-chars(cs)
+}
+
 ; ═══════════════════════════════════════════════
 ; index read
 ; ═══════════════════════════════════════════════
@@ -143,8 +162,10 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
     ; version
     ver = read-u32-be-local(content, 4)
 
-    ; we support v2 only for now
-    ver != 2 -> return
+    ; G-10: header v2 (also carries v3 stage entries, same layout) and
+    ; v4 (prefix-compressed names, no 8-byte padding).
+    ver != 2 && ver != 4 -> return
+    is-v4 = ver == 4
 
     ; entry count
     count = read-u32-be-local(content, 8)
@@ -157,6 +178,8 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
     pos = 12
     entry-start i64
     entry-len i64
+    prev-name str = ''
+    suffix-len i64 = 0
     i <- [0..count): {
 
         #{overflow=wrap}
@@ -223,42 +246,64 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         }
         name-len = flags & 0xfff
 
-        ; name (name-len bytes, then NUL, then padding)
-        #{overflow=wrap}
-        nm str = util.str-range(content, pos, pos + name-len)
+        ; G-10 v4: after flags comes [strip:1][suffix:name-len][NUL], no pad.
+        ; Full name = prev[0 .. prev.len-strip) + suffix. v2: [name][NUL]+pad.
+        nm str = ''
+        is-v4 -> {
+            strip = content.byte(pos) & 0xff
+
+            #{overflow=wrap}
+            keep = prev-name.len-bytes() - strip: {
+                ok -> it
+
+                -> _
+            }
+            keep < 0 -> keep = 0
+            ; suffix length = full name_len - kept prefix bytes
+            #{overflow=wrap}
+            suffix-len = name-len - keep
+            suffix-len < 0 -> suffix-len = 0
+            #{overflow=wrap}
+            pos + 1 + suffix-len > content.len-bytes() -> {
+                count = i
+                break
+            }
+            suffix = byte-range-str(content, pos + 1, suffix-len)
+            nm = byte-range-str(prev-name, 0, keep) - suffix
+        }
+        ! is-v4 -> {
+            #{overflow=wrap}
+            pos + name-len > content.len-bytes() -> {
+                count = i
+                break
+            }
+            nm = byte-range-str(content, pos, name-len)
+        }
+        prev-name = nm
 
         names = names - nm - '\n'
 
         ; hex oid
+        ; G-11/X-3: str index assignment writes the option tag byte (0x01).
+        ; Build the hex string by direct concatenation instead.
         hx = ''
         hc = '0123456789abcdef'
         j <- [0..20): {
             b = oid-bytes.byte(j)
-            c1 str = with-len(1)
 
             d9v1 str = hc[(b >> 4) & 15]: {
                 ok -> it
 
                 -> ''
             }
-            c1[0]: {
-                ok -> it = d9v1
-
-                -> _
-            }
-            c2 str = with-len(1)
+            hx = hx - d9v1
 
             d9v2 str = hc[b & 15]: {
                 ok -> it
 
                 -> ''
             }
-            c2[0]: {
-                ok -> it = d9v2
-
-                -> _
-            }
-            hx = hx - c1 - c2
+            hx = hx - d9v2
         }
         hexoids = hexoids - hx
 
@@ -268,7 +313,6 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
         modes = modes - ms - '\n'
 
         ; advance past name + NUL
-        ; pad entry length to 8-byte boundary
         #{overflow=wrap}
         entry-start = pos - 62: {
             ok -> it
@@ -276,19 +320,27 @@ read-index = (git-dir str) (names str, hexoids str, modes str, count i64, ok boo
             -> _
         }
 
-        #{overflow=wrap}
-        entry-len = 62 + name-len + 1: {
-            ok -> it
-
-            -> _
+        entry-len i64 = 0
+        is-v4 -> {
+            ; G-10 v4: 62 fixed + 1 strip + suffix + 1 NUL, NO 8-byte pad
+            entry-len = 64 + suffix-len
         }
-        rem = entry-len % 8
+        ! is-v4 -> {
+            ; v2: 62 fixed + name + 1 NUL, padded to 8-byte boundary
+            #{overflow=wrap}
+            entry-len = 62 + name-len + 1: {
+                ok -> it
 
-        #{overflow=wrap}
-        rem > 0 -> entry-len = entry-len + (8 - rem): {
-            ok -> it
+                -> _
+            }
+            rem = entry-len % 8
 
-            -> _
+            #{overflow=wrap}
+            rem > 0 -> entry-len = entry-len + (8 - rem): {
+                ok -> it
+
+                -> _
+            }
         }
 
         #{overflow=wrap}
@@ -532,7 +584,7 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
 
         ; find end of name i
         nl = find-newline-local(names-str, name-pos)
-        nm = names-str[name-pos..nl)
+        nm = util.str-range(names-str, name-pos, nl)
 
         ; find end of mode i
         nl2 = find-newline-local(modes-str, mode-pos)
@@ -700,8 +752,8 @@ write-index = (git-dir str, names-str str, oids-str str, modes-str str, count i6
     }
 
     ; write byte-by-byte (stride-safe)
-    util.write-file-simple(p, out)
-    ok = true
+    ; X-4: propagate write failure to caller
+    ok = util.write-file-simple(p, out)
 }
 
 ; ═══════════════════════════════════════════════
@@ -754,7 +806,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                     }
                 }
                 nj-end = find-newline-local(names, np)
-                nj-name = names[np..nj-end)
+                nj-name = util.str-range(names, np, nj-end)
 
                 best-j < 0 -> {
                     best-j = scan-j
@@ -774,7 +826,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                         }
                     }
                     bj-end = find-newline-local(names, bp)
-                    bj-name = names[bp..bj-end)
+                    bj-name = util.str-range(names, bp, bj-end)
 
                     cmp = name-cmp-index(nj-name, bj-name)
                     cmp < 0 -> best-j = scan-j
@@ -798,7 +850,7 @@ sort-index-entries = (names str, hexoids str, modes-str str, count i64) (sorted-
                 }
             }
             nj-end = find-newline-local(names, np)
-            nj-name = names[np..nj-end)
+            nj-name = util.str-range(names, np, nj-end)
 
             ; extract oid best-j
             nj-oid = hexoids[best-j * 40..best-j * 40 + 40)
@@ -902,7 +954,7 @@ index-add = (git-dir str, path str, o oid, mode i64) (ok bool) {
 
         ; find end of name i
         nl = find-newline-local(ri-names, pos)
-        nm = ri-names[pos..nl)
+        nm = util.str-range(ri-names, pos, nl)
 
         ; find end of mode i
         mnl2 = find-newline-local(ri-modes, mode-pos)
@@ -1015,7 +1067,7 @@ index-remove = (git-dir str, path str) (ok bool) {
 
         ; find end of name i
         nl = find-newline-local(ri-names, pos)
-        nm = ri-names[pos..nl)
+        nm = util.str-range(ri-names, pos, nl)
 
         ; find end of mode i
         mnl2 = find-newline-local(ri-modes, mode-pos)

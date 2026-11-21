@@ -2,9 +2,11 @@
 ;
 ; Two safety duties:
 ;   1. confirm(): interactive (or auto) approval for run-shell / write-file /
-;      edit-file before they touch the system.
-;   2. within-cwd(): the target path of a write/edit must resolve to a location
-;      inside the current working directory; `..` escapes are rejected.
+;      edit-file / read-file / list-dir (the last two only when their path is
+;      outside the working directory) before they touch the system.
+;   2. within-cwd(): the target path of ANY filesystem tool must resolve to a
+;      location inside the current working directory. `..` escapes are
+;      rejected lexically, then realpath re-checks defeat symlink escapes.
 
 # /noagent/src/utils
 
@@ -20,6 +22,12 @@ requires-approval = (name str) (yes bool) {
         name == 'write-file' -> yes = true
 
         name == 'edit-file' -> yes = true
+
+        ; read/list are only gated when their path leaves cwd — the caller
+        ; (agent.no) combines this with within-cwd for those two tools.
+        name == 'read-file' -> yes = true
+
+        name == 'list-dir' -> yes = true
     }
 }
 
@@ -33,6 +41,26 @@ needs-containment = (name str) (yes bool) {
         name == 'write-file' -> yes = true
 
         name == 'edit-file' -> yes = true
+
+        ; A-2: reads are containment-checked too. An absolute path or a `..`
+        ; escape (e.g. ~/.ssh/id_rsa) must not silently reach the model.
+        name == 'read-file' -> yes = true
+
+        name == 'list-dir' -> yes = true
+    }
+}
+
+; ═══════════════════════════════════════════════
+; is-read-tool — read/list take a path too, but an in-cwd path is harmless;
+; only an out-of-cwd one needs an approval prompt (A-2).
+; ═══════════════════════════════════════════════
+
+is-read-tool = (name str) (yes bool) {
+    yes = false
+    {
+        name == 'read-file' -> yes = true
+
+        name == 'list-dir' -> yes = true
     }
 }
 
@@ -134,17 +162,87 @@ resolve-abs = (p str) (out str) {
 }
 
 ; ═══════════════════════════════════════════════
+; path-has-symlink — does any component of absolute path `abs` traverse a
+; symbolic link? fs.readlink returns some(target) only for a symlink, so this
+; is the fail-closed guard for targets that realpath cannot resolve because
+; they do not exist yet (e.g. write-file to a new name under a symlinked dir).
+; ═══════════════════════════════════════════════
+
+path-has-symlink = (abs str) (yes bool) {
+    yes = false
+    parts = utils.split-str(abs, '/')
+    n = parts.len()
+    prefix = ''
+    abs.starts-with('/') -> prefix = '/'
+    i <- [0..n): {
+        seg = parts[i]: {
+            ok -> it
+
+            -> ''
+        }
+        {
+            seg == '' -> {
+            }
+
+            seg == '.' -> {
+            }
+
+            seg == '..' -> {
+            }
+
+            -> {
+                prefix == '/' -> prefix = prefix - seg
+                prefix != '/' -> prefix = prefix - '/' - seg
+                lt = fs.readlink(prefix)
+                lt: {
+                    ok -> yes = true
+
+                    -> {
+                    }
+                }
+            }
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; within-cwd — does path `p` resolve inside the working directory?
+; A-2: used by read/list as well as write/edit.
+; A-3: lexical containment alone is insufficient — a symlink inside cwd can
+;      point outside. Re-check with realpath (resolves symlinks) and, when the
+;      target does not exist yet, reject symlinked components fail-closed.
 ; ═══════════════════════════════════════════════
 
 within-cwd = (p str) (yes bool) {
     yes = false
     cwd = normalize(os.get-wd())
     abs = resolve-abs(p)
-    abs == cwd -> yes = true
+
+    ; 1) lexical containment (rejects `..` / absolute escapes)
+    lexical = false
+    abs == cwd -> lexical = true
     prefix = cwd
     prefix.ends-with('/') == false -> prefix = cwd - '/'
-    abs.starts-with(prefix) -> yes = true
+    abs.starts-with(prefix) -> lexical = true
+    lexical == false -> return
+
+    ; 2) realpath re-check. realpath resolves symlinks but requires the target
+    ;    to exist; for a not-yet-created file fall back to the link scan.
+    cwd-real = fs.realpath(cwd)
+    target-real = fs.realpath(abs)
+    cwd-real.len() > 0 -> {
+        target-real.len() > 0 -> {
+            real-prefix = cwd-real
+            real-prefix.ends-with('/') == false -> real-prefix = cwd-real - '/'
+            target-real == cwd-real -> yes = true
+            target-real.starts-with(real-prefix) -> yes = true
+            return
+        }
+        path-has-symlink(abs) == false -> yes = true
+        return
+    }
+    ; realpath unavailable for cwd: fail closed on symlink components
+    path-has-symlink(abs) == false -> yes = true
 }
 
 ; ═══════════════════════════════════════════════

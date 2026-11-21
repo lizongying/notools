@@ -9,6 +9,10 @@
 
 TAR-BLOCK = 512
 
+; 单条目大小上限（1 GiB）：tar 头里的 size 完全不可信，直接 with-len(sz) 会被
+; 声明超大 size 的恶意归档打爆内存（T-5）。
+TAR-MAX-ENTRY = 1073741824
+
 ; tar-write-octal: write octal number into data at offset
 tar-write-octal = (data []byte, off i64, width i64, val i64) {
 
@@ -357,6 +361,62 @@ tar-make-parent-dirs = (name str) {
     }
 }
 
+; tar-safe-name — 校验归档条目名（Zip-Slip 防护，T-1）
+; 解压到 cwd，条目名必须始终是相对路径：拒绝空名、绝对路径、盘符、反斜杠、
+; NUL 以及任意 '..' 路径段。与 nonpm/nouv 的 safe-archive-path 规则一致。
+tar-safe-name = (name str) (safe bool) {
+    safe = false
+    n = name.len-bytes()
+    n == 0 -> return
+
+    bad = false
+    seg-start = 0
+    i <- [0..n): {
+        c = name.byte(i)
+        c == 0 -> {
+            bad = true
+            break
+        }
+        c == 92 -> {
+            bad = true
+            break
+        }
+        i == 0 && c == 47 -> {
+            bad = true
+            break
+        }
+        i == 1 && c == 58 -> {
+            c0 = name.byte(0)
+            (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) -> {
+                bad = true
+                break
+            }
+        }
+        c == 47 -> {
+            #{overflow=wrap}
+            seg-len = i - seg-start
+            seg-len == 2 -> {
+                name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                    bad = true
+                    break
+                }
+            }
+            #{overflow=wrap}
+            seg-start = i + 1
+        }
+    }
+    ! bad -> {
+        #{overflow=wrap}
+        last-len = n - seg-start
+        last-len == 2 -> {
+            name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                bad = true
+            }
+        }
+    }
+    ! bad -> safe = true
+}
+
 do-extract = (filename str, use-gzip bool) {
     {
         ! fs.is-file(filename) -> {
@@ -388,12 +448,21 @@ do-extract = (filename str, use-gzip bool) {
         typ = archive.type(i)
         skip = is-skip-entry(name, typ)
         skip -> continue
+        name-safe = tar-safe-name(name)
+        ! name-safe -> {
+            print('tar: skipping unsafe entry: ' - name)
+            continue
+        }
         typ == 'dir' -> os.mkdir(name, 493)
         typ == 'file' -> {
             tar-make-parent-dirs(name)
 
             ; read content directly from data (avoid archive.read which returns []byte)
             sz = archive.size(i)
+            sz > TAR-MAX-ENTRY -> {
+                print('tar: entry too large, skipping: ' - name)
+                continue
+            }
             off = archive.offset(i)
             content []byte = with-len(sz)
             j <- [0..sz): {

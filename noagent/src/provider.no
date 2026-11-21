@@ -184,10 +184,10 @@ parse-response = (body str) (resp messages.message, finish str, ok bool, errmsg 
     }
 }
 
-; parseResponse4 — cross-module wrapper for parse-response. v0.4.24 miscomputes
+; parse-response4 — cross-module wrapper for parse-response. v0.4.24 miscomputes
 ; the arity of a hyphenated 4-return function when called as `provider.f()`,
 ; reporting "returns 0 value(s)"; a non-hyphenated name exports correctly.
-parseResponse4 = (body str) (resp messages.message, finish str, ok bool, errmsg str) {
+parse-response4 = (body str) (resp messages.message, finish str, ok bool, errmsg str) {
     resp, finish, ok, errmsg = parse-response(body)
     return
 }
@@ -365,7 +365,15 @@ process-sse-line = (line str) {
 
                                 ok -> {
                                     idx = stream.tc-index(it)
-                                    (idx >= slots) {
+                                    ; A-9a: clamp a negative index (would write
+                                    ; before the slot vec) and a pathological
+                                    ; huge one (would grow the vec unbounded).
+                                    idx < 0 -> idx = 0
+                                    idx > 255 -> idx = 255
+                                    ; Grow in a LOOP across any index gaps —
+                                    ; a single if only made room for one slot,
+                                    ; so a skipped index silently lost a call.
+                                    (slots <= idx) {
                                         ids.push('')
                                         names.push('')
                                         argss.push('')
@@ -550,7 +558,8 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
             break
         }
         closed -> {
-            stream-done = true
+            ; A-8: a transport close is NOT the same as the [DONE] sentinel.
+            ; Break now, but decide below whether the answer is complete.
             break
         }
     }
@@ -560,10 +569,16 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
     io.out('\n')
     httpclient.stream-close()
 
+    ; A-8: closed before [DONE] with no finish_reason means the answer was
+    ; truncated — fail instead of returning a partial reply with ok=true.
     ! stream-done -> {
-        resp = messages.make('assistant', '')
-        errmsg = 'stream interrupted'
-        return
+        finish-lst.len() == 0 -> {
+            resp = messages.make('assistant', '')
+            errmsg = 'stream interrupted: connection closed before [DONE]'
+            return
+        }
+        ; A few providers omit [DONE] but still send a finish_reason; accept
+        ; that as a normal completion.
     }
 
     {

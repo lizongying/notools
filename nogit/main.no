@@ -235,6 +235,12 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
         nm = object.tree-name-raw(raw, i)
         entry-oid = object.tree-id-raw(raw, i)
 
+        ; G-2: never let an untrusted tree entry escape dest-dir
+        ! util.safe-entry-name(nm) -> {
+            print('error: unsafe tree entry name, skipping checkout: ' - nm)
+            continue
+        }
+
         ; build full path
         full-path = dest-dir
         {
@@ -253,6 +259,8 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
                 ; subtree — create directory and recurse
                 util.mkdir-all(full-path)
                 sub-ok = checkout-tree-unified(git-dir, entry-oid, full-path)
+                ; X-4: a failed recursive checkout must fail this one too
+                ! sub-ok -> return
             }
 
             -> {
@@ -270,7 +278,9 @@ checkout-tree-unified = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
                         parent = util.str-range(full-path, 0, slash)
                         util.mkdir-all(parent)
                     }
-                    util.write-file-simple(full-path, b-data)
+                    ; X-4: write failure aborts checkout (ok stays false)
+                    wok = util.write-file-simple(full-path, b-data)
+                    ! wok -> return
                 }
             }
         }
@@ -1548,7 +1558,10 @@ cmd-checkout = (argc i64) {
                                 parent = util.str-range(full-path, 0, slash)
                                 util.mkdir-all(parent)
                             }
-                            util.write-file-simple(full-path, b-data)
+                            ; X-4: surface write failure instead of silently
+                            ; reporting success when restore did not land
+                            wok = util.write-file-simple(full-path, b-data)
+                            ! wok -> print('error: failed to restore file: ' - req-file)
                         }
                     }
                     break

@@ -6,11 +6,44 @@
 ;   -rf: combined flags (recursive + force)
 ;   path: file or directory to remove
 
+; is-link — 判断路径本身是否为符号链接（不跟随）。
+; fs.readlink 对符号链接返回目标（some），对普通文件/目录返回 nil。
+is-link = (path str) (yes bool) {
+    yes = false
+    t = fs.readlink(path)
+    t: {
+        ok -> yes = true
+
+        -> {
+        }
+    }
+}
+
+; is-forbidden-root — 递归删除的护栏：拒绝根、'.'、'..'、空路径及裸 '/'。
+; 这些路径一旦递归会清空整棵文件系统树（T-3）。
+is-forbidden-root = (path str) (yes bool) {
+    yes = false
+    path.len-bytes() == 0 -> yes = true
+    path == '.' || path == '..' || path == '/' -> yes = true
+    ; 去掉尾部 '/' 后仍需排除（如 'foo/' 允许，但 '/' 已覆盖）
+}
+
 ; remove-recursive removes a directory and all its contents.
 ; Uses open-dir/read-dir directly to avoid slice memory corruption.
 ; Uses fs.rmdir for directories (fs.remove/unlink cannot remove dirs).
+; 安全要点（T-3）：
+;   - 入口先判符号链接：遇链接直接 fs.remove，绝不 open-dir 跟随目标目录；
+;   - 目录内每个条目同样先判链接，链接只 unlink 不递归；
+;   - 拒绝根/'.'/'..'/空路径，防止清空整棵树。
 ; path str: directory path to remove recursively
 remove-recursive = (path str) {
+    is-forbidden-root(path) -> return
+    ; 关键：fs.is-dir 会跟随符号链接；必须先用 readlink 排除链接本身。
+    is-link(path) -> {
+        fs.remove(path)
+        return
+    }
+
     dirp = fs.open-dir(path)
     dirp == 0 -> return
 
@@ -33,10 +66,16 @@ remove-recursive = (path str) {
                 skip = name == '.' || name == '..'
                 ! skip -> {
                     full = path - '/' - name
-                    {
-                        fs.is-dir(full) -> remove-recursive(full)
+                    ; 先判链接：链接只删自身，不递归进目标目录。
+                    is-link(full) -> {
+                        fs.remove(full)
+                    }
+                    ! is-link(full) -> {
+                        {
+                            fs.is-dir(full) -> remove-recursive(full)
 
-                        -> fs.remove(full)
+                            -> fs.remove(full)
+                        }
                     }
                 }
             }
@@ -83,26 +122,40 @@ rm-run = () {
         }
         ! a.starts-with('-') -> {
             has-file = true
-            is-f = fs.is-file(a)
-            is-d = fs.is-dir(a)
-            exists = is-f || is-d
-            ! exists -> {
+            ; 根目录护栏：拒绝 rm -rf / / . ..，避免清空整棵树（T-3）。
+            is-forbidden-root(a) -> {
                 ! force -> {
-                    msg = 'rm: ' - a - ': No such file or directory'
-                    io.errln(msg)
+                    io.errln('rm: refusing to remove root or dot path: ' - a)
                     had-error = true
                 }
             }
-            exists -> {
-                is-d -> {
-                    recursive -> remove-recursive(a)
-                    ! recursive -> {
-                        msg = 'rm: ' - a - ': is a directory'
+            ! is-forbidden-root(a) -> {
+                is-f = fs.is-file(a)
+                is-d = fs.is-dir(a)
+                ; fs.is-dir 跟随链接：符号链接一律当普通文件删除，不递归进目标。
+                is-lnk = is-link(a)
+                exists = is-f || is-d || is-lnk
+                ! exists -> {
+                    ! force -> {
+                        msg = 'rm: ' - a - ': No such file or directory'
                         io.errln(msg)
                         had-error = true
                     }
                 }
-                ! is-d -> fs.remove(a)
+                exists -> {
+                    is-lnk -> fs.remove(a)
+                    ! is-lnk -> {
+                        is-d -> {
+                            recursive -> remove-recursive(a)
+                            ! recursive -> {
+                                msg = 'rm: ' - a - ': is a directory'
+                                io.errln(msg)
+                                had-error = true
+                            }
+                        }
+                        ! is-d -> fs.remove(a)
+                    }
+                }
             }
         }
     }

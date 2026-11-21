@@ -221,6 +221,16 @@ ev-repeat = (s str, n f64) (v i64) {
     n < 0 -> v = jv-null()
     n >= 0 -> {
         cnt i64 = (n).to-i64()
+
+        ; Cap the repeat count and the resulting byte length. Without this,
+        ; '"x" * 1e12' (or a long string times a large count) loops/OOMs.
+        cnt > 1000000 -> cnt = 1000000
+        s.len() > 0 -> {
+            #{overflow=wrap}
+            max-cnt = 67108864 / s.len()
+            cnt > max-cnt -> cnt = max-cnt
+        }
+
         acc str = ''
         i <- [0..cnt): {
             acc = acc - s
@@ -415,13 +425,22 @@ ev-slice-of = (p i64, shas bool, sd f64, ehas bool, ed f64) (v i64) {
 }
 
 ; ── recursive descent (..) ────────────────────
-ev-recurse = (x i64) (o []i64) {
+; depth guards against native-recursion stack overflow on deeply nested
+; values (jq's .. operator). Parsing allows far deeper nesting than the
+; call stack can safely recurse through.
+ev-recurse = (x i64, depth i64) (o []i64) {
     o = with-len(0)
     o.push(x)
     k i64 = jv-kind(x)
-    (k == JV-ARRAY || k == JV-OBJECT) -> {
+    (k == JV-ARRAY || k == JV-OBJECT) && depth < 500 -> {
         i <- [0..jv-arr-len(x)): {
-            c = ev-recurse(jv-val-idx(x, i))
+            d-opt = depth + 1
+            d-next i64 = d-opt: {
+                ok -> it
+
+                -> 500
+            }
+            c = ev-recurse(jv-val-idx(x, i), d-next)
             j <- [0..c.len()): {
                 o.push(c[j])
             }
@@ -1021,7 +1040,7 @@ ev = (node i64, in i64) (outs []i64, threw bool, errv i64) {
     k == A-IDENTITY -> outs.push(in)
     k == A-LIT -> outs.push(ax-val(node))
     k == A-REC -> {
-        r []i64 = ev-recurse(in)
+        r []i64 = ev-recurse(in, 0)
         i <- [0..r.len()): {
             rv i64 = r[i]: {
                 ok -> it
@@ -2536,9 +2555,23 @@ bi-range = (from i64, to i64, by i64) (outs []i64, threw bool, errv i64) {
         cur f64 = jv-number-val(from)
         endv f64 = jv-number-val(to)
         step f64 = jv-number-val(by)
+        n-emitted = 0
         ((step > 0.0 && cur < endv) || (step < 0.0 && cur > endv)) {
             outs.push(jv-number(cur))
-            cur = cur + step #{overflow=wrap}
+            ne-opt = n-emitted + 1
+            n-emitted = ne-opt: {
+                ok -> it
+
+                -> n-emitted
+            }
+
+            ; Stop at a hard cap, and stop when the step is too small
+            ; relative to cur (cur+step == cur under f64): otherwise
+            ; range(1e16;1e16+100;1) loops forever and pushes endlessly.
+            n-emitted >= 1000000 -> break
+            next-cur f64 = cur + step
+            next-cur == cur -> break
+            cur = next-cur
         }
     }
 }
@@ -3574,7 +3607,7 @@ evp = (node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
         }
     }
 
-    k == A-REC -> evp-recurse-all(in, jv-array(), op, ov)
+    k == A-REC -> evp-recurse-all(in, jv-array(), op, ov, 0)
 
     k == A-AS -> {
         vs, vt, ve = ev(ax-left(node), in)
@@ -3665,15 +3698,23 @@ evp = (node i64, in i64, op []i64, ov []i64) (threw bool, errv i64) {
 
 ; evp-recurse-all: pre-order all-node paths (jq ..), verified order
 ; path(..) on {"a":[1]} -> [], ["a"], ["a",0].
-evp-recurse-all = (v i64, p i64, op []i64, ov []i64) {
+; depth guards against native-recursion stack overflow on deeply nested
+; values (jq's .. in path mode).
+evp-recurse-all = (v i64, p i64, op []i64, ov []i64, depth i64) {
     evp-push(op, ov, p, v)
     e, ok, er = ev-elems(v)
     _ = er
-    ok -> {
+    ok && depth < 500 -> {
         j <- [0..e.len()): {
             seg i64 = jv-number-i64(j)
             jv-is-object(v) -> seg = jv-string(jv-key-str(v, j))
-            evp-recurse-all(e[j], evp-with-seg(p, seg), op, ov)
+            d-opt = depth + 1
+            d-next i64 = d-opt: {
+                ok -> it
+
+                -> 500
+            }
+            evp-recurse-all(e[j], evp-with-seg(p, seg), op, ov, d-next)
         }
     }
 }

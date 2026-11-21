@@ -40,6 +40,109 @@ current = () (ver str) {
 }
 
 ; ═══════════════════════════════════════════════
+; split-pre — split a normalized version into numeric core and prerelease.
+; The prerelease suffix is the trailing part beginning at the first character
+; that is not a digit or '.', with a leading '.', '-' or '_' separator removed.
+; This avoids the old whole-string searches that mis-flagged any 'a'/'b'/'c'
+; appearing anywhere in the version.
+; ═══════════════════════════════════════════════
+
+split-pre = (v str) (core str, pre str) {
+    core = v
+    pre = ''
+    n = v.len-bytes()
+    i = 0
+    (i < n) {
+        c = v.byte(i)
+        {
+            (c >= 48 && c <= 57) || c == 46 -> {
+                i = i + 1: {
+                    ok -> it
+
+                    -> _
+                }
+            }
+
+            -> break
+        }
+    }
+    i < n -> {
+        core = utils.slice-str(v, 0, i)
+        pre = utils.slice-str(v, i, n)
+        ; strip a single leading separator ('.', '-', '_')
+        pre.len-bytes() > 0 -> {
+            pc = pre.byte(0)
+            pc == 46 || pc == 45 || pc == 95 -> pre = utils.slice-str(pre, 1, pre.len-bytes())
+        }
+    }
+}
+
+; pre-rank — PEP 440 ordering rank of a prerelease label (a < b < rc/c).
+pre-rank = (s str) (rank i64) {
+    rank = 3
+    s.len-bytes() == 0 -> return
+    c = s.byte(0)
+    c == 97 || c == 65 -> rank = 0
+    c == 98 || c == 66 -> rank = 1
+    c == 99 || c == 67 -> rank = 2
+    c == 114 || c == 82 -> rank = 2
+}
+
+; pre-number — trailing numeric component of a prerelease (e.g. rc1 -> 1).
+pre-number = (s str) (num i64) {
+    num = 0
+    len = s.len-bytes()
+    i = 0
+    (i < len) {
+        c = s.byte(i)
+        c >= 48 && c <= 57 -> break
+        i = i + 1: {
+            ok -> it
+
+            -> _
+        }
+    }
+    i < len -> num = str-to-i64(s.slice(i, len))
+}
+
+; pre-compare — compare two prerelease suffixes; empty means final release.
+; A final release sorts above any prerelease with the same core version.
+pre-compare = (a str, b str) (cmp i64) {
+    cmp = 0
+    a-empty = a.len-bytes() == 0
+    b-empty = b.len-bytes() == 0
+    a-empty && b-empty -> return
+    a-empty -> {
+        cmp = 1
+        return
+    }
+    b-empty -> {
+        cmp = -1
+        return
+    }
+    ar = pre-rank(a)
+    br = pre-rank(b)
+    ar < br -> {
+        cmp = -1
+        return
+    }
+    ar > br -> {
+        cmp = 1
+        return
+    }
+    an = pre-number(a)
+    bn = pre-number(b)
+    an < bn -> {
+        cmp = -1
+        return
+    }
+    an > bn -> {
+        cmp = 1
+        return
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; parse — parse a version string into components
 ; "1.2.3" → major=1, minor=2, patch=3, pre=""
 ; "1.2.3a1" → major=1, minor=2, patch=3, pre="a1"
@@ -58,89 +161,11 @@ parse = (ver str) (major i64, minor i64, patch i64, pre str) {
         utils.starts-with-str(v, 'V') -> v = utils.slice-str(v, 1, v.len-bytes())
     }
 
-    ; find pre-release suffix: check 'rc' first, then 'a', 'b', 'c'
-    core = v
-    {
-        utils.index-str(v, 'rc') >= 0 -> {
-            parts-rc = utils.split-str(v, 'rc')
-            {
-                parts-rc.len() == 2 -> {
-                    p0 = parts-rc[0]: {
-                        ok -> it
+    ; strip build metadata before splitting off the prerelease
+    plus-pos = utils.index-str(v, '+')
+    plus-pos >= 0 -> v = utils.slice-str(v, 0, plus-pos)
 
-                        -> ''
-                    }
-                    p1 = parts-rc[1]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    core = p0
-                    pre = 'rc' - p1
-                }
-            }
-        }
-
-        utils.index-str(v, 'a') >= 0 -> {
-            parts-a = utils.split-str(v, 'a')
-            {
-                parts-a.len() == 2 -> {
-                    p0 = parts-a[0]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    p1 = parts-a[1]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    core = p0
-                    pre = 'a' - p1
-                }
-            }
-        }
-
-        utils.index-str(v, 'b') >= 0 -> {
-            parts-b = utils.split-str(v, 'b')
-            {
-                parts-b.len() == 2 -> {
-                    p0 = parts-b[0]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    p1 = parts-b[1]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    core = p0
-                    pre = 'b' - p1
-                }
-            }
-        }
-
-        utils.index-str(v, 'c') >= 0 -> {
-            parts-c = utils.split-str(v, 'c')
-            {
-                parts-c.len() == 2 -> {
-                    p0 = parts-c[0]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    p1 = parts-c[1]: {
-                        ok -> it
-
-                        -> ''
-                    }
-                    core = p0
-                    pre = 'c' - p1
-                }
-            }
-        }
-    }
+    core, pre = split-pre(v)
 
     ; parse core version
     parts = utils.split-str(core, '.')
@@ -224,26 +249,8 @@ compare = (a str, b str) (cmp i64) {
         }
     }
 
-    ; compare pre-release using has-pre instead of string comparison
-    ; to avoid split-based memory issues
-    a-has-pre = is-prerelease(a)
-    b-has-pre = is-prerelease(b)
-    {
-        ! a-has-pre && b-has-pre -> {
-            cmp = 1
-            return
-        }
-
-        a-has-pre && ! b-has-pre -> {
-            cmp = -1
-            return
-        }
-
-        a-has-pre == b-has-pre -> {
-            cmp = 0
-            return
-        }
-    }
+    ; compare prerelease segments: a < b < rc < final release
+    cmp = pre-compare(pre-a, pre-b)
 }
 
 ; ═══════════════════════════════════════════════
@@ -258,15 +265,10 @@ is-prerelease = (ver str) (yes bool) {
 
         utils.starts-with-str(v, 'V') -> v = utils.slice-str(v, 1, v.len-bytes())
     }
-    {
-        utils.index-str(v, 'a') >= 0 -> yes = true
-
-        utils.index-str(v, 'b') >= 0 -> yes = true
-
-        utils.index-str(v, 'c') >= 0 -> yes = true
-
-        utils.index-str(v, 'rc') >= 0 -> yes = true
-    }
+    plus-pos = utils.index-str(v, '+')
+    plus-pos >= 0 -> v = utils.slice-str(v, 0, plus-pos)
+    core, pre = split-pre(v)
+    pre.len-bytes() > 0 -> yes = true
 }
 
 ; ═══════════════════════════════════════════════
@@ -282,10 +284,12 @@ normalize = (ver str) (out str) {
 
         utils.starts-with-str(out, 'V') -> out = utils.slice-str(out, 1, out.len-bytes())
     }
+    plus-pos = utils.index-str(out, '+')
+    plus-pos >= 0 -> out = utils.slice-str(out, 0, plus-pos)
 
     major, minor, patch, pre = parse(out)
 
     out = major.to-str() - '.' - minor.to-str() - '.' - patch.to-str()
-    ; Don't append pre to avoid split-based memory issues
-    ; pre-release info is preserved via is-prerelease check
+    ; preserve the prerelease suffix so lockfiles keep a1/b2/rc1 distinct
+    pre.len-bytes() > 0 -> out = out - pre
 }

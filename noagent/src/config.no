@@ -312,13 +312,17 @@ resolve = (argc i64) (cfg config, rest str) {
         }
         e3 != '' -> cfg.base-url = e3
     }
-    e4-opt = os.get-env('NOAGENT_API_KEY')
-    e4 = e4-opt: {
-        ok -> it
+    ; A-6: same "fill only empties" rule as the other env fields above —
+    ; otherwise NOAGENT_API_KEY silently overwrites an explicit --api-key.
+    cfg.api-key == '' -> {
+        e4-opt = os.get-env('NOAGENT_API_KEY')
+        e4 = e4-opt: {
+            ok -> it
 
-        -> ''
+            -> ''
+        }
+        e4 != '' -> cfg.api-key = e4
     }
-    e4 != '' -> cfg.api-key = e4
 
     ; --- pass 3: config-file overlay (fill only empties) ---
     cfg.provider == '' -> {
@@ -377,10 +381,16 @@ resolve = (argc i64) (cfg config, rest str) {
 profile-str = (path str, provider str, key str) (val str) {
     val = ''
     text = utils.read-file-str(path)
+    ; A-11: a missing config file is normal, but an existing one that cannot
+    ; be read or parsed should not silently fall back to a default.
+    fs.exists(path) -> {
+        text == '' -> eprint('noagent: config file empty or unreadable: ' - path)
+    }
     text == '' -> return
     doc = jsonx.parse(text)
     doc: {
         err -> {
+            eprint('noagent: invalid JSON in config file ' - path - '; ignoring key ' - key)
         }
 
         nil -> {
@@ -427,10 +437,16 @@ profile-bool = (path str, provider str, key str) (val bool, found bool) {
     val = false
     found = false
     text = utils.read-file-str(path)
+    ; A-11: warn on an existing-but-unreadable/invalid config file; a plain
+    ; missing file is expected and stays silent.
+    fs.exists(path) -> {
+        text == '' -> eprint('noagent: config file empty or unreadable: ' - path)
+    }
     text == '' -> return
     doc = jsonx.parse(text)
     doc: {
         err -> {
+            eprint('noagent: invalid JSON in config file ' - path - '; ignoring key ' - key)
         }
 
         nil -> {

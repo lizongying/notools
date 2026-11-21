@@ -16,6 +16,78 @@
 ; local helpers (intra-module safe)
 ; ═══════════════════════════════════════════════
 
+; valid-ref-name: reject names that could escape the git directory or that
+; violate git's check-ref-format rules. Every function that builds a path from
+; a caller-supplied ref name MUST call this first (G-1 path traversal).
+; Rejects: empty, leading '/', leading '-', leading '.', control chars,
+; backslash, '//', '..', '.' path segments, trailing '/' and trailing '.'.
+valid-ref-name = (name str) (valid bool) {
+    valid = false
+    n = name.len-bytes()
+    n > 0 -> {
+        ; leading slash / dash / dot
+        first = name.byte(0)
+        first: {
+            ok -> {
+                it == 47 -> return
+                it == 45 -> return
+                it == 46 -> return
+            }
+
+            -> return
+        }
+
+        ok-scan = true
+        prev byte = 0
+        seg-first byte = 0
+        seg-len = 0
+        i <- [0..n): {
+            cbv = name.byte(i)
+            c byte = 0
+            cbv: {
+                ok -> c = it
+
+                -> _
+            }
+
+            ; control chars (<0x20, 0x7f) and backslash are never valid
+            c < 32 -> ok-scan = false
+            c == 127 -> ok-scan = false
+            c == 92 -> ok-scan = false
+
+            ; consecutive separators and consecutive dots are never valid
+            prev == 47 && c == 47 -> ok-scan = false
+            prev == 46 && c == 46 -> ok-scan = false
+
+            {
+                c == 47 -> {
+                    ; closing a segment: a lone '.' segment is invalid
+                    seg-len == 1 && seg-first == 46 -> ok-scan = false
+                    seg-len = 0
+                }
+
+                -> {
+                    seg-len == 0 -> seg-first = c
+
+                    #{overflow=wrap}
+                    seg-len = seg-len + 1: {
+                        ok -> it
+
+                        -> _
+                    }
+                }
+            }
+            prev = c
+        }
+
+        ; final segment checks: lone '.', trailing '/' and trailing '.'
+        seg-len == 1 && seg-first == 46 -> ok-scan = false
+        prev == 47 -> ok-scan = false
+        prev == 46 -> ok-scan = false
+        ok-scan -> valid = true
+    }
+}
+
 ; ═══════════════════════════════════════════════
 ; loose ref read / write
 ; ═══════════════════════════════════════════════
@@ -48,6 +120,15 @@ read-loose-ref = (git-dir str, name str) (content ?str) {
 ;   2. Otherwise, parse as 40-char hex oid
 ;   3. If the loose ref is absent, check packed-refs
 read-ref = (git-dir str, name str) (o ?oid) {
+    o = read-ref-depth(git-dir, name, 0)
+}
+
+; read-ref-depth: internal, depth-limited implementation of read-ref.
+; Git caps symbolic ref chains at 5 levels. Without the limit a cyclic
+; A -> B -> A ref pair recurses forever and overflows the stack (G-3).
+read-ref-depth = (git-dir str, name str, depth i64) (o ?oid) {
+    depth > 5 -> return
+    ! valid-ref-name(name) -> return
 
     ; try loose ref first
     content str
@@ -73,7 +154,15 @@ read-ref = (git-dir str, name str) (o ?oid) {
             content.starts-with('ref: ') -> {
                 target = util.str-range(content, 5, content.len())
                 target = util.trim-newline(target)
-                o = read-ref(git-dir, target)
+                ! valid-ref-name(target) -> return
+
+                #{overflow=wrap}
+                next-depth = depth + 1: {
+                    ok -> it
+
+                    -> _
+                }
+                o = read-ref-depth(git-dir, target, next-depth)
                 return
             }
 
@@ -123,6 +212,10 @@ read-symbolic-ref = (git-dir str, name str) (target ?str) {
 ; git-dir str, name str (e.g. "refs/heads/main"), o oid
 write-ref = (git-dir str, name str, o oid) (ok bool) {
     ok = false
+    ! valid-ref-name(name) -> {
+        print('error: invalid ref name')
+        return
+    }
     sl = '/'
     p = git-dir - sl - name
 
@@ -143,20 +236,28 @@ write-ref = (git-dir str, name str, o oid) (ok bool) {
     hx = oid.oid-hex-str(o)
 
     content = hx - '\n'
-    util.write-file-simple(p, content)
-    ok = true
+    ; X-4: propagate write failure (disk full / permissions) to caller
+    ok = util.write-file-simple(p, content)
 }
 
 ; write-symbolic-ref: write a symbolic ref (e.g. HEAD -> refs/heads/main)
 ; git-dir str, name str (e.g. "HEAD"), target str (e.g. "refs/heads/main")
 write-symbolic-ref = (git-dir str, name str, target str) (ok bool) {
     ok = false
+    ! valid-ref-name(name) -> {
+        print('error: invalid ref name')
+        return
+    }
+    ! valid-ref-name(target) -> {
+        print('error: invalid symbolic ref target')
+        return
+    }
     sl = '/'
     p = git-dir - sl - name
 
     content = 'ref: ' - target - '\n'
-    util.write-file-simple(p, content)
-    ok = true
+    ; X-4: propagate write failure (disk full / permissions) to caller
+    ok = util.write-file-simple(p, content)
 }
 
 ; update-head: set HEAD to point to a branch (symbolic)
@@ -172,8 +273,8 @@ set-head-detached = (git-dir str, o oid) (ok bool) {
     hx = oid.oid-hex-str(o)
 
     content = hx - '\n'
-    util.write-file-simple(p, content)
-    ok = true
+    ; X-4: propagate write failure (disk full / permissions) to caller
+    ok = util.write-file-simple(p, content)
 }
 
 ; current-branch: read HEAD and return the branch name it points to
@@ -233,6 +334,10 @@ current-branch = (git-dir str) (branch str, detached bool, ok bool) {
 ; git-dir str, name str, o oid
 ; returns ok bool (false if already exists)
 create-branch = (git-dir str, name str, o oid) (ok bool) {
+    ! valid-ref-name(name) -> {
+        print('error: invalid branch name')
+        return
+    }
     ref-name = 'refs/heads/' - name
     sl = '/'
 
@@ -250,6 +355,10 @@ create-branch = (git-dir str, name str, o oid) (ok bool) {
 ; git-dir str, name str
 ; returns ok bool
 delete-branch = (git-dir str, name str) (ok bool) {
+    ! valid-ref-name(name) -> {
+        print('error: invalid branch name')
+        return
+    }
     ref-name = 'refs/heads/' - name
     sl = '/'
 
@@ -320,6 +429,10 @@ list-branches = (git-dir str) (names str, count i64) {
 ; git-dir str, name str, o oid
 ; returns ok bool (false if already exists)
 create-tag = (git-dir str, name str, o oid) (ok bool) {
+    ! valid-ref-name(name) -> {
+        print('error: invalid tag name')
+        return
+    }
     ref-name = 'refs/tags/' - name
     sl = '/'
 
@@ -335,6 +448,10 @@ create-tag = (git-dir str, name str, o oid) (ok bool) {
 ; git-dir str, name str
 ; returns ok bool
 delete-tag = (git-dir str, name str) (ok bool) {
+    ! valid-ref-name(name) -> {
+        print('error: invalid tag name')
+        return
+    }
     ref-name = 'refs/tags/' - name
     sl = '/'
 
@@ -495,6 +612,10 @@ read-packed-ref = (git-dir str, name str) (o ?oid) {
 ; returns ok bool
 write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, email str, time i64, tz str, message str) (ok bool) {
     ok = false
+    ! valid-ref-name(refname) -> {
+        print('error: invalid reflog ref name')
+        return
+    }
     log-path = git-dir - '/logs/' - refname
 
     ; ensure parent dir exists (recursive)
@@ -534,8 +655,8 @@ write-reflog = (git-dir str, refname str, old-oid oid, new-oid oid, name str, em
         }
     }
     full = existing - log-entry
-    util.write-file-simple(log-path, full)
-    ok = true
+    ; X-4: propagate write failure to caller
+    ok = util.write-file-simple(log-path, full)
 }
 
 ; read-reflog: read reflog entries

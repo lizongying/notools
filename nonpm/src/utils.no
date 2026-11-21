@@ -256,6 +256,80 @@ path-join = (base str, sub str) (out str) {
     out = p.p
 }
 
+; safe-archive-path — central Zip-Slip guard for archive extraction.
+; Validates an untrusted archive entry name and joins it under dest.
+; Rejects: empty names, absolute paths (leading '/'), Windows drive letters,
+; backslashes, NUL bytes and any '..' path segment. The joined path is then
+; verified to still start with dest + '/'.
+; Returns the joined path (ok) or nil (rejected).
+safe-archive-path = (dest str, name str) (out ?str) {
+    out = nil
+    n = name.len-bytes()
+    n == 0 -> return
+
+    ; reject NUL, backslash, leading '/' and drive letters; find '..' segments
+    bad = false
+    seg-start = 0
+    i <- [0..n): {
+        c = name.byte(i)
+        c == 0 -> {
+            bad = true
+            break
+        }
+        c == 92 -> {
+            bad = true
+            break
+        }
+        i == 0 && c == 47 -> {
+            bad = true
+            break
+        }
+        i == 1 && c == 58 -> {
+            c0 = name.byte(0)
+            (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) -> {
+                bad = true
+                break
+            }
+        }
+        c == 47 -> {
+            #{overflow=wrap}
+            seg-len = i - seg-start
+            seg-len == 2 -> {
+                name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                    bad = true
+                    break
+                }
+            }
+            #{overflow=wrap}
+            seg-start = i + 1
+        }
+    }
+    ; check the trailing (last) segment
+    ! bad -> {
+        #{overflow=wrap}
+        last-len = n - seg-start
+        last-len == 2 -> {
+            name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> bad = true
+        }
+    }
+    bad -> return
+
+    ; normalize dest by dropping a trailing '/'
+    d = dest
+    dl = d.len-bytes()
+    dl > 0 -> {
+        d.byte(dl - 1) == 47 -> {
+            #{overflow=wrap}
+            d = d.slice(0, dl - 1)
+        }
+    }
+    prefix = d - '/'
+    full = prefix - name
+    ; defence in depth: the joined path must remain under dest
+    ! full.starts-with(prefix) -> return
+    out = full
+}
+
 ; path-dir — get directory of a path
 ; p str — file path
 ; returns out str — directory path

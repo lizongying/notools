@@ -7,6 +7,10 @@
 ;       Nolang 的 slice 所有权 bug 会导致传递 []byte 给函数时数据损坏。
 ;       使用自定义结构体方法，直接通过 .zdata 访问字节，避免传递 slice。
 
+; 单条目大小上限（1 GiB）：归档头里的 size 完全不可信，直接 with-len(sz) 会被
+; 声明超大 size 的恶意归档打爆内存（T-5）。
+UZ-MAX-ENTRY = 1073741824
+
 uz-arch {
     zdata []byte
 }
@@ -233,12 +237,72 @@ uz-arch.total = () (total i64) {
     total = .read-u16le(eocd + 8)
 }
 
+; uz-safe-name — 校验归档条目名（Zip-Slip 防护，T-1）
+; 解压到 cwd，条目名必须始终是相对路径：拒绝空名、绝对路径、盘符、反斜杠、
+; NUL 以及任意 '..' 路径段。与 nonpm/nouv 的 safe-archive-path 规则一致。
+uz-safe-name = (name str) (safe bool) {
+    safe = false
+    n = name.len-bytes()
+    n == 0 -> return
+
+    bad = false
+    seg-start = 0
+    i <- [0..n): {
+        c = name.byte(i)
+        c == 0 -> {
+            bad = true
+            break
+        }
+        c == 92 -> {
+            bad = true
+            break
+        }
+        i == 0 && c == 47 -> {
+            bad = true
+            break
+        }
+        i == 1 && c == 58 -> {
+            c0 = name.byte(0)
+            (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) -> {
+                bad = true
+                break
+            }
+        }
+        c == 47 -> {
+            #{overflow=wrap}
+            seg-len = i - seg-start
+            seg-len == 2 -> {
+                name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                    bad = true
+                    break
+                }
+            }
+            #{overflow=wrap}
+            seg-start = i + 1
+        }
+    }
+    ! bad -> {
+        #{overflow=wrap}
+        last-len = n - seg-start
+        last-len == 2 -> {
+            name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                bad = true
+            }
+        }
+    }
+    ! bad -> safe = true
+}
+
 ; extract-stored: 提取 method 0 (stored) 条目，直接写文件
 uz-arch.extract-stored = (idx i64, out-name str) {
     off = .entry-offset(idx)
 
     #{overflow=wrap}
     sz = .read-u32le(off + 24)
+    sz > UZ-MAX-ENTRY -> {
+        io.errln('unzip: entry too large, skipping')
+        return
+    }
 
     #{overflow=wrap}
     local-off = .read-u32le(off + 42)
@@ -284,6 +348,10 @@ uz-arch.extract-deflate = (idx i64, out-name str) {
 
     #{overflow=wrap}
     csz = .read-u32le(off + 20)
+    (sz > UZ-MAX-ENTRY || csz > UZ-MAX-ENTRY) -> {
+        io.errln('unzip: entry too large, skipping')
+        return
+    }
 
     #{overflow=wrap}
     local-off = .read-u32le(off + 42)
@@ -404,6 +472,11 @@ unzip-run = () {
     ; Extract mode
     i <- [0..n): {
         name = archive.read-name(i)
+        name-safe = uz-safe-name(name)
+        ! name-safe -> {
+            io.errln('unzip: skipping unsafe entry: ' - name)
+            continue
+        }
         method = archive.read-method(i)
         is-dir = name.ends-with('/')
         is-dir -> os.mkdir(name, 493)

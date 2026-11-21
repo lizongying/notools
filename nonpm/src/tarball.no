@@ -11,6 +11,10 @@
 
 # /nonpm/src/utils
 
+; NP-3: extraction size caps, matching nouv (512 MiB per file, 2 GiB total).
+ARCHIVE-MAX-FILE = 536870912
+ARCHIVE-MAX-TOTAL = 2147483648
+
 ; ═══════════════════════════════════════════════
 ; download — download a tarball from URL to local file
 ; url str — tarball URL
@@ -83,7 +87,8 @@ extract = (tgz-path str, dest-dir str) (ok bool) {
     ok = false
 
     ; 確保目標目錄存在
-    ensure-dir(dest-dir)
+    dest-ok = ensure-dir(dest-dir)
+    ! dest-ok -> return
 
     ; 讀取壓縮 tarball
     bytes []byte
@@ -100,23 +105,75 @@ extract = (tgz-path str, dest-dir str) (ok bool) {
     ; gzip 解壓 + tar 解析
     archive = tar.open-gz(bytes)
     n = archive.count()
+    total = 0
     i <- [0..n): {
         e = archive.entry(i)
         name = e.name()
+        want-dir = e.is-dir()
+        want-file = e.is-file()
+
+        ; 跳過 symlink/hardlink/device 等非普通條目（typeflag 非 0/5），避免任意寫
+        ! want-dir && ! want-file -> {
+            print('warning: skipping unsupported archive entry type: ' - name)
+            continue
+        }
 
         ; npm tarball 帶頂層 "package/" 前綴，去掉它
         name.starts-with('package/') -> name = name.slice(8, name.len-bytes())
 
-        e.is-dir() -> {
-            full = dest-dir - '/' - name
-            ensure-dir(full)
-        }
+        ; Zip-Slip 防護：校驗條目名並確認拼接後仍在 dest-dir 內
+        safe = safe-archive-path(dest-dir, name)
+        full str = ''
+        safe: {
+            ok -> full = it
 
-        e.is-file() -> {
-            full = dest-dir - '/' - name
-            ensure-parent(full)
-            content = e.read()
-            fs.write-bytes(full, content)
+            -> {
+                print('warning: skipping unsafe archive entry: ' - name)
+            }
+        }
+        full.len-bytes() > 0 -> {
+            want-dir -> {
+                ensure-dir(full)
+            }
+            want-file -> {
+                ensure-parent(full)
+                content = e.read()
+                ; NP-3: cap each file and the running total before writing —
+                ; a tarball bomb must not fill the disk / OOM.
+                content.len() > ARCHIVE-MAX-FILE -> {
+                    print('error: archive entry exceeds size limit: ' - name)
+                    ok = false
+                    return
+                }
+                #{overflow=wrap}
+                total-opt = total + content.len()
+                total = total-opt: {
+                    ok -> it
+
+                    -> ARCHIVE-MAX-TOTAL
+                }
+                total > ARCHIVE-MAX-TOTAL -> {
+                    print('error: archive total size limit exceeded')
+                    ok = false
+                    return
+                }
+                wok = fs.write-bytes(full, content)
+                wok: {
+                    ok -> {
+                        it == false -> {
+                            print('error: failed to write ' - full)
+                            ok = false
+                            return
+                        }
+                    }
+
+                    -> {
+                        print('error: failed to write ' - full)
+                        ok = false
+                        return
+                    }
+                }
+            }
         }
     }
     ok = true
@@ -175,15 +232,25 @@ pack-tarball = (dir str, tgz-path str) (ok bool) {
     }
     arch = builder.finish()
     gz = gzip.compress(arch.data)
-    fs.write-bytes(tgz-path, gz)
-    ok = true
+    wok = fs.write-bytes(tgz-path, gz)
+    wok: {
+        ok -> {
+            it == false -> {
+                print('error: failed to write tarball ' - tgz-path)
+                return
+            }
+            ok = true
+        }
+
+        -> print('error: failed to write tarball ' - tgz-path)
+    }
 }
 
 ; ═══════════════════════════════════════════════
 ; download-and-extract — download tarball, verify integrity, extract
 ; url str — tarball URL
 ; dest-dir str — destination directory (must exist)
-; expected str — SRI integrity (e.g. "sha512-<base64>"); empty skips verification
+; expected str — SRI integrity (e.g. "sha512-<base64>"); empty is REJECTED (fail closed)
 ; returns ok bool — true on success
 ; ═══════════════════════════════════════════════
 
@@ -212,13 +279,16 @@ download-and-extract = (url str, dest-dir str, expected str) (ok bool) {
 ; tgz-path str — path to .tgz file
 ; expected str — SRI ("sha512-<base64>" / "sha1-<base64>") or bare hex shasum;
 ;   empty means nothing to check (treated as ok)
-; returns ok bool — true if matches (or nothing to match)
+; returns ok bool — true only if a non-empty expected value matches
 ; ═══════════════════════════════════════════════
 
 verify-integrity = (tgz-path str, expected str) (ok bool) {
     ok = false
+    ; NP-7 / NP-2: fail closed when metadata carries no integrity hash.
+    ; An unverified tarball must never be extracted or linked — nouv already
+    ; does this; keep nonpm consistent. Refuse before touching the download.
     expected.len() == 0 -> {
-        ok = true
+        print('error: no integrity hash for ' - tgz-path - '; refusing unverified download')
         return
     }
 
@@ -228,11 +298,9 @@ verify-integrity = (tgz-path str, expected str) (ok bool) {
     read: {
         ok -> b = it
 
-        nil -> {
-        }
+        nil -> return
 
-        err -> {
-        }
+        err -> return
     }
     exp = expected.trim()
     exp.starts-with('sha512-') -> {
@@ -283,7 +351,19 @@ verify-integrity = (tgz-path str, expected str) (ok bool) {
         return
     }
 
-    ; bare hex (npm dist.shasum) — compare lowercase sha1 hex digest
+    ; bare hex (npm dist.shasum) — compare case-insensitively against the
+    ; lowercase sha1 hex digest. Fail closed on a non-empty malformed value.
+    exp-low = exp.to-lower()
     h1 = sha1.sha1-hex(b)
-    ok = h1 == exp
+    hex-ok = exp-low.len-bytes() == 40
+    j <- [0..exp-low.len-bytes()): {
+        c = exp-low.byte(j)
+        ! ((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) -> hex-ok = false
+    }
+    ! hex-ok -> {
+        print('error: malformed integrity value for ' - tgz-path - ': ' - exp)
+        ok = false
+        return
+    }
+    ok = h1 == exp-low
 }

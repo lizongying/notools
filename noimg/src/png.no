@@ -134,6 +134,26 @@ load = (path str) (img ?image) {
             ; Read chunk length (big-endian 32-bit)
             chunk-len = png-u32(data, pos)
 
+            ; Validate the whole chunk (length + type + data + CRC) fits in the
+            ; file before any per-byte loop runs over chunk-len. An IDAT that
+            ; declares 0x7FFFFFFF would otherwise loop billions of times.
+            #{overflow=wrap}
+            chunk-end = pos + chunk-len + 12
+            chunk-end > data.len() -> {
+                img = nil
+                return
+            }
+
+            ; Verify chunk CRC (computed over type + data, stored big-endian
+            ; right after the data). Reject corrupted/malformed chunks.
+            crc-computed = png-crc32(data, pos + 4, chunk-len + 4)
+            #{overflow=wrap}
+            crc-stored = png-u32(data, pos + 8 + chunk-len)
+            crc-computed != crc-stored -> {
+                img = nil
+                return
+            }
+
             #{overflow=wrap}
             pos = pos + 4: {
                 ok -> it
@@ -248,8 +268,24 @@ load = (path str) (img ?image) {
         color-type == 3 -> bytes-per-pixel = 1
     }
 
-    ; Decompress IDAT (zlib datastream per PNG spec; legacy gzip accepted)
-    raw = png-zlib-decompress(idat-data)
+    ; Reject output sizes wildly larger than the compressed input (allocation
+    ; bomb from a tiny file that declares enormous dimensions). 512 MiB slack
+    ; keeps legitimate, highly-compressible large images working.
+    #{overflow=wrap}
+    out-bytes = w * h * bytes-per-pixel
+    #{overflow=wrap}
+    out-limit = idat-data.len() * 256 + 536870912
+    out-bytes > out-limit -> {
+        img = nil
+        return
+    }
+
+    ; Decompress IDAT (zlib datastream per PNG spec; legacy gzip accepted).
+    ; Cap the DEFLATE output at the maximum the declared geometry can hold
+    ; plus one extra row for filter bytes, so a zip bomb cannot expand freely.
+    #{overflow=wrap}
+    raw-limit = w * h * bytes-per-pixel + h
+    raw = png-zlib-decompress(idat-data, raw-limit)
 
     ; Create output image — U16 if bit-depth == 16
     is-u16 = false
@@ -258,9 +294,8 @@ load = (path str) (img ?image) {
     }
     {
         is-u16 -> {
-
-            #{overflow=wrap}
-            _d []byte = with-len(w * h * bands * 2)
+            ; image.new-u16 allocates its own buffer; the previous
+            ; with-len(w*h*bands*2) here was never used (pure memory waste).
             tmp = image.new-u16(w, h, bands)
         }
 
@@ -376,8 +411,12 @@ load = (path str) (img ?image) {
                             #{overflow=wrap}
                             img-y = sy-start + py * sy-step
 
-                            ; Read filter type
+                            ; Read filter type (must be 0..4)
                             filter-type = raw[raw-pos]
+                            filter-type > 4 -> {
+                                img = nil
+                                return
+                            }
 
                             ; Copy current row
                             pass-cur []byte = with-len(pass-stride)
@@ -674,6 +713,10 @@ load = (path str) (img ?image) {
                     row-start + row-len > raw.len() -> break
                 }
                 filter-type = raw[row-start]
+                filter-type > 4 -> {
+                    img = nil
+                    return
+                }
 
                 ; Copy current row
                 cur-row []byte = with-len(stride)
@@ -1046,9 +1089,8 @@ load = (path str) (img ?image) {
                     has-palette -> {
                         rgba-img = image.new(w, h, 4)
                         i <- [0..w * h): {
-
-                            #{overflow=wrap}
-                            idx = tmp.data[i * 3]; This was set from palette R
+                            ; Removed dead assignment `idx = tmp.data[i * 3]`
+                            ; (value was never read).
 
                             ; Actually for indexed, tmp already has RGB expanded.
                             ; We need the original index, but it's lost.
@@ -1160,7 +1202,7 @@ png-zlib-compress = (data []byte) (out []byte) {
 ; files written by older noimg versions, which wrapped IDAT in gzip)
 ; data []byte: zlib (or legacy gzip) datastream
 ; returns out []byte: decompressed data
-png-zlib-decompress = (data []byte) (out []byte) {
+png-zlib-decompress = (data []byte, limit i64) (out []byte) {
     is-gzip = false
     data.len() >= 2 -> {
         png-byte-at(data, 0, 0) == 31 && png-byte-at(data, 1, 0) == 139 -> {
@@ -1172,13 +1214,13 @@ png-zlib-decompress = (data []byte) (out []byte) {
             ; gzip.gzip-decompress was removed in compiler v0.4.24.
             ; Strip the 10-byte gzip header and 8-byte trailer, then inflate raw DEFLATE.
             data.len() > 18 -> {
-                out = gzip.inflate-decompress(data.slice(10, data.len() - 8), 0)
+                out = gzip.inflate-decompress(data.slice(10, data.len() - 8), limit)
             }
         }
 
         -> {
             data.len() > 6 -> {
-                out = gzip.inflate-decompress(data.slice(2, data.len() - 4), 0)
+                out = gzip.inflate-decompress(data.slice(2, data.len() - 4), limit)
             }
         }
     }

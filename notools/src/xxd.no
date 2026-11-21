@@ -386,7 +386,8 @@ dump-pure = (data []byte, cols i64) {
 
                 -> 0
             }
-            line = space.repeat(rep)
+            ; 用字符串拼接构造整行：str 的 option 索引写会写入 0x01 tag 字节
+            line = ''
             j <- [0..line-n): {
 
                 #{overflow=wrap}
@@ -402,51 +403,17 @@ dump-pure = (data []byte, cols i64) {
                 }
                 b = db & 255
 
-                hi = (b >> 4) & 15: {
-                    ok -> it
-
-                    -> _
-                }
-                hb = hex-digits[hi]: {
+                hb = hex-digits[(b >> 4) & 15]: {
                     ok -> it
 
                     -> ''
                 }
-
-                #{overflow=wrap}
-                p2 = j * 2: {
-                    ok -> it
-
-                    -> _
-                }
-                line[p2]: {
-                    ok -> it = hb
-
-                    -> _
-                }
-
-                li = b & 15: {
-                    ok -> it
-
-                    -> _
-                }
-                lb = hex-digits[li]: {
+                lb = hex-digits[b & 15]: {
                     ok -> it
 
                     -> ''
                 }
-
-                #{overflow=wrap}
-                p21 = j * 2 + 1: {
-                    ok -> it
-
-                    -> _
-                }
-                line[p21]: {
-                    ok -> it = lb
-
-                    -> _
-                }
+                line = line - hb - lb
             }
             print(line)
 
@@ -744,66 +711,31 @@ canonical = (data []byte, cols i64, group i64, autoskip bool, base i64) {
                 }
                 line-n > cols -> line-n = cols
 
-                #{overflow=wrap}
-                line-len = 8 + 2 + hex-width + 2 + line-n
-                line = space.repeat(line-len)
-
-                ; address
+                ; 用字符串拼接构造整行：str 的 option 索引写会写入 0x01 tag 字节。
+                ; address: 8 位十六进制 + ':' + ' '
                 #{overflow=wrap}
                 a = base + offset
+                addr = ''
                 k3 <- [0..8): {
-                    ai = a & 15: {
-                        ok -> it
-
-                        -> _
-                    }
+                    ; 注意：不要写 a & 15: { ok -> it; -> _ } —— 实测该 option-match
+                    ; 对 & 运算恒走 fallback，使索引恒错（参照 od.no 的修复）。
+                    ai = a & 15
                     ab = hex-digits[ai]: {
                         ok -> it
 
                         -> ''
                     }
-
-                    #{overflow=wrap}
-                    si = 7 - k3: {
-                        ok -> it
-
-                        -> _
-                    }
-                    line[si]: {
-                        ok -> it = ab
-
-                        -> _
-                    }
+                    addr = ab - addr
                     a = a >> 4
                 }
-                line[8]: {
-                    ok -> it = ':'
+                line = addr - ':' - ' '
 
-                    -> _
-                }
-                line[9]: {
-                    ok -> it = ' '
-
-                    -> _
-                }
-
-                ; hex section
-                hi = 10
+                ; hex section: 每 group 字节之间插入一个空格
+                hexpart = ''
                 j3 <- [0..line-n): {
                     {
                         j3 > 0 && (j3 % group == 0) -> {
-                            line[hi]: {
-                                ok -> it = ' '
-
-                                -> _
-                            }
-
-                            #{overflow=wrap}
-                            hi = hi + 1: {
-                                ok -> it
-
-                                -> _
-                            }
+                            hexpart = hexpart - ' '
                         }
                     }
 
@@ -820,56 +752,30 @@ canonical = (data []byte, cols i64, group i64, autoskip bool, base i64) {
                     }
                     b = db3 & 255
 
-                    hidx = (b >> 4) & 15: {
-                        ok -> it
-
-                        -> _
-                    }
+                    hidx = (b >> 4) & 15
                     hb3 = hex-digits[hidx]: {
                         ok -> it
 
                         -> ''
                     }
-                    line[hi]: {
-                        ok -> it = hb3
-
-                        -> _
-                    }
-
-                    #{overflow=wrap}
-                    hi = hi + 1: {
-                        ok -> it
-
-                        -> _
-                    }
-
-                    ldx = b & 15: {
-                        ok -> it
-
-                        -> _
-                    }
+                    ldx = b & 15
                     lb3 = hex-digits[ldx]: {
                         ok -> it
 
                         -> ''
                     }
-                    line[hi]: {
-                        ok -> it = lb3
+                    hexpart = hexpart - hb3 - lb3
+                }
+                line = line - hexpart
 
-                        -> _
-                    }
-
-                    #{overflow=wrap}
-                    hi = hi + 1: {
-                        ok -> it
-
-                        -> _
-                    }
+                ; 短行补齐 hex 列宽，再加与 ascii 列之间的两个空格
+                #{overflow=wrap}
+                pad = hex-width - hexpart.len-bytes() + 2
+                pad > 0 -> {
+                    line = line - space.repeat(pad)
                 }
 
                 ; ascii section
-                #{overflow=wrap}
-                ascii-start = 10 + hex-width + 2
                 j4 <- [0..line-n): {
 
                     #{overflow=wrap}
@@ -884,28 +790,14 @@ canonical = (data []byte, cols i64, group i64, autoskip bool, base i64) {
                         -> _
                     }
                     b = db4 & 255
-
-                    #{overflow=wrap}
-                    apo = ascii-start + j4: {
-                        ok -> it
-
-                        -> _
-                    }
                     {
                         b >= 32 && b < 127 -> {
-                            line[apo]: {
-                                ok -> it = b
-
-                                -> _
-                            }
+                            bc char = b
+                            line = line - bc.to-str()
                         }
 
                         -> {
-                            line[apo]: {
-                                ok -> it = '.'
-
-                                -> _
-                            }
+                            line = line - '.'
                         }
                     }
                 }
@@ -925,9 +817,6 @@ canonical = (data []byte, cols i64, group i64, autoskip bool, base i64) {
 ; c-include: C 数组格式输出
 ; 有名: unsigned char NAME[] = {
 ; body
-
-;
-unsigned int = N; 
 
 ; 无名(stdin): 仅 body
 c-include = (data []byte, nm str, cols i64) {

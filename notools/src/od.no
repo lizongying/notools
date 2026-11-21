@@ -66,64 +66,27 @@ stride-of = (size i64) (st i64) {
 
 fmt-octal = (v i64, fw i64) (s str) {
     digits = '01234567'
-    space = ' '
-    s = space.repeat(fw)
+    ; 不能用 s[si]:{ok->it=v} 写 str：option 索引写会把 0x01 tag 字节写进
+    ; 字符串而非字符载荷。改为字符串拼接：逐位从低位到高位取出，前插到结果。
+    s = ''
     x = v
     k <- [0..fw): {
-        xi = x & 7: {
-            ok -> it
-
-            -> _
-        }
-        d9v1 = digits[xi]: {
-            ok -> it
-
-            -> ''
-        }
-
-        #{overflow=wrap}
-        si = fw - 1 - k: {
-            ok -> it
-
-            -> _
-        }
-        s[si]: {
-            ok -> it = d9v1
-
-            -> _
-        }
+        xi = x & 7
+        ; 注意：不要写 xi = x & 7: { ok -> it; -> _ } —— 实测该 option-match
+        ; 对 & 运算恒走 fallback，使 xi 恒为 0（所有位都输出 '0'）。
+        s = digits[xi] - s
         x = x >> 3
     }
 }
 
 fmt-hex = (v i64, fw i64) (s str) {
     digits = '0123456789abcdef'
-    space = ' '
-    s = space.repeat(fw)
+    ; 同 fmt-octal：用字符串拼接代替 str 的 option 索引写。
+    s = ''
     x = v
     k <- [0..fw): {
-        xi = x & 15: {
-            ok -> it
-
-            -> _
-        }
-        d9v2 = digits[xi]: {
-            ok -> it
-
-            -> ''
-        }
-
-        #{overflow=wrap}
-        si = fw - 1 - k: {
-            ok -> it
-
-            -> _
-        }
-        s[si]: {
-            ok -> it = d9v2
-
-            -> _
-        }
+        xi = x & 15
+        s = digits[xi] - s
         x = x >> 4
     }
 }
@@ -185,107 +148,48 @@ fmt-char = (b i64) (s str) {
 }
 
 ; render the address field into a fixed 7-column string.
+; 三分支均用字符串拼接构造，避免 str 的 option 索引写注入 0x01 tag 字节。
 addr-str = (val i64, fmt str) (s str) {
-    space = ' '
     {
         fmt == 'd' -> {
-            s = space.repeat(7)
+            digits = '0123456789'
+            s = ''
             x = val
             k <- [0..7): {
 
                 #{overflow=wrap}
-                si = 6 - k: {
-                    ok -> it
+                xm = x % 10
+                s = digits[xm] - s
 
-                    -> _
-                }
-
+                ; 新版编译器 '/' 返回 ?i64，需显式解包，不能直赋 i64。
                 #{overflow=wrap}
-                xm = x % 10: {
+                xq = x / 10
+                x = xq: {
                     ok -> it
 
-                    -> _
-                }
-
-                #{overflow=wrap}
-                dg = 48 + xm: {
-                    ok -> it
-
-                    -> _
-                }
-                s[si]: {
-                    ok -> it = dg
-
-                    -> _
-                }
-
-                #{overflow=wrap}
-                x = x / 10: {
-                    ok -> it
-
-                    -> _
+                    -> 0
                 }
             }
         }
 
         fmt == 'x' -> {
             hex-digits = '0123456789abcdef'
-            s = space.repeat(7)
+            s = ''
             x = val
             k <- [0..7): {
-                xi = x & 15: {
-                    ok -> it
-
-                    -> _
-                }
-                d9v3 = hex-digits[xi]: {
-                    ok -> it
-
-                    -> ''
-                }
-
-                #{overflow=wrap}
-                si = 6 - k: {
-                    ok -> it
-
-                    -> _
-                }
-                s[si]: {
-                    ok -> it = d9v3
-
-                    -> _
-                }
+                xi = x & 15
+                s = hex-digits[xi] - s
                 x = x >> 4
             }
         }
 
         -> {
             oct-digits = '01234567'
-            s = space.repeat(7)
+            s = ''
             x = val
             k <- [0..7): {
-                xi = x & 7: {
-                    ok -> it
-
-                    -> _
-                }
-                d9v4 = oct-digits[xi]: {
-                    ok -> it
-
-                    -> ''
-                }
-
-                #{overflow=wrap}
-                si = 6 - k: {
-                    ok -> it
-
-                    -> _
-                }
-                s[si]: {
-                    ok -> it = d9v4
-
-                    -> _
-                }
+                xi = x & 7
+                s = oct-digits[xi] - s
                 x = x >> 3
             }
         }

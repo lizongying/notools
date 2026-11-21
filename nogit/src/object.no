@@ -898,9 +898,18 @@ write-loose = (git-dir str, kind str, data str) (o oid) {
     ; >= 0x80 的位元組時兩者不等（每個高位元組編成 2 bytes UTF-8），用 len() 會
     ; 截斷尾端（Adler-32）產生損壞的 loose object。故先轉 []byte 再按元素數寫出。
     comp-bytes = comp.to-bytes()
+    ; G-8: surface a failed/short object write instead of silently reporting
+    ; success with an oid whose loose object was never persisted.
     fd = fs.open-write(f)
-    fs.write(fd, comp-bytes, comp-bytes.len())
+    fd <= 0 -> {
+        print('error: could not open object file for write: ' - f)
+        return
+    }
+    written = fs.write(fd, comp-bytes, comp-bytes.len())
     fs.close(fd)
+    written != comp-bytes.len() -> {
+        print('error: failed to write object: ' - f)
+    }
 }
 
 ; write-blob: store a blob whose content is a byte-string
@@ -1372,6 +1381,12 @@ tree-to-flat = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, 
         entry-oid = tree-id-raw(raw, i)
         entry-hex = oid.oid-hex-str(entry-oid)
 
+        ; G-2: these paths later drive remove-stale-files (deletions)
+        ! util.safe-entry-name(nm) -> {
+            print('error: unsafe tree entry name, skipping: ' - nm)
+            continue
+        }
+
         ; build full path: prefix/nm or just nm if prefix is empty
         full-path = nm
         {
@@ -1438,6 +1453,12 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
         nm = tree-name-raw(raw, i)
         entry-oid = tree-id-raw(raw, i)
 
+        ; G-2: never let an untrusted tree entry escape dest-dir
+        ! util.safe-entry-name(nm) -> {
+            print('error: unsafe tree entry name, skipping checkout: ' - nm)
+            continue
+        }
+
         ; build full path: dest-dir/nm
         full-path = dest-dir
         {
@@ -1455,6 +1476,8 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
                 ; subtree — create directory and recurse
                 util.mkdir-all(full-path)
                 sub-ok = checkout-tree(git-dir, entry-oid, full-path)
+                ; X-4: propagate recursive checkout failure
+                ! sub-ok -> return
             }
 
             -> {
@@ -1472,7 +1495,9 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
                         parent = util.str-range(full-path, 0, slash)
                         util.mkdir-all(parent)
                     }
-                    util.write-file-simple(full-path, b-data)
+                    ; X-4: write failure aborts checkout (ok stays false)
+                    wok = util.write-file-simple(full-path, b-data)
+                    ! wok -> return
                 }
             }
         }

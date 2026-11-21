@@ -20,6 +20,15 @@
 # /nouv/src/utils
 
 ; ═══════════════════════════════════════════════
+; Hard cap on a single HTTP response body (64 MiB). A Content-Length larger
+; than this is rejected at parse time (sentinel -2), and the raw read loops
+; are capped so a chunked / missing-length response cannot OOM us either.
+; ═══════════════════════════════════════════════
+
+HTTP-MAX-BODY = 67108864
+HTTP-MAX-BUF = 67239936
+
+; ═══════════════════════════════════════════════
 ; http-timeout-ms — per-request wall-clock budget in milliseconds.
 ;
 ; The std tls conn reads via non-blocking recv + short sleeps, so SO_RCVTIMEO
@@ -209,6 +218,8 @@ fetch-once = (url str, deadline i64) (status i64, body []byte, ok bool) {
     ; ── Phase 1: read until the header/body separator (\r\n\r\n) is present ──
     (iters < 20000) {
         expired(deadline) -> break
+        ; cap raw accumulation so a no-separator / chunked flood cannot OOM
+        result.len() > HTTP-MAX-BUF -> break
 
         #{overflow=wrap}
         iters = iters + 1: {
@@ -235,6 +246,12 @@ fetch-once = (url str, deadline i64) (status i64, body []byte, ok bool) {
         header-end = find-crlfcrlf(result)
         header-end >= 0 -> {
             content-length = parse-content-length(result, header-end)
+            ; reject an absurd declared body size before reading any of it
+            content-length == -2 -> {
+                print('httpclient: response body exceeds size limit: ' - url)
+                tls-c.close()
+                return
+            }
             break
         }
     }
@@ -253,6 +270,8 @@ fetch-once = (url str, deadline i64) (status i64, body []byte, ok bool) {
             ; top up the buffer until we have the whole body
             (result.len() < end) {
                 expired(deadline) -> break
+                ; hard cap even when Content-Length was missing/understated
+                result.len() > HTTP-MAX-BUF -> break
                 n2 = tls-c.recv(buf, 16640)
                 n2 <= 0 -> break
                 chunk2 []byte = with-len(n2)
@@ -571,6 +590,11 @@ parse-content-length = (b []byte, header-end i64) (cl i64) {
                         ok -> it
 
                         -> _
+                    }
+                    ; reject at parse time: too large (or wrapped) => -2
+                    val > HTTP-MAX-BODY -> {
+                        cl = -2
+                        return
                     }
 
                     #{overflow=wrap}

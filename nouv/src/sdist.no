@@ -11,6 +11,10 @@
 # /nouv/src/utils
 # std/archive/zip
 
+; extraction size caps: 512 MiB per file, 2 GiB total per archive
+ARCHIVE-MAX-FILE = 536870912
+ARCHIVE-MAX-TOTAL = 2147483648
+
 ; ═══════════════════════════════════════════════
 ; get-build-system — get build system info from pyproject.toml
 ; ═══════════════════════════════════════════════
@@ -281,34 +285,67 @@ extract-tar-gz = (archive-path str, dest str) (ok bool) {
         err -> archive = tar.open-gz([])
     }
     count = archive.count()
+    total = 0
     i <- [0..count): {
         name = archive.name(i)
-        {
-            archive.is-dir(i) -> {
-                dir-path = dest - '/' - name
-                made = utils.mkdir-p(dir-path)
-            }
+        ; skip symlink / hardlink / device entries (typeflag not file/dir)
+        archive.is-dir(i) || archive.is-file(i) -> {
+            safe = utils.safe-archive-path(dest, name)
+            safe: {
+                ok -> {
+                    full = it
+                    {
+                        archive.is-dir(i) -> {
+                            made = utils.mkdir-p(full)
+                        }
 
-            -> {
-                file-path = dest - '/' - name
-                slash-pos = utils.rindex-str(file-path, '/')
-                parent = utils.slice-str(file-path, 0, slash-pos)
-                {
-                    parent.len() > 0 -> {
-                        made = utils.mkdir-p(parent)
+                        -> {
+                            slash-pos = utils.rindex-str(full, '/')
+                            parent = utils.slice-str(full, 0, slash-pos)
+                            {
+                                parent.len() > 0 -> {
+                                    made = utils.mkdir-p(parent)
+                                }
+                            }
+                            content = archive.read(i)
+                            content.len() > ARCHIVE-MAX-FILE -> {
+                                print('error: archive entry exceeds per-file size limit: ' - name)
+                                ok = false
+                                return
+                            }
+                            total = total + content.len()
+                            total > ARCHIVE-MAX-TOTAL -> {
+                                print('error: archive exceeds total size limit')
+                                ok = false
+                                return
+                            }
+                            wfd = fs.open-write(full)
+                            {
+                                wfd > 0 -> {
+                                    written = fs.write(wfd, content, content.len())
+                                    fs.close(wfd)
+                                    written != content.len() -> {
+                                        print('error: failed to write ' - full)
+                                        ok = false
+                                        return
+                                    }
+                                }
+
+                                -> {
+                                    print('error: failed to write ' - full)
+                                    ok = false
+                                    return
+                                }
+                            }
+                        }
                     }
                 }
-                content = archive.read(i)
-                wfd = fs.open-write(file-path)
-                {
-                    wfd > 0 -> {
-                        fs.write(wfd, content, content.len())
-                        fs.close(wfd)
-                    }
 
-                    -> ok = false
-                }
+                -> print('warning: skipping unsafe archive entry: ' - name)
             }
+        }
+        ! archive.is-dir(i) && ! archive.is-file(i) -> {
+            print('warning: skipping unsupported tar entry type: ' - name)
         }
     }
     ! ok -> print('error: failed to extract tar.gz')
@@ -332,34 +369,61 @@ extract-zip-file = (archive-path str, dest str) (ok bool) {
         }
     }
     count = zarchive.count()
+    total = 0
     i <- [0..count): {
         name = zarchive.name(i)
-        {
-            name.ends-with('/') -> {
-                dir-path = dest - '/' - name
-                made = utils.mkdir-p(dir-path)
-            }
-
-            -> {
-                file-path = dest - '/' - name
-                slash-pos = utils.rindex-str(file-path, '/')
-                parent = utils.slice-str(file-path, 0, slash-pos)
+        safe = utils.safe-archive-path(dest, name)
+        safe: {
+            ok -> {
+                full = it
                 {
-                    parent.len() > 0 -> {
-                        made = utils.mkdir-p(parent)
-                    }
-                }
-                content = zarchive.extract(i)
-                wfd = fs.open-write(file-path)
-                {
-                    wfd > 0 -> {
-                        fs.write(wfd, content, content.len())
-                        fs.close(wfd)
+                    name.ends-with('/') -> {
+                        made = utils.mkdir-p(full)
                     }
 
-                    -> ok = false
+                    -> {
+                        slash-pos = utils.rindex-str(full, '/')
+                        parent = utils.slice-str(full, 0, slash-pos)
+                        {
+                            parent.len() > 0 -> {
+                                made = utils.mkdir-p(parent)
+                            }
+                        }
+                        content = zarchive.extract(i)
+                        content.len() > ARCHIVE-MAX-FILE -> {
+                            print('error: archive entry exceeds per-file size limit: ' - name)
+                            ok = false
+                            return
+                        }
+                        total = total + content.len()
+                        total > ARCHIVE-MAX-TOTAL -> {
+                            print('error: archive exceeds total size limit')
+                            ok = false
+                            return
+                        }
+                        wfd = fs.open-write(full)
+                        {
+                            wfd > 0 -> {
+                                written = fs.write(wfd, content, content.len())
+                                fs.close(wfd)
+                                written != content.len() -> {
+                                    print('error: failed to write ' - full)
+                                    ok = false
+                                    return
+                                }
+                            }
+
+                            -> {
+                                print('error: failed to write ' - full)
+                                ok = false
+                                return
+                            }
+                        }
+                    }
                 }
             }
+
+            -> print('warning: skipping unsafe archive entry: ' - name)
         }
     }
     ! ok -> print('error: failed to extract zip')

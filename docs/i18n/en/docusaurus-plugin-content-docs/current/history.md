@@ -7,6 +7,21 @@ sidebar_position: 2
 This page collects Nolang release records for each version, kept consistent with the root `HISTORY.md`.
 
 
+## v0.1.36
+
+- fix(notools): reject zip-slip archive paths and cap single-entry size in unzip and tar
+- fix(notools): replace str option index writes with concatenation in od, xxd, blake2bx and mcookie
+- fix(notools): refuse recursive delete on symlinks and forbidden roots in rm, and propagate read/write failures in cp, install and yes
+- fix(nogit): validate ref names, add ref resolution depth limit, and reject path traversal in packed-refs and index extraction
+- fix(nogit): fix hex output corruption from dynamic str index writes across util, oid, pack and index
+- fix(nogit): propagate loose-object and config write failures, and add read-only git index v4 support
+- fix(nonpm): reject unsafe archive paths, cap extracted size, and fail closed on missing or malformed integrity hashes
+- fix(nouv): reject unsafe wheel and sdist paths, cap download and extraction size, and verify downloaded hashes
+- fix(noimg): validate image dimensions and chunk lengths in bmp, gif, jpeg, png and webp decoders to prevent OOM
+- fix(noagent): enforce path containment on file tools and fix streaming tool-call slot expansion
+- fix(nojq): correct eval semantics and option handling
+- chore(skills): sync .agents/rules via Makefile and remove legacy nolang helper skills
+
 ## v0.1.35
 
 - fix(notools): repair md5 digest returning 32 control bytes by replacing str option index writes with string concatenation in md5x

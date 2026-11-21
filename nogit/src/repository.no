@@ -141,42 +141,47 @@ repo-init = (base-dir str, bare bool) (result ?str) {
 
     os.mkdir(git-dir - '/logs/refs/heads', 493) -> {}
 
+    ; G-8: every init file write goes through util.write-file-simple, which
+    ; checks the fd / short-write result. A failed write aborts init so the
+    ; caller never sees a half-initialized repository as success.
     ; write HEAD: "ref: refs/heads/main\n"
     hp = git-head-path(git-dir)
-    fd = fs.open-write(hp)
     head-content = 'ref: refs/heads/main\n'
-    fs.write(fd, head-content, head-content.len-bytes())
-    fs.close(fd)
+    head-ok = util.write-file-simple(hp, head-content)
+    ! head-ok -> {
+        result = nil
+        return
+    }
 
     ; write config
     cp = git-config-path(git-dir)
-    fd2 = fs.open-write(cp)
-    {
-        bare -> {
-            cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tfilemode = true\n'
-            fs.write(fd2, cfg, cfg.len-bytes())
-        }
-
-        -> {
-            cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfilemode = true\n'
-            fs.write(fd2, cfg, cfg.len-bytes())
-        }
+    cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfilemode = true\n'
+    bare -> {
+        cfg = '[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tfilemode = true\n'
     }
-    fs.close(fd2)
+    cfg-ok = util.write-file-simple(cp, cfg)
+    ! cfg-ok -> {
+        result = nil
+        return
+    }
 
     ; write description
     dp = git-description-path(git-dir)
-    fd3 = fs.open-write(dp)
     desc = 'Unnamed repository; edit this file to name it for gitweb.\n'
-    fs.write(fd3, desc, desc.len-bytes())
-    fs.close(fd3)
+    desc-ok = util.write-file-simple(dp, desc)
+    ! desc-ok -> {
+        result = nil
+        return
+    }
 
     ; write info/exclude
     ep = git-dir - '/info/exclude'
-    fd4 = fs.open-write(ep)
     exc = '# git ls-files --others --exclude-from=.git/info/exclude\n'
-    fs.write(fd4, exc, exc.len-bytes())
-    fs.close(fd4)
+    exc-ok = util.write-file-simple(ep, exc)
+    ! exc-ok -> {
+        result = nil
+        return
+    }
     result = git-dir
 }
 

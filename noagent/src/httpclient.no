@@ -18,6 +18,11 @@
 USER-AGENT = 'noagent/0.1.0'
 RECV-CAP = 16640
 
+; A-7: hard ceiling for any single response body (32 MiB). Without this, a
+; hostile/broken server can declare an enormous Content-Length or stream
+; forever and exhaust memory. Both the buffered and SSE paths honor it.
+MAX-BODY = 33554432
+
 ; ═══════════════════════════════════════════════
 ; http-post — POST a JSON body, return (status, response-body, ok)
 ;   url       full https URL (scheme://host[:port]/path)
@@ -161,10 +166,26 @@ http-post-bytes = (url str, api-key str, body str, accept str) (status i64, out 
     ; ── Phase 2: obtain the full body ──
     {
         content-length >= 0 -> {
+            ; A-7: cap the declared length and bound the read loop so a huge
+            ; or never-finishing Content-Length cannot grow `result` forever.
+            clamped-len = content-length
+            content-length > MAX-BODY -> {
+                eprint('httpclient: response body exceeds cap; truncating')
+                clamped-len = MAX-BODY
+            }
 
             #{overflow=wrap}
-            end = body-start + content-length
+            end = body-start + clamped-len
+            body-iters = 0
             (result.len() < end) {
+                body-iters >= 200000 -> break
+
+                #{overflow=wrap}
+                body-iters = body-iters + 1: {
+                    ok -> it
+
+                    -> _
+                }
                 n2 = tls-c.recv(buf, RECV-CAP)
                 n2 <= 0 -> break
                 chunk2 = bytes-from-str(buf, n2)
@@ -176,7 +197,10 @@ http-post-bytes = (url str, api-key str, body str, accept str) (status i64, out 
 
         -> {
 
-            ; read to connection close (chunked or close-delimited)
+            ; read to connection close (chunked or close-delimited), but never
+            ; beyond the hard body cap.
+            #{overflow=wrap}
+            body-cap = body-start + MAX-BODY
             (iters < 200000) {
 
                 #{overflow=wrap}
@@ -189,6 +213,7 @@ http-post-bytes = (url str, api-key str, body str, accept str) (status i64, out 
                 n3 <= 0 -> break
                 chunk3 = bytes-from-str(buf, n3)
                 result = bytes-concat(result, chunk3)
+                result.len() > body-cap -> break
             }
             tail = slice-bytes(result, body-start, result.len())
             {
@@ -805,23 +830,40 @@ slice-bytes = (b []byte, from i64, to i64) (out []byte) {
 ; time, which fits a single-threaded CLI agent. Never call concurrently.
 ; ═══════════════════════════════════════════════
 
-G-live = false
-G-raw []byte
-G-emitted = 0
-G-content-length = -1
-G-is-chunked = false
-G-iters = 0
-G-conn tls.conn
+g-live = false
+g-raw []byte
+g-emitted = 0
+g-content-length = -1
+g-is-chunked = false
+g-iters = 0
+g-conn tls.conn
 
-; push-raw — push src[from..to) into the module buffer G-raw.
-; ⚠️ Nolang does NOT persist an OWNED module-global REASSIGNMENT (`G-raw =
+; push-raw — push src[from..to) into the module buffer g-raw.
+; ⚠️ Nolang does NOT persist an OWNED module-global REASSIGNMENT (`g-raw =
 ; concat(...)` binds a dead function-local temp; the global keeps its old
 ; value — confirmed compiler gap). Only in-place mutation persists, so we grow
-; G-raw exclusively via .push and reset it with .truncate(0); reads (len/index/
+; g-raw exclusively via .push and reset it with .truncate(0); reads (len/index/
 ; slice) observe the accumulated bytes correctly across calls.
 push-raw = (src []byte, from i64, to i64) {
     (to > src.len()) -> to = src.len()
     (from < 0) -> from = 0
+    ; A-7: never let the accumulating stream buffer exceed the body cap.
+    #{overflow=wrap}
+    room = MAX-BODY - g-raw.len(): {
+        ok -> it
+
+        -> 0
+    }
+    room <= 0 -> return
+
+    #{overflow=wrap}
+    last-opt = from + room
+    last = last-opt: {
+        ok -> it
+
+        -> to
+    }
+    last < to -> to = last
     i <- [from..to): {
         bv byte = 0
         src[i]: {
@@ -829,7 +871,7 @@ push-raw = (src []byte, from i64, to i64) {
 
             -> _
         }
-        G-raw.push(bv)
+        g-raw.push(bv)
     }
 }
 
@@ -845,22 +887,22 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 
     req = compose-request(host, path, api-key, body, accept)
 
-    G-conn.init()
-    connected = G-conn.connect(host, port)
+    g-conn.init()
+    connected = g-conn.connect(host, port)
     ! connected -> {
         eprint('httpclient: connect failed: ' - host)
         return
     }
 
-    w = G-conn.send(req)
+    w = g-conn.send(req)
     w: {
         nil -> {
-            G-conn.close()
+            g-conn.close()
             return
         }
 
         err -> {
-            G-conn.close()
+            g-conn.close()
             return
         }
 
@@ -883,31 +925,32 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 
             -> _
         }
-        n = G-conn.recv(buf, RECV-CAP)
+        n = g-conn.recv(buf, RECV-CAP)
         n <= 0 -> break
         chunk = bytes-from-str(buf, n)
         raw = bytes-concat(raw, chunk)
         header-end = find-crlfcrlf(raw)
         header-end >= 0 -> break
+        raw.len() > MAX-BODY -> break
     }
 
     header-end < 0 -> {
         eprint('httpclient: no response header (connection closed early)')
-        G-conn.close()
+        g-conn.close()
         return
     }
 
     status = parse-status-code(raw, header-end)
-    G-content-length = parse-content-length(raw, header-end)
-    G-is-chunked = header-has(raw, header-end, 'Transfer-Encoding: chunked')
-    G-raw.truncate(0)
+    g-content-length = parse-content-length(raw, header-end)
+    g-is-chunked = header-has(raw, header-end, 'Transfer-Encoding: chunked')
+    g-raw.truncate(0)
 
     #{overflow=wrap}
     body-start = header-end + 4
     push-raw(raw, body-start, raw.len())
-    G-emitted = 0
-    G-iters = 0
-    G-live = true
+    g-emitted = 0
+    g-iters = 0
+    g-live = true
     ok = true
 }
 
@@ -917,17 +960,17 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 stream-next = () (data str, done bool) {
     data = ''
     done = true
-    ! G-live -> return
+    ! g-live -> return
 
     #{overflow=wrap}
-    G-iters = G-iters + 1
-    G-iters > 200000 -> {
-        G-live = false
+    g-iters = g-iters + 1
+    g-iters > 200000 -> {
+        g-live = false
         return
     }
 
     buf str = with-len(RECV-CAP)
-    n = G-conn.recv(buf, RECV-CAP)
+    n = g-conn.recv(buf, RECV-CAP)
     n > 0 -> {
         chunk = bytes-from-str(buf, n)
         push-raw(chunk, 0, chunk.len())
@@ -937,21 +980,21 @@ stream-next = () (data str, done bool) {
     {
         vis []byte = with-len(0)
         {
-            G-is-chunked -> vis = dechunk(G-raw)
+            g-is-chunked -> vis = dechunk(g-raw)
 
-            -> vis = slice-bytes(G-raw, 0, G-raw.len())
+            -> vis = slice-bytes(g-raw, 0, g-raw.len())
         }
 
         ; Content-Length mode clamps the visible window; other modes
         {
             ; expose everything decoded so far
-            G-content-length >= 0 -> vis.len() > G-content-length -> vis.truncate(G-content-length)
+            g-content-length >= 0 -> vis.len() > g-content-length -> vis.truncate(g-content-length)
         }
-        vis.len() > G-emitted -> {
-            fresh = slice-bytes(vis, G-emitted, vis.len())
+        vis.len() > g-emitted -> {
+            fresh = slice-bytes(vis, g-emitted, vis.len())
 
             #{overflow=wrap}
-            G-emitted = G-emitted + fresh.len(): {
+            g-emitted = g-emitted + fresh.len(): {
                 ok -> it
 
                 -> _
@@ -964,14 +1007,31 @@ stream-next = () (data str, done bool) {
         }
     }
 
+    ; A-7: non-chunked g-raw is exactly the decoded body, so the already
+    ; emitted prefix can be discarded after copying it out. This bounds
+    ; memory and stops every stream-next from re-walking the whole buffer.
+    ; Chunked streams cannot map decoded bytes back to raw offsets cheaply,
+    ; so they rely on the 32 MiB g-raw cap above instead.
+    g-is-chunked == false -> {
+        g-emitted > 0 -> {
+            remain = slice-bytes(g-raw, g-emitted, g-raw.len())
+            g-raw.truncate(0)
+            push-raw(remain, 0, remain.len())
+            g-emitted = 0
+        }
+    }
+
     done = true
     n > 0 -> {
         done = false
-        G-content-length >= 0 -> G-emitted >= G-content-length -> done = true
+        g-content-length >= 0 -> g-emitted >= g-content-length -> done = true
     }
+    ; A-7: once the cap is hit, signal completion rather than letting the
+    ; caller loop forever on a connection whose bytes we refuse to buffer.
+    g-raw.len() >= MAX-BODY -> done = true
 }
 
 stream-close = () {
-    G-live -> G-conn.close()
-    G-live = false
+    g-live -> g-conn.close()
+    g-live = false
 }

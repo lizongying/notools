@@ -76,6 +76,47 @@ str-range = (s str, start i64, end i64) (out str) {
     out = b.slice(0, n).to-bytes-str()
 }
 
+; safe-entry-name: validate an untrusted tree entry name before it is joined
+; into a work-tree path (G-2). Tree names are single path components; reject
+; empty names, absolute paths, '..' traversal and backslashes. High bytes are
+; allowed so non-ASCII file names still work.
+safe-entry-name = (name str) (valid bool) {
+    valid = false
+    n = name.len-bytes()
+    n > 0 -> {
+        first = name.byte(0)
+        first: {
+            ok -> it == 47 -> return
+
+            -> return
+        }
+        ok-scan = true
+        prev byte = 0
+        i <- [0..n): {
+            cbv = name.byte(i)
+            c byte = 0
+            cbv: {
+                ok -> c = it
+
+                -> _
+            }
+            c == 92 -> ok-scan = false
+            prev == 46 && c == 46 -> ok-scan = false
+            prev = c
+        }
+        ; a lone '.' component is not a usable file name
+        n == 1 -> {
+            dot = name.byte(0)
+            dot: {
+                ok -> it == 46 -> ok-scan = false
+
+                -> ok-scan = false
+            }
+        }
+        ok-scan -> valid = true
+    }
+}
+
 ; mkdir-seg: create a single directory segment; returns made i64 (1 if present/created, 0 on failure).
 ; i64 (not bool) is returned because bool arithmetic miscompiles in this toolchain version.
 mkdir-seg = (parent str) (made i64) {
@@ -423,8 +464,9 @@ hex-decode = (s str) (out ?[]byte) {
 hex-encode = (data []byte) (out str) {
     hex-chars = '0123456789abcdef'
 
-    #{overflow=wrap}
-    out str = with-len(data.len() * 2)
+    ; G-11/X-3: str index assignment `out[i]:{ok->it=v}` writes the
+    ; option tag byte (0x01), not the payload. Build via concatenation.
+    out = ''
     i <- [0..data.len()): {
         b = data[i]: {
             ok -> it
@@ -437,26 +479,14 @@ hex-encode = (data []byte) (out str) {
 
             -> ''
         }
-
-        #{overflow=wrap}
-        out[i * 2]: {
-            ok -> it = d9v1
-
-            -> _
-        }
+        out = out - d9v1
 
         d9v2 str = hex-chars[b & 15]: {
             ok -> it
 
             -> ''
         }
-
-        #{overflow=wrap}
-        out[i * 2 + 1]: {
-            ok -> it = d9v2
-
-            -> _
-        }
+        out = out - d9v2
     }
 }
 
@@ -548,7 +578,19 @@ read-file-str = (p str) (out ?str) {
 write-file-simple = (p str, content str) (ok bool) {
     ok = false
     fd = fs.open-write(p)
-    fs.write(fd, content, content.len-bytes())
+    fd <= 0 -> {
+        ; X-4: an open failure (permission / path) must be visible too,
+        ; not silently swallowed just because it returns before the write.
+        print('error: failed to open for write: ' - p)
+        return
+    }
+    written = fs.write(fd, content, content.len-bytes())
     fs.close(fd)
+    ; G-8: a short/failed write (disk full, permission) must not look like
+    ; success — report it so callers can refuse to continue.
+    written != content.len-bytes() -> {
+        print('error: failed to write ' - p)
+        return
+    }
     ok = true
 }

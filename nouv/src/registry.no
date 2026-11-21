@@ -913,18 +913,49 @@ get-extra-index-urls = (cfg str) (urls str) {
 }
 
 ; ═══════════════════════════════════════════════
+; get-expected-hash — read the sha256 for a package artifact from registry
+; metadata. kind is 'wheel' or 'sdist'. Returns nil when no trusted hash is
+; available, so callers can fail closed instead of accepting an unverified
+; download.
+; ═══════════════════════════════════════════════
+
+get-expected-hash = (name str, kind str) (hash ?str) {
+    hash = nil
+    info-opt = get-package-info(name)
+    info-opt: {
+        ok -> {
+            key = kind - '-hash'
+            h = get-info-field(it, key)
+            h: {
+                ok -> {
+                    it.len-bytes() > 0 -> hash = it
+                }
+
+                -> {
+                }
+            }
+        }
+
+        -> {
+        }
+    }
+}
+
+; ═══════════════════════════════════════════════
 ; verify-hash — verify a file hash against expected value
 ; ═══════════════════════════════════════════════
 
 verify-hash = (file-path str, expected-hash str) (ok bool) {
     ok = false
+    ; fail closed: no expected hash means nothing can be verified
+    expected-hash == '' -> return
     p = path{
         p: file-path
     }
     file-exists = p.exists()
     {
         ! file-exists -> {
-            print('error: could not read file {file-path}')
+            print('error: could not read file ' - file-path)
             return
         }
 
@@ -937,13 +968,21 @@ verify-hash = (file-path str, expected-hash str) (ok bool) {
 
                 err -> actual-hash = ''
             }
+            ; fail closed on a read failure / empty digest
+            actual-hash == '' -> {
+                print('error: could not hash file ' - file-path)
+                return
+            }
+            ; compare case-insensitively (PyPI shas are lowercase hex)
+            exp-low = expected-hash.to-lower()
+            act-low = actual-hash.to-lower()
             {
-                actual-hash == expected-hash -> ok = true
+                act-low == exp-low -> ok = true
 
                 -> {
-                    print('error: hash mismatch for {file-path}')
-                    print('  expected: {expected-hash}')
-                    print('  actual:   {actual-hash}')
+                    print('error: hash mismatch for ' - file-path)
+                    print('  expected: ' - expected-hash)
+                    print('  actual:   ' - actual-hash)
                 }
             }
         }
@@ -951,30 +990,21 @@ verify-hash = (file-path str, expected-hash str) (ok bool) {
 }
 
 ; ═══════════════════════════════════════════════
-; download-and-verify — download a package and verify its hash
+; download-and-verify — download a package and verify its hash.
+; Fails closed when no expected hash is supplied.
 ; ═══════════════════════════════════════════════
 
 download-and-verify = (name str, ver str, dest str, expected-hash str) (ok bool) {
     ok = false
+    ; no trusted hash -> refuse the download entirely
+    expected-hash == '' -> {
+        print('error: no integrity hash for ' - name - '==' - ver - '; refusing unverified download')
+        return
+    }
 
     dl-ok = download-package(name, ver, dest)
-    {
-        ! dl-ok -> return
+    ! dl-ok -> return
 
-        -> {
-            expected-hash == '' -> {
-                ok = true
-            }
-
-            -> {
-                hash-ok = verify-hash(dest, expected-hash)
-                ok = hash-ok
-                {
-                    ! hash-ok -> {
-                        fs.remove(dest)
-                    }
-                }
-            }
-        }
-    }
+    ok = verify-hash(dest, expected-hash)
+    ! ok -> fs.remove(dest)
 }

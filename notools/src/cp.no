@@ -53,17 +53,26 @@ base-name = (p str) (out str) {
 }
 
 ; one-file: copy a single file from src to dst
-one-file = (src str, dst str) {
+; 返回是否成功。读失败绝不写空文件覆盖目标（T-4）。
+one-file = (src str, dst str) (ok bool) {
+    ok = false
     data []byte
     r = fs.read-bytes(src)
     r: {
-        ok -> data = it
+        ok -> {
+            data = it
+            ok = true
+        }
 
         nil -> {
         }
 
         err -> {
         }
+    }
+    ! ok -> {
+        eprint('cp: ' - src - ': read failed, refusing to write ' - dst)
+        return
     }
     fd = fs.open-write(dst)
     n = data.len()
@@ -72,7 +81,21 @@ one-file = (src str, dst str) {
 }
 
 ; copy-tree: recursively copy a directory tree from src to dst
-copy-tree = (src str, dst str) {
+; 返回是否成功（任一子文件读失败即失败）。
+copy-tree = (src str, dst str) (all-ok bool) {
+    all-ok = true
+    ; 入口符号链接防护：readlink 命中的是链接，直接拒绝递归避免成环（T-4）。
+    is-lnk = fs.readlink(src)
+    is-lnk: {
+        ok -> {
+            eprint('cp: ' - src - ': symbolic link, skipped')
+            all-ok = false
+            return
+        }
+
+        -> {
+        }
+    }
 
     ; create target directory (ignore error if it already exists)
     os.mkdir(dst, 511)
@@ -103,11 +126,25 @@ copy-tree = (src str, dst str) {
                     src-full = src - '/' - name
                     dst-full = dst - '/' - name
 
-                    is-d = fs.is-dir(src-full)
-                    is-d -> copy-tree(src-full, dst-full)
-                    ! is-d -> {
-                        is-f = fs.is-file(src-full)
-                        is-f -> one-file(src-full, dst-full)
+                    ; 目录内条目先判链接，避免跟随符号链接成环（T-4）。
+                    lnk = fs.readlink(src-full)
+                    lnk: {
+                        ok -> eprint('cp: ' - src-full - ': symbolic link, skipped')
+
+                        -> {
+                            is-d = fs.is-dir(src-full)
+                            is-d -> {
+                                sub-ok = copy-tree(src-full, dst-full)
+                                ! sub-ok -> all-ok = false
+                            }
+                            ! is-d -> {
+                                is-f = fs.is-file(src-full)
+                                is-f -> {
+                                    f-ok = one-file(src-full, dst-full)
+                                    ! f-ok -> all-ok = false
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -208,13 +245,19 @@ cp-run = () {
         ; copy
         is-d = fs.is-dir(src)
         is-d -> {
-            recursive -> copy-tree(src, target)
+            recursive -> {
+                c-ok = copy-tree(src, target)
+                ! c-ok -> had-err = true
+            }
             ! recursive -> {
                 eprint('cp: ' - src - ': is a directory (use -r)')
                 had-err = true
             }
         }
-        ! is-d -> one-file(src, target)
+        ! is-d -> {
+            f-ok = one-file(src, target)
+            ! f-ok -> had-err = true
+        }
     }
 
     had-err -> exit(1)

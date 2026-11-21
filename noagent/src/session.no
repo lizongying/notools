@@ -23,7 +23,32 @@ sessions-dir = () (dir str) {
     dir = config.home-dir() - SESSIONS-REL
 }
 
+; ═══════════════════════════════════════════════
+; valid-id — A-10: a session id becomes a file name, so `../../x` would escape
+; the sessions directory. Accept only a conservative [A-Za-z0-9_-]+ set.
+; ═══════════════════════════════════════════════
+
+valid-id = (id str) (yes bool) {
+    yes = false
+    n = id.len-bytes()
+    n <= 0 -> return
+    n > 128 -> return
+    yes = true
+    i <- [0..n): {
+        c = id.byte(i)
+        good = false
+        (c >= 65 && c <= 90) -> good = true
+        (c >= 97 && c <= 122) -> good = true
+        (c >= 48 && c <= 57) -> good = true
+        c == 95 -> good = true
+        c == 45 -> good = true
+        good == false -> yes = false
+    }
+}
+
 session-path = (id str) (path str) {
+    path = ''
+    valid-id(id) == false -> return
     path = sessions-dir() - '/' - id - '.json'
 }
 
@@ -35,6 +60,7 @@ save = (id str, msgs []messages.message) (ok bool) {
     ok = false
     id == '' -> return
     path = session-path(id)
+    path == '' -> return
     utils.ensure-parent-dir(path)
     body = '{'
     body = body - '"id":' - jsonx.quoted(id)
@@ -49,7 +75,10 @@ save = (id str, msgs []messages.message) (ok bool) {
 
 exists = (id str) (yes bool) {
     yes = false
-    id != '' -> yes = utils.file-exists(session-path(id))
+    id == '' -> return
+    path = session-path(id)
+    path == '' -> return
+    yes = utils.file-exists(path)
 }
 
 ; ═══════════════════════════════════════════════
@@ -61,6 +90,7 @@ load = (id str) (msgs []messages.message, ok bool) {
     ok = false
     id == '' -> return
     path = session-path(id)
+    path == '' -> return
     utils.file-exists(path) == false -> return
     text = utils.read-file-str(path)
     text == '' -> return

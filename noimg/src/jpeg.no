@@ -165,6 +165,29 @@ load = (path str) (img ?image) {
 
                             #{overflow=wrap}
                             components = jpeg-byte(data, pos + 7)
+
+                            ; Validate geometry once, right after SOF, so the
+                            ; check applies to BOTH baseline and progressive.
+                            ; Without this, SOF2 breaks out of the scan loop
+                            ; before the baseline-only check at the SOS branch
+                            ; and hands unchecked w/h to the progressive decoder.
+                            w <= 0 || h <= 0 || components <= 0 || w > 65535 || h > 65535 -> {
+                                img = nil
+                                return
+                            }
+
+                            ; Reject output sizes wildly larger than the input
+                            ; (e.g. a tiny file claiming 65535x65535) before any
+                            ; with-len(w*h*bands) allocation in either path.
+                            #{overflow=wrap}
+                            out-bytes = w * h * 4
+                            #{overflow=wrap}
+                            out-limit = data.len() * 256 + 268435456
+                            out-bytes > out-limit -> {
+                                img = nil
+                                return
+                            }
+
                             ci <- [0..components): {
 
                                 #{overflow=wrap}
@@ -234,6 +257,16 @@ load = (path str) (img ?image) {
                                     tc-th = jpeg-byte(data, ht-pos)
                                     table-class = (tc-th >> 4) & 15
                                     table-id = tc-th & 15
+
+                                    ; DHT table id must be 0..3. The tables
+                                    ; (dc/ac-lens, dc/ac-tables) only have 4 slots
+                                    ; so a larger id makes writes silently drop,
+                                    ; leaving empty tables and silent corruption.
+                                    ; Reject the file instead.
+                                    table-id > 3 -> {
+                                        img = nil
+                                        return
+                                    }
 
                                     #{overflow=wrap}
                                     ht-pos = ht-pos + 1
@@ -1054,6 +1087,17 @@ jpeg-decode-progressive = (data []byte, sof-pos i64, w i64, h i64, components i6
 
     #{overflow=wrap}
     pplane-max = ppad-w * ppad-h
+
+    ; Guard against absurd allocations from crafted SOF2 dimensions: a real
+    ; scan's coefficient planes stay within a modest multiple of the compressed
+    ; input. A tiny file claiming 65535x65535 would otherwise request ~100GB.
+    #{overflow=wrap}
+    pplane-limit = data.len() * 256 + 67108864
+    pplane-max > pplane-limit -> {
+        img = nil
+        return
+    }
+
     coef-all []i64 = with-len(4 * pplane-max)
     pcomp-data-all []byte = with-len(4 * pplane-max)
     pprev-dc-0 = 0

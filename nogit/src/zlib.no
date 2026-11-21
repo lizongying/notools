@@ -185,10 +185,15 @@ zlib-decompress = (data str) (out ?str) {
             }
         }
 
-        ; Estimate output size: 100x input (capped to avoid OOM)
+        ; Output-size estimate. NOTE: std gzip.inflate-decompress grows its
+        ; result with push() and currently ignores this hint, so raising the
+        ; cap cannot truncate output. The bound still documents the intended
+        ; ceiling for callers and protects against a future stdlib that does
+        ; preallocate out-size bytes. 512 MB keeps real git objects (which may
+        ; exceed the old 1 MB cap) working (G-4).
         #{overflow=wrap}
         est-out i64 = data.len-bytes() * 100
-        est-out > 1048576 -> est-out = 1048576; cap at 1MB
+        est-out > 536870912 -> est-out = 536870912; cap at 512MB
         est-out < 64 -> est-out = 64; minimum
         decomp-bytes []byte = gzip.inflate-decompress(deflate-data, est-out)
         decomp-bytes.len() == 0 -> {
@@ -318,9 +323,15 @@ zlib-consumed-stored = (data str) (consumed i64) {
 }
 
 ; zlib-consumed-binary-search: find the consumed length of a zlib stream
-; by binary search on the input length. This works for any block type
-; (stored, fixed Huffman, dynamic Huffman) because we use the actual
-; decompressor to verify.
+; that starts at `start` inside a larger buffer (e.g. a packfile).
+;
+; LIMITATION (G-5): the std inflate API does not expose how many input bytes
+; it consumed, and decompressing a TRUNCATED dynamic-Huffman stream can crash
+; the runtime (verified by experiment). We therefore never decompress a
+; prefix. Stored-block streams are measured exactly by zlib-consumed-stored.
+; For compressed streams we decompress the full remainder once, compute its
+; Adler-32, and scan the raw bytes for the big-endian 4-byte trailer; this
+; locates the real stream end without re-decompressing truncated input.
 ;
 ; data str: the full data buffer
 ; start i64: offset where the zlib stream begins
@@ -329,89 +340,85 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     consumed = 0
 
     #{overflow=wrap}
-    avail = data.len-bytes() - start
+    avail = data.len-bytes() - start: {
+        ok -> it
+
+        -> _
+    }
     avail < 6 -> return
 
-    ; First, verify the stream decompresses correctly with full remaining data
-    sub str = util.str-range(data, start, data.len-bytes())
-    decomp-check = zlib-decompress(sub)
-    decomp-check: {
-        ok -> {
-        }
-
-        nil -> {
-            return
-        }
-
-        err -> {
-            return
-        }
-    }
-
-    ; Binary search for the minimum input length that produces a valid
-    ; decompression. We search for the boundary where shorter input fails.
-    ; To avoid crashes from truncated gzip data, we use stored-block
-    ; scan as the primary method (safe for any input) and only fall
-    ; back to binary search if stored scan fails.
     sub-full str = util.str-range(data, start, data.len-bytes())
-    stored-len = 0
+
+    ; stored blocks: zlib-consumed-stored gives the exact length
     stored-len = zlib-consumed-stored(sub-full)
     stored-len > 0 -> {
         consumed = stored-len
         return
     }
 
-    ; For compressed blocks: use binary search with stored-block scan
-    ; as a safe probe. We try decreasing lengths until decompression fails.
-    ; Start from full available data (which we know works) and find the
-    ; minimum working length.
-    lo = 6
-    hi i64 = avail
-    mid = 0
+    ; compressed blocks: verify the trailing Adler-32 of the full stream
+    full-opt = zlib-decompress(sub-full)
+    full-out str = ''
+    full-opt: {
+        ok -> full-out = it
 
+        -> return
+    }
+    expected = adler32(full-out)
+    b0 = (expected >> 24) & 255
+    b1 = (expected >> 16) & 255
+    b2 = (expected >> 8) & 255
+    b3 = expected & 255
+
+    ; First 4-byte match from the earliest plausible trailer position is
+    ; the end of this stream (a coincidental match is ~1 in 2^32 per byte).
+    e = start + 6: {
+        ok -> it
+
+        -> _
+    }
     !! {
-        lo >= hi -> break
-
         #{overflow=wrap}
-        mid = (lo + hi) / 2: {
+        e4 = e + 4: {
             ok -> it
 
             -> _
         }
+        e4 > data.len-bytes() -> break
 
-        ; Check if mid bytes is enough by trying stored-block scan first
         #{overflow=wrap}
-        sub2 str = util.str-range(data, start, start + mid)
-        s2 i64 = 0
-        s2 = zlib-consumed-stored(sub2)
-        s2 > 0 -> {
+        e1 = e + 1: {
+            ok -> it
 
-            ; stored block — we know the exact consumed length
-            consumed = s2
+            -> _
+        }
+        #{overflow=wrap}
+        e2 = e + 2: {
+            ok -> it
+
+            -> _
+        }
+        #{overflow=wrap}
+        e3 = e + 3: {
+            ok -> it
+
+            -> _
+        }
+        hit = data.byte(e) == b0 && data.byte(e1) == b1 && data.byte(e2) == b2 && data.byte(e3) == b3
+        hit -> {
+            #{overflow=wrap}
+            consumed = e4 - start: {
+                ok -> it
+
+                -> _
+            }
             return
         }
-
-        ; For compressed blocks, we can't safely try decompression on
-        ; truncated data (gzip module may crash). So we use the full
-        ; decompression result and try to find the boundary by checking
-        ; if the data at start+mid looks like a valid next object header.
-        ;
-        ; Heuristic: the byte after the zlib stream should be a valid
-        ; pack object header byte (type 1-7 in upper nibble, with
-        ; continuation bit possibly set). We scan for the first byte
-        ; that looks like a valid object header after the current position.
-        ;
-        ; Actually, for binary search we need a safe predicate. Let's
-        ; use a different approach: scan forward from start+2 looking
-        ; for the Adler-32 trailer pattern. The Adler-32 is 4 bytes
-        ; after the last DEFLATE block. We can try decompressing
-        ; sub-slices and check if the output matches.
-        ;
-        ; Since we can't safely call gzip on truncated data, we use
-        ; the approach: try stored-block scan, and if that fails, fall
-        ; back to a linear scan for valid object headers.
-        hi = mid
+        e = e1
     }
 
-    consumed = hi
+    ; FALLBACK: no verifiable trailer. The old code returned a lower bound
+    ; that desynchronised the pack scanner. Consuming the rest of the buffer
+    ; stops scanning cleanly instead of misparsing following objects.
+    consumed = avail
 }

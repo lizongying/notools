@@ -799,6 +799,82 @@ nz-make-parent-dirs = (full-path str) {
     }
 }
 
+; ═══════════════════════════════════════════════
+; safe-archive-path — central Zip-Slip guard for archive extraction.
+; Validates an untrusted entry name and joins it under dest. Rejects empty
+; names, absolute paths, drive letters, backslashes, NUL bytes and any '..'
+; segment, then verifies the joined path still starts with dest + '/'.
+; Returns the joined path (ok) or nil (rejected).
+; ═══════════════════════════════════════════════
+
+safe-archive-path = (dest str, name str) (out ?str) {
+    out = nil
+    n = name.len-bytes()
+    n == 0 -> return
+
+    bad = false
+    seg-start = 0
+    i <- [0..n): {
+        c = name.byte(i)
+        c == 0 -> {
+            bad = true
+            break
+        }
+        c == 92 -> {
+            bad = true
+            break
+        }
+        i == 0 && c == 47 -> {
+            bad = true
+            break
+        }
+        i == 1 && c == 58 -> {
+            c0 = name.byte(0)
+            (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) -> {
+                bad = true
+                break
+            }
+        }
+        c == 47 -> {
+            #{overflow=wrap}
+            seg-len = i - seg-start
+            seg-len == 2 -> {
+                name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> {
+                    bad = true
+                    break
+                }
+            }
+            #{overflow=wrap}
+            seg-start = i + 1
+        }
+    }
+    ! bad -> {
+        #{overflow=wrap}
+        last-len = n - seg-start
+        last-len == 2 -> {
+            name.byte(seg-start) == 46 && name.byte(seg-start + 1) == 46 -> bad = true
+        }
+    }
+    bad -> return
+
+    d = dest
+    dl = d.len-bytes()
+    dl > 0 -> {
+        d.byte(dl - 1) == 47 -> {
+            #{overflow=wrap}
+            d = d.slice(0, dl - 1)
+        }
+    }
+    prefix = d - '/'
+    full = prefix - name
+    ! full.starts-with(prefix) -> return
+    out = full
+}
+
+; extraction size caps (also declared locally in wheel.no / sdist.no)
+ARCHIVE-MAX-FILE = 536870912
+ARCHIVE-MAX-TOTAL = 2147483648
+
 extract-zip = (zip-path str, dest-dir str) (ok bool) {
     ok = false
 
@@ -837,35 +913,56 @@ extract-zip = (zip-path str, dest-dir str) (ok bool) {
             }
             mk = dp.make-dir()
 
-            ; extract each entry
+            ; extract each entry with Zip-Slip guard + size caps
+            total = 0
             i <- [0..count): {
                 name = archive.read-name(i)
                 method = archive.read-method(i)
                 is-dir = name.ends-with('/')
-                out-path = dest-dir - '/' - name
-
-                {
-                    is-dir -> {
-                        dp2 = path{
-                            p: out-path
-                        }
-                        mk2 = dp2.make-dir()
-                    }
-
-                    -> {
-                        nz-make-parent-dirs(out-path)
+                safe = safe-archive-path(dest-dir, name)
+                safe: {
+                    ok -> {
+                        out-path = it
                         {
-                            method == 0 -> {
-                                out = archive.extract-stored(i)
-                                fs.write-file(out-path, out)
+                            is-dir -> {
+                                dp2 = path{
+                                    p: out-path
+                                }
+                                mk2 = dp2.make-dir()
                             }
 
-                            method == 8 -> {
-                                out = archive.extract-deflate(i)
-                                fs.write-file(out-path, out)
+                            -> {
+                                nz-make-parent-dirs(out-path)
+                                method == 0 || method == 8 -> {
+                                    out []byte
+                                    method == 0 -> out = archive.extract-stored(i)
+                                    method == 8 -> out = archive.extract-deflate(i)
+                                    out.len() > ARCHIVE-MAX-FILE -> {
+                                        print('error: archive entry exceeds per-file size limit: ' - name)
+                                        ok = false
+                                        return
+                                    }
+                                    total = total + out.len(): {
+                                        ok -> it
+
+                                        -> _
+                                    }
+                                    total > ARCHIVE-MAX-TOTAL -> {
+                                        print('error: archive exceeds total size limit')
+                                        ok = false
+                                        return
+                                    }
+                                    ! fs.write-file(out-path, out) -> {
+                                        print('error: failed to write archive entry: ' - out-path)
+                                        ok = false
+                                        return
+                                    }
+                                }
                             }
                         }
                     }
+
+                    -> print('warning: skipping unsafe archive entry: ' - name)
                 }
             }
 

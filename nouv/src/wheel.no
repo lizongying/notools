@@ -8,6 +8,10 @@
 # /nouv/src/markers
 # std/archive/zip
 
+; extraction size caps: 512 MiB per file, 2 GiB total per wheel
+ARCHIVE-MAX-FILE = 536870912
+ARCHIVE-MAX-TOTAL = 2147483648
+
 ; ═══════════════════════════════════════════════
 ; install — install a wheel file into a virtual environment
 ; ═══════════════════════════════════════════════
@@ -44,44 +48,73 @@ install = (venv-path str, wheel-path str, no-cache bool) (ok bool) {
 
     ; extract each entry directly into site-packages
     dist-info-dir = ''
+    total = 0
     i = 0
     (i < n) {
         name = archive.name(i)
-        {
-            name.ends-with('/') -> {
-                made = utils.mkdir-p(sp-dir - '/' - name)
-            }
-
-            -> {
-                dest = sp-dir - '/' - name
-
-                ; create parent directory if needed
-                slash = dest.last-index('/')
-                slash > 0 -> {
-                    parent = dest.slice(0, slash)
-                    made = utils.mkdir-p(parent)
-                }
-
-                ; track the top-level .dist-info directory
-                seg = name
-                sl = name.index('/')
-                sl > 0 -> seg = name.slice(0, sl)
-                seg.ends-with('.dist-info') -> {
-                    dist-info-dir = seg
-                }
-
-                content = archive.extract(i)
-                fd = fs.open-write(dest)
+        safe = utils.safe-archive-path(sp-dir, name)
+        safe: {
+            ok -> {
+                dest = it
                 {
-                    fd > 0 -> {
-                        fs.write(fd, content, content.len())
-                        fs.close(fd)
-                        ok = true
+                    name.ends-with('/') -> {
+                        made = utils.mkdir-p(dest)
                     }
 
-                    -> print('error: failed to write {dest}')
+                    -> {
+                        ; create parent directory if needed
+                        slash = dest.last-index('/')
+                        slash > 0 -> {
+                            parent = dest.slice(0, slash)
+                            made = utils.mkdir-p(parent)
+                        }
+
+                        ; track the top-level .dist-info directory
+                        seg = name
+                        sl = name.index('/')
+                        sl > 0 -> seg = name.slice(0, sl)
+                        seg.ends-with('.dist-info') -> {
+                            dist-info-dir = seg
+                        }
+
+                        content = archive.extract(i)
+                        content.len() > ARCHIVE-MAX-FILE -> {
+                            print('error: wheel entry exceeds per-file size limit: ' - name)
+                            ok = false
+                            return
+                        }
+                        total = total + content.len()
+                        total > ARCHIVE-MAX-TOTAL -> {
+                            print('error: wheel exceeds total size limit')
+                            ok = false
+                            return
+                        }
+                        fd = fs.open-write(dest)
+                        {
+                            fd > 0 -> {
+                                written = fs.write(fd, content, content.len())
+                                fs.close(fd)
+                                written == content.len() -> {
+                                    ok = true
+                                }
+                                written != content.len() -> {
+                                    print('error: failed to write ' - dest)
+                                    ok = false
+                                    return
+                                }
+                            }
+
+                            -> {
+                                print('error: failed to write ' - dest)
+                                ok = false
+                                return
+                            }
+                        }
+                    }
                 }
             }
+
+            -> print('warning: skipping unsafe wheel entry: ' - name)
         }
 
         #{overflow=wrap}
@@ -394,26 +427,30 @@ create-entry-point-scripts = (venv-path str, ep-content str) (ok bool) {
                                         }
                                         ep-target = utils.slice-str(rest, eq1, rest.len-bytes())
 
-                                        {
-                                            ep-type == 'console_scripts' -> {
-                                                ep-type == 'gui_scripts' -> {
-                                                    script-path = bin-dir - '/' - ep-name
-                                                    wfd = fs.open-write(script-path)
-                                                    {
-                                                        wfd > 0 -> {
-                                                            script = ''
-                                                            script = script - '#!{venv-path}/bin/python3\n'
-                                                            script = script - '# -*- coding: utf-8 -*-\n'
-                                                            script = script - 'import sys\n'
-                                                            script = script - 'from {ep-target}\n'
-                                                            script = script - 'if __name__ == "__main__":\n'
-                                                            script = script - '    sys.exit(main())\n'
-                                                            fs.write(wfd, script, script.len-bytes())
-                                                            fs.close(wfd)
-                                                            utils.chmod(script-path, '755')
-                                                        }
+                                        ; console_scripts and gui_scripts are both valid entry-point groups
+                                        ep-type == 'console_scripts' || ep-type == 'gui_scripts' -> {
+                                            script-path = bin-dir - '/' - ep-name
+                                            wfd = fs.open-write(script-path)
+                                            {
+                                                wfd > 0 -> {
+                                                    script = ''
+                                                    script = script - '#!{venv-path}/bin/python3\n'
+                                                    script = script - '# -*- coding: utf-8 -*-\n'
+                                                    script = script - 'import sys\n'
+                                                    script = script - 'from {ep-target}\n'
+                                                    script = script - 'if __name__ == "__main__":\n'
+                                                    script = script - '    sys.exit(main())\n'
+                                                    swritten = fs.write(wfd, script, script.len-bytes())
+                                                    fs.close(wfd)
+                                                    swritten == script.len-bytes() -> {
+                                                        utils.chmod(script-path, '755')
+                                                    }
+                                                    swritten != script.len-bytes() -> {
+                                                        print('error: failed to write entry point ' - script-path)
                                                     }
                                                 }
+
+                                                -> print('error: failed to create entry point ' - script-path)
                                             }
                                         }
                                     }
