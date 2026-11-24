@@ -831,25 +831,25 @@ slice-bytes = (b []byte, from i64, to i64) (out []byte) {
 ; ═══════════════════════════════════════════════
 
 g-live = false
-g-raw []byte
-g-emitted = 0
-g-content-length = -1
-g-is-chunked = false
-g-iters = 0
-g-conn tls.conn
+G-RAW []byte
+G-EMITTED = 0
+G-CONTENT-LENGTH = -1
+G-IS-CHUNKED = false
+G-ITERS = 0
+G-CONN tls.conn
 
-; push-raw — push src[from..to) into the module buffer g-raw.
-; ⚠️ Nolang does NOT persist an OWNED module-global REASSIGNMENT (`g-raw =
+; push-raw — push src[from..to) into the module buffer G-RAW.
+; ⚠️ Nolang does NOT persist an OWNED module-global REASSIGNMENT (`G-RAW =
 ; concat(...)` binds a dead function-local temp; the global keeps its old
 ; value — confirmed compiler gap). Only in-place mutation persists, so we grow
-; g-raw exclusively via .push and reset it with .truncate(0); reads (len/index/
+; G-RAW exclusively via .push and reset it with .truncate(0); reads (len/index/
 ; slice) observe the accumulated bytes correctly across calls.
 push-raw = (src []byte, from i64, to i64) {
     (to > src.len()) -> to = src.len()
     (from < 0) -> from = 0
     ; A-7: never let the accumulating stream buffer exceed the body cap.
     #{overflow=wrap}
-    room = MAX-BODY - g-raw.len(): {
+    room = MAX-BODY - G-RAW.len(): {
         ok -> it
 
         -> 0
@@ -871,7 +871,7 @@ push-raw = (src []byte, from i64, to i64) {
 
             -> _
         }
-        g-raw.push(bv)
+        G-RAW.push(bv)
     }
 }
 
@@ -887,22 +887,22 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 
     req = compose-request(host, path, api-key, body, accept)
 
-    g-conn.init()
-    connected = g-conn.connect(host, port)
+    G-CONN.init()
+    connected = G-CONN.connect(host, port)
     ! connected -> {
         eprint('httpclient: connect failed: ' - host)
         return
     }
 
-    w = g-conn.send(req)
+    w = G-CONN.send(req)
     w: {
         nil -> {
-            g-conn.close()
+            G-CONN.close()
             return
         }
 
         err -> {
-            g-conn.close()
+            G-CONN.close()
             return
         }
 
@@ -925,7 +925,7 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 
             -> _
         }
-        n = g-conn.recv(buf, RECV-CAP)
+        n = G-CONN.recv(buf, RECV-CAP)
         n <= 0 -> break
         chunk = bytes-from-str(buf, n)
         raw = bytes-concat(raw, chunk)
@@ -936,20 +936,20 @@ stream-open = (url str, api-key str, body str, accept str) (status i64, ok bool)
 
     header-end < 0 -> {
         eprint('httpclient: no response header (connection closed early)')
-        g-conn.close()
+        G-CONN.close()
         return
     }
 
     status = parse-status-code(raw, header-end)
-    g-content-length = parse-content-length(raw, header-end)
-    g-is-chunked = header-has(raw, header-end, 'Transfer-Encoding: chunked')
-    g-raw.truncate(0)
+    G-CONTENT-LENGTH = parse-content-length(raw, header-end)
+    G-IS-CHUNKED = header-has(raw, header-end, 'Transfer-Encoding: chunked')
+    G-RAW.truncate(0)
 
     #{overflow=wrap}
     body-start = header-end + 4
     push-raw(raw, body-start, raw.len())
-    g-emitted = 0
-    g-iters = 0
+    G-EMITTED = 0
+    G-ITERS = 0
     g-live = true
     ok = true
 }
@@ -963,14 +963,14 @@ stream-next = () (data str, done bool) {
     ! g-live -> return
 
     #{overflow=wrap}
-    g-iters = g-iters + 1
-    g-iters > 200000 -> {
+    G-ITERS = G-ITERS + 1
+    G-ITERS > 200000 -> {
         g-live = false
         return
     }
 
     buf str = with-len(RECV-CAP)
-    n = g-conn.recv(buf, RECV-CAP)
+    n = G-CONN.recv(buf, RECV-CAP)
     n > 0 -> {
         chunk = bytes-from-str(buf, n)
         push-raw(chunk, 0, chunk.len())
@@ -980,21 +980,21 @@ stream-next = () (data str, done bool) {
     {
         vis []byte = with-len(0)
         {
-            g-is-chunked -> vis = dechunk(g-raw)
+            G-IS-CHUNKED -> vis = dechunk(G-RAW)
 
-            -> vis = slice-bytes(g-raw, 0, g-raw.len())
+            -> vis = slice-bytes(G-RAW, 0, G-RAW.len())
         }
 
         ; Content-Length mode clamps the visible window; other modes
         {
             ; expose everything decoded so far
-            g-content-length >= 0 -> vis.len() > g-content-length -> vis.truncate(g-content-length)
+            G-CONTENT-LENGTH >= 0 -> vis.len() > G-CONTENT-LENGTH -> vis.truncate(G-CONTENT-LENGTH)
         }
-        vis.len() > g-emitted -> {
-            fresh = slice-bytes(vis, g-emitted, vis.len())
+        vis.len() > G-EMITTED -> {
+            fresh = slice-bytes(vis, G-EMITTED, vis.len())
 
             #{overflow=wrap}
-            g-emitted = g-emitted + fresh.len(): {
+            G-EMITTED = G-EMITTED + fresh.len(): {
                 ok -> it
 
                 -> _
@@ -1007,31 +1007,31 @@ stream-next = () (data str, done bool) {
         }
     }
 
-    ; A-7: non-chunked g-raw is exactly the decoded body, so the already
+    ; A-7: non-chunked G-RAW is exactly the decoded body, so the already
     ; emitted prefix can be discarded after copying it out. This bounds
     ; memory and stops every stream-next from re-walking the whole buffer.
     ; Chunked streams cannot map decoded bytes back to raw offsets cheaply,
-    ; so they rely on the 32 MiB g-raw cap above instead.
-    g-is-chunked == false -> {
-        g-emitted > 0 -> {
-            remain = slice-bytes(g-raw, g-emitted, g-raw.len())
-            g-raw.truncate(0)
+    ; so they rely on the 32 MiB G-RAW cap above instead.
+    G-IS-CHUNKED == false -> {
+        G-EMITTED > 0 -> {
+            remain = slice-bytes(G-RAW, G-EMITTED, G-RAW.len())
+            G-RAW.truncate(0)
             push-raw(remain, 0, remain.len())
-            g-emitted = 0
+            G-EMITTED = 0
         }
     }
 
     done = true
     n > 0 -> {
         done = false
-        g-content-length >= 0 -> g-emitted >= g-content-length -> done = true
+        G-CONTENT-LENGTH >= 0 -> G-EMITTED >= G-CONTENT-LENGTH -> done = true
     }
     ; A-7: once the cap is hit, signal completion rather than letting the
     ; caller loop forever on a connection whose bytes we refuse to buffer.
-    g-raw.len() >= MAX-BODY -> done = true
+    G-RAW.len() >= MAX-BODY -> done = true
 }
 
 stream-close = () {
-    g-live -> g-conn.close()
+    g-live -> G-CONN.close()
     g-live = false
 }

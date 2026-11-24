@@ -22,6 +22,10 @@ no build
 # Or download a prebuilt binary from GitHub Releases (see root README)
 ```
 
+### Install / reference via nohub
+
+See package info, version snapshots and source entry on [nohub](https://lizongying.github.io/nohub/): [noagent:latest](https://lizongying.github.io/nohub/?package=noagent:latest@github.com/lizongying/notools)
+
 ## Commands
 
 | Command | Description |

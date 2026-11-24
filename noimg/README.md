@@ -28,6 +28,10 @@ no build
 # 产物位于 noimg/dist/noimg
 ```
 
+### 方式三：通过 nohub 安装或引用
+
+通过 [nohub](https://lizongying.github.io/nohub/) 包清单查看包信息、版本快照与源码入口：[noimg:latest](https://lizongying.github.io/nohub/?package=noimg:latest@github.com/lizongying/notools)
+
 ## 支持的格式
 
 | 格式 | 扩展名 | 读取 | 写入 | 说明 |

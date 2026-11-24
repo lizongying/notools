@@ -32,6 +32,10 @@ no build
 # 产物位于 notools/dist/notools
 ```
 
+### 方式三：通过 nohub 安装或引用
+
+通过 [nohub](https://lizongying.github.io/nohub/) 包清单查看包信息、版本快照与源码入口：[notools:latest](https://lizongying.github.io/nohub/?package=notools:latest@github.com/lizongying/notools)
+
 ## 命令列表
 
 > `md5`/`sha*` 为 BSD 风格命名，`md5sum`/`sha*sum` 为 GNU 风格命名，两者输出相同。

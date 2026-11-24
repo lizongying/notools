@@ -105,6 +105,20 @@ cd noagent && no build && cd ..
 cp noagent/dist/noagent /usr/local/bin/noagent
 ```
 
+### 通过 nohub 安装或引用
+
+[nohub](https://lizongying.github.io/nohub/) 是 Nolang 社区包清单，下列链接直达各包的 nohub 页面，可查看包信息、版本快照与源码入口：
+
+| 包 | 说明 | nohub |
+|----|------|-------|
+| `notools` | Unix 常用命令行工具集（193 个命令） | [notools:latest](https://lizongying.github.io/nohub/?package=notools:latest@github.com/lizongying/notools) |
+| `nogit` | 纯 Nolang Git 实现（不依赖系统 `git`） | [nogit:latest](https://lizongying.github.io/nohub/?package=nogit:latest@github.com/lizongying/notools) |
+| `noimg` | 纯 Nolang 图像处理工具库（9 种格式、55+ 种操作） | [noimg:latest](https://lizongying.github.io/nohub/?package=noimg:latest@github.com/lizongying/notools) |
+| `nouv` | 纯 Nolang Python 包管理器（兼容 uv/pip） | [nouv:latest](https://lizongying.github.io/nohub/?package=nouv:latest@github.com/lizongying/notools) |
+| `nonpm` | 纯 Nolang Node.js 包管理器（兼容 pnpm） | [nonpm:latest](https://lizongying.github.io/nohub/?package=nonpm:latest@github.com/lizongying/notools) |
+| `noagent` | 纯 Nolang 自主 LLM 智能体 CLI（OpenAI 兼容、工具调用、流式） | [noagent:latest](https://lizongying.github.io/nohub/?package=noagent:latest@github.com/lizongying/notools) |
+| `nojq` | 纯 Nolang JSON 处理工具（兼容 jq 1.7） | [nojq:latest](https://lizongying.github.io/nohub/?package=nojq:latest@github.com/lizongying/notools) |
+
 ## 工具列表
 
 > 以下为已实现并接入分发的全部命令（193 个）。`md5`/`sha*` 为 BSD 风格命名，`md5sum`/`sha*sum` 为 GNU 风格命名，两者输出相同。

@@ -30,6 +30,10 @@ no build
 # 产物位于 nogit/dist/git
 ```
 
+### 方式三：通过 nohub 安装或引用
+
+通过 [nohub](https://lizongying.github.io/nohub/) 包清单查看包信息、版本快照与源码入口：[nogit:latest](https://lizongying.github.io/nohub/?package=nogit:latest@github.com/lizongying/notools)
+
 ## 命令列表
 
 | 命令 | 说明 | 示例 |

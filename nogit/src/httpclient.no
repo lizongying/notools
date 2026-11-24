@@ -1,0 +1,450 @@
+; http-client — 纯 Nolang HTTP/1.1 客户端
+;
+; 仅使用标准库 net / tls / proxy / url / env，不调用 process.cmd。
+; 支持 HTTPS over HTTP CONNECT（读取 HTTPS_PROXY / HTTP_PROXY）、重定向、
+; Content-Length 与 chunked 响应。供养 nohub sync 与 nogit remote 复用。
+
+HTTP-CLIENT-BUF-SIZE = 16640
+HTTP-CLIENT-MAX-RESPONSE = 1048576
+HTTP-CLIENT-MAX-REDIRECT = 5
+
+hc-arr-str = (a []str, i i64) (out str) {
+    out = ''
+    v = a[i]
+    v: {
+        ok -> out = it
+
+        nil || err -> _
+    }
+}
+
+hc-add-i = (a i64, b i64) (out i64) {
+    x = a + b
+    x: {
+        ok -> out = it
+
+        nil || err -> out = a
+    }
+}
+
+hc-env-str = (key str) (out str) {
+    out = ''
+    v = env.get(key)
+    v: {
+        ok -> out = it
+
+        nil || err -> _
+    }
+}
+
+hc-is-digit-str = (s str) (yes bool) {
+    yes = s.len-bytes() > 0
+    i <- [0..s.len-bytes()): {
+        ch = s[i]
+        yes = yes && ch >= 48 && ch <= 57
+    }
+}
+
+hc-parse-int = (s str) (out i64) {
+    out = 0
+    hc-is-digit-str(s) == false -> return
+    i <- [0..s.len-bytes()): {
+        ch = s[i]
+        out = out * 10 + ch - 48
+    }
+}
+
+hc-hex-value = (ch char) (out i64) {
+    out = -1
+    ch >= 48 && ch <= 57 -> out = ch - 48
+    ch >= 97 && ch <= 102 -> out = ch - 97 + 10
+    ch >= 65 && ch <= 70 -> out = ch - 65 + 10
+}
+
+hc-parse-hex = (s str) (out i64) {
+    out = 0
+    n = s.len-bytes()
+    n == 0 -> return
+    i <- [0..n): {
+        v = hc-hex-value(s[i])
+        v < 0 -> return
+        #{overflow=wrap}
+        x = out * 16 + v
+        x: {
+            ok -> out = it
+
+            -> _
+        }
+    }
+}
+
+hc-header-value = (headers str, name str) (out str) {
+    out = ''
+    needle = name.to-lower() - ': '
+    lines = headers.split('\r\n')
+    i <- [0..lines.len()): {
+        line = hc-arr-str(lines, i)
+        low = line.to-lower()
+        out.len-bytes() == 0 && low.starts-with(needle) -> {
+            out = line.slice(needle.len-bytes(), line.len-bytes()).trim()
+        }
+    }
+}
+
+hc-status-code = (raw str) (out i64) {
+    out = 0
+    sep = raw.index('\r\n')
+    line = raw
+    sep >= 0 -> line = raw.slice(0, sep)
+    sp1 = line.index(' ')
+    sp1 < 0 -> return
+    rest = line.slice(hc-add-i(sp1, 1), line.len-bytes())
+    sp2 = rest.index(' ')
+    code-str = rest
+    sp2 >= 0 -> code-str = rest.slice(0, sp2)
+    out = hc-parse-int(code-str)
+}
+
+hc-no-proxy-match = (no-proxy str, host str) (matched bool) {
+    matched = false
+    no-proxy.len-bytes() == 0 -> return
+    no-proxy.trim() == '*' -> {
+        matched = true
+        return
+    }
+    items = no-proxy.split(',')
+    i <- [0..items.len()): {
+        item = hc-arr-str(items, i).trim().to-lower()
+        h = host.to-lower()
+        {
+            item.len-bytes() == 0 -> _
+
+            item == h -> matched = true
+
+            item.starts-with('.') && h.ends-with(item) -> matched = true
+
+            h.ends-with('.' - item) -> matched = true
+        }
+    }
+}
+
+hc-proxy-for = (scheme str, host str) (out str) {
+    out = ''
+    {
+        scheme == 'https' -> {
+            out = hc-env-str('HTTPS_PROXY')
+            out.len-bytes() == 0 -> out = hc-env-str('https_proxy')
+        }
+
+        -> {
+            out = hc-env-str('HTTP_PROXY')
+            out.len-bytes() == 0 -> out = hc-env-str('http_proxy')
+        }
+    }
+    no-proxy = hc-env-str('NO_PROXY')
+    no-proxy.len-bytes() == 0 -> no-proxy = hc-env-str('no_proxy')
+    hc-no-proxy-match(no-proxy, host) -> out = ''
+}
+
+hc-host-header = (u url.url-info) (out str) {
+    out = u.host
+    default-port = u.scheme == 'https' -> 443 -> 80
+    u.port == default-port -> return
+    out = out - ':' - u.port.to-str()
+}
+
+hc-request-path = (u url.url-info) (out str) {
+    out = u.path
+    out.len-bytes() == 0 -> out = '/'
+    u.query.len-bytes() > 0 -> out = out - '?' - u.query
+}
+
+hc-build-request = (method str, u url.url-info, agent str, accept str) (out str) {
+    crlf = '\r\n'
+    path = hc-request-path(u)
+    out = method - ' ' - path - ' HTTP/1.1' - crlf
+    out = out - 'Host: ' - hc-host-header(u) - crlf
+    out = out - 'User-Agent: ' - agent - crlf
+    out = out - 'Accept: ' - accept - crlf
+    out = out - 'Accept-Encoding: identity' - crlf
+    out = out - 'Connection: close' - crlf - crlf
+}
+
+hc-read-enough = (raw str, header-end i64) (enough bool) {
+    enough = false
+    header-end < 0 -> return
+    headers = raw.slice(0, header-end)
+    content-length = hc-header-value(headers, 'content-length').trim()
+    {
+        content-length.len-bytes() > 0 && hc-is-digit-str(content-length) -> {
+            need = hc-add-i(hc-add-i(header-end, 4), hc-parse-int(content-length))
+            raw.len-bytes() >= need -> enough = true
+        }
+
+        headers.to-lower().contains('transfer-encoding: chunked') -> {
+            body = raw.slice(hc-add-i(header-end, 4), raw.len-bytes())
+            body.contains('\r\n0\r\n\r\n') -> enough = true
+        }
+    }
+}
+
+hc-read-tls-response = (c tls.conn) (raw str, ok bool) {
+    raw = ''
+    ok = true
+    rec []byte = with-len(HTTP-CLIENT-BUF-SIZE)
+    separator = '\r\n\r\n'
+    !! {
+        ct = 0
+        rlen = 0
+        ct, rlen = tls.read-record(c.fd, rec)
+        ct < 0 -> break
+        ct == 21 -> break
+        {
+            ct == 23 -> {
+                dct, plain = c.decrypt-record-13(rec, c.ap-server-key, c.ap-server-iv, c.ap-read-seq)
+                c.ap-read-seq = hc-add-i(c.ap-read-seq, 1)
+                dct != 23 -> break
+                s-opt = plain.to-str()
+                s-opt: {
+                    ok -> raw = raw - it
+
+                    nil || err -> _
+                }
+            }
+        }
+        sep = raw.index(separator)
+        hc-read-enough(raw, sep) -> break
+        raw.len-bytes() > HTTP-CLIENT-MAX-RESPONSE -> {
+            ok = false
+            break
+        }
+    }
+}
+
+hc-read-net-response = (fd fd) (raw str, ok bool) {
+    raw = ''
+    ok = true
+    buf str = with-len(HTTP-CLIENT-BUF-SIZE)
+    separator = '\r\n\r\n'
+    !! {
+        n = net.net-recv(fd, buf, HTTP-CLIENT-BUF-SIZE)
+        n <= 0 -> break
+        raw = raw - buf.slice(0, n)
+        sep = raw.index(separator)
+        hc-read-enough(raw, sep) -> break
+        raw.len-bytes() > HTTP-CLIENT-MAX-RESPONSE -> {
+            ok = false
+            break
+        }
+    }
+}
+
+hc-decode-chunked = (body str) (out str) {
+    out = ''
+    crlf = '\r\n'
+    pos = 0
+    !! {
+        pos >= body.len-bytes() -> break
+        line-end = body.index-from(crlf, pos)
+        line-end < 0 -> break
+        size-line = body.slice(pos, line-end)
+        semi = size-line.index(';')
+        semi >= 0 -> size-line = size-line.slice(0, semi)
+        size = hc-parse-hex(size-line.trim())
+        pos = hc-add-i(line-end, 2)
+        size == 0 -> break
+        end = hc-add-i(pos, size)
+        end > body.len-bytes() -> break
+        out = out - body.slice(pos, end)
+        pos = hc-add-i(end, 2)
+    }
+}
+
+hc-parse-response = (raw str) (status i64, body str, location str, ok bool) {
+    status = 0
+    body = ''
+    location = ''
+    ok = false
+    sep = raw.index('\r\n\r\n')
+    sep < 0 -> return
+    headers = raw.slice(0, sep)
+    status = hc-status-code(raw)
+    status <= 0 -> return
+    body = raw.slice(hc-add-i(sep, 4), raw.len-bytes())
+    {
+        headers.to-lower().contains('transfer-encoding: chunked') -> body = hc-decode-chunked(body)
+    }
+    location = hc-header-value(headers, 'location').trim()
+    content-length = hc-header-value(headers, 'content-length').trim()
+    {
+        content-length.len-bytes() > 0 && hc-is-digit-str(content-length) -> {
+            want = hc-parse-int(content-length)
+            body.len-bytes() > want -> body = body.slice(0, want)
+        }
+    }
+    ok = true
+}
+
+hc-get-once = (url-str str, agent str, accept str) (status i64, body str, location str, err str, ok bool) {
+    status = 0
+    body = ''
+    location = ''
+    err = ''
+    ok = false
+    u = url.url-parse(url-str)
+    u.ok == false -> {
+        err = 'fetch failed'
+        return
+    }
+    u.scheme != 'http' && u.scheme != 'https' -> {
+        err = 'fetch failed'
+        return
+    }
+    req = hc-build-request('GET', u, agent, accept)
+    purl = hc-proxy-for(u.scheme, u.host)
+    raw = ''
+    read-ok = false
+    {
+        u.scheme == 'https' && purl.len-bytes() > 0 -> {
+            pu = url.url-parse(purl)
+            pu.ok == false -> {
+                err = 'fetch failed'
+                return
+            }
+            opt = proxy.proxy-tls-dial(pu.host, pu.port, u.host, u.port)
+            opt: {
+                ok -> {
+                    c = it
+                    w = c.send(req)
+                    w: {
+                        ok -> {
+                            raw, read-ok = hc-read-tls-response(c)
+                        }
+
+                        nil || err -> err = 'fetch failed'
+                    }
+                    c.close()
+                }
+
+                nil || err -> err = 'fetch failed'
+            }
+        }
+
+        u.scheme == 'https' -> {
+            opt = tls.dial(u.host, u.port)
+            opt: {
+                ok -> {
+                    c = it
+                    w = c.send(req)
+                    w: {
+                        ok -> {
+                            raw, read-ok = hc-read-tls-response(c)
+                        }
+
+                        nil || err -> err = 'fetch failed'
+                    }
+                    c.close()
+                }
+
+                nil || err -> err = 'fetch failed'
+            }
+        }
+
+        purl.len-bytes() > 0 -> {
+            pu = url.url-parse(purl)
+            pu.ok == false -> {
+                err = 'fetch failed'
+                return
+            }
+            fd = net.net-dial(pu.host, pu.port)
+            fd < 0 -> {
+                err = 'fetch failed'
+                return
+            }
+            absolute = u.to-str()
+            proxy-req = 'GET ' - absolute - ' HTTP/1.1\r\n'
+            proxy-req = proxy-req - 'Host: ' - hc-host-header(u) - '\r\n'
+            proxy-req = proxy-req - 'User-Agent: ' - agent - '\r\n'
+            proxy-req = proxy-req - 'Accept: ' - accept - '\r\n'
+            proxy-req = proxy-req - 'Accept-Encoding: identity\r\n'
+            proxy-req = proxy-req - 'Connection: close\r\n\r\n'
+            written = net.net-send(fd, proxy-req, proxy-req.len-bytes())
+            written < 0 -> err = 'fetch failed'
+            written >= 0 -> raw, read-ok = hc-read-net-response(fd)
+            net.close(fd)
+        }
+
+        -> {
+            fd = net.net-dial(u.host, u.port)
+            fd < 0 -> {
+                err = 'fetch failed'
+                return
+            }
+            written = net.net-send(fd, req, req.len-bytes())
+            written < 0 -> err = 'fetch failed'
+            written >= 0 -> raw, read-ok = hc-read-net-response(fd)
+            net.close(fd)
+        }
+    }
+    ! read-ok -> {
+        err.len-bytes() == 0 -> err = 'fetch failed'
+        return
+    }
+    status, body, location, ok = hc-parse-response(raw)
+    ! ok -> err = 'fetch failed'
+}
+
+hc-resolve-location = (base-url str, location str) (out str) {
+    out = location
+    location.starts-with('http://') || location.starts-with('https://') -> return
+    u = url.url-parse(base-url)
+    u.ok == false -> return
+    authority = u.host
+    default-port = u.scheme == 'https' -> 443 -> 80
+    u.port != default-port -> authority = authority - ':' - u.port.to-str()
+    {
+        location.starts-with('/') -> out = u.scheme - '://' - authority - location
+
+        -> {
+            path = u.path
+            slash = path.last-index('/')
+            base-dir = path
+            slash >= 0 -> base-dir = path.slice(0, hc-add-i(slash, 1))
+            out = u.scheme - '://' - authority - base-dir - location
+        }
+    }
+}
+
+hc-fetch-n = (url-str str, agent str, accept str, depth i64) (status i64, body str, err str, ok bool) {
+    status = 0
+    body = ''
+    err = ''
+    ok = false
+    status, body, location, err, ok = hc-get-once(url-str, agent, accept)
+    {
+        ! ok -> return
+
+        status == 301 || status == 302 || status == 303 || status == 307 || status == 308 -> {
+            location.len-bytes() == 0 -> {
+                err = 'fetch failed'
+                ok = false
+                return
+            }
+            depth >= HTTP-CLIENT-MAX-REDIRECT -> {
+                err = 'fetch failed'
+                ok = false
+                return
+            }
+            next-url = hc-resolve-location(url-str, location)
+            status, body, err, ok = hc-fetch-n(next-url, agent, accept, hc-add-i(depth, 1))
+        }
+    }
+}
+
+fetch = (url-str str, agent str) (status i64, body str, err str, ok bool) {
+    status, body, err, ok = hc-fetch-n(url-str, agent, '*/*', 0)
+}
+
+fetch-accept = (url-str str, agent str, accept str) (status i64, body str, err str, ok bool) {
+    status, body, err, ok = hc-fetch-n(url-str, agent, accept, 0)
+}

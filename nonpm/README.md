@@ -26,6 +26,10 @@ no install nonpm
 no run nonpm <command>
 ```
 
+### Install / reference via nohub
+
+See package info, version snapshots and source entry on [nohub](https://lizongying.github.io/nohub/): [nonpm:latest](https://lizongying.github.io/nohub/?package=nonpm:latest@github.com/lizongying/notools)
+
 ## Commands
 
 ### Install Dependencies

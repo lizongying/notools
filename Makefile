@@ -15,7 +15,7 @@ help:
 	@echo "notools Makefile"
 	@echo ""
 	@echo "Targets:"
-	@echo "  sync-skills   Sync .agents/skills & .agents/rules from $(NO_LANG_REPO) ($(NO_LANG_BRANCH))"
+	@echo "  sync-agents   Sync .agents/skills & .agents/rules from $(NO_LANG_REPO) ($(NO_LANG_BRANCH))"
 	@echo "  help          Show this help"
 
 # --- Skill & Rule Sync (sparse checkout) ---
@@ -24,8 +24,8 @@ help:
 # Note: the checkout happens inside the temp dir via --work-tree; the copy
 # always writes to absolute project paths (never "../", which would resolve
 # relative to the temp dir's parent).
-.PHONY: sync-skills
-sync-skills:
+.PHONY: sync-agents
+sync-agents:
 	@echo "==> Fetching skills & rules from $(NO_LANG_REPO) ($(NO_LANG_BRANCH))..."
 	@tmp=$$(mktemp -d); \
 		dst_skills=$$(pwd)/$(SKILLS_DIR); \

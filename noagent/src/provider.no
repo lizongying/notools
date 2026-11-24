@@ -289,60 +289,60 @@ extract-api-error = (body str) (msg str) {
 ; content is accumulated as a fragment vec joined at pack time, not a str.
 ; ═══════════════════════════════════════════════
 
-content-frags []str; content deltas, joined at pack
-finish-lst []str; finish_reasons seen (last non-empty wins)
-ids []str; tool_call slot: ids
-names []str; tool_call slot: names
-argss []str; tool_call slot: stitched arguments
-part []byte; partial-line byte buffer (no '\n' seen yet)
-raw-chunks []str; every received chunk (for non-2xx error extract)
-part-off = 0; cursor into part for the un-processed suffix
-slots = 0; number of allocated tool_call slots
-got-done = false; terminal `data: [DONE]` observed
-do-render = false; echo content deltas live to stdout
+CONTENT-FRAGS []str; content deltas, joined at pack
+FINISH-LST []str; finish_reasons seen (last non-empty wins)
+IDS []str; tool_call slot: ids
+NAMES []str; tool_call slot: names
+ARGSS []str; tool_call slot: stitched arguments
+PART []byte; partial-line byte buffer (no '\n' seen yet)
+RAW-CHUNKS []str; every received chunk (for non-2xx error extract)
+PART-OFF = 0; cursor into part for the un-processed suffix
+SLOTS = 0; number of allocated tool_call slots
+GOT-DONE = false; terminal `data: [DONE]` observed
+DO-RENDER = false; echo content deltas live to stdout
 
 ; stream-reset — clear all incremental state before a new stream (in-place)
 stream-reset = () {
-    content-frags.truncate(0)
-    finish-lst.truncate(0)
-    ids.truncate(0)
-    names.truncate(0)
-    argss.truncate(0)
-    part.truncate(0)
-    raw-chunks.truncate(0)
-    part-off = 0
-    slots = 0
-    got-done = false
-    do-render = false
+    CONTENT-FRAGS.truncate(0)
+    FINISH-LST.truncate(0)
+    IDS.truncate(0)
+    NAMES.truncate(0)
+    ARGSS.truncate(0)
+    PART.truncate(0)
+    RAW-CHUNKS.truncate(0)
+    PART-OFF = 0
+    SLOTS = 0
+    GOT-DONE = false
+    DO-RENDER = false
 }
 
 ; saw-done — whether the current feed cycle observed the `data: [DONE]`
 ; sentinel. An accessor because cross-module reads of a foreign module global
 ; in an expression can trip a lowering failure; a function call is stable.
 saw-done = () (yes bool) {
-    yes = got-done
+    yes = GOT-DONE
 }
 
 ; ═══════════════════════════════════════════════
 ; process-sse-line — fold ONE complete SSE line into the module state. Shared
 ; by the live path (stream-feed) and the PURE path (aggregate-stream). Content
-; deltas echo to stdout when do-render is true.
+; deltas echo to stdout when DO-RENDER is true.
 ; ═══════════════════════════════════════════════
 
 process-sse-line = (line str) {
     payload = stream.strip-data-prefix(line)
     payload != '' -> {
         {
-            stream.is-done(payload) -> got-done = true
+            stream.is-done(payload) -> GOT-DONE = true
 
             -> {
                 d = stream.extract-content(payload)
                 d != '' -> {
-                    content-frags.push(d)
-                    do-render -> io.out(d)
+                    CONTENT-FRAGS.push(d)
+                    DO-RENDER -> io.out(d)
                 }
                 f = stream.extract-finish(payload)
-                f != '' -> finish-lst.push(f)
+                f != '' -> FINISH-LST.push(f)
                 tcs = stream.delta-tool-calls(payload)
                 tcs: {
                     err -> {
@@ -373,27 +373,27 @@ process-sse-line = (line str) {
                                     ; Grow in a LOOP across any index gaps —
                                     ; a single if only made room for one slot,
                                     ; so a skipped index silently lost a call.
-                                    (slots <= idx) {
-                                        ids.push('')
-                                        names.push('')
-                                        argss.push('')
+                                    (SLOTS <= idx) {
+                                        IDS.push('')
+                                        NAMES.push('')
+                                        ARGSS.push('')
 
                                         #{overflow=wrap}
-                                        slots-opt = slots + 1
-                                        slots = slots-opt: {
+                                        slots-opt = SLOTS + 1
+                                        SLOTS = slots-opt: {
                                             ok -> it
 
                                             -> 0
                                         }
                                     }
                                     id = stream.tc-id(it)
-                                    id != '' -> ids[idx] = id
+                                    id != '' -> IDS[idx] = id
                                     nm = stream.tc-name(it)
-                                    nm != '' -> names[idx] = nm
+                                    nm != '' -> NAMES[idx] = nm
                                     ag = stream.tc-args(it)
 
                                     #{overflow=wrap}
-                                    ag != '' -> argss[idx] = argss[idx] - ag
+                                    ag != '' -> ARGSS[idx] = ARGSS[idx] - ag
                                 }
                             }
                         }
@@ -405,26 +405,26 @@ process-sse-line = (line str) {
 }
 
 ; ═══════════════════════════════════════════════
-; find-nl-from — byte index of the first '\n' in part at/after `from` (-1 none).
+; find-nl-from — byte index of the first '\n' in PART at/after `from` (-1 none).
 ; ═══════════════════════════════════════════════
 
 find-nl-from = (from i64) (at i64) {
     at = -1
-    i <- [from..part.len()): {
-        at < 0 -> part[i] == 10 -> at = i
+    i <- [from..PART.len()): {
+        at < 0 -> PART[i] == 10 -> at = i
     }
 }
 
-; part-to-str — decode part[start..end) into a str via a fresh local buffer.
+; part-to-str — decode PART[start..end) into a str via a fresh local buffer.
 part-to-str = (start i64, end i64) (s str) {
     v []byte = with-len(0)
     lo = start
     (lo < 0) -> lo = 0
-    (lo > part.len()) -> lo = part.len()
+    (lo > PART.len()) -> lo = PART.len()
     hi = end
-    (hi > part.len()) -> hi = part.len()
+    (hi > PART.len()) -> hi = PART.len()
     (lo < hi) {
-        byte0 = part[lo]: {
+        byte0 = PART[lo]: {
             ok -> it
 
             -> 0
@@ -447,13 +447,13 @@ part-to-str = (start i64, end i64) (s str) {
 
 ; ═══════════════════════════════════════════════
 ; stream-feed — append freshly-arrived transport bytes and process every
-; complete line. part keeps a partial-line buffer so frames split across TLS
+; complete line. PART keeps a partial-line buffer so frames split across TLS
 ; records are rejoined. byte 10 scanning is UTF-8 safe; strip-data-prefix
 ; already trims '\r'.
 ; ═══════════════════════════════════════════════
 
 stream-feed = (text str) {
-    raw-chunks.push(text)
+    RAW-CHUNKS.push(text)
     b = text.to-bytes()
     i <- [0..b.len()): {
         byte0 = b[i]: {
@@ -461,16 +461,16 @@ stream-feed = (text str) {
 
             -> 0
         }
-        part.push(byte0)
+        PART.push(byte0)
     }
-    nl = find-nl-from(part-off)
+    nl = find-nl-from(PART-OFF)
     (nl >= 0) {
-        line = part-to-str(part-off, nl)
+        line = part-to-str(PART-OFF, nl)
         process-sse-line(line)
 
         #{overflow=wrap}
-        part-off = nl + 1
-        nl = find-nl-from(part-off)
+        PART-OFF = nl + 1
+        nl = find-nl-from(PART-OFF)
     }
 }
 
@@ -481,25 +481,25 @@ stream-feed = (text str) {
 
 stream-pack = () (resp messages.message, finish str) {
     resp = messages.make('assistant', '')
-    content str = content-frags.join('')
+    content str = CONTENT-FRAGS.join('')
     resp.content = content
     finish = ''
-    finish-lst.len() > 0 -> {
+    FINISH-LST.len() > 0 -> {
 
         #{overflow=wrap}
-        last = finish-lst.len() - 1
+        last = FINISH-LST.len() - 1
 
-        finish = finish-lst[last]: {
+        finish = FINISH-LST[last]: {
             ok -> it
 
             -> ''
         }
     }
-    k <- [0..slots): {
+    k <- [0..SLOTS): {
         tc messages.tool-call
-        tc.id = ids[k]
-        tc.name = names[k]
-        tc.arguments = argss[k]
+        tc.id = IDS[k]
+        tc.name = NAMES[k]
+        tc.arguments = ARGSS[k]
         tc.id != '' -> resp.tool-calls.push(tc)
     }
 }
@@ -548,12 +548,12 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
     }
 
     stream-reset()
-    do-render = true
+    DO-RENDER = true
     stream-done = false
     !! {
         data, closed = httpclient.stream-next()
         stream-feed(data)
-        got-done -> {
+        GOT-DONE -> {
             stream-done = true
             break
         }
@@ -565,14 +565,14 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
     }
 
     ; flush a trailing line that arrived without its final '\n'
-    part-off < part.len() -> process-sse-line(part-to-str(part-off, part.len()))
+    PART-OFF < PART.len() -> process-sse-line(part-to-str(PART-OFF, PART.len()))
     io.out('\n')
     httpclient.stream-close()
 
     ; A-8: closed before [DONE] with no finish_reason means the answer was
     ; truncated — fail instead of returning a partial reply with ok=true.
     ! stream-done -> {
-        finish-lst.len() == 0 -> {
+        FINISH-LST.len() == 0 -> {
             resp = messages.make('assistant', '')
             errmsg = 'stream interrupted: connection closed before [DONE]'
             return
@@ -584,7 +584,7 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
     {
         status < 200 -> status >= 300 -> {
             resp = messages.make('assistant', '')
-            errmsg = extract-api-error(raw-chunks.join(''))
+            errmsg = extract-api-error(RAW-CHUNKS.join(''))
             status-text = 'http ' - status.to-str()
             {
                 errmsg == '' -> errmsg = status-text
@@ -609,7 +609,7 @@ complete-stream = (cfg config.config, msgs []messages.message, tools-json str) (
 
 aggregate-stream = (body str, render bool) (resp messages.message, finish str) {
     stream-reset()
-    do-render = render
+    DO-RENDER = render
     lines = utils.split-lines(body)
     n = lines.len()
     i <- [0..n): {

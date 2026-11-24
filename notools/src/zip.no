@@ -7,11 +7,11 @@
 ; to the undefined []byte.push builtin and mutates a copy rather than the
 ; original field). Local-variable push works correctly.
 
-zw-files []str
-zw-data []byte
-zw-sizes []i64
-zw-offsets []i64
-zw-crcs []i64
+ZWFILES []str
+ZWDATA []byte
+ZWSIZES []i64
+ZWOFFSETS []i64
+ZWCRCS []i64
 
 ; byte-at: extract one byte (shifted) from an i64 as a plain i64 (option unwrapped)
 ; 0.4.24: `>>`/`&` yield ?i64, so unwrap here before pushing into []byte.
@@ -30,221 +30,221 @@ byte-at = (v i64, shift i64) (b i64) {
 
 ; add-file: append a file's contents to the archive
 add-file = (name str, content str) {
-    zw-files.push(name.copy())
-    zw-offsets.push(zw-data.len())
+    ZWFILES.push(name.copy())
+    ZWOFFSETS.push(ZWDATA.len())
     n = content.len()
-    zw-sizes.push(n)
+    ZWSIZES.push(n)
 
     ; compute CRC-32
     content-bytes = content
     crc = crc-32.new(content-bytes, n)
-    zw-crcs.push(crc)
+    ZWCRCS.push(crc)
 
     ; local file header signature
-    zw-data.push(80)
-    zw-data.push(75)
-    zw-data.push(3)
-    zw-data.push(4)
+    ZWDATA.push(80)
+    ZWDATA.push(75)
+    ZWDATA.push(3)
+    ZWDATA.push(4)
 
     ; version needed (20)
-    zw-data.push(20)
-    zw-data.push(0)
+    ZWDATA.push(20)
+    ZWDATA.push(0)
 
     ; general purpose flags (0)
-    zw-data.push(0)
-    zw-data.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
 
     ; compression method (0=stored)
-    zw-data.push(0)
-    zw-data.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
 
     ; mod time/date (zeros)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
 
     ; crc-32
-    zw-data.push(crc & 255)
-    zw-data.push((crc >> 8) & 255)
-    zw-data.push((crc >> 16) & 255)
-    zw-data.push((crc >> 24) & 255)
+    ZWDATA.push(crc & 255)
+    ZWDATA.push((crc >> 8) & 255)
+    ZWDATA.push((crc >> 16) & 255)
+    ZWDATA.push((crc >> 24) & 255)
 
     ; compressed size = uncompressed size (stored)
     b0 = n & 255
     b1 = (n >> 8) & 255
     b2 = (n >> 16) & 255
     b3 = (n >> 24) & 255
-    zw-data.push(b0)
-    zw-data.push(b1)
-    zw-data.push(b2)
-    zw-data.push(b3)
-    zw-data.push(b0)
-    zw-data.push(b1)
-    zw-data.push(b2)
-    zw-data.push(b3)
+    ZWDATA.push(b0)
+    ZWDATA.push(b1)
+    ZWDATA.push(b2)
+    ZWDATA.push(b3)
+    ZWDATA.push(b0)
+    ZWDATA.push(b1)
+    ZWDATA.push(b2)
+    ZWDATA.push(b3)
 
     ; filename length
     nl = name.len()
     nl0 = nl & 255
     nl1 = (nl >> 8) & 255
-    zw-data.push(nl0)
-    zw-data.push(nl1)
+    ZWDATA.push(nl0)
+    ZWDATA.push(nl1)
 
     ; extra field length (0)
-    zw-data.push(0)
-    zw-data.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
 
     ; filename bytes
     i <- [0..nl): {
-        zw-data.push(name[i])
+        ZWDATA.push(name[i])
     }
 
     ; file content
     i <- [0..n): {
-        zw-data.push(content[i])
+        ZWDATA.push(content[i])
     }
 }
 
-; finalize: append central directory and EOCD to zw-data
+; finalize: append central directory and EOCD to ZWDATA
 finalize = () {
-    cd-start = zw-data.len()
-    n = zw-files.len()
+    cd-start = ZWDATA.len()
+    n = ZWFILES.len()
     i <- [0..n): {
 
-        ; two-stage unwrap: a raw `name = zw-files[i]` read types as ?str and
+        ; two-stage unwrap: a raw `name = ZWFILES[i]` read types as ?str and
         ; poisons same-named vars in other funcs via the checker var snapshot
         fname = ''
-        zw-files[i]: {
+        ZWFILES[i]: {
             ok -> fname = it
 
             -> _
         }
         nl = fname.len()
-        sz = zw-sizes[i]: {
+        sz = ZWSIZES[i]: {
             ok -> it
 
             -> 0
         }
-        off = zw-offsets[i]: {
+        off = ZWOFFSETS[i]: {
             ok -> it
 
             -> 0
         }
-        crc = zw-crcs[i]: {
+        crc = ZWCRCS[i]: {
             ok -> it
 
             -> 0
         }
 
         ; central directory header signature
-        zw-data.push(80)
-        zw-data.push(75)
-        zw-data.push(1)
-        zw-data.push(2)
+        ZWDATA.push(80)
+        ZWDATA.push(75)
+        ZWDATA.push(1)
+        ZWDATA.push(2)
 
         ; version made by / version needed
-        zw-data.push(20)
-        zw-data.push(0)
-        zw-data.push(20)
-        zw-data.push(0)
+        ZWDATA.push(20)
+        ZWDATA.push(0)
+        ZWDATA.push(20)
+        ZWDATA.push(0)
 
         ; flags (0) / method (0=stored)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
 
         ; mod time/date (zeros)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
 
         ; crc-32
-        zw-data.push(byte-at(crc, 0))
-        zw-data.push(byte-at(crc, 8))
-        zw-data.push(byte-at(crc, 16))
-        zw-data.push(byte-at(crc, 24))
+        ZWDATA.push(byte-at(crc, 0))
+        ZWDATA.push(byte-at(crc, 8))
+        ZWDATA.push(byte-at(crc, 16))
+        ZWDATA.push(byte-at(crc, 24))
 
         ; compressed size
-        zw-data.push(byte-at(sz, 0))
-        zw-data.push(byte-at(sz, 8))
-        zw-data.push(byte-at(sz, 16))
-        zw-data.push(byte-at(sz, 24))
+        ZWDATA.push(byte-at(sz, 0))
+        ZWDATA.push(byte-at(sz, 8))
+        ZWDATA.push(byte-at(sz, 16))
+        ZWDATA.push(byte-at(sz, 24))
 
         ; uncompressed size
-        zw-data.push(byte-at(sz, 0))
-        zw-data.push(byte-at(sz, 8))
-        zw-data.push(byte-at(sz, 16))
-        zw-data.push(byte-at(sz, 24))
+        ZWDATA.push(byte-at(sz, 0))
+        ZWDATA.push(byte-at(sz, 8))
+        ZWDATA.push(byte-at(sz, 16))
+        ZWDATA.push(byte-at(sz, 24))
 
         ; filename length
-        zw-data.push(byte-at(nl, 0))
-        zw-data.push(byte-at(nl, 8))
+        ZWDATA.push(byte-at(nl, 0))
+        ZWDATA.push(byte-at(nl, 8))
 
         ; extra/comment length (0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
 
         ; disk number start / internal attrs / external attrs
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
-        zw-data.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
+        ZWDATA.push(0)
 
         ; local header offset
-        zw-data.push(byte-at(off, 0))
-        zw-data.push(byte-at(off, 8))
-        zw-data.push(byte-at(off, 16))
-        zw-data.push(byte-at(off, 24))
+        ZWDATA.push(byte-at(off, 0))
+        ZWDATA.push(byte-at(off, 8))
+        ZWDATA.push(byte-at(off, 16))
+        ZWDATA.push(byte-at(off, 24))
 
         ; filename bytes
         j <- [0..nl): {
             fj = fname[j]: {
                 ok -> it
 
-                -> 0
+                -> "0"
             }
-            zw-data.push(fj)
+            ZWDATA.push(fj)
         }
     }
 
     ; EOCD record
     #{overflow=wrap}
-    cd-size = zw-data.len() - cd-start: {
+    cd-size = ZWDATA.len() - cd-start: {
         ok -> it
 
         -> 0
     }
-    zw-data.push(80)
-    zw-data.push(75)
-    zw-data.push(5)
-    zw-data.push(6)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(0)
-    zw-data.push(byte-at(n, 0))
-    zw-data.push(byte-at(n, 8))
-    zw-data.push(byte-at(n, 0))
-    zw-data.push(byte-at(n, 8))
-    zw-data.push(byte-at(cd-size, 0))
-    zw-data.push(byte-at(cd-size, 8))
-    zw-data.push(byte-at(cd-size, 16))
-    zw-data.push(byte-at(cd-size, 24))
-    zw-data.push(byte-at(cd-start, 0))
-    zw-data.push(byte-at(cd-start, 8))
-    zw-data.push(byte-at(cd-start, 16))
-    zw-data.push(byte-at(cd-start, 24))
-    zw-data.push(0)
-    zw-data.push(0)
+    ZWDATA.push(80)
+    ZWDATA.push(75)
+    ZWDATA.push(5)
+    ZWDATA.push(6)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(0)
+    ZWDATA.push(byte-at(n, 0))
+    ZWDATA.push(byte-at(n, 8))
+    ZWDATA.push(byte-at(n, 0))
+    ZWDATA.push(byte-at(n, 8))
+    ZWDATA.push(byte-at(cd-size, 0))
+    ZWDATA.push(byte-at(cd-size, 8))
+    ZWDATA.push(byte-at(cd-size, 16))
+    ZWDATA.push(byte-at(cd-size, 24))
+    ZWDATA.push(byte-at(cd-start, 0))
+    ZWDATA.push(byte-at(cd-start, 8))
+    ZWDATA.push(byte-at(cd-start, 16))
+    ZWDATA.push(byte-at(cd-start, 24))
+    ZWDATA.push(0)
+    ZWDATA.push(0)
 }
 
 ; add-dir: recursively add files under dir
@@ -312,7 +312,7 @@ create = (filename str, files []str) {
     }
 
     finalize()
-    fs.write-file(filename, zw-data)
+    fs.write-file(filename, ZWDATA)
 }
 
 #{linux-amd64, linux-arm64, mac-amd64, mac-arm64}

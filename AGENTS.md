@@ -33,10 +33,10 @@
 | `docs/` | Docusaurus 文档站；`docs/design/option-unified.md` 是 option 迁移的语料侧权威 | — |
 | `scripts/smoke.sh` | 本地 smoke 套件，镜像 CI 的六个发布目标 | `scripts/smoke.sh [--build] [suite...]` |
 | `.github/workflows/build.yml` | tag push 触发：变更检测 → 6 目标交叉编译 → smoke → Release | — |
-| `.agents/skills/`、`.agents/rules/` | 由根 `make sync-skills` 从 nolang 仓库稀疏同步；本地改动要想到上游 | — |
+| `.agents/skills/`、`.agents/rules/` | 由根 `make sync-agents` 从 nolang 仓库稀疏同步；本地改动要想到上游 | — |
 | `.agents/plans/`、`.agents/specs/` | AI 产出的计划 / 规格落盘目录（见 §1.5） | — |
 | `workspace.noml` | 工作区根定义，登记七个包路径 | — |
-| `Makefile` | 只有 `sync-skills` / `help`；**没有** `make no` / `make test` | — |
+| `Makefile` | 只有 `sync-agents` / `help`；**没有** `make no` / `make test` | — |
 | `tests/`、`tmp/`、`bin/`、`dist/` | gitignored 的一次性产物 / 复现目录 | — |
 
 注意：CI / Release 只覆盖 **6 个发布目标**（不含 `nojq`），但 `workspace.noml` 登记 7 个包；
@@ -81,7 +81,7 @@ scripts/smoke.sh nogit noimg          # 只跑指定套件（针对已构建二�
 仓库把语言 / 编译器的深层知识放在 skill 里，AGENTS.md 只是面向代理的精简版。
 
 - **优先级**：工作区 skill（`.agents/skills/`）优先于同名 / 同功能的用户级 skill。
-  由 `make sync-skills` 从 nolang 仓库同步，改本地副本前先想上游是否也该改。
+  由 `make sync-agents` 从 nolang 仓库同步，改本地副本前先想上游是否也该改。
 - **权威顺序**：见文件开头；红线全文在 `.agents/rules/nolang-red-lines.md`。
 - `nolang-core` 加载协议：先读 `SKILL.md` 的开关表 → `build` / `verify` 常驻，
   `syntax` / `std` 命中 trigger 才载 → 子视图（`syntax/` 7 个、`std/` 10 个）只挑一两个，

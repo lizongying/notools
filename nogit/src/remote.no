@@ -1,0 +1,192 @@
+; nogit/src/remote.no — 远端引用读取（v0.1.36 增量能力）
+;
+; 本模块是 v0.1.36 之外的**新增文件**，不改动任何已有 nogit 源码。
+; 远端 refs 通过 Git Smart HTTP v1 协议读取：
+;   GET <url>/info/refs?service=git-upload-pack
+; 不使用系统 git，也不调用 process.cmd；底层 HTTP 由 nogit/src/httpclient
+; 提供（纯 Nolang net/tls/proxy 实现）。
+;
+; 约定：多值返回用 `(..., ok bool)`；失败时 err 给出描述，ok=false。
+
+# nogit/src/httpclient
+
+r-add-i = (a i64, b i64) (out i64) {
+    x = a + b
+    x: {
+        ok -> out = it
+
+        nil || err -> out = a
+    }
+}
+
+; 判断字符串前 n 个字节是否都是小写十六进制字符。
+is-hex-prefix = (s str, n i64) (yes bool) {
+    yes = true
+    hex-chars = '0123456789abcdef'
+    i <- [0..n): {
+        next-i = i + 1
+        j = next-i: {
+            ok -> it
+
+            -> i
+        }
+        ch = s.slice-bytes(i, j)
+        {
+            hex-chars.contains(ch) -> _
+
+            -> yes = false
+        }
+    }
+}
+
+strip-lf = (s str) (out str) {
+    out = s
+    out.ends-with('\n') -> out = out.slice-bytes(0, r-add-i(out.len-bytes(), -1))
+}
+
+; 将 Git Smart HTTP advertisement 解析成 git ls-remote 风格文本。
+parse-advertisement = (body str) (out str) {
+    out = ''
+    pos = 0
+    n = body.len-bytes()
+    !! {
+        r-add-i(pos, 4) > n -> break
+        len-str = body.slice-bytes(pos, r-add-i(pos, 4))
+        pkt-len = httpclient.hc-parse-hex(len-str)
+        pkt-len < 4 -> break
+        end = r-add-i(pos, pkt-len)
+        end > n -> break
+        payload = strip-lf(body.slice-bytes(r-add-i(pos, 4), end))
+        pos = end
+        payload.len-bytes() == 0 -> continue
+        payload.starts-with('#') -> continue
+        {
+            payload.starts-with('ref: ') -> out = out - payload - '\n'
+
+            -> {
+                sp = payload.index(' ')
+                sp < 0 -> continue
+                sha = payload.slice-bytes(0, sp)
+                name = payload.slice-bytes(r-add-i(sp, 1), payload.len-bytes())
+                {
+                    is-hex-prefix(sha, sha.len-bytes()) && name.len-bytes() > 0 -> {
+                        out = out - sha - '\t' - name - '\n'
+                    }
+                }
+            }
+        }
+    }
+}
+
+; 读取远端 refs，返回 git ls-remote 风格 stdout。
+ls-remote = (url str) (out str, err str, ok bool) {
+    out = ''
+    err = ''
+    ok = false
+    base = url.trim()
+    base.ends-with('/') -> base = base.slice-bytes(0, r-add-i(base.len-bytes(), -1))
+    info-url = base - '/info/refs?service=git-upload-pack'
+    status, body, ferr, good = httpclient.fetch-accept(info-url, 'git/2.39.0', 'application/x-git-upload-pack-advertisement')
+    {
+        ! good || status != 200 -> {
+            err = 'Command failed: git ls-remote --symref ' - url - '\n' - ferr
+        }
+
+        -> {
+            out = parse-advertisement(body)
+            ok = true
+        }
+    }
+}
+
+; 解析 `git ls-remote --symref` 输出，等价于 Node 的 parseLsRemote。
+; names/shas 为以 '\n' 分隔的并行数组，包含 `refs/tags/x^{}` peeled 行；
+; default-branch 来自 `ref: refs/heads/<branch>\tHEAD`，没有则为空串。
+parse-ls-remote = (text str) (names str, shas str, count i64, default-branch str, ok bool) {
+    names = ''
+    shas = ''
+    count = 0
+    default-branch = ''
+    ok = true
+
+    sym-prefix = 'ref: refs/heads/'
+    lines = text.split('\n')
+    line <- lines: {
+        {
+            line.starts-with(sym-prefix) -> {
+                tab = line.find-byte-from('\t', 0)
+                {
+                    tab > 0 -> {
+                        tail = line.slice-bytes(tab + 1, line.len-bytes())
+                        {
+                            tail == 'HEAD' -> {
+                                branch = line.slice-bytes(sym-prefix.len-bytes(), tab)
+                                {
+                                    branch.len-bytes() > 0 -> default-branch = branch
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            -> {
+                l = line.len-bytes()
+                {
+                    l >= 41 -> {
+                        tab-ok = false
+                        b = line.byte(40)
+                        b: {
+                            ok -> tab-ok = it == 9
+
+                            -> _
+                        }
+                        {
+                            tab-ok -> {
+                                sha = line.slice-bytes(0, 40)
+                                {
+                                    is-hex-prefix(sha, 40) -> {
+                                        name = line.slice-bytes(41, l)
+                                        {
+                                            name.len-bytes() > 0 -> {
+                                                names = names - name - '\n'
+                                                shas = shas - sha - '\n'
+
+                                                #{overflow=wrap}
+                                                next-count = count + 1
+                                                next-count: {
+                                                    ok -> count = it
+
+                                                    -> _
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+; 组合入口：读取并解析远端 refs。
+list-remote-refs = (url str) (names str, shas str, count i64, default-branch str, err str, ok bool) {
+    names = ''
+    shas = ''
+    count = 0
+    default-branch = ''
+    err = ''
+    ok = false
+
+    raw, e, good = ls-remote(url)
+    {
+        good -> {
+            names, shas, count, default-branch, ok = parse-ls-remote(raw)
+        }
+
+        -> err = e
+    }
+}
