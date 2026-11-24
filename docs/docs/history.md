@@ -7,6 +7,12 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.38
+
+- build(ci): bump the pinned Nolang compiler to v0.4.32 in CI and all seven package manifests
+- feat(nogit): publish a platform-independent `nogit-ast.zip` with one gob entry per module for `no add nogit@github.com/lizongying/notools`
+- docs(release): document importing `# nogit/src/remote` and `# nogit/src/httpclient` from the AST package
+
 ## v0.1.36
 
 - fix(notools): reject zip-slip archive paths and cap single-entry size in unzip and tar

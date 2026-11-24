@@ -34,6 +34,21 @@ no build
 
 通过 [nohub](https://lizongying.github.io/nohub/) 包清单查看包信息、版本快照与源码入口：[nogit:latest](https://lizongying.github.io/nohub/?package=nogit:latest@github.com/lizongying/notools)
 
+### 方式四：作为 Nolang 依赖引入
+
+Release 同时发布与平台无关的预编 AST 包 `nogit-ast.zip`（需 Nolang v0.4.32+）：
+
+```bash
+no add nogit@github.com/lizongying/notools
+```
+
+之后可在源码中按模块导入远端引用读取等能力：
+
+```nolang
+# nogit/src/remote
+# nogit/src/httpclient
+```
+
 ## 命令列表
 
 | 命令 | 说明 | 示例 |
