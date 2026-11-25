@@ -16,7 +16,7 @@
 ; commented out; the parser special-cases them), so keyword lookup is exact-word
 ; only.
 ;
-; Scan state lives in module globals (_lx-*) so helpers mutate it in place —
+; Scan state lives in module globals (G-lx-*) so helpers mutate it in place —
 ; the same idiom value.no uses for its pool — avoiding multi-return plumbing.
 
 # /nojq/src/value
@@ -102,34 +102,39 @@ lex-state {
     toks []jq-token
     stack []i64
 }
-_lv lex-state
-_lx-pos i64
-_lx-line i64
-_lx-col i64
-_lx-sp i64
+G-lv lex-state
+G-lx-pos i64
+G-lx-line i64
+G-lx-col i64
+G-lx-sp i64
 
 lx-char = (off i64) (c i64) {
     c = -1
-    idx i64 = _lx-pos + off #{overflow=wrap}
+    #{overflow=wrap}
+    idx i64 = G-lx-pos + off: {
+        ok -> it
+
+        -> 0
+    }
     idx >= 0 -> {
-        idx < _lv.input.count() -> c = _lv.input[idx]
+        idx < G-lv.input.count() -> c = G-lv.input[idx]
     }
 }
 
 lx-not-eof = () (e bool) {
-    e = _lx-pos < _lv.input.count()
+    e = G-lx-pos < G-lv.input.count()
 }
 
 ; lx-bump: consume the current codepoint, advance pos/line/col.
 lx-bump = () {
-    c i64 = _lv.input[_lx-pos]
-    _lx-pos = _lx-pos + 1 #{overflow=wrap}
+    c i64 = G-lv.input[G-lx-pos]
+    G-lx-pos = G-lx-pos + 1 #{overflow=wrap}
     c == 10 -> {
-        _lx-line = _lx-line + 1 #{overflow=wrap}
-        _lx-col = 1
+        G-lx-line = G-lx-line + 1 #{overflow=wrap}
+        G-lx-col = 1
     }
     c != 10 -> {
-        _lx-col = _lx-col + 1: {
+        G-lx-col = G-lx-col + 1: {
             ok -> it
 
             -> _
@@ -142,29 +147,37 @@ lx-emit = (kind i64, text str, val i64) {
     t.kind = kind
     t.text = text
     t.val = val
-    t.line = _lx-line
-    t.col = _lx-col
-    _lv.toks.push(t)
-    _lv.toks.len() > LEXER-MAX-TOKENS -> _lv.err = 'too many tokens'
+    t.line = G-lx-line
+    t.col = G-lx-col
+    G-lv.toks.push(t)
+    G-lv.toks.len() > LEXER-MAX-TOKENS -> G-lv.err = 'too many tokens'
 }
 
 lx-push-state = (st i64) {
-    _lx-sp < LEXER-MAX-DEPTH -> {
-        _lv.stack[_lx-sp] = st
-        _lx-sp = _lx-sp + 1 #{overflow=wrap}
+    G-lx-sp < LEXER-MAX-DEPTH -> {
+        G-lv.stack[G-lx-sp] = st
+        G-lx-sp = G-lx-sp + 1 #{overflow=wrap}
     }
-    _lx-sp >= LEXER-MAX-DEPTH -> _lv.err = 'expression nesting too deep'
+    G-lx-sp >= LEXER-MAX-DEPTH -> G-lv.err = 'expression nesting too deep'
 }
 
 lx-pop-state = () {
-    _lx-sp > 0 -> {
-        _lx-sp = _lx-sp - 1 #{overflow=wrap}
+    G-lx-sp > 0 -> {
+        G-lx-sp = G-lx-sp - 1 #{overflow=wrap}
     }
 }
 
 lx-top-state = () (st i64) {
     st = LS-INITIAL
-    _lx-sp > 0 -> st = _lv.stack[_lx-sp - 1] #{overflow=wrap}
+    G-lx-sp > 0 -> {
+#{overflow=wrap}
+
+        st = G-lv.stack[G-lx-sp - 1]: {
+            ok -> it
+
+            -> 0
+        }
+    }
 }
 
 ; ── character classes ─────────────────────────
@@ -212,7 +225,7 @@ lex-keyword = (w str) (kind i64) {
 
 ; lx-skip-to: advance global pos up to index e (updating line/col).
 lx-skip-to = (e i64) {
-    (_lx-pos < e && lx-not-eof()) {
+    (G-lx-pos < e && lx-not-eof()) {
         lx-bump()
     }
 }
@@ -221,7 +234,7 @@ lx-skip-to = (e i64) {
 lx-read-one-word = () (w str) {
     w = ''
     (lx-not-eof() && lex-alnum(lx-char(0))) {
-        c i64 = _lv.input[_lx-pos]
+        c i64 = G-lv.input[G-lx-pos]
         cd char = c
         w = w - cd.to-str()
         lx-bump()
@@ -269,20 +282,20 @@ lx-read-format = () {
     lx-bump()
     w = ''
     (lx-not-eof() && lex-alnum(lx-char(0))) {
-        c i64 = _lv.input[_lx-pos]
+        c i64 = G-lv.input[G-lx-pos]
         cd char = c
         w = w - cd.to-str()
         lx-bump()
     }
-    w.empty() -> _lv.err = 'invalid format directive'
+    w.empty() -> G-lv.err = 'invalid format directive'
     ! w.empty() -> lx-emit(TQ-FORMAT, w, -1)
 }
 
 ; lx-read-number: scan a numeric literal at pos and emit LITERAL.
 lx-read-number = () {
-    n i64 = _lv.input.count()
-    e i64 = _lx-pos
-    first i64 = _lv.input[e]
+    n i64 = G-lv.input.count()
+    e i64 = G-lx-pos
+    first i64 = G-lv.input[e]
     first == 46 -> {
         e = e + 1: {
             ok -> it
@@ -290,31 +303,31 @@ lx-read-number = () {
             -> _
         } #{overflow=wrap}
         ms i64 = e
-        (e < n && lex-digit(_lv.input[e])) {
+        (e < n && lex-digit(G-lv.input[e])) {
             e = e + 1: {
                 ok -> it
 
                 -> _
             } #{overflow=wrap}
         }
-        e == ms -> _lv.err = 'invalid numeric literal'
+        e == ms -> G-lv.err = 'invalid numeric literal'
     }
     first != 46 -> {
-        (e < n && lex-digit(_lv.input[e])) {
+        (e < n && lex-digit(G-lv.input[e])) {
             e = e + 1: {
                 ok -> it
 
                 -> _
             } #{overflow=wrap}
         }
-        f bool = e < n && _lv.input[e] == 46
+        f bool = e < n && G-lv.input[e] == 46
         f -> {
             e = e + 1: {
                 ok -> it
 
                 -> _
             } #{overflow=wrap}
-            (e < n && lex-digit(_lv.input[e])) {
+            (e < n && lex-digit(G-lv.input[e])) {
                 e = e + 1: {
                     ok -> it
 
@@ -323,8 +336,8 @@ lx-read-number = () {
             }
         }
     }
-    _lv.err.empty() -> {
-        ex bool = e < n && (_lv.input[e] == 101 || _lv.input[e] == 69)
+    G-lv.err.empty() -> {
+        ex bool = e < n && (G-lv.input[e] == 101 || G-lv.input[e] == 69)
         ex -> {
             se i64 = e
             ee i64 = e
@@ -333,7 +346,7 @@ lx-read-number = () {
 
                 -> _
             } #{overflow=wrap}
-            sgn bool = ee < n && (_lv.input[ee] == 43 || _lv.input[ee] == 45)
+            sgn bool = ee < n && (G-lv.input[ee] == 43 || G-lv.input[ee] == 45)
             sgn -> {
                 ee = ee + 1: {
                     ok -> it
@@ -342,7 +355,7 @@ lx-read-number = () {
                 } #{overflow=wrap}
             }
             dse i64 = ee
-            (ee < n && lex-digit(_lv.input[ee])) {
+            (ee < n && lex-digit(G-lv.input[ee])) {
                 ee = ee + 1: {
                     ok -> it
 
@@ -353,8 +366,8 @@ lx-read-number = () {
             ee == dse -> e = se
         }
     }
-    _lv.err.empty() -> {
-        src str = _lv.input
+    G-lv.err.empty() -> {
+        src str = G-lv.input
         last i64 = 0
         last-opt = e - 1 #{overflow=wrap}
         last-opt: {
@@ -366,7 +379,7 @@ lx-read-number = () {
                 last = 0
             }
         }
-        text str = src[_lx-pos..last]
+        text str = src[G-lx-pos..last]
         v = jv-parse(text)
         val i64 = -1
         bad bool = false
@@ -377,7 +390,7 @@ lx-read-number = () {
 
             nil -> bad = true
         }
-        bad -> _lv.err = 'invalid numeric literal'
+        bad -> G-lv.err = 'invalid numeric literal'
         ! bad -> {
             lx-skip-to(e)
             lx-emit(TQ-LITERAL, text, val)
@@ -391,7 +404,7 @@ lx-handle-comment = () {
     lx-bump()
     keep = true
     (lx-not-eof() && keep) {
-        c i64 = _lv.input[_lx-pos]
+        c i64 = G-lv.input[G-lx-pos]
         c == 10 -> keep = false
         c != 10 && c == 92 && (lx-char(1) == 10 || (lx-char(1) == 13 && lx-char(2) == 10)) -> {
             lx-bump()
@@ -400,7 +413,7 @@ lx-handle-comment = () {
         }
         c != 10 && ! (c == 92 && (lx-char(1) == 10 || (lx-char(1) == 13 && lx-char(2) == 10))) -> lx-bump()
     }
-    lx-not-eof() && _lv.input[_lx-pos] == 10 -> lx-bump()
+    lx-not-eof() && G-lv.input[G-lx-pos] == 10 -> lx-bump()
 }
 
 ; lx-handle-closer: validate `]`/`}`/`)` against the current state.
@@ -429,11 +442,11 @@ lx-handle-closer = (c i64) {
     }
     ! done && ! c == 41 -> {
         lx-emit(TQ-INVALID, '?', -1)
-        _lv.err = 'syntax error'
+        G-lv.err = 'syntax error'
     }
     ! done && c == 41 -> {
         lx-emit(TQ-INVALID, ')', -1)
-        _lv.err = 'syntax error'
+        G-lv.err = 'syntax error'
     }
     done -> lx-bump()
 }
@@ -468,10 +481,10 @@ lx-dot = () {
 ; still-escaped), stopping before a `"` or a `\(`. Decoded via the JSON parser.
 lx-string-run = () {
     raw = ''
-    src str = _lv.input
+    src str = G-lv.input
     cont = true
     (lx-not-eof() && cont) {
-        c i64 = _lv.input[_lx-pos]
+        c i64 = G-lv.input[G-lx-pos]
         c == 34 -> cont = false
         c == 92 && lx-char(1) == 40 -> cont = false
         cont && c != 34 && ! (c == 92 && lx-char(1) == 40) -> {
@@ -479,13 +492,13 @@ lx-string-run = () {
                 bs char = 92
                 raw = raw - bs.to-str()
                 lx-bump()
-                c2 i64 = _lv.input[_lx-pos]
-                raw = raw - src[_lx-pos.._lx-pos]
+                c2 i64 = G-lv.input[G-lx-pos]
+                raw = raw - src[G-lx-pos..G-lx-pos]
                 lx-bump()
                 c2 == 117 -> {
                     hx i64 = 0
                     (hx < 4 && lx-not-eof() && lex-hex(lx-char(0))) {
-                        raw = raw - src[_lx-pos.._lx-pos]
+                        raw = raw - src[G-lx-pos..G-lx-pos]
                         lx-bump()
                         hx = hx + 1: {
                             ok -> it
@@ -496,7 +509,7 @@ lx-string-run = () {
                 }
             }
             c != 92 -> {
-                raw = raw - src[_lx-pos.._lx-pos]
+                raw = raw - src[G-lx-pos..G-lx-pos]
                 lx-bump()
             }
         }
@@ -512,7 +525,7 @@ lx-string-run = () {
 
         nil -> bad = true
     }
-    bad -> _lv.err = 'invalid string escape'
+    bad -> G-lv.err = 'invalid string escape'
     ! bad -> lx-emit(TQ-QQTEXT, raw, val)
 }
 
@@ -521,7 +534,7 @@ lx-string-run = () {
 ; has consumed input and advanced pos, a later guard that re-reads lookahead
 ; could fire spuriously. A `matched` latch makes the three cases exclusive.
 lx-qstring = () {
-    c i64 = _lv.input[_lx-pos]
+    c i64 = G-lv.input[G-lx-pos]
     matched = false
     c == 34 -> {
         lx-bump()
@@ -542,7 +555,7 @@ lx-qstring = () {
 ; lx-normal: the ordinary (non-string-body) token rules, with lookahead captured
 ; once so a consumed token cannot re-trigger a later guard on the same char.
 lx-normal = () {
-    c i64 = _lv.input[_lx-pos]
+    c i64 = G-lv.input[G-lx-pos]
     p1 = lx-char(1)
     p2 = lx-char(2)
     eq = p1 == 61
@@ -573,7 +586,7 @@ lx-normal = () {
     }
     c == 33 && ! eq -> {
         lx-emit(TQ-INVALID, '!', -1)
-        _lv.err = 'syntax error'
+        G-lv.err = 'syntax error'
     }
     c == 61 && eq -> {
         lx-emit(TQ-EQ, '==', -1)
@@ -648,35 +661,35 @@ lx-normal = () {
 
     ! handled -> {
         lx-emit(TQ-INVALID, '?', -1)
-        _lv.err = 'invalid character'
+        G-lv.err = 'invalid character'
     }
 }
 
 ; jq-lex: tokenize a jq program. Returns the token vector and an error string
 ; ('' on success). The token stream always ends with a TQ-EOF token.
 jq-lex = (input str) (toks []jq-token, err str) {
-    _lv.input = input
-    _lx-pos = 0
-    _lx-line = 1
-    _lx-col = 1
+    G-lv.input = input
+    G-lx-pos = 0
+    G-lx-line = 1
+    G-lx-col = 1
     tt []jq-token = with-len(0)
-    _lv.toks = tt
+    G-lv.toks = tt
     ts []i64 = with-len(LEXER-MAX-DEPTH)
-    _lv.stack = ts
-    _lx-sp = 0
-    _lv.err = ''
+    G-lv.stack = ts
+    G-lx-sp = 0
+    G-lv.err = ''
     lx-push-state(LS-INITIAL)
-    (lx-not-eof() && _lv.err.empty()) {
+    (lx-not-eof() && G-lv.err.empty()) {
         top i64 = lx-top-state()
         top == LS-QQSTRING -> lx-qstring()
         top != LS-QQSTRING -> lx-normal()
     }
-    _lv.err.empty() -> {
+    G-lv.err.empty() -> {
         ls i64 = lx-top-state()
         ls != LS-INITIAL && ls != LS-QQINTERP -> {}
-        ls == LS-QQSTRING -> _lv.err = 'unterminated string'
+        ls == LS-QQSTRING -> G-lv.err = 'unterminated string'
     }
     lx-emit(TQ-EOF, '', -1)
-    toks = _lv.toks
-    err = _lv.err
+    toks = G-lv.toks
+    err = G-lv.err
 }

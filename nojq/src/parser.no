@@ -15,7 +15,7 @@
 ; bindings (binder forms reduce / foreach / label / break / module /
 ; import / include are still rejected with a clear "not yet" error).
 ;
-; AST lives in a struct global (_ap) as parallel vecs (struct-of-arrays);
+; AST lives in a struct global (G-ap) as parallel vecs (struct-of-arrays);
 ; mutation of a struct-field vec persists (see lexer.no header note). Child
 ; slots: left/right/c1/c2/c3. Variable-length lists (object entries, call
 ; args, string parts) are A-CONS chains {head=left, tail=right}.
@@ -109,8 +109,8 @@ parse-state {
     bms []i64
     prelen i64
 }
-_ps parse-state
-_p i64
+G-ps parse-state
+G-p i64
 
 ; ── AST pool (parallel vecs) ──────────────────
 ast-pool {
@@ -126,83 +126,83 @@ ast-pool {
     nline []i64
     ncol []i64
 }
-_ap ast-pool
+G-ap ast-pool
 
 ap-reset = () {
-    _ps.err = ''
-    _p = 0
+    G-ps.err = ''
+    G-p = 0
     k []i64 = with-len(0)
-    _ap.kind = k
+    G-ap.kind = k
     o []i64 = with-len(0)
-    _ap.op = o
+    G-ap.op = o
     l []i64 = with-len(0)
-    _ap.left = l
+    G-ap.left = l
     r []i64 = with-len(0)
-    _ap.right = r
+    G-ap.right = r
     c []i64 = with-len(0)
-    _ap.c1 = c
+    G-ap.c1 = c
     d []i64 = with-len(0)
-    _ap.c2 = d
+    G-ap.c2 = d
     e []i64 = with-len(0)
-    _ap.c3 = e
+    G-ap.c3 = e
     t []str = with-len(0)
-    _ap.text = t
+    G-ap.text = t
     v []i64 = with-len(0)
-    _ap.val = v
+    G-ap.val = v
     nl []i64 = with-len(0)
-    _ap.nline = nl
+    G-ap.nline = nl
     nc []i64 = with-len(0)
-    _ap.ncol = nc
+    G-ap.ncol = nc
     dn []str = with-len(0)
-    _defs.name = dn
+    G-defs.name = dn
     da []i64 = with-len(0)
-    _defs.arity = da
+    G-defs.arity = da
     dps []str = with-len(0)
-    _defs.params = dps
+    G-defs.params = dps
     ds []i64 = with-len(0)
-    _defscope.items = ds
+    G-defscope.items = ds
     dv []i64 = with-len(0)
-    _defs.paramval = dv
+    G-defs.paramval = dv
     mn []i64 = with-len(0)
-    _defs.pmnline = mn
+    G-defs.pmnline = mn
     mc0 []i64 = with-len(0)
-    _defs.pmncol = mc0
+    G-defs.pmncol = mc0
     dp []i64 = with-len(0)
-    _defs.pstart = dp
+    G-defs.pstart = dp
     dq []i64 = with-len(0)
-    _defs.pcount = dq
+    G-defs.pcount = dq
     db []i64 = with-len(0)
-    _defs.body = db
+    G-defs.body = db
     lb []str = with-len(0)
-    _ps.labels = lb
+    G-ps.labels = lb
     li []i64 = with-len(0)
-    _ps.lblid = li
-    _ps.lblctr = 0
+    G-ps.lblid = li
+    G-ps.lblctr = 0
     bs []i64 = with-len(0)
-    _ps.bms = bs
-    _ps.srcname = '<top-level>'
+    G-ps.bms = bs
+    G-ps.srcname = '<top-level>'
 }
 
 ; mk: append a fresh node of the given kind, default children to -1.
 mk = (kind i64) (idx i64) {
-    idx = _ap.kind.len()
-    _ap.kind.push(kind)
-    _ap.op.push(0)
-    _ap.left.push(-1)
-    _ap.right.push(-1)
-    _ap.c1.push(-1)
-    _ap.c2.push(-1)
-    _ap.c3.push(-1)
-    _ap.text.push('')
-    _ap.val.push(-1)
-    _ap.nline.push(0)
-    _ap.ncol.push(0)
+    idx = G-ap.kind.len()
+    G-ap.kind.push(kind)
+    G-ap.op.push(0)
+    G-ap.left.push(-1)
+    G-ap.right.push(-1)
+    G-ap.c1.push(-1)
+    G-ap.c2.push(-1)
+    G-ap.c3.push(-1)
+    G-ap.text.push('')
+    G-ap.val.push(-1)
+    G-ap.nline.push(0)
+    G-ap.ncol.push(0)
 }
 
 ; node accessors (bounds-safe reads into the pool; index-out defaults apply
 ; so out-of-range reads never surface an unhandled option).
 nkind = (i i64) (k i64) {
-    k = _ap.kind[i]: {
+    k = G-ap.kind[i]: {
         ok -> it
 
         -> 0
@@ -210,7 +210,7 @@ nkind = (i i64) (k i64) {
 }
 
 nop = (i i64) (k i64) {
-    k = _ap.op[i]: {
+    k = G-ap.op[i]: {
         ok -> it
 
         -> 0
@@ -218,7 +218,7 @@ nop = (i i64) (k i64) {
 }
 
 ax-c2 = (i i64) (k i64) {
-    k = _ap.c2[i]: {
+    k = G-ap.c2[i]: {
         ok -> it
 
         -> 0
@@ -227,49 +227,54 @@ ax-c2 = (i i64) (k i64) {
 
 ; ── token cursor helpers ──────────────────────
 p-eof = () (e bool) {
-    e = _p >= _ps.toks.len()
-    ! e -> e = _ps.toks[_p].kind == TQ-EOF
+    e = G-p >= G-ps.toks.len()
+    ! e -> e = G-ps.toks[G-p].kind == TQ-EOF
 }
 
 p-kind = () (k i64) {
     k = TQ-EOF
-    ! p-eof() -> k = _ps.toks[_p].kind
+    ! p-eof() -> k = G-ps.toks[G-p].kind
 }
 
 p-peek = (off i64) (k i64) {
     k = TQ-EOF
-    i i64 = _p + off #{overflow=wrap}
+    #{overflow=wrap}
+    i i64 = G-p + off: {
+        ok -> it
+
+        -> 0
+    }
     i >= 0 -> {
-        i < _ps.toks.len() -> k = _ps.toks[i].kind
+        i < G-ps.toks.len() -> k = G-ps.toks[i].kind
     }
 }
 
 p-text = () (s str) {
     s = ''
-    ! p-eof() -> s = _ps.toks[_p].text
+    ! p-eof() -> s = G-ps.toks[G-p].text
 }
 
 p-val = () (v i64) {
     v = -1
-    ! p-eof() -> v = _ps.toks[_p].val
+    ! p-eof() -> v = G-ps.toks[G-p].val
 }
 
 p-line = () (l i64) {
     l = 1
-    ! p-eof() -> l = _ps.toks[_p].line
+    ! p-eof() -> l = G-ps.toks[G-p].line
 }
 
 p-col = () (c i64) {
     c = 1
-    ! p-eof() -> c = _ps.toks[_p].col
+    ! p-eof() -> c = G-ps.toks[G-p].col
 }
 
 p-advance = () {
-    _p = _p + 1 #{overflow=wrap}
+    G-p = G-p + 1 #{overflow=wrap}
 }
 
 p-error = (msg str) {
-    _ps.err.empty() -> _ps.err = msg
+    G-ps.err.empty() -> G-ps.err = msg
 }
 
 p-eat = (want i64) (ok bool) {
@@ -297,8 +302,8 @@ cons-from = (items []i64) (idx i64) {
             -> 0
         }
         c i64 = mk(A-CONS)
-        _ap.left[c] = head
-        _ap.right[c] = tail
+        G-ap.left[c] = head
+        G-ap.right[c] = tail
         tail = c
         i = i - 1 #{overflow=wrap}
     }
@@ -306,25 +311,25 @@ cons-from = (items []i64) (idx i64) {
 }
 
 ; ── operator table (scratch; Nolang guards are sequential) ──
-_bi-bp i64
-_bi-assoc i64
-_bi-opkind i64
-_bi-op i64
+G-bi-bp i64
+G-bi-assoc i64
+G-bi-opkind i64
+G-bi-op i64
 
-; _dictmode: true while parsing a dictionary (object) VALUE.
+; G-dictmode: true while parsing a dictionary (object) VALUE.
 ; jq has TWO subgrammars: a full Query lets `|` bind looser than `,`
 ; (so `a, b | c` == `a, (b|c)`), but a DictExpr value EXCLUDES top-level
 ; comma while still allowing `|`. Precedence climbing can't express that
 ; with bp alone, so we force comma to bp 0 (non-binding) inside dictmode.
 ; Nested (...) / [..] / \(..) go through parse-query, which lifts the guard.
-_dictmode bool
+G-dictmode bool
 
 ; ── function definitions (def) ────────────────
-; Defs live in a parallel pool (_defs); the parser keeps a scope stack
-; (_defscope) and resolves every A-CALL to its def record at parse time,
+; Defs live in a parallel pool (G-defs); the parser keeps a scope stack
+; (G-defscope) and resolves every A-CALL to its def record at parse time,
 ; storing the record index in the node's c1 field (-1 = not user-defined,
 ; fall back to builtins at eval). Parameter names are flattened into
-; _defparams/_defparamval (val=1 for $value params, 0 for filter params).
+; G-defparams/G-defparamval (val=1 for $value params, 0 for filter params).
 def-entry {
     name []str
     arity []i64
@@ -336,60 +341,60 @@ def-entry {
     pmnline []i64
     pmncol []i64
 }
-_defs def-entry
+G-defs def-entry
 
 ; def-scope: parse-time stack of visible def record indices.
 def-scope {
     items []i64
 }
-_defscope def-scope
+G-defscope def-scope
 
 new-def = (name str, params []str, vals []i64, mline []i64, mcol []i64) (di i64) {
-    di = _defs.name.len()
-    _defs.name.push(name)
-    _defs.arity.push(params.len())
-    _defs.pstart.push(_defs.params.len())
-    _defs.pcount.push(params.len())
-    _defs.body.push(-1)
+    di = G-defs.name.len()
+    G-defs.name.push(name)
+    G-defs.arity.push(params.len())
+    G-defs.pstart.push(G-defs.params.len())
+    G-defs.pcount.push(params.len())
+    G-defs.body.push(-1)
     i <- [0..params.len()): {
         pv str = params[i]: {
             ok -> it
 
             -> ''
         }
-        _defs.params.push(pv)
+        G-defs.params.push(pv)
         vv i64 = vals[i]: {
             ok -> it
 
             -> 0
         }
-        _defs.paramval.push(vv)
+        G-defs.paramval.push(vv)
         ml i64 = mline[i]: {
             ok -> it
 
             -> 0
         }
-        _defs.pmnline.push(ml)
+        G-defs.pmnline.push(ml)
         mc i64 = mcol[i]: {
             ok -> it
 
             -> 0
         }
-        _defs.pmncol.push(mc)
+        G-defs.pmncol.push(mc)
     }
 }
 
 ; def-lookup: innermost scope match on name+arity (later defs shadow earlier).
 def-lookup = (name str, argc i64) (di i64) {
     di = -1
-    i i64 = _defscope.items.len() - 1 #{overflow=wrap}
+    i i64 = G-defscope.items.len() - 1 #{overflow=wrap}
     (di < 0 && i >= 0) {
-        d i64 = _defscope.items[i]: {
+        d i64 = G-defscope.items[i]: {
             ok -> it
 
             -> 0
         }
-        _defs.name[d] == name && _defs.arity[d] == argc -> di = d
+        G-defs.name[d] == name && G-defs.arity[d] == argc -> di = d
         i = i - 1: {
             ok -> it
 
@@ -415,196 +420,216 @@ count-cons = (n i64) (c i64) {
 
 def-params = (di i64) (names []str) {
     names = with-len(0)
-    st i64 = _defs.pstart[di]
-    n i64 = _defs.pcount[di]
+    st i64 = G-defs.pstart[di]: {
+        ok -> it
+
+        -> 0
+    }
+    n i64 = G-defs.pcount[di]: {
+        ok -> it
+
+        -> 0
+    }
     i <- [0..n): {
-        names.push(_defs.params[st + i]) #{overflow=wrap}
+        names.push(G-defs.params[st + i]) #{overflow=wrap}
     }
 }
 
 def-paramval = (di i64) (vals []i64) {
     vals = with-len(0)
-    st i64 = _defs.pstart[di]
-    n i64 = _defs.pcount[di]
+    st i64 = G-defs.pstart[di]: {
+        ok -> it
+
+        -> 0
+    }
+    n i64 = G-defs.pcount[di]: {
+        ok -> it
+
+        -> 0
+    }
     i <- [0..n): {
-        vals.push(_defs.paramval[st + i]) #{overflow=wrap}
+        vals.push(G-defs.paramval[st + i]) #{overflow=wrap}
     }
 }
 
 def-body = (di i64) (b i64) {
-    b = _defs.body[di]
+    b = G-defs.body[di]: {
+        ok -> it
+
+        -> 0
+    }
 }
 
 bi-run = (k i64) {
-    _bi-bp = 0
-    _bi-assoc = 0
-    _bi-opkind = 0
-    _bi-op = 0
+    G-bi-bp = 0
+    G-bi-assoc = 0
+    G-bi-opkind = 0
+    G-bi-op = 0
 
     ; '|' (pipe) — bp 1, right assoc
     k == 124 -> {
-        _bi-bp = 1
-        _bi-assoc = 1
+        G-bi-bp = 1
+        G-bi-assoc = 1
     }
 
     ; ',' (comma) — bp 3, left assoc
     k == 44 -> {
-        _bi-bp = 3
-        _bi-assoc = 0
+        G-bi-bp = 3
+        G-bi-assoc = 0
     }
 
     ; '//' (defined-or) — bp 5, right assoc
     k == TQ-DEFINEDOR -> {
-        _bi-bp = 5
-        _bi-assoc = 1
-        _bi-opkind = 3
+        G-bi-bp = 5
+        G-bi-assoc = 1
+        G-bi-opkind = 3
     }
 
     ; assignments — bp 7, right assoc
     k == 61 -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-ASSIGN
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-ASSIGN
     }
     k == TQ-SETPIPE -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-PIPE
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-PIPE
     }
     k == TQ-SETPLUS -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-PLUS
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-PLUS
     }
     k == TQ-SETMINUS -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-MINUS
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-MINUS
     }
     k == TQ-SETMULT -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-MUL
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-MUL
     }
     k == TQ-SETDIV -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-DIV
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-DIV
     }
     k == TQ-SETMOD -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-MOD
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-MOD
     }
     k == TQ-SETDEFINEDOR -> {
-        _bi-bp = 7
-        _bi-assoc = 1
-        _bi-opkind = 4
-        _bi-op = ASG-DEFOR
+        G-bi-bp = 7
+        G-bi-assoc = 1
+        G-bi-opkind = 4
+        G-bi-op = ASG-DEFOR
     }
 
     ; 'or' — bp 9, 'and' — bp 11
     k == TQ-OR -> {
-        _bi-bp = 9
-        _bi-assoc = 0
-        _bi-opkind = 2
-        _bi-op = 0
+        G-bi-bp = 9
+        G-bi-assoc = 0
+        G-bi-opkind = 2
+        G-bi-op = 0
     }
     k == TQ-AND -> {
-        _bi-bp = 11
-        _bi-assoc = 0
-        _bi-opkind = 2
-        _bi-op = 1
+        G-bi-bp = 11
+        G-bi-assoc = 0
+        G-bi-opkind = 2
+        G-bi-op = 1
     }
 
     ; comparisons — bp 13, nonassoc (treated left)
     k == TQ-EQ -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-EQ
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-EQ
     }
     k == TQ-NEQ -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-NEQ
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-NEQ
     }
     k == 60 -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-LT
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-LT
     }
     k == 62 -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-GT
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-GT
     }
     k == TQ-LESSEQ -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-LE
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-LE
     }
     k == TQ-GREATEREQ -> {
-        _bi-bp = 13
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-GE
+        G-bi-bp = 13
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-GE
     }
 
     ; additive + - — bp 15, left assoc
     k == 43 -> {
-        _bi-bp = 15
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-PLUS
+        G-bi-bp = 15
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-PLUS
     }
     k == 45 -> {
-        _bi-bp = 15
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-MINUS
+        G-bi-bp = 15
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-MINUS
     }
 
     ; multiplicative * / % — bp 17, left assoc
     k == 42 -> {
-        _bi-bp = 17
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-MUL
+        G-bi-bp = 17
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-MUL
     }
     k == 47 -> {
-        _bi-bp = 17
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-DIV
+        G-bi-bp = 17
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-DIV
     }
     k == 37 -> {
-        _bi-bp = 17
-        _bi-assoc = 0
-        _bi-opkind = 1
-        _bi-op = BIN-MOD
+        G-bi-bp = 17
+        G-bi-assoc = 0
+        G-bi-opkind = 1
+        G-bi-op = BIN-MOD
     }
 }
 
 ; ── grammar ───────────────────────────────────
 parse-query = () (node i64) {
-    saved bool = _dictmode
-    _dictmode = false
+    saved bool = G-dictmode
+    G-dictmode = false
     bms-push(0)
     node = parse-expr(1)
     bms-pop()
-    _dictmode = saved
+    G-dictmode = saved
 }
 
 parse-expr = (minbp i64) (node i64) {
@@ -615,20 +640,20 @@ parse-expr = (minbp i64) (node i64) {
     ; inside a reduce/foreach stream, a trailing `as` belongs to the binder:
     ; suppress the Term-level binding wherever that stream's parse recurses
     cont = true
-    (cont && _ps.err.empty() && ! p-eof()) {
+    (cont && G-ps.err.empty() && ! p-eof()) {
         k i64 = p-kind()
         bi-run(k)
-        _dictmode && k == 44 -> _bi-bp = 0
-        too-low bool = _bi-bp == 0 || _bi-bp < minbp
+        G-dictmode && k == 44 -> G-bi-bp = 0
+        too-low bool = G-bi-bp == 0 || G-bi-bp < minbp
         too-low -> cont = false
         ! too-low -> {
 
             ; capture the operator now: the recursive parse-expr below calls
-            ; bi-run itself and would clobber the _bi-* scratch globals.
-            opkind i64 = _bi-opkind
-            op i64 = _bi-op
+            ; bi-run itself and would clobber the G-bi-* scratch globals.
+            opkind i64 = G-bi-opkind
+            op i64 = G-bi-op
             next-min i64 = 0
-            next-min-opt = _bi-bp + 1 #{overflow=wrap}
+            next-min-opt = G-bi-bp + 1 #{overflow=wrap}
             next-min-opt: {
                 ok -> {
                     next-min = it
@@ -638,7 +663,7 @@ parse-expr = (minbp i64) (node i64) {
                     next-min = 0
                 }
             }
-            _bi-assoc == 1 -> next-min = _bi-bp
+            G-bi-assoc == 1 -> next-min = G-bi-bp
             p-advance()
             rhs i64 = parse-expr(next-min)
             node = combine(opkind, op, k, node, rhs)
@@ -650,40 +675,40 @@ combine = (opkind i64, op i64, k i64, a i64, b i64) (node i64) {
     node = a
     k == 124 -> {
         node = mk(A-PIPE)
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     k == 44 -> {
         node = mk(A-COMMA)
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     opkind == 3 -> {
         node = mk(A-DEFOR)
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     opkind == 4 -> {
         node = mk(A-ASSIGN)
-        _ap.op[node] = op
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.op[node] = op
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     opkind == 2 && op == 0 -> {
         node = mk(A-OR)
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     opkind == 2 && op == 1 -> {
         node = mk(A-AND)
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
     opkind == 1 -> {
         node = mk(A-BINOP)
-        _ap.op[node] = op
-        _ap.left[node] = a
-        _ap.right[node] = b
+        G-ap.op[node] = op
+        G-ap.left[node] = a
+        G-ap.right[node] = b
     }
 }
 
@@ -715,33 +740,33 @@ parse-binder-exp = () (node i64) {
     vl = 1
     vc = 0
     ka = p-kind()
-    _ps.err.empty() && ka == TQ-BINDING -> {
+    G-ps.err.empty() && ka == TQ-BINDING -> {
         vname = p-text()
         vl = p-line()
         vc = p-col() - vname.count() - 1 #{overflow=wrap}
         p-advance()
     }
-    _ps.err.empty() && ka != TQ-BINDING -> p-error('only $name patterns supported')
-    _ps.err.empty() && p-expect(40, 'expected (') -> {
+    G-ps.err.empty() && ka != TQ-BINDING -> p-error('only $name patterns supported')
+    G-ps.err.empty() && p-expect(40, 'expected (') -> {
         bms-push(0)
         init i64 = parse-expr(0)
         upd i64 = -1
-        _ps.err.empty() && p-expect(59, 'expected ;') -> upd = parse-expr(0)
+        G-ps.err.empty() && p-expect(59, 'expected ;') -> upd = parse-expr(0)
         ex i64 = -1
-        _ps.err.empty() && isfc && p-kind() == 59 -> {
+        G-ps.err.empty() && isfc && p-kind() == 59 -> {
             p-advance()
             ex = parse-expr(0)
         }
-        _ps.err.empty() && p-expect(41, 'expected )') -> {
+        G-ps.err.empty() && p-expect(41, 'expected )') -> {
             node = mk(A-FOREACH)
             isfc == false -> node = mk(A-REDUCE)
-            _ap.left[node] = e
-            _ap.right[node] = init
-            _ap.c1[node] = upd
-            _ap.c2[node] = ex
-            _ap.text[node] = vname
-            _ap.nline[node] = vl
-            _ap.ncol[node] = vc
+            G-ap.left[node] = e
+            G-ap.right[node] = init
+            G-ap.c1[node] = upd
+            G-ap.c2[node] = ex
+            G-ap.text[node] = vname
+            G-ap.nline[node] = vl
+            G-ap.ncol[node] = vc
 
             ; '.' inside update/extract denotes the fold state, not the
             ; outer input: rewrite those subtrees' identity nodes to A-STATE.
@@ -760,7 +785,7 @@ parse-binder-exp = () (node i64) {
 mark-state-nodes = (node i64) {
     node < 0 -> return
     k = ax-kind(node)
-    k == A-IDENTITY -> _ap.kind[node] = A-STATE
+    k == A-IDENTITY -> G-ap.kind[node] = A-STATE
     k == A-AS -> {
         mark-state-nodes(ax-right(node))
         return
@@ -784,26 +809,26 @@ mark-state-nodes = (node i64) {
 ; instead of vec.remove — the toolchain's remove lowering emits invalid LLVM —
 ; and in a standalone function to dodge the while/guard cascade false-error bug.
 pop-label = () {
-    n i64 = _ps.labels.len()
+    n i64 = G-ps.labels.len()
     n == 0 -> return
     kept []str = with-len(0)
     keepi []i64 = with-len(0)
     i <- [0..n - 1): {
-        lv str = _ps.labels[i]: {
+        lv str = G-ps.labels[i]: {
             ok -> it
 
             -> ''
         }
         kept.push(lv)
-        li i64 = _ps.lblid[i]: {
+        li i64 = G-ps.lblid[i]: {
             ok -> it
 
             -> 0
         }
         keepi.push(li)
     }
-    _ps.labels = kept
-    _ps.lblid = keepi
+    G-ps.labels = kept
+    G-ps.lblid = keepi
 }
 
 ; ── term-`as` suppression stack ───────────────
@@ -816,27 +841,27 @@ pop-label = () {
 ; the struct-global-local read-back aliasing bug (a captured `save` local
 ; would reflect mutations made by the recursive descent).
 bms-push = (v i64) {
-    _ps.bms.push(v)
+    G-ps.bms.push(v)
 }
 
 bms-pop = () {
-    n i64 = _ps.bms.len()
+    n i64 = G-ps.bms.len()
     n == 0 -> return
     kept []i64 = with-len(0)
     i <- [0..n - 1): {
-        bv i64 = _ps.bms[i]: {
+        bv i64 = G-ps.bms[i]: {
             ok -> it
 
             -> 0
         }
         kept.push(bv)
     }
-    _ps.bms = kept
+    G-ps.bms = kept
 }
 
 bm-top = () (v i64) {
     v = 0
-    n i64 = _ps.bms.len()
+    n i64 = G-ps.bms.len()
     n > 0 -> {
         ln i64 = 0
         ln-opt = n - 1 #{overflow=wrap}
@@ -849,7 +874,7 @@ bm-top = () (v i64) {
                 ln = 0
             }
         }
-        v = _ps.bms[ln]: {
+        v = G-ps.bms[ln]: {
             ok -> it
 
             -> 0
@@ -862,8 +887,8 @@ bm-top = () (v i64) {
 ; matching jq's grammar rule `Exp: Term "as" PATS '|' Exp`.
 parse-term = () (node i64) {
     node = parse-primary()
-    node >= 0 && _ps.err.empty() -> node = parse-postfix(node)
-    node >= 0 && _ps.err.empty() && p-kind() == TQ-AS && bm-top() == 0 -> {
+    node >= 0 && G-ps.err.empty() -> node = parse-postfix(node)
+    node >= 0 && G-ps.err.empty() && p-kind() == TQ-AS && bm-top() == 0 -> {
         p-advance()
         ka i64 = p-kind()
         ka == TQ-BINDING -> {
@@ -874,11 +899,11 @@ parse-term = () (node i64) {
             p-expect(124, 'expected |')
             rhs i64 = parse-expr(1)
             n i64 = mk(A-AS)
-            _ap.left[n] = node
-            _ap.right[n] = rhs
-            _ap.text[n] = vname
-            _ap.nline[n] = al
-            _ap.ncol[n] = ac
+            G-ap.left[n] = node
+            G-ap.right[n] = rhs
+            G-ap.text[n] = vname
+            G-ap.nline[n] = al
+            G-ap.ncol[n] = ac
             node = n
         }
         ka != TQ-BINDING -> p-error('only $name patterns supported')
@@ -888,24 +913,24 @@ parse-term = () (node i64) {
 parse-postfix = (node i64) (cur i64) {
     cur = node
     cont = true
-    (cont && _ps.err.empty() && ! p-eof()) {
+    (cont && G-ps.err.empty() && ! p-eof()) {
         k i64 = p-kind()
         step bool = true
         k == TQ-FIELD -> {
             n i64 = mk(A-FIELD)
-            _ap.left[n] = cur
-            _ap.text[n] = p-text()
+            G-ap.left[n] = cur
+            G-ap.text[n] = p-text()
             p-advance()
             cur = n
         }
         k == 46 && p-peek(1) == TQ-LITERAL -> {
             p-advance()
             key i64 = mk(A-LIT)
-            _ap.val[key] = p-val()
+            G-ap.val[key] = p-val()
             p-advance()
             n i64 = mk(A-FIELDSTR)
-            _ap.left[n] = cur
-            _ap.right[n] = key
+            G-ap.left[n] = cur
+            G-ap.right[n] = key
             cur = n
         }
         k == 46 && p-peek(1) == 91 -> {
@@ -916,7 +941,7 @@ parse-postfix = (node i64) (cur i64) {
         k == 63 -> {
             p-advance()
             n i64 = mk(A-OPTPOST)
-            _ap.left[n] = cur
+            G-ap.left[n] = cur
             cur = n
         }
         step = k == TQ-FIELD || k == 91 || k == 63 || (k == 46 && (p-peek(1) == TQ-LITERAL || p-peek(1) == 91))
@@ -935,7 +960,7 @@ parse-bracket = (parent i64) (node i64) {
     iterate -> {
         p-advance()
         node = mk(A-ITERATE)
-        _ap.left[node] = parent
+        G-ap.left[node] = parent
     }
     ! iterate -> {
         start-none bool = p-kind() == 58
@@ -944,8 +969,8 @@ parse-bracket = (parent i64) (node i64) {
             end i64 = parse-query()
             p-expect(93, 'expected ]')
             node = mk(A-SLICE)
-            _ap.left[node] = parent
-            _ap.c1[node] = end
+            G-ap.left[node] = parent
+            G-ap.c1[node] = end
         }
         ! start-none -> {
             a i64 = parse-query()
@@ -953,8 +978,8 @@ parse-bracket = (parent i64) (node i64) {
             ! colon -> {; [idx]
                 p-expect(93, 'expected ]')
                 node = mk(A-INDEX)
-                _ap.left[node] = parent
-                _ap.right[node] = a
+                G-ap.left[node] = parent
+                G-ap.right[node] = a
             }
             colon -> {; [s:...]
                 p-advance()
@@ -962,16 +987,16 @@ parse-bracket = (parent i64) (node i64) {
                 end-none -> {
                     p-advance()
                     node = mk(A-SLICE)
-                    _ap.left[node] = parent
-                    _ap.right[node] = a
+                    G-ap.left[node] = parent
+                    G-ap.right[node] = a
                 }
                 ! end-none -> {
                     b i64 = parse-query()
                     p-expect(93, 'expected ]')
                     node = mk(A-SLICE)
-                    _ap.left[node] = parent
-                    _ap.right[node] = a
-                    _ap.c1[node] = b
+                    G-ap.left[node] = parent
+                    G-ap.right[node] = a
+                    G-ap.c1[node] = b
                 }
             }
         }
@@ -1001,17 +1026,22 @@ parse-primary = () (node i64) {
         kb i64 = p-kind()
         kb == TQ-BINDING -> {
             node = mk(A-LABEL)
-            _ap.text[node] = p-text()
+            G-ap.text[node] = p-text()
 
             ; assign a compile-time label ordinal (source order) matching jq's
             ; {"__jq":N} caught-break value; break resolves to this id.
-            _ap.val[node] = _ps.lblctr
-            _ps.lblctr = _ps.lblctr + 1 #{overflow=wrap}
+            G-ap.val[node] = G-ps.lblctr
+            #{overflow=wrap}
+            G-ps.lblctr = G-ps.lblctr + 1: {
+                ok -> it
+
+                -> 0
+            }
             p-advance()
             p-expect(124, 'expected |')
-            _ps.labels.push(ax-text(node))
-            _ps.lblid.push(ax-val(node))
-            _ap.right[node] = parse-expr(1)
+            G-ps.labels.push(ax-text(node))
+            G-ps.lblid.push(ax-val(node))
+            G-ap.right[node] = parse-expr(1)
             pop-label()
         }
         kb != TQ-BINDING -> p-error('label requires a $name binding')
@@ -1029,21 +1059,21 @@ parse-primary = () (node i64) {
             found bool = false
             theid i64 = -1
             btag str = p-text()
-            i <- [0.._ps.labels.len()): {
-                _ps.labels[i] == btag -> {
+            i <- [0..G-ps.labels.len()): {
+                G-ps.labels[i] == btag -> {
                     found = true
-                    theid = _ps.lblid[i]: {
+                    theid = G-ps.lblid[i]: {
                         ok -> it
 
                         -> 0
                     }
                 }
             }
-            _ps.err.empty() && ! found -> p-error('$*label-' - btag - ' is not defined')
-            _ps.err.empty() -> {
+            G-ps.err.empty() && ! found -> p-error('$*label-' - btag - ' is not defined')
+            G-ps.err.empty() -> {
                 node = mk(A-BREAK)
-                _ap.text[node] = btag
-                _ap.val[node] = theid
+                G-ap.text[node] = btag
+                G-ap.val[node] = theid
                 p-advance()
             }
         }
@@ -1052,13 +1082,13 @@ parse-primary = () (node i64) {
     }
     k == TQ-FIELD -> {
         node = mk(A-FIELD)
-        _ap.text[node] = p-text()
+        G-ap.text[node] = p-text()
         p-advance()
         done = true
     }
     k == TQ-LITERAL -> {
         node = mk(A-LIT)
-        _ap.val[node] = p-val()
+        G-ap.val[node] = p-val()
         p-advance()
         done = true
     }
@@ -1067,9 +1097,9 @@ parse-primary = () (node i64) {
         bt str = p-text()
         cn i64 = p-col() - bt.count() - 1 #{overflow=wrap}
         node = mk(A-VAR)
-        _ap.text[node] = p-text()
-        _ap.nline[node] = ln
-        _ap.ncol[node] = cn
+        G-ap.text[node] = p-text()
+        G-ap.nline[node] = ln
+        G-ap.ncol[node] = cn
         p-advance()
         done = true
     }
@@ -1080,9 +1110,9 @@ parse-primary = () (node i64) {
 
         ; jq 1.8 expands $__loc__ at parse time to {"file":F,"line":L}
         obj i64 = jv-object()
-        jv-obj-insert(obj, 'file', jv-string(_ps.srcname))
+        jv-obj-insert(obj, 'file', jv-string(G-ps.srcname))
         jv-obj-insert(obj, 'line', jv-number((ln).to-f64()))
-        _ap.val[node] = obj
+        G-ap.val[node] = obj
         done = true
     }
     k == TQ-DEF -> {
@@ -1090,7 +1120,7 @@ parse-primary = () (node i64) {
         ; `def f(params): body; ... more-defs Exp` — jq's FuncDefs Exp rule:
         ; a def chain prefixes a whole Exp (binds looser than '|'), and the
         ; defs stay visible only inside that following Exp.
-        mark i64 = _defscope.items.len()
+        mark i64 = G-defscope.items.len()
         (p-kind() == TQ-DEF) {
             p-advance()
             fname str = ''
@@ -1111,7 +1141,7 @@ parse-primary = () (node i64) {
                 p-advance()
                 p-kind() != 41 -> {
                     loop bool = true
-                    (loop && _ps.err.empty()) {
+                    (loop && G-ps.err.empty()) {
                         pk i64 = p-kind()
                         pk == TQ-BINDING -> {
                             mb i64 = p-col() - p-text().count() - 1 #{overflow=wrap}
@@ -1143,9 +1173,9 @@ parse-primary = () (node i64) {
             }
             p-expect(58, 'expected :')
             di i64 = new-def(fname, params, vals, mline, mcol)
-            _defscope.items.push(di); visible to its own body (recursion)
+            G-defscope.items.push(di); visible to its own body (recursion)
             b i64 = parse-expr(1)
-            _defs.body[di] = b
+            G-defs.body[di] = b
             p-expect(59, 'expected ;')
         }
         node = parse-expr(1)
@@ -1154,7 +1184,7 @@ parse-primary = () (node i64) {
         ; vec.remove lowering currently emits invalid LLVM for index vars)
         kept []i64 = with-len(mark)
         i <- [0..mark): {
-            d9v1 i64 = _defscope.items[i]: {
+            d9v1 i64 = G-defscope.items[i]: {
                 ok -> it
 
                 -> 0
@@ -1165,7 +1195,7 @@ parse-primary = () (node i64) {
                 -> _
             }
         }
-        _defscope.items = kept
+        G-defscope.items = kept
         done = true
     }
     k == 45 -> {; unary minus '-'
@@ -1177,9 +1207,9 @@ parse-primary = () (node i64) {
         ; trailing-as binding at the parse-term tail), so build the operand as
         ; primary+postfix only and let the OUTER parse-term wrap the `as`.
         t i64 = parse-primary()
-        t >= 0 && _ps.err.empty() -> t = parse-postfix(t)
+        t >= 0 && G-ps.err.empty() -> t = parse-postfix(t)
         node = mk(A-NEGATE)
-        _ap.left[node] = t
+        G-ap.left[node] = t
         done = true
     }
     k == 40 -> {; '(' query ')'
@@ -1199,13 +1229,13 @@ parse-primary = () (node i64) {
         nxt == 93 -> {
             p-advance()
             node = mk(A-LIT)
-            _ap.val[node] = jv-array()
+            G-ap.val[node] = jv-array()
         }
         nxt != 93 -> {
             q i64 = parse-query()
             p-expect(93, 'expected ]')
             node = mk(A-ARRAY)
-            _ap.left[node] = q
+            G-ap.left[node] = q
         }
         done = true
     }
@@ -1229,8 +1259,8 @@ parse-primary = () (node i64) {
             ; equivalent to @format "\(.)" — one interpolation of `.`.
             idn i64 = mk(A-IDENTITY)
             ip i64 = mk(A-INTERP)
-            _ap.left[ip] = idn
-            _ap.text[ip] = f
+            G-ap.left[ip] = idn
+            G-ap.text[ip] = f
             body []i64 = with-len(1)
             body[0]: {
                 ok -> it = ip
@@ -1238,7 +1268,7 @@ parse-primary = () (node i64) {
                 -> _
             }
             node = mk(A-STR)
-            _ap.left[node] = cons-from(body)
+            G-ap.left[node] = cons-from(body)
         }
         done = true
     }
@@ -1258,24 +1288,24 @@ parse-primary = () (node i64) {
         cc i64 = p-col() - name.count() #{overflow=wrap}
         p-advance()
         node = mk(A-CALL)
-        _ap.text[node] = name
+        G-ap.text[node] = name
 
         ; true/false/null are IDENT (lexed so); collapse to literals here
         name == 'true' -> {
             node = mk(A-LIT)
-            _ap.val[node] = jv-true()
+            G-ap.val[node] = jv-true()
         }
         name == 'false' -> {
             node = mk(A-LIT)
-            _ap.val[node] = jv-false()
+            G-ap.val[node] = jv-false()
         }
         name == 'null' -> {
             node = mk(A-LIT)
-            _ap.val[node] = jv-null()
+            G-ap.val[node] = jv-null()
         }
         p-kind() == 40 -> {
             p-advance()
-            _ap.left[node] = parse-args()
+            G-ap.left[node] = parse-args()
             p-expect(41, 'expected )')
         }
 
@@ -1283,14 +1313,14 @@ parse-primary = () (node i64) {
         ax-kind(node) == A-CALL -> {
             argc i64 = 0
             ax-left(node) >= 0 -> argc = count-cons(ax-left(node))
-            _ap.c1[node] = def-lookup(name, argc)
+            G-ap.c1[node] = def-lookup(name, argc)
 
             ; record the call's source position ONLY on genuine A-CALL nodes
             ; (true/false/null were reassigned to A-LIT above and are skipped,
             ; so their orphaned A-CALL pool slots keep nline/ncol=0 and never
             ; trip the compile-time undefined-function scan)
-            _ap.nline[node] = cl
-            _ap.ncol[node] = cc
+            G-ap.nline[node] = cl
+            G-ap.ncol[node] = cc
         }
         done = true
     }
@@ -1318,9 +1348,9 @@ parse-if = () (node i64) {
         p-advance()
     }
     node = mk(A-IF)
-    _ap.left[node] = cond
-    _ap.right[node] = then
-    _ap.c1[node] = el
+    G-ap.left[node] = cond
+    G-ap.right[node] = then
+    G-ap.c1[node] = el
 }
 
 ; parse-if-elif: body of an `elif` already-consumed; builds nested if..else.
@@ -1342,9 +1372,9 @@ parse-if-elif = () (node i64) {
         p-advance()
     }
     node = mk(A-IF)
-    _ap.left[node] = cond
-    _ap.right[node] = then
-    _ap.c1[node] = el
+    G-ap.left[node] = cond
+    G-ap.right[node] = then
+    G-ap.c1[node] = el
 }
 
 parse-try = () (node i64) {
@@ -1355,14 +1385,14 @@ parse-try = () (node i64) {
         ca = parse-term()
     }
     node = mk(A-TRY)
-    _ap.left[node] = body
-    _ap.right[node] = ca
+    G-ap.left[node] = body
+    G-ap.right[node] = ca
 }
 
 parse-args = () (idx i64) {
     items []i64 = with-len(0)
     cont = true
-    (cont && _ps.err.empty()) {
+    (cont && G-ps.err.empty()) {
         q i64 = parse-query()
         items.push(q)
         more bool = p-eat(59)
@@ -1377,7 +1407,7 @@ parse-string-body = (fmt str) (node i64) {
     p-eat(TQ-QQSTART)
     parts []i64 = with-len(0)
     cont = true
-    (cont && _ps.err.empty() && ! p-eof()) {
+    (cont && G-ps.err.empty() && ! p-eof()) {
         k i64 = p-kind()
         k == TQ-QQEND -> {
             p-advance()
@@ -1385,8 +1415,8 @@ parse-string-body = (fmt str) (node i64) {
         }
         k == TQ-QQTEXT -> {
             n i64 = mk(A-LIT)
-            _ap.val[n] = p-val()
-            _ap.op[n] = 1
+            G-ap.val[n] = p-val()
+            G-ap.op[n] = 1
             p-advance()
             parts.push(n)
         }
@@ -1395,8 +1425,8 @@ parse-string-body = (fmt str) (node i64) {
             q i64 = parse-query()
             p-expect(TQ-QQINTERPEND, 'expected )')
             n i64 = mk(A-INTERP)
-            _ap.left[n] = q
-            _ap.text[n] = fmt
+            G-ap.left[n] = q
+            G-ap.text[n] = fmt
             parts.push(n)
         }
         ! (k == TQ-QQEND || k == TQ-QQTEXT || k == TQ-QQINTERPSTART) -> {
@@ -1419,17 +1449,17 @@ string-assemble = (parts []i64, fmt str) (node i64) {
     node = -1
     n == 0 -> {
         node = mk(A-LIT)
-        _ap.val[node] = jv-string('')
+        G-ap.val[node] = jv-string('')
     }
     only-lit -> node = p0
     n != 0 && ! only-lit -> {
         node = mk(A-STR)
-        _ap.left[node] = cons-from(parts)
+        G-ap.left[node] = cons-from(parts)
     }
     ! fmt.empty() && node >= 0 -> {
         f i64 = mk(A-FORMAT)
-        _ap.text[f] = fmt
-        _ap.left[f] = node
+        G-ap.text[f] = fmt
+        G-ap.left[f] = node
         node = f
     }
 }
@@ -1439,7 +1469,7 @@ parse-object = () (node i64) {
     seen-close = p-eat(125)
     ! seen-close -> {
         cont bool = true
-        (cont && _ps.err.empty() && ! p-eof()) {
+        (cont && G-ps.err.empty() && ! p-eof()) {
             e i64 = parse-entry()
             entries.push(e)
             more bool = p-eat(44)
@@ -1448,7 +1478,7 @@ parse-object = () (node i64) {
         p-expect(125, 'expected }')
     }
     node = mk(A-OBJECT)
-    _ap.left[node] = cons-from(entries)
+    G-ap.left[node] = cons-from(entries)
 }
 
 parse-entry = () (node i64) {
@@ -1459,18 +1489,18 @@ parse-entry = () (node i64) {
         name str = p-text()
         p-advance()
         node = mk(A-ENTRY)
-        _ap.text[node] = name
+        G-ap.text[node] = name
         has-colon bool = p-kind() == 58
         has-colon -> {
             p-advance()
-            _ap.op[node] = EK-IDENT
-            _ap.right[node] = parse-dictexpr()
+            G-ap.op[node] = EK-IDENT
+            G-ap.right[node] = parse-dictexpr()
         }
         ! has-colon -> {
-            _ap.op[node] = EK-SHORTHAND
+            G-ap.op[node] = EK-SHORTHAND
             v i64 = mk(A-FIELD)
-            _ap.text[v] = name
-            _ap.right[node] = v
+            G-ap.text[v] = name
+            G-ap.right[node] = v
         }
         done = true
     }
@@ -1480,21 +1510,21 @@ parse-entry = () (node i64) {
         cn i64 = p-col() - name.count() - 1 #{overflow=wrap}
         p-advance()
         node = mk(A-ENTRY)
-        _ap.op[node] = EK-VAR
-        _ap.text[node] = name
-        _ap.nline[node] = ln
-        _ap.ncol[node] = cn
+        G-ap.op[node] = EK-VAR
+        G-ap.text[node] = name
+        G-ap.nline[node] = ln
+        G-ap.ncol[node] = cn
         has-colon bool = p-kind() == 58
         has-colon -> {
             p-advance()
-            _ap.right[node] = parse-dictexpr()
+            G-ap.right[node] = parse-dictexpr()
         }
         ! has-colon -> {
             v i64 = mk(A-VAR)
-            _ap.text[v] = name
-            _ap.nline[v] = ln
-            _ap.ncol[v] = cn
-            _ap.right[node] = v
+            G-ap.text[v] = name
+            G-ap.nline[v] = ln
+            G-ap.ncol[v] = cn
+            G-ap.right[node] = v
         }
         done = true
     }
@@ -1506,20 +1536,20 @@ parse-entry = () (node i64) {
         }
         keynode i64 = parse-string-body(f)
         node = mk(A-ENTRY)
-        _ap.op[node] = EK-STRING
-        _ap.left[node] = keynode
+        G-ap.op[node] = EK-STRING
+        G-ap.left[node] = keynode
         has-colon bool = p-kind() == 58
         has-colon -> {
             p-advance()
-            _ap.right[node] = parse-dictexpr()
+            G-ap.right[node] = parse-dictexpr()
         }
         ! has-colon -> {
-            _ap.op[node] = EK-SHORTHAND
+            G-ap.op[node] = EK-SHORTHAND
             v i64 = mk(A-IDENTITY)
             idx i64 = mk(A-INDEX)
-            _ap.left[idx] = v
-            _ap.right[idx] = keynode
-            _ap.right[node] = idx
+            G-ap.left[idx] = v
+            G-ap.right[idx] = keynode
+            G-ap.right[node] = idx
         }
         done = true
     }
@@ -1529,23 +1559,23 @@ parse-entry = () (node i64) {
         p-expect(41, 'expected )')
         p-expect(58, 'expected :')
         node = mk(A-ENTRY)
-        _ap.op[node] = EK-EXPR
-        _ap.left[node] = ke
-        _ap.right[node] = parse-dictexpr()
+        G-ap.op[node] = EK-EXPR
+        G-ap.left[node] = ke
+        G-ap.right[node] = parse-dictexpr()
         done = true
     }
     ! done -> {
         p-error('invalid object key')
         node = mk(A-ENTRY)
-        _ap.op[node] = EK-IDENT
+        G-ap.op[node] = EK-IDENT
     }
 }
 
 parse-dictexpr = () (node i64) {
-    saved bool = _dictmode
-    _dictmode = true
+    saved bool = G-dictmode
+    G-dictmode = true
     node = parse-expr(1)
-    _dictmode = saved
+    G-dictmode = saved
 }
 
 bad-kw = (k i64) {
@@ -1569,33 +1599,33 @@ is-binder = (k i64) (b bool) {
 ; subtract/negative errors). Kept on ONE line: __loc__ reports only the line
 ; number, and zero newlines here keep user line numbers unchanged. Order is
 ; dependency-first (isempty/nth reference first/skip).
-BI-DEFS = 'def first(g): label $out | g | ., break $out; def isempty(g): first((g|false), true); def limit($n; expr): if $n > 0 then label $out | foreach expr as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end) elif $n == 0 then empty else error("limit doesn\'t support negative count") end; def skip($n; expr): if $n > 0 then foreach expr as $item ($n; . - 1; if . < 0 then $item else empty end) elif $n == 0 then expr else error("skip doesn\'t support negative count") end; def nth($n; g): if $n < 0 then error("nth doesn\'t support negative indices") else first(skip($n; g)) end; def first: .[0]; def last: .[-1]; def range($x;$y;$z): _range3($x;$y;$z); def range($x;$y): range($x;$y;1); def range($x): range(0;$x); def all(generator; condition): isempty(generator|condition and empty); def any(generator; condition): isempty(generator|condition or empty)|not; def all(condition): all(.[]; condition); def any(condition): any(.[]; condition); def all: all(.[]; .); def any: any(.[]; .); def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}]; def add(f): reduce f as $x (null; . + $x); def from_entries: add(.[] | { (.key // .Key // .name // .Name): if has("value") then .value else .Value end }) // {}; def with_entries(f): to_entries | map(f) | from_entries; def reverse: [.[range(length-1;-1;-1)]]; def recurse: ..; def paths: path(recurse)|select(length > 0); def paths(node_filter): path(recurse|select(node_filter))|select(length > 0); def del(f): delpaths([path(f)]); def map_values(f): .[] |= f; def in(xs): . as $x | xs | has($x); def numbers: select(type == "number"); def strings: select(type == "string"); def booleans: select(type == "boolean"); def nulls: select(. == null); def arrays: select(type == "array"); def objects: select(type == "object"); def iterables: select(type|. == "array" or . == "object"); def scalars: select(type|. != "array" and . != "object"); def ascii_downcase: explode | map(if 65 <= . and . <= 90 then . + 32 else . end) | implode; def ascii_upcase: explode | map(if 97 <= . and . <= 122 then . - 32 else . end) | implode; '
+BI-DEFS = 'def first(g): label $out | g | ., break $out; def isempty(g): first((g|false), true); def limit($n; expr): if $n > 0 then label $out | foreach expr as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end) elif $n == 0 then empty else error("limit doesn\'t support negative count") end; def skip($n; expr): if $n > 0 then foreach expr as $item ($n; . - 1; if . < 0 then $item else empty end) elif $n == 0 then expr else error("skip doesn\'t support negative count") end; def nth($n; g): if $n < 0 then error("nth doesn\'t support negative indices") else first(skip($n; g)) end; def first: .[0]; def last: .[-1]; def range($x;$y;$z): G-range3($x;$y;$z); def range($x;$y): range($x;$y;1); def range($x): range(0;$x); def all(generator; condition): isempty(generator|condition and empty); def any(generator; condition): isempty(generator|condition or empty)|not; def all(condition): all(.[]; condition); def any(condition): any(.[]; condition); def all: all(.[]; .); def any: any(.[]; .); def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}]; def add(f): reduce f as $x (null; . + $x); def from_entries: add(.[] | { (.key // .Key // .name // .Name): if has("value") then .value else .Value end }) // {}; def with_entries(f): to_entries | map(f) | from_entries; def reverse: [.[range(length-1;-1;-1)]]; def recurse: ..; def paths: path(recurse)|select(length > 0); def paths(node_filter): path(recurse|select(node_filter))|select(length > 0); def del(f): delpaths([path(f)]); def map_values(f): .[] |= f; def in(xs): . as $x | xs | has($x); def numbers: select(type == "number"); def strings: select(type == "string"); def booleans: select(type == "boolean"); def nulls: select(. == null); def arrays: select(type == "array"); def objects: select(type == "object"); def iterables: select(type|. == "array" or . == "object"); def scalars: select(type|. != "array" and . != "object"); def ascii_downcase: explode | map(if 65 <= . and . <= 90 then . + 32 else . end) | implode; def ascii_upcase: explode | map(if 97 <= . and . <= 122 then . - 32 else . end) | implode; '
 
 jq-parse-program = (prog str) (root i64, err str) {
     ap-reset()
-    _ps.prelen = pre-length(prog)
+    G-ps.prelen = pre-length(prog)
     pre = BI-DEFS
     src = pre - prog
     prog.empty() -> src = ''
     toks, le = jq-lex(src)
-    _ps.toks = toks
+    G-ps.toks = toks
     root = -1
-    ! le.empty() -> _ps.err = le
+    ! le.empty() -> G-ps.err = le
     le.empty() -> {
         root = parse-query()
-        _ps.err.empty() && ! p-eof() -> {
+        G-ps.err.empty() && ! p-eof() -> {
             is-binder(p-kind()) -> bad-kw(p-kind())
             ! is-binder(p-kind()) -> p-error('unexpected trailing tokens')
         }
     }
-    err = _ps.err
+    err = G-ps.err
     ! err.empty() -> root = -1
 }
 
 ; ── AST dumper (for structural tests) ─────────
 ; Reads a pool slot by index (all calls here are bounds-checked to i>=0).
 ax-kind = (i i64) (k i64) {
-    k = _ap.kind[i]: {
+    k = G-ap.kind[i]: {
         ok -> it
 
         -> 0
@@ -1603,7 +1633,7 @@ ax-kind = (i i64) (k i64) {
 }
 
 ax-op = (i i64) (k i64) {
-    k = _ap.op[i]: {
+    k = G-ap.op[i]: {
         ok -> it
 
         -> 0
@@ -1611,7 +1641,7 @@ ax-op = (i i64) (k i64) {
 }
 
 ax-left = (i i64) (k i64) {
-    k = _ap.left[i]: {
+    k = G-ap.left[i]: {
         ok -> it
 
         -> 0
@@ -1619,7 +1649,7 @@ ax-left = (i i64) (k i64) {
 }
 
 ax-right = (i i64) (k i64) {
-    k = _ap.right[i]: {
+    k = G-ap.right[i]: {
         ok -> it
 
         -> 0
@@ -1627,7 +1657,7 @@ ax-right = (i i64) (k i64) {
 }
 
 ax-c1 = (i i64) (k i64) {
-    k = _ap.c1[i]: {
+    k = G-ap.c1[i]: {
         ok -> it
 
         -> 0
@@ -1635,7 +1665,7 @@ ax-c1 = (i i64) (k i64) {
 }
 
 ax-text = (i i64) (s str) {
-    s = _ap.text[i]: {
+    s = G-ap.text[i]: {
         ok -> it
 
         -> ''
@@ -1643,7 +1673,7 @@ ax-text = (i i64) (s str) {
 }
 
 ax-val = (i i64) (k i64) {
-    k = _ap.val[i]: {
+    k = G-ap.val[i]: {
         ok -> it
 
         -> 0
@@ -1785,100 +1815,116 @@ subst-state {
     old []i64
     new []i64
 }
-_sb subst-state
+G-sb subst-state
 
 sb-find = (s str) (i i64) {
     i = -1
-    j <- [0.._sb.names.len()): {
-        _sb.names[j] == s -> i = j
+    j <- [0..G-sb.names.len()): {
+        G-sb.names[j] == s -> i = j
     }
 }
 
 def-has-param = (di i64, s str) (t bool) {
     t = false
-    st i64 = _defs.pstart[di]
-    n i64 = _defs.pcount[di]
+    st i64 = G-defs.pstart[di]: {
+        ok -> it
+
+        -> 0
+    }
+    n i64 = G-defs.pcount[di]: {
+        ok -> it
+
+        -> 0
+    }
     i <- [0..n): {
-        _defs.params[st + i] == s -> t = true #{overflow=wrap}
+        G-defs.params[st + i] == s -> t = true #{overflow=wrap}
     }
 }
 
 clone-node = (src i64) (idx i64) {
     idx = mk(ax-kind(src))
-    _ap.op[idx] = ax-op(src)
-    _ap.left[idx] = ax-left(src)
-    _ap.right[idx] = ax-right(src)
-    _ap.c1[idx] = ax-c1(src)
-    _ap.text[idx] = ax-text(src)
-    _ap.val[idx] = ax-val(src)
-    nl = _ap.nline[src]: {
+    G-ap.op[idx] = ax-op(src)
+    G-ap.left[idx] = ax-left(src)
+    G-ap.right[idx] = ax-right(src)
+    G-ap.c1[idx] = ax-c1(src)
+    G-ap.text[idx] = ax-text(src)
+    G-ap.val[idx] = ax-val(src)
+    nl = G-ap.nline[src]: {
         ok -> it
 
         -> 0
     }
-    _ap.nline[idx] = nl
-    nc = _ap.ncol[src]: {
+    G-ap.nline[idx] = nl
+    nc = G-ap.ncol[src]: {
         ok -> it
 
         -> 0
     }
-    _ap.ncol[idx] = nc
+    G-ap.ncol[idx] = nc
 }
 
 ; ast-lit: append a fresh A-LIT node carrying a runtime value handle.
 ast-lit = (v i64) (idx i64) {
     idx = mk(A-LIT)
-    _ap.val[idx] = v
+    G-ap.val[idx] = v
 }
 
 subst = (node i64, names []str, nodes []i64) (new i64) {
-    _sb.names = names
-    _sb.nodes = nodes
+    G-sb.names = names
+    G-sb.nodes = nodes
     o []i64 = with-len(0)
-    _sb.old = o
+    G-sb.old = o
     nn []i64 = with-len(0)
-    _sb.new = nn
+    G-sb.new = nn
     new = subst-rec(node)
 }
 
 subst-def = (di i64) (ndi i64) {
     ndi = -1
-    j <- [0.._sb.old.len()): {
-        _sb.old[j] == di -> ndi = _sb.new[j]
+    j <- [0..G-sb.old.len()): {
+        G-sb.old[j] = = di -> ndi = G-sb.new[j]: {
+            ok -> it
+
+            -> 0
+        }
     }
     ndi < 0 -> {
-        ndi = _defs.name.len()
-        _defs.name.push(_defs.name[di])
-        _defs.arity.push(_defs.arity[di])
-        _defs.pstart.push(_defs.params.len())
-        _defs.pcount.push(_defs.pcount[di])
-        _defs.body.push(-1)
-        st i64 = _defs.pstart[di]
-        i <- [0.._defs.pcount[di]): {
-            _defs.params.push(_defs.params[st + i]) #{overflow=wrap}
-            _defs.paramval.push(_defs.paramval[st + i]) #{overflow=wrap}
-            _defs.pmnline.push(_defs.pmnline[st + i]) #{overflow=wrap}
-            _defs.pmncol.push(_defs.pmncol[st + i]) #{overflow=wrap}
+        ndi = G-defs.name.len()
+        G-defs.name.push(G-defs.name[di])
+        G-defs.arity.push(G-defs.arity[di])
+        G-defs.pstart.push(G-defs.params.len())
+        G-defs.pcount.push(G-defs.pcount[di])
+        G-defs.body.push(-1)
+        st i64 = G-defs.pstart[di]: {
+            ok -> it
+
+            -> 0
         }
-        _sb.old.push(di)
-        _sb.new.push(ndi)
+        i <- [0..G-defs.pcount[di]): {
+            G-defs.params.push(G-defs.params[st + i]) #{overflow=wrap}
+            G-defs.paramval.push(G-defs.paramval[st + i]) #{overflow=wrap}
+            G-defs.pmnline.push(G-defs.pmnline[st + i]) #{overflow=wrap}
+            G-defs.pmncol.push(G-defs.pmncol[st + i]) #{overflow=wrap}
+        }
+        G-sb.old.push(di)
+        G-sb.new.push(ndi)
 
         ; drop bindings the nested def's own parameters shadow
         sn []str = with-len(0)
         sr []i64 = with-len(0)
-        k <- [0.._sb.names.len()): {
-            ! def-has-param(di, _sb.names[k]) -> {
-                sn.push(_sb.names[k])
-                sr.push(_sb.nodes[k])
+        k <- [0..G-sb.names.len()): {
+            ! def-has-param(di, G-sb.names[k]) -> {
+                sn.push(G-sb.names[k])
+                sr.push(G-sb.nodes[k])
             }
         }
-        saved-n []str = _sb.names
-        saved-r []i64 = _sb.nodes
-        _sb.names = sn
-        _sb.nodes = sr
-        _defs.body[ndi] = subst-rec(_defs.body[di])
-        _sb.names = saved-n
-        _sb.nodes = saved-r
+        saved-n []str = G-sb.names
+        saved-r []i64 = G-sb.nodes
+        G-sb.names = sn
+        G-sb.nodes = sr
+        G-defs.body[ndi] = subst-rec(G-defs.body[di])
+        G-sb.names = saved-n
+        G-sb.nodes = saved-r
     }
 }
 
@@ -1891,14 +1937,22 @@ subst-rec = (node i64) (new i64) {
         k == A-VAR -> {
             bi i64 = sb-find(ax-text(node))
             bi >= 0 -> {
-                new = _sb.nodes[bi]
+                new = G-sb.nodes[bi]: {
+                    ok -> it
+
+                    -> 0
+                }
                 done = true
             }
         }
         k == A-STATE && ! done -> {
             bi i64 = sb-find(STATE-N)
             bi >= 0 -> {
-                new = _sb.nodes[bi]
+                new = G-sb.nodes[bi]: {
+                    ok -> it
+
+                    -> 0
+                }
                 done = true
             }
         }
@@ -1909,25 +1963,29 @@ subst-rec = (node i64) (new i64) {
             bi i64 = -1
             di < 0 && argc == 0 -> bi = sb-find(ax-text(node))
             bi >= 0 -> {
-                new = _sb.nodes[bi]
+                new = G-sb.nodes[bi]: {
+                    ok -> it
+
+                    -> 0
+                }
                 done = true
             }
             ! done -> {
                 c i64 = clone-node(node)
                 al i64 = ax-left(node)
                 al >= 0 -> al = subst-rec(al)
-                _ap.left[c] = al
-                di >= 0 -> _ap.c1[c] = subst-def(di)
+                G-ap.left[c] = al
+                di >= 0 -> G-ap.c1[c] = subst-def(di)
                 new = c
                 done = true
             }
         }
         k == A-AS && ! done -> {
             c i64 = clone-node(node)
-            _ap.left[c] = subst-rec(ax-left(node))
+            G-ap.left[c] = subst-rec(ax-left(node))
             shadow i64 = sb-find(ax-text(node))
-            shadow >= 0 -> _ap.right[c] = ax-right(node)
-            shadow < 0 -> _ap.right[c] = subst-rec(ax-right(node))
+            shadow >= 0 -> G-ap.right[c] = ax-right(node)
+            shadow < 0 -> G-ap.right[c] = subst-rec(ax-right(node))
             new = c
             done = true
         }
@@ -1936,16 +1994,16 @@ subst-rec = (node i64) (new i64) {
             ; the iterated var shadows outer bindings inside update/extract,
             ; while E and init still see them (jq-verified scoping)
             c i64 = clone-node(node)
-            _ap.left[c] = subst-rec(ax-left(node))
-            _ap.right[c] = subst-rec(ax-right(node))
+            G-ap.left[c] = subst-rec(ax-left(node))
+            G-ap.right[c] = subst-rec(ax-right(node))
             shadow i64 = sb-find(ax-text(node))
             shadow < 0 -> {
                 u i64 = ax-c1(node)
                 u >= 0 -> u = subst-rec(u)
-                _ap.c1[c] = u
+                G-ap.c1[c] = u
                 x i64 = ax-c2(node)
                 x >= 0 -> x = subst-rec(x)
-                _ap.c2[c] = x
+                G-ap.c2[c] = x
             }
             new = c
             done = true
@@ -1954,13 +2012,13 @@ subst-rec = (node i64) (new i64) {
             c i64 = clone-node(node)
             l i64 = ax-left(node)
             l >= 0 -> l = subst-rec(l)
-            _ap.left[c] = l
+            G-ap.left[c] = l
             r i64 = ax-right(node)
             r >= 0 -> r = subst-rec(r)
-            _ap.right[c] = r
+            G-ap.right[c] = r
             cv i64 = ax-c1(node)
             cv >= 0 -> cv = subst-rec(cv)
-            _ap.c1[c] = cv
+            G-ap.c1[c] = cv
             new = c
         }
     }
@@ -1977,7 +2035,7 @@ pre-length = (prog str) (n i64) {
 ; nodes (builtin defs) self-bind and must never answer the user's checks.
 in-user-zone = (l i64, c i64) (b bool) {
     b = l > 1
-    l == 1 && c > _ps.prelen -> b = true
+    l == 1 && c > G-ps.prelen -> b = true
 }
 
 ; var-is-bound: name appears as a USER-ZONE binder (as/reduce/foreach
@@ -1985,20 +2043,20 @@ in-user-zone = (l i64, c i64) (b bool) {
 ; stricter block scoping is accepted more permissively here.
 var-is-bound = (nm str) (b bool) {
     b = false
-    i <- [0.._ap.kind.len()): {
-        k i64 = _ap.kind[i]: {
+    i <- [0..G-ap.kind.len()): {
+        k i64 = G-ap.kind[i]: {
             ok -> it
 
             -> 0
         }
         kk bool = k == A-AS || k == A-REDUCE || k == A-FOREACH
-        ! b && kk && _ap.text[i] == nm -> {
-            zl i64 = _ap.nline[i]: {
+        ! b && kk && G-ap.text[i] == nm -> {
+            zl i64 = G-ap.nline[i]: {
                 ok -> it
 
                 -> 0
             }
-            zc i64 = _ap.ncol[i]: {
+            zc i64 = G-ap.ncol[i]: {
                 ok -> it
 
                 -> 0
@@ -2006,14 +2064,14 @@ var-is-bound = (nm str) (b bool) {
             in-user-zone(zl, zc) -> b = true
         }
     }
-    j <- [0.._defs.params.len()): {
-        ! b && _defs.params[j] == nm -> {
-            pl i64 = _defs.pmnline[j]: {
+    j <- [0..G-defs.params.len()): {
+        ! b && G-defs.params[j] == nm -> {
+            pl i64 = G-defs.pmnline[j]: {
                 ok -> it
 
                 -> 0
             }
-            pc i64 = _defs.pmncol[j]: {
+            pc i64 = G-defs.pmncol[j]: {
                 ok -> it
 
                 -> 0
@@ -2033,20 +2091,20 @@ var-is-bound = (nm str) (b bool) {
 ; the known codegen gap (elements past the first zero out), so the caller
 ; owns the vectors. Line-1 columns are corrected for the BI-DEFS prefix.
 jq-undef-var-into = (allow []str, names []str, ls []i64, cs []i64) {
-    i <- [0.._ap.kind.len()): {
-        k i64 = _ap.kind[i]: {
+    i <- [0..G-ap.kind.len()): {
+        k i64 = G-ap.kind[i]: {
             ok -> it
 
             -> 0
         }
-        isref bool = k == A-VAR || (k == A-ENTRY && _ap.op[i] == EK-VAR)
+        isref bool = k == A-VAR || (k == A-ENTRY && G-ap.op[i] == EK-VAR)
         isref -> {
-            rl i64 = _ap.nline[i]: {
+            rl i64 = G-ap.nline[i]: {
                 ok -> it
 
                 -> 0
             }
-            rc i64 = _ap.ncol[i]: {
+            rc i64 = G-ap.ncol[i]: {
                 ok -> it
 
                 -> 0
@@ -2055,7 +2113,7 @@ jq-undef-var-into = (allow []str, names []str, ls []i64, cs []i64) {
             ; references inside the builtin prefix resolve against prefix
             ; binders only; the user check starts past it
             in-user-zone(rl, rc) -> {
-                nm str = _ap.text[i]: {
+                nm str = G-ap.text[i]: {
                     ok -> it
 
                     -> ''
@@ -2072,7 +2130,12 @@ jq-undef-var-into = (allow []str, names []str, ls []i64, cs []i64) {
                 ! allowed && ! var-is-bound(nm) -> {
                     c i64 = rc #{overflow=wrap}
                     cc i64 = c #{overflow=wrap}
-                    rl == 1 -> cc = c - _ps.prelen #{overflow=wrap}
+                    #{overflow=wrap}
+                    rl == 1 -> cc = c - G-ps.prelen: {
+                        ok -> it
+
+                        -> 0
+                    }
 
                     ; insertion sort by (line, column); identical sites
                     ; (clone artifacts) are deduped
@@ -2278,7 +2341,7 @@ bi-code = (name str, argc i64) (c i64) {
     name == 'split' && argc == 1 -> c = BI-SPLIT
     name == 'max' && argc == 0 -> c = BI-MAX
     name == 'min' && argc == 0 -> c = BI-MIN
-    name == '_range3' && argc == 3 -> c = BI-RANGE
+    name == 'G-range3' && argc == 3 -> c = BI-RANGE
     name == 'input' && argc == 0 -> c = BI-INPUT
     name == 'inputs' && argc == 0 -> c = BI-INPUTS
     name == 'path' && argc == 1 -> c = BI-PATH
@@ -2297,24 +2360,24 @@ bi-code = (name str, argc i64) (c i64) {
 ; corrected for the BI-DEFS prefix, and prefix-internal calls are skipped via
 ; in-user-zone exactly like the variable pass.
 jq-undef-func-into = (names []str, arities []i64, ls []i64, cs []i64) {
-    i <- [0.._ap.kind.len()): {
-        k i64 = _ap.kind[i]: {
+    i <- [0..G-ap.kind.len()): {
+        k i64 = G-ap.kind[i]: {
             ok -> it
 
             -> 0
         }
         k == A-CALL -> {
-            c1 i64 = _ap.c1[i]: {
+            c1 i64 = G-ap.c1[i]: {
                 ok -> it
 
                 -> 0
             }
-            nm str = _ap.text[i]: {
+            nm str = G-ap.text[i]: {
                 ok -> it
 
                 -> ''
             }
-            argn i64 = _ap.left[i]: {
+            argn i64 = G-ap.left[i]: {
                 ok -> it
 
                 -> 0
@@ -2322,12 +2385,12 @@ jq-undef-func-into = (names []str, arities []i64, ls []i64, cs []i64) {
             argc i64 = count-cons(argn)
             bc i64 = bi-code(nm, argc)
             c1 < 0 && bc < 0 -> {
-                rl i64 = _ap.nline[i]: {
+                rl i64 = G-ap.nline[i]: {
                     ok -> it
 
                     -> 0
                 }
-                rc i64 = _ap.ncol[i]: {
+                rc i64 = G-ap.ncol[i]: {
                     ok -> it
 
                     -> 0
@@ -2335,7 +2398,12 @@ jq-undef-func-into = (names []str, arities []i64, ls []i64, cs []i64) {
                 in-user-zone(rl, rc) -> {
                     c i64 = rc #{overflow=wrap}
                     cc i64 = c #{overflow=wrap}
-                    rl == 1 -> cc = c - _ps.prelen #{overflow=wrap}
+                    #{overflow=wrap}
+                    rl == 1 -> cc = c - G-ps.prelen: {
+                        ok -> it
+
+                        -> 0
+                    }
 
                     ; insertion sort by (line, column); identical sites deduped
                     pos i64 = names.len()
@@ -2500,13 +2568,13 @@ jq-undef-func-into = (names []str, arities []i64, ls []i64, cs []i64) {
 ; is parsed -- any later jq-parse-program (per-value jq-run) resets the pool.
 jq-program-uses-input = () (b bool) {
     b = false
-    i <- [0.._ap.kind.len()): {
-        t i64 = _ap.kind[i]: {
+    i <- [0..G-ap.kind.len()): {
+        t i64 = G-ap.kind[i]: {
             ok -> it
 
             -> 0
         }
-        s str = _ap.text[i]: {
+        s str = G-ap.text[i]: {
             ok -> it
 
             -> ''

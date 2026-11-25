@@ -132,7 +132,7 @@ read-file-str = (p str) (out ?str) {
     {
         ! isf -> { return }        ; 未找到 → 保持 nil
     }
-    out = fs.read-file(p).to-bytes-str()
+    out = fs.read-file(p).to-str()
 }
 ```
 

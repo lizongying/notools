@@ -180,7 +180,7 @@ scripts/smoke.sh nogit noimg          # 只跑指定套件（针对已构建二�
   不是字符载荷：N 次循环得到 N 个控制字节。v0.1.35 修了 md5x / sha* 系列，曾遗漏
   od / xxd / blake2bx / mcookie 与 nogit 的 util / index / pack / oid（2026-11-21 已专项修复）。
 - 安全写法：**字符串拼接** `out = out - ch`（参照 `hashutil.bytes-to-hex`），或逐字节走 `[]byte`
-  再 `to-bytes-str()`。实测**固定索引** `s[0]` / `s[1]` 与 `[]byte` / `[]i64` 索引写是安全的，
+  再 `to-str()`。实测**固定索引** `s[0]` / `s[1]` 与 `[]byte` / `[]i64` 索引写是安全的，
   不要一刀切改所有索引。
 - 附带：MD5 输出是**小端字组序**（内部值已字节反转，与 `store-le-u32` 双重抵消），
   别按大端推理去「修正」顺序。
