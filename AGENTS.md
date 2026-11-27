@@ -41,7 +41,8 @@
 | `tests/`、`tmp/`、`bin/`、`dist/` | gitignored 的一次性产物 / 复现目录 | — |
 
 注意：CI / smoke 覆盖 **7 个发布子项目**（`notools nogit noimg nouv nonpm noagent nosync`，
-各自 6 个目标平台），`workspace.noml` 登记 **8 个包**；改 `nojq` 不触发 CI 构建。
+各自 6 个目标平台），`workspace.noml` 登记 **8 个包**；`nojq` 只产出 AST 包，不构建二进制。
+全部 8 个包都通过 `no pack` 发布 `<name>-ast.zip`，供 `no add` 按模块导入。
 
 ### 1.2 包、入口与导入
 

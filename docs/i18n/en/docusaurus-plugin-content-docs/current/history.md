@@ -7,6 +7,13 @@ sidebar_position: 2
 This page collects Nolang release records for each version, kept consistent with the root `HISTORY.md`.
 
 
+## v0.1.42
+
+- feat(ci): publish a platform-independent `<name>-ast.zip` for all eight subprojects
+- feat(ci): add an AST-only nojq job with change detection and release assets
+- ci(nosync): upload vet diagnostics on native gate failure
+- docs: document AST packages for every subproject in README and AGENTS
+
 ## v0.1.41
 
 - build(ci): bump the pinned Nolang compiler to v0.4.38 in CI and all eight package manifests

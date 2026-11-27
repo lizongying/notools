@@ -121,6 +121,19 @@ cp noagent/dist/noagent /usr/local/bin/noagent
 | `noagent` | 纯 Nolang 自主 LLM 智能体 CLI（OpenAI 兼容、工具调用、流式） | [noagent:latest](https://lizongying.github.io/nohub/?package=noagent:latest@github.com/lizongying/notools) |
 | `nojq` | 纯 Nolang JSON 处理工具（兼容 jq 1.7） | [nojq:latest](https://lizongying.github.io/nohub/?package=nojq:latest@github.com/lizongying/notools) |
 
+### 预编 AST 包（作为 Nolang 依赖）
+
+每个 Release 都为全部 8 个子项目发布与平台无关的 `<name>-ast.zip`（需 Nolang v0.4.38+）：`notools-ast.zip`、`nogit-ast.zip`、`noimg-ast.zip`、`nojq-ast.zip`、`nouv-ast.zip`、`nonpm-ast.zip`、`noagent-ast.zip`、`nosync-ast.zip`。其中 `nojq` 只发布 AST 包，不发布二进制。
+
+```bash
+no add nogit:v0.1.41@github.com/lizongying/notools
+```
+
+```nolang
+# nogit/src/remote
+# nogit/src/httpclient
+```
+
 ## 工具列表
 
 > 以下为已实现并接入分发的全部命令（193 个）。`md5`/`sha*` 为 BSD 风格命名，`md5sum`/`sha*sum` 为 GNU 风格命名，两者输出相同。

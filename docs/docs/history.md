@@ -7,6 +7,13 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.42
+
+- feat(ci): publish a platform-independent `<name>-ast.zip` for all eight subprojects
+- feat(ci): add an AST-only nojq job with change detection and release assets
+- ci(nosync): upload vet diagnostics on native gate failure
+- docs: document AST packages for every subproject in README and AGENTS
+
 ## v0.1.41
 
 - build(ci): bump the pinned Nolang compiler to v0.4.38 in CI and all eight package manifests

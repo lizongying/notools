@@ -3,11 +3,12 @@ name: Build
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
-#      判断 notools / nogit / noimg / nouv / nonpm / noagent / nosync 哪些子项目有变更，决定是否需要构建
+#      判断 notools / nogit / noimg / nojq / nouv / nonpm / noagent / nosync 哪些子项目有变更，决定是否需要构建
 #   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
 #   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
 #   4. no build 交叉编译 6 个目标平台（按需构建），产物名追加 -v<版本> 后缀
 #      例如 notools-darwin-amd64-v0.1.38 / notools-windows-amd64-v0.1.38.exe
+#      每个子项目同时用 no pack 产出 <name>-ast.zip；nojq 只产出 AST 包
 #   5. 对产物运行 smoke test 验证正确性
 #   6. tag 推送时发布 GitHub Release（跳过的子项目从上一个 release 继承）
 #
@@ -28,6 +29,7 @@ jobs:
       needs-notools: ${{ steps.detect.outputs.needs-notools }}
       needs-nogit: ${{ steps.detect.outputs.needs-nogit }}
       needs-noimg: ${{ steps.detect.outputs.needs-noimg }}
+      needs-nojq: ${{ steps.detect.outputs.needs-nojq }}
       needs-nouv: ${{ steps.detect.outputs.needs-nouv }}
       needs-nonpm: ${{ steps.detect.outputs.needs-nonpm }}
       needs-noagent: ${{ steps.detect.outputs.needs-noagent }}
@@ -90,6 +92,7 @@ jobs:
             echo "needs-notools=true"    >> "$GITHUB_OUTPUT"
             echo "needs-nogit=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noimg=true"      >> "$GITHUB_OUTPUT"
+            echo "needs-nojq=true"       >> "$GITHUB_OUTPUT"
             echo "needs-nouv=true"       >> "$GITHUB_OUTPUT"
             echo "needs-nonpm=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noagent=true"    >> "$GITHUB_OUTPUT"
@@ -114,11 +117,12 @@ jobs:
           echo ""
 
           # ── 4. 判断每个子项目是否有变更 ──
-          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/  nonpm/  noagent/  nosync/
+          # 子项目路径前缀：notools/  nogit/  noimg/  nojq/  nouv/  nonpm/  noagent/  nosync/
           # 额外：根目录的 .github/workflows/ 或 package.jsonc 变更也触发全部构建
           NEEDS_NOTOOLS=false
           NEEDS_NOGIT=false
           NEEDS_NOIMG=false
+          NEEDS_NOJQ=false
           NEEDS_NOUV=false
           NEEDS_NONPM=false
           NEEDS_NOAGENT=false
@@ -133,6 +137,7 @@ jobs:
                 NEEDS_NOTOOLS=true
                 NEEDS_NOGIT=true
                 NEEDS_NOIMG=true
+                NEEDS_NOJQ=true
                 NEEDS_NOUV=true
                 NEEDS_NONPM=true
                 NEEDS_NOAGENT=true
@@ -155,6 +160,10 @@ jobs:
               noimg/*)
                 NEEDS_NOIMG=true
                 echo "  [noimg] $f"
+                ;;
+              nojq/*)
+                NEEDS_NOJQ=true
+                echo "  [nojq] $f"
                 ;;
               nouv/*)
                 NEEDS_NOUV=true
@@ -182,6 +191,7 @@ jobs:
           echo "  notools: $NEEDS_NOTOOLS"
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
+          echo "  nojq:    $NEEDS_NOJQ"
           echo "  nouv:    $NEEDS_NOUV"
           echo "  nonpm:   $NEEDS_NONPM"
           echo "  noagent: $NEEDS_NOAGENT"
@@ -192,6 +202,7 @@ jobs:
           echo "needs-notools=$NEEDS_NOTOOLS" >> "$GITHUB_OUTPUT"
           echo "needs-nogit=$NEEDS_NOGIT"     >> "$GITHUB_OUTPUT"
           echo "needs-noimg=$NEEDS_NOIMG"     >> "$GITHUB_OUTPUT"
+          echo "needs-nojq=$NEEDS_NOJQ"       >> "$GITHUB_OUTPUT"
           echo "needs-nouv=$NEEDS_NOUV"        >> "$GITHUB_OUTPUT"
           echo "needs-nonpm=$NEEDS_NONPM"      >> "$GITHUB_OUTPUT"
           echo "needs-noagent=$NEEDS_NOAGENT"  >> "$GITHUB_OUTPUT"
@@ -223,6 +234,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: notools/main.no
+          pack: "true"
+          pack-entry: notools
           name: notools
           targets: >-
             linux/amd64,
@@ -263,11 +276,13 @@ jobs:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+          AST_ZIP: ${{ steps.build.outputs.ast-zip }}
         run: |
           echo "============================================"
           echo "  notools Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo "AST package:    ${AST_ZIP:-not produced}"
           echo ""
           echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
@@ -577,6 +592,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: noimg/main.no
+          pack: "true"
+          pack-entry: noimg
           name: noimg
           targets: >-
             linux/amd64,
@@ -617,11 +634,13 @@ jobs:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+          AST_ZIP: ${{ steps.build.outputs.ast-zip }}
         run: |
           echo "============================================"
           echo "  noimg Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo "AST package:    ${AST_ZIP:-not produced}"
           echo ""
           echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
@@ -768,6 +787,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: nouv/main.no
+          pack: "true"
+          pack-entry: nouv
           name: nouv
           targets: >-
             linux/amd64,
@@ -808,11 +829,13 @@ jobs:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+          AST_ZIP: ${{ steps.build.outputs.ast-zip }}
         run: |
           echo "============================================"
           echo "  nouv Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo "AST package:    ${AST_ZIP:-not produced}"
           echo ""
           echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
@@ -928,6 +951,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: nonpm/main.no
+          pack: "true"
+          pack-entry: nonpm
           name: nonpm
           targets: >-
             linux/amd64,
@@ -968,11 +993,13 @@ jobs:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+          AST_ZIP: ${{ steps.build.outputs.ast-zip }}
         run: |
           echo "============================================"
           echo "  nonpm Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo "AST package:    ${AST_ZIP:-not produced}"
           echo ""
           echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
@@ -1078,6 +1105,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: noagent/main.no
+          pack: "true"
+          pack-entry: noagent
           name: noagent
           targets: >-
             linux/amd64,
@@ -1118,11 +1147,13 @@ jobs:
           BINARIES: ${{ steps.build.outputs.binaries }}
           FAILED: ${{ steps.build.outputs.failed }}
           NOLANG_VER: ${{ steps.build.outputs.nolang-version }}
+          AST_ZIP: ${{ steps.build.outputs.ast-zip }}
         run: |
           echo "============================================"
           echo "  noagent Build Report"
           echo "============================================"
           echo "Nolang version: ${NOLANG_VER:-unknown}"
+          echo "AST package:    ${AST_ZIP:-not produced}"
           echo ""
           echo "--- Built successfully ---"
           if [ -n "$BINARIES" ]; then
@@ -1223,6 +1254,8 @@ jobs:
         with:
           version: "v0.4.38"
           entry: nosync/main.no
+          pack: "true"
+          pack-entry: nosync
           name: nosync
           targets: >-
             linux/amd64,
@@ -1273,6 +1306,36 @@ jobs:
         with:
           name: nosync-binaries
           path: dist/nosync-*
+          if-no-files-found: error
+
+  # ── nojq 只发布预编 AST 包（不构建二进制）────────────────────
+  build-nojq-ast:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nojq == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: lizongying/nolang/.github/actions/setup-nolang@main
+        with:
+          version: "v0.4.38"
+          flavor: embedded
+
+      - name: Pack nojq AST package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          no version
+          no pack -o dist/nojq-ast.zip nojq
+          ls -lh dist/nojq-ast.zip
+
+      - name: Upload nojq AST artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nojq-ast
+          path: dist/nojq-ast.zip
           if-no-files-found: error
 
   # ── nosync 三桌面平台原生门禁（链接测试不可跳过）──────────────
@@ -1341,7 +1404,37 @@ jobs:
 
       - name: Vet nosync entry
         shell: bash
-        run: no vet nosync/main.no
+        env:
+          NOLANG_AST_CACHE_OFF: '1'
+        run: |
+          set -uo pipefail
+          diagnostic="$RUNNER_TEMP/nosync-vet-$RUNNER_OS.txt"
+          {
+            printf 'runner=%s\n' "$RUNNER_OS"
+            printf 'cwd=%s\n' "$PWD"
+            printf 'nolang_std_src=%s\n' "${NOLANG_STD_SRC:-}"
+            printf 'nolang_src=%s\n' "${NOLANG_SRC:-}"
+            no version
+            git ls-files --eol nosync
+          } > "$diagnostic" 2>&1
+          no vet nosync/main.no 2>&1 | tee -a "$diagnostic"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            printf '::error::nosync vet failed on %s; see the nosync-vet-%s diagnostic artifact\n' "$RUNNER_OS" "$RUNNER_OS"
+            grep -E '\[ERROR\]|^Error:|panic:|fatal error:' "$diagnostic" | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+          fi
+          exit "$status"
+
+      - name: Upload nosync vet diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nosync-vet-${{ runner.os }}
+          path: ${{ runner.temp }}/nosync-vet-${{ runner.os }}.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run nosync native unit CLI and E2E tests
         shell: bash
@@ -1385,7 +1478,7 @@ jobs:
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nojq-ast, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1411,6 +1504,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: noimg-binaries
+          path: artifacts
+
+      - name: Download nojq AST artifact
+        if: needs.detect-changes.outputs.needs-nojq == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nojq-ast
           path: artifacts
 
       - name: Download nouv artifacts
@@ -1448,6 +1548,7 @@ jobs:
           NEEDS_NOTOOLS: ${{ needs.detect-changes.outputs.needs-notools }}
           NEEDS_NOGIT: ${{ needs.detect-changes.outputs.needs-nogit }}
           NEEDS_NOIMG: ${{ needs.detect-changes.outputs.needs-noimg }}
+          NEEDS_NOJQ: ${{ needs.detect-changes.outputs.needs-nojq }}
           NEEDS_NOUV: ${{ needs.detect-changes.outputs.needs-nouv }}
           NEEDS_NONPM: ${{ needs.detect-changes.outputs.needs-nonpm }}
           NEEDS_NOAGENT: ${{ needs.detect-changes.outputs.needs-noagent }}
@@ -1464,6 +1565,7 @@ jobs:
           echo "  notools: $NEEDS_NOTOOLS"
           echo "  nogit:   $NEEDS_NOGIT"
           echo "  noimg:   $NEEDS_NOIMG"
+          echo "  nojq:    $NEEDS_NOJQ"
           echo "  nouv:    $NEEDS_NOUV"
           echo "  nonpm:   $NEEDS_NONPM"
           echo "  noagent: $NEEDS_NOAGENT"
@@ -1486,6 +1588,7 @@ jobs:
           [ "$NEEDS_NOTOOLS" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### notools\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/notools-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOJQ" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nojq\n\n本次未变更，AST 包请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nojq-ast.zip) 下载。\n\n"
           [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NOAGENT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noagent\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noagent-linux-amd64-${LAST_TAG}) 下载。\n\n"
@@ -1518,6 +1621,7 @@ jobs:
             artifacts/notools-*
             artifacts/nogit-*
             artifacts/noimg-*
+            artifacts/nojq-*
             artifacts/nouv-*
             artifacts/nonpm-*
             artifacts/noagent-*
@@ -1569,15 +1673,24 @@ jobs:
 
             ### 作为 Nolang 依赖使用
 
-            `nogit-ast.zip` 是与平台无关的预编 AST 包，可用 `no add` 引入后在源码中按模块导入：
+            所有 8 个子项目都发布与平台无关的预编 AST 包（`<name>-ast.zip`，需 Nolang v0.4.38+），可用 `no add` 引入后在源码中按模块导入；`nojq` 仅发布 AST 包，不发布二进制：
 
             ```bash
+            no add notools:${{ github.ref_name }}@github.com/lizongying/notools
             no add nogit:${{ github.ref_name }}@github.com/lizongying/notools
+            no add noimg:${{ github.ref_name }}@github.com/lizongying/notools
+            no add nojq:${{ github.ref_name }}@github.com/lizongying/notools
+            no add nouv:${{ github.ref_name }}@github.com/lizongying/notools
+            no add nonpm:${{ github.ref_name }}@github.com/lizongying/notools
+            no add noagent:${{ github.ref_name }}@github.com/lizongying/notools
+            no add nosync:${{ github.ref_name }}@github.com/lizongying/notools
             ```
 
             ```nolang
             # nogit/src/remote
             # nogit/src/httpclient
+            # noimg/lib
+            # nojq/src/parser
             ```
 
             ### 校验
