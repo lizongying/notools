@@ -3,8 +3,7 @@ name: Build
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
-#      判断 notools / nogit / noimg / nouv / nonpm / noagent 哪些子项目有变更，决定是否需要构建
-#      nosync 暂时禁用：不构建、不 CI、不发布（见下方各 job 的 if: false）
+#      判断 notools / nogit / noimg / nouv / nonpm / noagent / nosync 哪些子项目有变更，决定是否需要构建
 #   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
 #   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
 #   4. no build 交叉编译 6 个目标平台（按需构建），产物名追加 -v<版本> 后缀
@@ -94,7 +93,7 @@ jobs:
             echo "needs-nouv=true"       >> "$GITHUB_OUTPUT"
             echo "needs-nonpm=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noagent=true"    >> "$GITHUB_OUTPUT"
-            echo "needs-nosync=false"    >> "$GITHUB_OUTPUT"
+            echo "needs-nosync=true"     >> "$GITHUB_OUTPUT"
             echo "last-tag="             >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -137,8 +136,8 @@ jobs:
                 NEEDS_NOUV=true
                 NEEDS_NONPM=true
                 NEEDS_NOAGENT=true
-                NEEDS_NOSYNC=false
-                echo "  [root-config] $f → triggers all (nosync disabled)"
+                NEEDS_NOSYNC=true
+                echo "  [root-config] $f → triggers all"
                 continue
                 ;;
             esac
@@ -170,8 +169,8 @@ jobs:
                 echo "  [noagent] $f"
                 ;;
               nosync/*)
-                NEEDS_NOSYNC=false
-                echo "  [nosync] $f (disabled)"
+                NEEDS_NOSYNC=true
+                echo "  [nosync] $f"
                 ;;
             esac
           done <<< "$CHANGED_FILES"
@@ -222,7 +221,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: notools/main.no
           name: notools
           targets: >-
@@ -388,9 +387,9 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          # v0.4.37 是首个把 no pack 输出改成逐模块 <modulePath>.gob 的版本；
-          # v0.4.31 的 zip 仍只有 ast.gob，消费端无法按模块取用。
-          version: "v0.4.37"
+          # v0.4.37 起 no pack 输出为逐模块 <modulePath>.gob；v0.4.31 的 zip
+          # 仍只有 ast.gob，消费端无法按模块取用，因此这里钉 v0.4.38。
+          version: "v0.4.38"
           entry: nogit/main.no
           # Publish the platform-independent AST package alongside the binaries:
           # dist/nogit-ast.zip -> release asset nogit-ast.zip, consumed by
@@ -576,7 +575,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: noimg/main.no
           name: noimg
           targets: >-
@@ -767,7 +766,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: nouv/main.no
           name: nouv
           targets: >-
@@ -927,7 +926,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: nonpm/main.no
           name: nonpm
           targets: >-
@@ -1077,7 +1076,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: noagent/main.no
           name: noagent
           targets: >-
@@ -1203,7 +1202,7 @@ jobs:
   # ── 构建 nosync（六目标发布资产）────────────────────────────────
   build-nosync:
     needs: detect-changes
-    if: false # NOSYNC 暂时禁用：不构建、不 CI
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1222,7 +1221,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           entry: nosync/main.no
           name: nosync
           targets: >-
@@ -1279,7 +1278,7 @@ jobs:
   # ── nosync 三桌面平台原生门禁（链接测试不可跳过）──────────────
   native-nosync:
     needs: detect-changes
-    if: false # NOSYNC 暂时禁用：不构建、不 CI
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1290,10 +1289,41 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: lizongying/nolang/.github/actions/setup-nolang@main
+      - name: Set up nolang on Unix
+        if: runner.os != 'Windows'
+        uses: lizongying/nolang/.github/actions/setup-nolang@main
         with:
-          version: "v0.4.37"
+          version: "v0.4.38"
           flavor: embedded
+
+      # Keep the Windows install explicit: no.exe must have a Windows executable
+      # extension, and every download is checked before it reaches PATH.
+      - name: Set up nolang on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'nolang-cache'
+          $bin = Join-Path $cache 'bin'
+          $src = Join-Path $cache 'src'
+          New-Item -ItemType Directory -Force -Path $bin, $src | Out-Null
+          $compiler = Join-Path $bin 'no.exe'
+          $asset = 'https://github.com/lizongying/nolang/releases/download/v0.4.38/no-llvm-windows-amd64-v0.4.38.exe'
+          $expected = '874f5e72091d4ee3a5e4d8632f186b5414357c2e21de87e422db51d45960e6c1'
+          Invoke-WebRequest -Uri $asset -OutFile $compiler
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $compiler).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "nolang compiler checksum mismatch: $actual" }
+          $archive = Join-Path $src 'nolang-src.zip'
+          Invoke-WebRequest -Uri 'https://github.com/lizongying/nolang/archive/refs/tags/v0.4.38.zip' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $src -Force
+          $srcRoot = Join-Path $src 'nolang-0.4.38\src'
+          $stdSrc = Join-Path $srcRoot 'std'
+          if (-not (Test-Path -LiteralPath $stdSrc -PathType Container)) { throw "missing standard library: $stdSrc" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "NOLANG_STD_SRC=$stdSrc"
+          Add-Content -Path $env:GITHUB_ENV -Value "NOLANG_SRC=$srcRoot"
+          & $compiler version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -1323,12 +1353,13 @@ jobs:
           if [ "$RUNNER_OS" != Windows ]; then
             no run -cc zig nosync/tests/test.no
           fi
+          mkdir -p dist
           no build -cc zig -o dist/nosync nosync/main.no
 
   # ── Linux 发布 artifact 容器 smoke ──────────────────────────────
   container-nosync:
     needs: [detect-changes, build-nosync]
-    if: false # NOSYNC 暂时禁用：不构建、不 CI
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1354,7 +1385,7 @@ jobs:
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1401,6 +1432,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: noagent-binaries
+          path: artifacts
+
+      - name: Download nosync artifacts
+        if: needs.detect-changes.outputs.needs-nosync == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nosync-binaries
           path: artifacts
 
       - name: Generate checksums and build release notes
@@ -1451,6 +1489,7 @@ jobs:
           [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NOAGENT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noagent\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noagent-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOSYNC" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nosync\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nosync-linux-amd64-${LAST_TAG}) 下载。\n\n"
 
           # 输出到 GITHUB_ENV 供 release step 的 body 引用
           {
@@ -1482,11 +1521,12 @@ jobs:
             artifacts/nouv-*
             artifacts/nonpm-*
             artifacts/noagent-*
+            artifacts/nosync-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI + 纯 Nolang 本地增量同步工具，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
@@ -1521,6 +1561,10 @@ jobs:
             chmod +x noagent
             sudo mv noagent /usr/local/bin/noagent
 
+            # nosync (纯 Nolang 本地增量同步工具)
+            curl -fsSL -o nosync https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nosync-linux-amd64-${{ github.ref_name }}
+            chmod +x nosync
+            sudo mv nosync /usr/local/bin/nosync
             ```
 
             ### 作为 Nolang 依赖使用

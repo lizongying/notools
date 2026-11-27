@@ -1,5 +1,12 @@
 # 更新日誌
 
+## v0.1.41
+
+- build(ci): bump the pinned Nolang compiler to v0.4.38 in CI and all eight package manifests
+- ci(nosync): re-enable nosync build, native gate, container smoke and release assets
+- chore(smoke): restore nosync in default smoke targets
+- docs(downstream): update AGENTS and nogit README for the v0.4.38 pin
+
 ## v0.1.40
 
 - ci(nosync): disable nosync build, native gate and container smoke jobs

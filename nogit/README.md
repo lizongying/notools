@@ -36,7 +36,7 @@ no build
 
 ### 方式四：作为 Nolang 依赖引入
 
-Release 同时发布与平台无关的预编 AST 包 `nogit-ast.zip`（需 Nolang v0.4.37+）：
+Release 同时发布与平台无关的预编 AST 包 `nogit-ast.zip`（需 Nolang v0.4.38+）：
 
 ```bash
 no add nogit@github.com/lizongying/notools

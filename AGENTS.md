@@ -45,7 +45,7 @@
 
 ### 1.2 包、入口与导入
 
-- 每个子项目有一份 `package.noml`：`compiler.version` 目前统一钉 `v0.4.37`，`output: '/dist'`。
+- 每个子项目有一份 `package.noml`：`compiler.version` 目前统一钉 `v0.4.38`，`output: '/dist'`。
   本地实际使用的 `no` 可能不是这个版本——排查前先 `no version` 核对（见 §5.4）。
 - 入口是 `main.no`（子命令直接作为顶层脚本运行，不再包一层 `main`）；库入口是 `lib.no`（目前只有 `noimg/lib.no`）。
 - 测试档用工作区根起始的绝对路径导入，如 `# /nogit/src/oid`；标准库模块自动加载，
