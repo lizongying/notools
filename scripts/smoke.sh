@@ -29,7 +29,7 @@ for arg in "$@"; do
     *) TARGETS+=("$arg") ;;
   esac
 done
-[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm noagent nosync)
+[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm noagent)  # nosync 暂时禁用
 
 TOTAL_PASS=0
 TOTAL_FAIL=0

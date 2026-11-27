@@ -1,5 +1,12 @@
 # 更新日誌
 
+## v0.1.40
+
+- ci(nosync): disable nosync build, native gate and container smoke jobs
+- build(release): drop nosync binaries from release assets and install instructions
+- chore(smoke): remove nosync from default smoke targets
+- chore(cleanup): remove committed nosync pycache artifact
+
 ## v0.1.39
 
 - refactor(downstream): replace to-bytes-str with to-str and explicit option unwrap

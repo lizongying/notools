@@ -3,7 +3,8 @@ name: Build
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
-#      判断 notools / nogit / noimg / nouv / nonpm / noagent / nosync 哪些子项目有变更，决定是否需要构建
+#      判断 notools / nogit / noimg / nouv / nonpm / noagent 哪些子项目有变更，决定是否需要构建
+#      nosync 暂时禁用：不构建、不 CI、不发布（见下方各 job 的 if: false）
 #   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
 #   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
 #   4. no build 交叉编译 6 个目标平台（按需构建），产物名追加 -v<版本> 后缀
@@ -93,7 +94,7 @@ jobs:
             echo "needs-nouv=true"       >> "$GITHUB_OUTPUT"
             echo "needs-nonpm=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noagent=true"    >> "$GITHUB_OUTPUT"
-            echo "needs-nosync=true"     >> "$GITHUB_OUTPUT"
+            echo "needs-nosync=false"    >> "$GITHUB_OUTPUT"
             echo "last-tag="             >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -136,8 +137,8 @@ jobs:
                 NEEDS_NOUV=true
                 NEEDS_NONPM=true
                 NEEDS_NOAGENT=true
-                NEEDS_NOSYNC=true
-                echo "  [root-config] $f → triggers all"
+                NEEDS_NOSYNC=false
+                echo "  [root-config] $f → triggers all (nosync disabled)"
                 continue
                 ;;
             esac
@@ -169,8 +170,8 @@ jobs:
                 echo "  [noagent] $f"
                 ;;
               nosync/*)
-                NEEDS_NOSYNC=true
-                echo "  [nosync] $f"
+                NEEDS_NOSYNC=false
+                echo "  [nosync] $f (disabled)"
                 ;;
             esac
           done <<< "$CHANGED_FILES"
@@ -1202,7 +1203,7 @@ jobs:
   # ── 构建 nosync（六目标发布资产）────────────────────────────────
   build-nosync:
     needs: detect-changes
-    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    if: false # NOSYNC 暂时禁用：不构建、不 CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1278,7 +1279,7 @@ jobs:
   # ── nosync 三桌面平台原生门禁（链接测试不可跳过）──────────────
   native-nosync:
     needs: detect-changes
-    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    if: false # NOSYNC 暂时禁用：不构建、不 CI
     strategy:
       fail-fast: false
       matrix:
@@ -1327,7 +1328,7 @@ jobs:
   # ── Linux 发布 artifact 容器 smoke ──────────────────────────────
   container-nosync:
     needs: [detect-changes, build-nosync]
-    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    if: false # NOSYNC 暂时禁用：不构建、不 CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1353,7 +1354,7 @@ jobs:
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1400,13 +1401,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: noagent-binaries
-          path: artifacts
-
-      - name: Download nosync artifacts
-        if: needs.detect-changes.outputs.needs-nosync == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: nosync-binaries
           path: artifacts
 
       - name: Generate checksums and build release notes
@@ -1457,7 +1451,6 @@ jobs:
           [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64-${LAST_TAG}) 下载。\n\n"
           [ "$NEEDS_NOAGENT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noagent\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noagent-linux-amd64-${LAST_TAG}) 下载。\n\n"
-          [ "$NEEDS_NOSYNC" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nosync\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nosync-linux-amd64-${LAST_TAG}) 下载。\n\n"
 
           # 输出到 GITHUB_ENV 供 release step 的 body 引用
           {
@@ -1489,12 +1482,11 @@ jobs:
             artifacts/nouv-*
             artifacts/nonpm-*
             artifacts/noagent-*
-            artifacts/nosync-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI + 纯 Nolang 本地增量同步工具，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
@@ -1529,10 +1521,6 @@ jobs:
             chmod +x noagent
             sudo mv noagent /usr/local/bin/noagent
 
-            # nosync (纯 Nolang 本地增量同步工具)
-            curl -fsSL -o nosync https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nosync-linux-amd64-${{ github.ref_name }}
-            chmod +x nosync
-            sudo mv nosync /usr/local/bin/nosync
             ```
 
             ### 作为 Nolang 依赖使用
