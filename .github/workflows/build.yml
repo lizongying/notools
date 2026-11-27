@@ -50,6 +50,20 @@ jobs:
           echo "  REPO:    $REPO"
           echo "============================================"
 
+          # Diagnostic tags run only the nosync native gate and publish the
+          # failing Windows vet log as an anonymously downloadable release asset.
+          if [[ "$NEW_TAG" == *-diagnostic.* ]]; then
+            echo "needs-notools=false"    >> "$GITHUB_OUTPUT"
+            echo "needs-nogit=false"      >> "$GITHUB_OUTPUT"
+            echo "needs-noimg=false"      >> "$GITHUB_OUTPUT"
+            echo "needs-nouv=false"       >> "$GITHUB_OUTPUT"
+            echo "needs-nonpm=false"      >> "$GITHUB_OUTPUT"
+            echo "needs-noagent=false"    >> "$GITHUB_OUTPUT"
+            echo "needs-nosync=true"      >> "$GITHUB_OUTPUT"
+            echo "last-tag=v0.1.42"       >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # ── 1. 获取所有 tags，semver 排序，找到上一个 release tag ──
           # GitHub API 分页获取全部 tags
           TAGS_JSON=""
@@ -1341,7 +1355,52 @@ jobs:
 
       - name: Vet nosync entry
         shell: bash
-        run: no vet nosync/main.no
+        env:
+          NOLANG_AST_CACHE_OFF: '1'
+        run: |
+          set -uo pipefail
+          diagnostic="$RUNNER_TEMP/nosync-vet-$RUNNER_OS.txt"
+          {
+            printf 'runner=%s\n' "$RUNNER_OS"
+            printf 'cwd=%s\n' "$PWD"
+            printf 'nolang_std_src=%s\n' "${NOLANG_STD_SRC:-}"
+            printf 'nolang_src=%s\n' "${NOLANG_SRC:-}"
+            no version
+            git ls-files --eol nosync
+          } > "$diagnostic" 2>&1
+          no vet nosync/main.no 2>&1 | tee -a "$diagnostic"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            printf '::error::nosync vet failed on %s; see the nosync-vet-%s diagnostic artifact\n' "$RUNNER_OS" "$RUNNER_OS"
+            grep -E '\[ERROR\]|^Error:|panic:|fatal error:' "$diagnostic" | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+          fi
+          exit "$status"
+
+      - name: Upload nosync vet diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nosync-vet-${{ runner.os }}
+          path: ${{ runner.temp }}/nosync-vet-${{ runner.os }}.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish Windows vet diagnostic as public release asset
+        if: failure() && runner.os == 'Windows'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: nosync Windows vet diagnostic
+          body: |
+            Temporary diagnostic prerelease for the nosync Windows native gate.
+            This is not a production release.
+          files: ${{ runner.temp }}/nosync-vet-Windows.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: true
+          generate_release_notes: false
 
       - name: Run nosync native unit CLI and E2E tests
         shell: bash
@@ -1384,7 +1443,7 @@ jobs:
 
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
-    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-diagnostic.') }}
     needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
     runs-on: ubuntu-latest
     steps:
