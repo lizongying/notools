@@ -7,6 +7,14 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.43
+
+- build(ci): bump the pinned Nolang compiler to v0.4.40 in CI and all eight package manifests
+- ci: disable Windows PDB generation for cross-built binaries
+- fix(nosync): use `fs.O_*` constants for POSIX open flags
+- fix(notools): guard overflow in `env` / `tail` via option unwrap
+- docs(skills): refresh nolang-core skill modules, add nolang-app / nolang-compiler skills and nohub/review guides
+
 ## v0.1.42
 
 - feat(ci): publish a platform-independent `<name>-ast.zip` for all eight subprojects

@@ -123,7 +123,7 @@ cp noagent/dist/noagent /usr/local/bin/noagent
 
 ### 预编 AST 包（作为 Nolang 依赖）
 
-每个 Release 都为全部 8 个子项目发布与平台无关的 `<name>-ast.zip`（需 Nolang v0.4.38+）：`notools-ast.zip`、`nogit-ast.zip`、`noimg-ast.zip`、`nojq-ast.zip`、`nouv-ast.zip`、`nonpm-ast.zip`、`noagent-ast.zip`、`nosync-ast.zip`。其中 `nojq` 只发布 AST 包，不发布二进制。
+每个 Release 都为全部 8 个子项目发布与平台无关的 `<name>-ast.zip`（需 Nolang v0.4.40+）：`notools-ast.zip`、`nogit-ast.zip`、`noimg-ast.zip`、`nojq-ast.zip`、`nouv-ast.zip`、`nonpm-ast.zip`、`noagent-ast.zip`、`nosync-ast.zip`。其中 `nojq` 只发布 AST 包，不发布二进制。
 
 ```bash
 no add nogit:v0.1.41@github.com/lizongying/notools
