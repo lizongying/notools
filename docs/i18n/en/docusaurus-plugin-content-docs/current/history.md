@@ -7,6 +7,10 @@ sidebar_position: 2
 This page collects Nolang release records for each version, kept consistent with the root `HISTORY.md`.
 
 
+## v0.1.46
+
+- fix(nosync): pass `GetCurrentDirectoryW` arguments in Win32 order (capacity, buffer) so relative-path stat on Windows no longer segfaults
+
 ## v0.1.45
 
 - fix(nosync): pass the missing `lpDefaultChar` argument to `WideCharToMultiByte` so Windows native tests no longer segfault during relative-path stat
