@@ -7,6 +7,11 @@ sidebar_position: 2
 This page collects Nolang release records for each version, kept consistent with the root `HISTORY.md`.
 
 
+## v0.1.44
+
+- fix(ci): run nosync native gates via explicit `no build` + execute so the Windows v0.4.40 `no run` temp `out` binary can launch
+- ci(nosync): tee native test/build output to diagnostics and upload them on failure
+
 ## v0.1.43
 
 - build(ci): bump the pinned Nolang compiler to v0.4.40 in CI and all eight package manifests

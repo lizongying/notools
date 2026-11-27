@@ -1434,27 +1434,43 @@ jobs:
           fi
           exit "$status"
 
-      - name: Upload nosync vet diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: nosync-vet-${{ runner.os }}
-          path: ${{ runner.temp }}/nosync-vet-${{ runner.os }}.txt
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: Run nosync native unit CLI and E2E tests
         shell: bash
         env:
           NOLANG_AST_CACHE_OFF: '1'
         run: |
           set -euo pipefail
-          no run -cc zig nosync/tests/test-native.no
+          diagnostic="$RUNNER_TEMP/nosync-native-$RUNNER_OS.txt"
+          : > "$diagnostic"
+          trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -f "$diagnostic" ]; then while IFS= read -r line; do printf "::error::%s\n" "$line"; done < "$diagnostic"; fi' EXIT
+          # v0.4.40 的 `no run` 在 Windows 把临时产物命名为 out（无 .exe），
+          # Go exec 无法启动；改为显式 build 到带 .exe 的路径再执行。
+          run_native_test() {
+            src="$1"
+            exe="${src%.no}"
+            [ "$RUNNER_OS" = Windows ] && exe="${exe}.exe"
+            no build -cc zig -o "$exe" "$src" 2>&1 | tee -a "$diagnostic"
+            "$exe" 2>&1 | tee -a "$diagnostic"
+          }
+          run_native_test nosync/tests/test-native.no
           if [ "$RUNNER_OS" != Windows ]; then
-            no run -cc zig nosync/tests/test.no
+            run_native_test nosync/tests/test.no
           fi
           mkdir -p dist
-          no build -cc zig -o dist/nosync nosync/main.no
+          main_out='dist/nosync'
+          [ "$RUNNER_OS" = Windows ] && main_out='dist/nosync.exe'
+          no build -cc zig -o "$main_out" nosync/main.no 2>&1 | tee -a "$diagnostic"
+
+      - name: Upload nosync native diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nosync-native-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/nosync-vet-${{ runner.os }}.txt
+            ${{ runner.temp }}/nosync-native-${{ runner.os }}.txt
+          if-no-files-found: warn
+          retention-days: 7
 
   # ── Linux 发布 artifact 容器 smoke ──────────────────────────────
   container-nosync:
