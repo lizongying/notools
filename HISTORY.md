@@ -1,5 +1,10 @@
 # 更新日誌
 
+## v0.1.45
+
+- fix(nosync): pass the missing `lpDefaultChar` argument to `WideCharToMultiByte` so Windows native tests no longer segfault during relative-path stat
+- ci(nosync): capture staged diagnostics for the Windows native gate
+
 ## v0.1.44
 
 - fix(ci): run nosync native gates via explicit `no build` + execute so the Windows v0.4.40 `no run` temp `out` binary can launch

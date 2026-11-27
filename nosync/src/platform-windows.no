@@ -51,7 +51,7 @@ _GetLastError = () (error i32)
 _MultiByteToWideChar = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32) (written i32)
 
 #{c}
-_WideCharToMultiByte = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32, used *byte) (written i32)
+_WideCharToMultiByte = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32, default-char *byte, used *byte) (written i32)
 
 #{c}
 _GetCurrentDirectoryW = (buffer *byte, capacity i32) (written i32)
@@ -224,7 +224,7 @@ windows-wide-pointer-string = (pointer i64, count i64) (value str) {
     ! windows-ensure-buffers() -> return
     length = count
     length < 0 -> length = -1
-    written = _WideCharToMultiByte(65001, 0, pointer, length, WIN-UTF8-PTR, 131071, 0)
+    written = _WideCharToMultiByte(65001, 0, pointer, length, WIN-UTF8-PTR, 131071, 0, 0)
     written <= 0 || written >= 131071 -> return
     length >= 0 -> _memset(add-index(WIN-UTF8-PTR, written), 0, 1)
 
@@ -296,7 +296,7 @@ windows-memory-bytes = (pointer i64, count i64) (bytes []byte) {
     count <= 0 || count > 32767 -> return
     wide-count = _MultiByteToWideChar(28591, 0, pointer, count, WIN-WIDE-PTR, 32767)
     wide-count != count -> return
-    written = _WideCharToMultiByte(65000, 0, WIN-WIDE-PTR, wide-count, WIN-UTF8-PTR, 131071, 0)
+    written = _WideCharToMultiByte(65000, 0, WIN-WIDE-PTR, wide-count, WIN-UTF8-PTR, 131071, 0, 0)
     written <= 0 -> return
     _memset(add-index(WIN-UTF8-PTR, written), 0, 1)
     encoded = _strstr(WIN-UTF8-PTR, '')
@@ -500,19 +500,13 @@ windows-seek = (fd i64, offset i64) (ok bool) {
 }
 
 windows-stat = (path str) (info stat-info, ok bool) {
-    eprint('MARK: windows-stat start')
     info.kind = KIND-OTHER
     ! windows-ensure-buffers() -> return
-    eprint('MARK: windows-stat buffers ready')
     extended = windows-extended-path(path)
-    eprint('MARK: windows-stat extended path done')
     ! windows-load-wide(extended) -> return
-    eprint('MARK: windows-stat wide path loaded')
     handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 35651584, 0)
-    eprint('MARK: windows-stat CreateFileW done')
     handle == -1 -> return
     valid = _GetFileInformationByHandle(handle, WIN-FILE-DATA-PTR)
-    eprint('MARK: windows-stat GetFileInformationByHandle done')
     closed = windows-close(handle)
     ! valid || ! closed -> return
     attributes = windows-u32-memory(WIN-FILE-DATA-PTR, 0)
