@@ -1,10 +1,10 @@
 # Red lines — 违反了就静默出错或丢东西
 
-**权威顺序**：实测 > `AGENTS.md`（语法与编码权威） > `.agents/rules/nolang-red-lines.md`（红线全文） > 记忆笔记。
+**权威顺序**：实测 > `AGENTS.md`（语法与编码权威） > `.agents/rules/nolang-red-lines.md`（红线总入口） > 记忆笔记。
 
 本档只放**每次动手前必须扫一眼**的条目；完整论证、命令与环境见
-`.agents/rules/nolang-red-lines.md`（`alwaysApply`，宿主支持时无需点名加载）。
-两份如有出入，以该文件与实测为准。
+`.agents/rules/nolang-red-lines.md`（`alwaysApply`，宿主支持时无需点名加载；内含任务路由表指向编译器 / 应用两份完整红线）。
+两份如有出入，以对应子文件与实测为准。
 
 ## Git
 
@@ -21,7 +21,7 @@
 
 ## 语言（写 `.no` 前必读）
 
-- 🔴 **索引写全域禁用**：`s[i] = v` / `t[i] = c`。变长走 `push` 家族（`str.push` / `push-str`；`txt.push` / `push-str` / `push-txt`），原位覆写走 `fill` 或 place-match，逐字节构造走 `[]byte` + `to-bytes-str`。
+- 🔴 **索引写全域禁用**：`s[i] = v` / `t[i] = c`。变长走 `push` 家族（`str.push` / `push-str`；`txt.push` / `push-str` / `push-txt`），原位覆写走 `fill` 或 place-match，逐字节构造走 `[]byte` + `to-str`。
 - 🔴 空 `str` 的 `data == NULL`：`eq(x, n)` 在 `n > 0` 直接崩 ⇒ 空串断言一律 `n = 0`。
 - 🔴 `t[i]` / `s[i]` 越界读是 `err` 不是 `-1`：断言 tag，不要断言兜底值。
 - 🔴 不写 `free`（deferred move + 作用域退出自动销毁）；协程用 `co` 或协程组 `{}`，`go` **不是**关键字。
@@ -37,7 +37,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:$PATH"
 
 make no                              # 改过 src/std 或 Go 代码必做
 ./bin/no vet src/std                 # 必须 0 error（见 m40-verify.md）
-./bin/no test test/std               # 目录级 gate：ALL TESTS PASSED / rc=0
+./bin/no test test-std/src               # 目录级 gate：ALL TESTS PASSED / rc=0
 cd src && go test -count=1 ./mir/ ./fmt/ ./parser/ ./lexer/ ./hir/ ./checker/
 ```
 

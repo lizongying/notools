@@ -1,0 +1,30 @@
+; Regression guard: place-match index write on a str/txt is now a compile error.
+;
+; Before the fix (v0.4.31 and earlier): `no vet` was clean and the program
+; printed 01 01 01 01 instead of 'bbbb' — the `str` RHS was bit-copied into
+; a char slot, so the low byte of %str-long's length/tag field (1) was stored.
+;
+; After the fix (v0.4.37+): `no build` must fail with stridxwr (trace idxwrite)
+; and name the allowed alternatives (push / push-str / fill / concatenation /
+; []byte). `no vet` catches it too via the surface-AST place-match check.
+;
+; Trigger: `v str = 'b'` (a one-character STRING), then `s[i]: { ok -> it = v }`.
+; The ok arm's `it` is the element place (type char for str, byte for []byte).
+;
+; Control: `v char = "b"` (char literal, double quotes) used to produce 'bbbb',
+; but the language now forbids ALL index writes on str/txt regardless of RHS.
+; Control: plain `s[0] = v` is rejected with trace `idxwrite`.
+; Control: []byte / []i64 place-match writes remain legal.
+probe = () {
+    s = ' '.repeat(4)
+    i <- [0..4): {
+        v str = 'b'
+        s[i]: {
+            ok -> it = v
+            -> _
+        }
+    }
+    print(s)
+}
+
+probe()

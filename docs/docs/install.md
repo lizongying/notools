@@ -25,37 +25,39 @@ sidebar_position: 2
 
 | 平台 | notools | nogit | noimg | nouv | nonpm | noagent |
 |------|---------|-------|-------|------|-------|---------|
-| Linux amd64 | `notools-linux-amd64` | `nogit-linux-amd64` | `noimg-linux-amd64` | `nouv-linux-amd64` | `nonpm-linux-amd64` | `noagent-linux-amd64` |
-| Linux arm64 | `notools-linux-arm64` | `nogit-linux-arm64` | `noimg-linux-arm64` | `nouv-linux-arm64` | `nonpm-linux-arm64` | `noagent-linux-arm64` |
-| macOS amd64 | `notools-darwin-amd64` | `nogit-darwin-amd64` | `noimg-darwin-amd64` | `nouv-darwin-amd64` | `nonpm-darwin-amd64` | `noagent-darwin-amd64` |
-| macOS arm64 | `notools-darwin-arm64` | `nogit-darwin-arm64` | `noimg-darwin-arm64` | `nouv-darwin-arm64` | `nonpm-darwin-arm64` | `noagent-darwin-arm64` |
-| Windows amd64 | `notools-windows-amd64.exe` | `nogit-windows-amd64.exe` | `noimg-windows-amd64.exe` | `nouv-windows-amd64.exe` | `nonpm-windows-amd64.exe` | `noagent-windows-amd64.exe` |
-| Windows arm64 | `notools-windows-arm64.exe` | `nogit-windows-arm64.exe` | `noimg-windows-arm64.exe` | `nouv-windows-arm64.exe` | `nonpm-windows-arm64.exe` | `noagent-windows-arm64.exe` |
+| Linux amd64 | `notools-linux-amd64-v0.1.38` | `nogit-linux-amd64-v0.1.38` | `noimg-linux-amd64-v0.1.38` | `nouv-linux-amd64-v0.1.38` | `nonpm-linux-amd64-v0.1.38` | `noagent-linux-amd64-v0.1.38` |
+| Linux arm64 | `notools-linux-arm64-v0.1.38` | `nogit-linux-arm64-v0.1.38` | `noimg-linux-arm64-v0.1.38` | `nouv-linux-arm64-v0.1.38` | `nonpm-linux-arm64-v0.1.38` | `noagent-linux-arm64-v0.1.38` |
+| macOS amd64 | `notools-darwin-amd64-v0.1.38` | `nogit-darwin-amd64-v0.1.38` | `noimg-darwin-amd64-v0.1.38` | `nouv-darwin-amd64-v0.1.38` | `nonpm-darwin-amd64-v0.1.38` | `noagent-darwin-amd64-v0.1.38` |
+| macOS arm64 | `notools-darwin-arm64-v0.1.38` | `nogit-darwin-arm64-v0.1.38` | `noimg-darwin-arm64-v0.1.38` | `nouv-darwin-arm64-v0.1.38` | `nonpm-darwin-arm64-v0.1.38` | `noagent-darwin-arm64-v0.1.38` |
+| Windows amd64 | `notools-windows-amd64-v0.1.38.exe` | `nogit-windows-amd64-v0.1.38.exe` | `noimg-windows-amd64-v0.1.38.exe` | `nouv-windows-amd64-v0.1.38.exe` | `nonpm-windows-amd64-v0.1.38.exe` | `noagent-windows-amd64-v0.1.38.exe` |
+| Windows arm64 | `notools-windows-arm64-v0.1.38.exe` | `nogit-windows-arm64-v0.1.38.exe` | `noimg-windows-arm64-v0.1.38.exe` | `nouv-windows-arm64-v0.1.38.exe` | `nonpm-windows-arm64-v0.1.38.exe` | `noagent-windows-arm64-v0.1.38.exe` |
+
+檔名中的 `-v0.1.38` 是版本號後輟，下載時替換為目標版本即可。
 
 ```bash
-# Linux amd64 示例 — 按需安裝
+# Linux amd64 示例 — 按需安裝（將 v0.1.38 替換為所需版本）
 # notools
-curl -fsSL -o notools https://github.com/lizongying/notools/releases/latest/download/notools-linux-amd64
+curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/v0.1.38/notools-linux-amd64-v0.1.38
 chmod +x notools && sudo mv notools /usr/local/bin/
 
 # nogit
-curl -fsSL -o nogit https://github.com/lizongying/notools/releases/latest/download/nogit-linux-amd64
+curl -fsSL -o nogit https://github.com/lizongying/notools/releases/download/v0.1.38/nogit-linux-amd64-v0.1.38
 chmod +x nogit && sudo mv nogit /usr/local/bin/
 
 # noimg
-curl -fsSL -o noimg https://github.com/lizongying/notools/releases/latest/download/noimg-linux-amd64
+curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/v0.1.38/noimg-linux-amd64-v0.1.38
 chmod +x noimg && sudo mv noimg /usr/local/bin/
 
 # nouv
-curl -fsSL -o nouv https://github.com/lizongying/notools/releases/latest/download/nouv-linux-amd64
+curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/v0.1.38/nouv-linux-amd64-v0.1.38
 chmod +x nouv && sudo mv nouv /usr/local/bin/
 
 # nonpm
-curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/latest/download/nonpm-linux-amd64
+curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/download/v0.1.38/nonpm-linux-amd64-v0.1.38
 chmod +x nonpm && sudo mv nonpm /usr/local/bin/
 
 # noagent
-curl -fsSL -o noagent https://github.com/lizongying/notools/releases/latest/download/noagent-linux-amd64
+curl -fsSL -o noagent https://github.com/lizongying/notools/releases/download/v0.1.38/noagent-linux-amd64-v0.1.38
 chmod +x noagent && sudo mv noagent /usr/local/bin/
 ```
 

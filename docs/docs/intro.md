@@ -28,8 +28,8 @@ notools 是一個使用 [Nolang](https://github.com/lizongying/nolang) 語言實
 ## 快速開始
 
 ```bash
-# 從 Releases 下載預編譯二進制
-curl -fsSL -o notools https://github.com/lizongying/notools/releases/latest/download/notools-linux-amd64
+# 從 Releases 下載預編譯二進制（將 v0.1.38 替換為所需版本）
+curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/v0.1.38/notools-linux-amd64-v0.1.38
 chmod +x notools && sudo mv notools /usr/local/bin/
 
 # 使用

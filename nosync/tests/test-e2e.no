@@ -1,0 +1,393 @@
+; 真实同步编排回归：路径语义、元数据、删除保护、链接与 delta。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/platform
+# /nosync/src/file-io
+# /nosync/src/filter
+# /nosync/src/sync
+
+OPTS = options{}
+
+e2e-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+ensure-e2e-tmp = () {
+    info, exists = platform-stat('tmp')
+    exists && info.kind == KIND-DIR -> return
+    created = platform-mkdir('tmp', 448)
+    e2e-check(created, 'create test tmp directory')
+}
+
+reset-options = () {
+    OPTS = options{}
+    OPTS.recursive = true
+    OPTS.links = true
+    OPTS.perms = true
+    OPTS.times = true
+    OPTS.owner = true
+    OPTS.group = true
+    OPTS.block-size = 4096
+    OPTS.memory-limit = 16777216
+}
+
+run-ok = (name str) {
+    code = run-sync(OPTS, [])
+    code != 0 -> eprint(name - ': ' - STATE.error-stage - ' ' - STATE.error-path - ' ' - STATE.error-message)
+    e2e-check(code == 0, name)
+}
+
+mtime-equals = (path str, expected i64) (same bool) {
+    value = os.stat-mtime(path)
+    value: {
+        ok -> same = it == expected
+
+        -> {
+        }
+    }
+}
+
+mode-equals = (path str, expected i64) (same bool) {
+    value = os.stat-mode(path)
+    value: {
+        ok -> same = it == expected
+
+        -> {
+        }
+    }
+}
+
+same-content = (a str, b str) (same bool) {
+    a-size = fs.stat-size(a)
+    b-size = fs.stat-size(b)
+    a-size: {
+        ok -> {
+            size = it
+            b-size: {
+                ok -> {
+                    size != it -> return
+                    a-digest, a-ok = file-digest(a, size)
+                    b-digest, b-ok = file-digest(b, size)
+                    same = a-ok && b-ok && sha256-equal(a-digest, b-digest)
+                }
+
+                -> return
+            }
+        }
+
+        -> return
+    }
+}
+
+append-block = (data []byte, block []byte) (out []byte) {
+    out = data
+    i <- [0..block.len()): {
+        block[i]: {
+            ok -> out.push(it)
+
+            -> return
+        }
+    }
+}
+
+make-block = (block i64, seed i64) (data []byte) {
+    data = with-len(4096)
+    i <- [0..data.len()): {
+        value = add-index(mul-index(block, 29), mul-index(i, 37))
+        value = add-index(value, seed)
+        data[i]: {
+            ok -> it = to-byte(value & 255)
+
+            -> return
+        }
+    }
+}
+
+write-pattern = (path str, blocks i64, extra bool) (ok bool) {
+    data []byte = []
+    extra -> data = append-block(data, make-block(99, 7))
+    i <- [0..blocks): {
+        data = append-block(data, make-block(i, 3))
+    }
+    ok = fs.write-file(path, data)
+}
+
+test-basic-links-delete = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create basic case root')
+    reset-options()
+    OPTS.src = case-root - '/src/'
+    OPTS.dst = case-root - '/dst'
+    e2e-check(fs.mkdir(case-root - '/src', 448), 'create source root')
+    e2e-check(fs.mkdir(case-root - '/src/sub', 448), 'create source subdirectory')
+    e2e-check(fs.write-file(case-root - '/src/a', 'alpha'.to-bytes()), 'write source file')
+    e2e-check(fs.write-file(case-root - '/src/sub/b', 'beta'.to-bytes()), 'write nested file')
+    e2e-check(fs.symlink('a', case-root - '/src/link'), 'create source link')
+    e2e-check(fs.symlink('missing-target', case-root - '/src/broken'), 'create dangling source link')
+    OPTS.dry-run = true
+    run-ok('dry-run missing destination')
+    e2e-check(! fs.lstat(OPTS.dst), 'dry-run does not create destination')
+    OPTS.dry-run = false
+    run-ok('initial archive copy')
+    e2e-check(same-content(case-root - '/src/a', OPTS.dst - '/a'), 'copy file content')
+    e2e-check(same-content(case-root - '/src/sub/b', OPTS.dst - '/sub/b'), 'copy nested content')
+    target, read = platform-read-link(OPTS.dst - '/link')
+    e2e-check(read && STATE.scratch-link-target.compare('a') == 0, 'copy link target')
+    target, read = platform-read-link(OPTS.dst - '/broken')
+    e2e-check(read && STATE.scratch-link-target.compare('missing-target') == 0, 'copy dangling link without following')
+    run-ok('unchanged archive sync')
+    e2e-check(STATS.created == 0 && STATS.updated == 0 && STATS.deleted == 0, 'unchanged sync has no mutations')
+    e2e-check(fs.remove(case-root - '/src/link'), 'remove old source link')
+    e2e-check(fs.symlink('sub/b', case-root - '/src/link'), 'change source link target')
+    run-ok('update link')
+    target, read = platform-read-link(OPTS.dst - '/link')
+    e2e-check(read && STATE.scratch-link-target.compare('sub/b') == 0, 'update link target atomically')
+    e2e-check(fs.write-file(OPTS.dst - '/old', 'old'.to-bytes()), 'create stale destination file')
+    e2e-check(fs.mkdir(OPTS.dst - '/stale', 448), 'create stale destination directory')
+    e2e-check(fs.write-file(OPTS.dst - '/stale/item', 'stale'.to-bytes()), 'populate stale directory')
+    OPTS.delete = true
+    run-ok('delete stale entries')
+    e2e-check(! fs.lstat(OPTS.dst - '/old'), 'delete stale file')
+    e2e-check(! fs.lstat(OPTS.dst - '/stale'), 'delete stale directory depth-first')
+}
+
+test-exclude-protection = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create filter case root')
+    reset-options()
+    OPTS.src = case-root - '/src/'
+    OPTS.dst = case-root - '/dst/'
+    OPTS.delete = true
+    e2e-check(fs.mkdir(case-root - '/src', 448), 'create filter source')
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create filter destination')
+    e2e-check(fs.write-file(case-root - '/src/keep.tmp', 'source'.to-bytes()), 'write excluded source')
+    e2e-check(fs.write-file(OPTS.dst - '/keep.tmp', 'target'.to-bytes()), 'write excluded destination')
+    e2e-check(fs.write-file(OPTS.dst - '/old.tmp', 'old'.to-bytes()), 'write stale excluded destination')
+    rule, valid = make-rule('*.tmp', false)
+    e2e-check(valid, 'create exclude rule')
+    code = run-sync(OPTS, [rule])
+    code != 0 -> eprint('delete with excluded paths: ' - STATE.error-stage - ' ' - STATE.error-path - ' ' - STATE.error-message)
+    e2e-check(code == 0, 'delete with excluded paths')
+    e2e-check(fs.lstat(OPTS.dst - '/keep.tmp'), 'excluded corresponding target is protected')
+    e2e-check(fs.lstat(OPTS.dst - '/old.tmp'), 'excluded stale target is protected')
+}
+
+test-links-not-followed = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create no-follow case root')
+    e2e-check(fs.mkdir(case-root - '/outside', 448), 'create outside directory')
+    e2e-check(fs.write-file(case-root - '/outside/sentinel', 'outside'.to-bytes()), 'write outside sentinel')
+    e2e-check(fs.mkdir(case-root - '/src', 448), 'create no-follow source')
+    e2e-check(fs.symlink(case-root - '/outside', case-root - '/src/escape'), 'link source to outside directory')
+    e2e-check(fs.symlink('.', case-root - '/src/loop'), 'create looping source link')
+    reset-options()
+    OPTS.src = case-root - '/src/'
+    OPTS.dst = case-root - '/dst'
+    OPTS.links = false
+    run-ok('skip source links by default')
+    e2e-check(! fs.lstat(OPTS.dst - '/escape') && ! fs.lstat(OPTS.dst - '/loop'), 'skipped links create no destination entries')
+
+    OPTS.links = true
+    run-ok('copy links themselves')
+    e2e-check(fs.lstat(OPTS.dst - '/escape') && fs.lstat(OPTS.dst - '/loop'), 'link entries copied')
+    escaped-info, escaped-exists = platform-stat(OPTS.dst - '/escape')
+    e2e-check(escaped-exists && escaped-info.kind == KIND-LINK, 'directory link target is not traversed')
+    e2e-check(same-content(case-root - '/outside/sentinel', case-root - '/outside/sentinel'), 'outside sentinel remains readable')
+
+    fs.remove(OPTS.dst - '/escape')
+    fs.remove(OPTS.dst - '/loop')
+    e2e-check(fs.symlink(case-root - '/outside', OPTS.dst - '/escape'), 'replace destination entry with escaping link')
+    e2e-check(fs.write-file(case-root - '/src/escape-file', 'source'.to-bytes()), 'write conflicting source file')
+    OPTS.dst = case-root - '/conflict'
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create conflict destination')
+    e2e-check(fs.symlink(case-root - '/outside', OPTS.dst - '/escape-file'), 'create conflicting destination link')
+    code = run-sync(OPTS, [])
+    e2e-check(code == 1 && STATE.error-stage == 'preflight', 'destination link type conflict rejected')
+    e2e-check(! fs.lstat(case-root - '/outside/escape-file'), 'conflict does not write through destination link')
+}
+
+test-dry-run-no-side-effects = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create dry-run case root')
+    reset-options()
+    OPTS.src = case-root - '/src/'
+    OPTS.dst = case-root - '/dst'
+    OPTS.delete = true
+    OPTS.checksum = true
+    e2e-check(fs.mkdir(OPTS.src, 448), 'create dry-run source')
+    e2e-check(fs.mkdir(OPTS.src - '/sub', 448), 'create dry-run source directory')
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create dry-run destination')
+    e2e-check(fs.mkdir(OPTS.dst - '/sub', 448), 'create dry-run target directory')
+    e2e-check(fs.write-file(OPTS.src - '/a', 'new-source'.to-bytes()), 'write dry-run source file')
+    e2e-check(fs.write-file(OPTS.dst - '/a', 'old-target'.to-bytes()), 'write dry-run target file')
+    e2e-check(fs.write-file(OPTS.dst - '/stale', 'stale'.to-bytes()), 'write stale dry-run target')
+    e2e-check(fs.write-file(case-root - '/expected-a', 'old-target'.to-bytes()), 'save expected dry-run content')
+    e2e-check(fs.ch-mod(OPTS.dst - '/a', 416), 'set dry-run target mode')
+    expected-mode = os.stat-mode(OPTS.dst - '/a')
+    mode-value = 0
+    expected-mode: {
+        ok -> mode-value = it
+
+        -> e2e-check(false, 'read dry-run target mode')
+    }
+    e2e-check(fs.utime(OPTS.dst - '/a', 1700000000, 1700000000), 'set dry-run target mtime')
+    e2e-check(fs.utime(OPTS.dst, 1700000001, 1700000001), 'set dry-run root mtime')
+    e2e-check(fs.utime(OPTS.dst - '/sub', 1700000002, 1700000002), 'set dry-run subdirectory mtime')
+    OPTS.dry-run = true
+    run-ok('dry-run plans updates and deletion')
+    e2e-check(same-content(case-root - '/expected-a', OPTS.dst - '/a'), 'dry-run preserves file content')
+    e2e-check(mode-equals(OPTS.dst - '/a', mode-value), 'dry-run preserves file mode')
+    e2e-check(mtime-equals(OPTS.dst - '/a', 1700000000), 'dry-run preserves file mtime')
+    e2e-check(mtime-equals(OPTS.dst, 1700000001), 'dry-run preserves root mtime')
+    e2e-check(mtime-equals(OPTS.dst - '/sub', 1700000002), 'dry-run preserves directory mtime')
+    e2e-check(fs.lstat(OPTS.dst - '/stale'), 'dry-run preserves deletion candidate')
+    e2e-check(STATS.created == 0 && STATS.updated == 0 && STATS.deleted == 0, 'dry-run records no completed mutations')
+}
+
+test-checksum-metadata = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create checksum case root')
+    reset-options()
+    OPTS.src = case-root - '/src'
+    OPTS.dst = case-root - '/dst'
+    e2e-check(fs.write-file(OPTS.src, 'alpha'.to-bytes()), 'write checksum source')
+    run-ok('copy single file')
+    e2e-check(same-content(OPTS.src, OPTS.dst), 'single file copy')
+    e2e-check(fs.write-file(OPTS.dst, 'omega'.to-bytes()), 'change destination same-size content')
+    e2e-check(fs.utime(OPTS.dst, 1700000000, 1700000000), 'set destination mtime')
+    e2e-check(fs.utime(OPTS.src, 1700000000, 1700000000), 'set source mtime')
+    OPTS.checksum = true
+    run-ok('checksum detects same size and mtime')
+    e2e-check(STATS.updated == 1 && same-content(OPTS.src, OPTS.dst), 'checksum replaces different content')
+    e2e-check(fs.ch-mod(OPTS.src, 416), 'set source mode')
+    e2e-check(fs.utime(OPTS.src, 1700000123, 1700000123), 'set source metadata')
+    run-ok('metadata-only update')
+    mode = os.stat-mode(OPTS.dst)
+    mtime = os.stat-mtime(OPTS.dst)
+    mode-value = 0
+    mode: {
+        ok -> {
+            mode-value = it
+            source-mode = os.stat-mode(OPTS.src)
+            source-mode: {
+                ok -> e2e-check(it == mode-value, 'preserve mode')
+
+                -> e2e-check(false, 'read source mode')
+            }
+        }
+
+        -> e2e-check(false, 'read destination mode')
+    }
+    mtime: {
+        ok -> e2e-check(it == 1700000123, 'preserve mtime')
+
+        -> e2e-check(false, 'read destination mtime')
+    }
+    e2e-check(STATS.metadata-only == 1 && STATS.updated == 0, 'metadata-only does not rewrite file')
+}
+
+test-path-semantics = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create path case root')
+    reset-options()
+    OPTS.src = case-root - '/one'
+    OPTS.dst = case-root - '/missing-file'
+    e2e-check(fs.write-file(OPTS.src, 'one'.to-bytes()), 'write file source')
+    run-ok('file to missing file path')
+    e2e-check(same-content(OPTS.src, OPTS.dst), 'file destination content')
+    OPTS.dst = case-root - '/directory'
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create destination directory')
+    run-ok('file to existing directory')
+    e2e-check(same-content(OPTS.src, OPTS.dst - '/one'), 'file uses basename in directory')
+    OPTS.src = case-root - '/tree'
+    OPTS.dst = case-root - '/wrapped'
+    e2e-check(fs.mkdir(OPTS.src, 448), 'create wrapped source')
+    e2e-check(fs.write-file(OPTS.src - '/item', 'item'.to-bytes()), 'write wrapped source item')
+    run-ok('wrapped directory to missing root')
+    e2e-check(same-content(OPTS.src - '/item', OPTS.dst - '/tree/item'), 'wrapped directory contains source basename')
+    OPTS.dst = OPTS.src - '/child'
+    code = run-sync(OPTS, [])
+    e2e-check(code == 1 && STATE.error-stage == 'preflight', 'nested destination rejected')
+    e2e-check(! fs.lstat(OPTS.dst), 'overlap rejection does not write')
+}
+
+test-directory-metadata-order = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create directory metadata case root')
+    reset-options()
+    OPTS.src = case-root - '/src'
+    OPTS.dst = case-root - '/dst'
+    OPTS.checksum = true
+    e2e-check(fs.mkdir(OPTS.src, 448), 'create source directory')
+    e2e-check(fs.mkdir(OPTS.src - '/sub', 448), 'create read-only source subdirectory')
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create wrapped destination root')
+    e2e-check(fs.mkdir(OPTS.dst - '/src', 448), 'create existing wrapped target directory')
+    e2e-check(fs.mkdir(OPTS.dst - '/src/sub', 448), 'create writable wrapped target subdirectory')
+    e2e-check(fs.write-file(OPTS.src - '/sub/item', 'new'.to-bytes()), 'write updated source item')
+    e2e-check(fs.write-file(OPTS.dst - '/src/sub/item', 'old'.to-bytes()), 'write stale wrapped target item')
+    e2e-check(fs.utime(OPTS.src - '/sub/item', 1700000200, 1700000200), 'set source item mtime')
+    e2e-check(fs.utime(OPTS.dst - '/src/sub/item', 1700000200, 1700000200), 'set target item mtime')
+    e2e-check(fs.ch-mod(OPTS.src - '/sub', 365), 'make source subdirectory read-only')
+    run-ok('update child before restoring read-only directory metadata')
+    e2e-check(same-content(OPTS.src - '/sub/item', OPTS.dst - '/src/sub/item'), 'child updated before directory became read-only')
+    source-mode = os.stat-mode(OPTS.src - '/sub')
+    source-mode: {
+        ok -> e2e-check(mode-equals(OPTS.dst - '/src/sub', it), 'directory mode restored after child update')
+
+        -> e2e-check(false, 'read source directory mode')
+    }
+    e2e-check(fs.ch-mod(OPTS.dst - '/src/sub', 448), 'restore target directory writability for cleanup')
+}
+
+test-wrapped-delete-boundary = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create wrapped delete case root')
+    reset-options()
+    OPTS.src = case-root - '/src'
+    OPTS.dst = case-root - '/dst'
+    OPTS.delete = true
+    e2e-check(fs.mkdir(OPTS.src, 448), 'create wrapped delete source')
+    e2e-check(fs.mkdir(OPTS.dst, 448), 'create wrapped delete destination')
+    e2e-check(fs.mkdir(OPTS.dst - '/src', 448), 'create wrapped target subtree')
+    e2e-check(fs.mkdir(OPTS.dst - '/src-other', 448), 'create component-prefix sibling directory')
+    e2e-check(fs.write-file(OPTS.src - '/item', 'source-new'.to-bytes()), 'write wrapped delete source item')
+    e2e-check(fs.write-file(OPTS.dst - '/src/item', 'target'.to-bytes()), 'write wrapped target item')
+    e2e-check(fs.write-file(OPTS.dst - '/src/stale', 'stale'.to-bytes()), 'write stale wrapped subtree item')
+    e2e-check(fs.write-file(OPTS.dst - '/unrelated', 'keep'.to-bytes()), 'write unrelated root sibling')
+    e2e-check(fs.write-file(OPTS.dst - '/src-other/sentinel', 'keep'.to-bytes()), 'write component-prefix sibling sentinel')
+    run-ok('delete only inside wrapped source subtree')
+    e2e-check(! fs.lstat(OPTS.dst - '/src/stale'), 'stale wrapped subtree item deleted')
+    e2e-check(same-content(OPTS.src - '/item', OPTS.dst - '/src/item'), 'wrapped source item retained')
+    e2e-check(fs.lstat(OPTS.dst - '/unrelated'), 'unrelated destination root sibling retained')
+    e2e-check(fs.lstat(OPTS.dst - '/src-other/sentinel'), 'component-prefix destination sibling retained')
+}
+
+test-delta-e2e = (case-root str) {
+    e2e-check(fs.mkdir(case-root, 448), 'create delta case root')
+    reset-options()
+    OPTS.src = case-root - '/src'
+    OPTS.dst = case-root - '/dst'
+    e2e-check(write-pattern(OPTS.src, 10, false), 'write initial delta source')
+    run-ok('initial whole-file copy')
+    e2e-check(write-pattern(OPTS.src, 10, true), 'prepend delta block')
+    run-ok('delta update')
+    e2e-check(same-content(OPTS.src, OPTS.dst), 'delta rebuilt content')
+    e2e-check(STATS.reused-bytes == 40960, 'delta reuses every old block')
+    e2e-check(mul-index(STATS.reused-bytes, 100) >= mul-index(40960, 95), 'delta reuse threshold')
+    e2e-check(STATS.matched-blocks == 10 && STATS.fallbacks == 0, 'delta did not fall back')
+}
+
+run-e2e-tests = () {
+    ensure-e2e-tmp()
+    root = 'tmp/nosync-e2e-' - os.get-pid().to-str()
+    created = fs.mkdir(root, 448)
+    ! created -> exit(1)
+    test-basic-links-delete(root - '/basic')
+    test-exclude-protection(root - '/filter')
+    test-links-not-followed(root - '/links')
+    test-dry-run-no-side-effects(root - '/dry-run')
+    test-checksum-metadata(root - '/checksum')
+    test-path-semantics(root - '/paths')
+    test-directory-metadata-order(root - '/directory-metadata')
+    test-wrapped-delete-boundary(root - '/wrapped-delete')
+    test-delta-e2e(root - '/delta')
+}
+
+run-e2e-tests()
+print('ALL E2E TESTS PASSED')

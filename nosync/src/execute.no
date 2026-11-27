@@ -1,0 +1,422 @@
+; 动作执行：所有传输成功后才删除，目录元数据最后恢复。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/safe-path
+# /nosync/src/platform
+# /nosync/src/file-io
+# /nosync/src/metadata
+# /nosync/src/delta
+# /nosync/src/plan
+
+parent-path = (path str) (parent str) {
+    parent = '.'
+    slash = path.rindex('/')
+    slash > 0 -> parent = path.slice(0, slash)
+    slash == 0 -> parent = '/'
+}
+
+action-entry = (index i64) (item action, ok bool) {
+    index < 0 || index >= STATE.actions.len() -> return
+    STATE.actions[index]: {
+        ok -> item = it
+
+        -> return
+    }
+    ok = true
+}
+
+execute-fail = (item action, rel str, message str) (ok bool) {
+    ok = walk-fail('execute', join-path(STATE.dst-root, rel), message)
+}
+
+verify-rebuilt = (source str, rebuilt str, size i64) (ok bool) {
+    source-digest, source-ok = file-digest(source, size)
+    ! source-ok -> return
+    rebuilt-digest, rebuilt-ok = file-digest(rebuilt, size)
+    ! rebuilt-ok -> return
+    ok = sha256-equal(source-digest, rebuilt-digest)
+}
+
+cleanup-copy = (temp str, temp-fd i64, source-fd i64, target-fd i64) {
+    target-fd >= 0 -> platform-close(target-fd)
+    source-fd >= 0 -> platform-close(source-fd)
+    temp-fd >= 0 -> platform-close(temp-fd)
+    platform-remove-file(temp)
+}
+
+source-unchanged = (path str, entry manifest-entry) (same bool) {
+    current, exists = platform-stat(path)
+    ! exists -> return
+    same = current.kind == entry.kind && current.size == entry.size && current.mtime == entry.mtime
+}
+
+link-unchanged = (path str, expected str, directory bool) (same bool) {
+    current, exists = platform-stat(path)
+    ! exists || current.kind != KIND-LINK -> return
+    same = current.link-directory == directory && STATE.scratch-link-target.compare(expected) == 0
+}
+
+record-fallback = () {
+    STATS.fallbacks = add-index(STATS.fallbacks, 1)
+    reason = SIGNATURE.fallback-reason
+    reason: {
+        FALLBACK-MISSING -> STATS.fallback-missing = add-index(STATS.fallback-missing, 1)
+
+        FALLBACK-SMALL -> STATS.fallback-small = add-index(STATS.fallback-small, 1)
+
+        FALLBACK-MEMORY -> STATS.fallback-memory = add-index(STATS.fallback-memory, 1)
+
+        FALLBACK-LOW-REUSE -> STATS.fallback-low-reuse = add-index(STATS.fallback-low-reuse, 1)
+
+        FALLBACK-IO -> STATS.fallback-io = add-index(STATS.fallback-io, 1)
+
+        -> {
+        }
+    }
+}
+
+copy-file-action = (item action, rel str, opts options) (ok bool) {
+    source, found = entry-at(STATE.src-entries, item.source-index)
+    ! found -> {
+        ok = execute-fail(item, rel, 'invalid source manifest index')
+        return
+    }
+    source-rel, source-found = path-at(STATE.src-paths, source)
+    ! source-found -> {
+        ok = execute-fail(item, rel, 'invalid source path')
+        return
+    }
+    source-path = join-path(STATE.src-root, source-rel)
+    destination-path = join-path(STATE.dst-root, rel)
+    ! source-unchanged(source-path, source) -> {
+        ok = execute-fail(item, rel, 'source changed before transfer')
+        return
+    }
+    target-info, target-exists = platform-stat(destination-path)
+    item.kind == ACTION-COPY-FILE && target-exists -> {
+        ok = execute-fail(item, rel, 'destination appeared during transfer')
+        return
+    }
+    item.kind == ACTION-UPDATE-FILE && ! target-exists -> {
+        ok = execute-fail(item, rel, 'destination disappeared during transfer')
+        return
+    }
+    target-exists && target-info.kind != KIND-FILE -> {
+        ok = execute-fail(item, rel, 'destination type changed before transfer')
+        return
+    }
+    parent = parent-path(destination-path)
+    temp, temp-fd, created = platform-create-temp(parent)
+    ! created -> {
+        ok = execute-fail(item, rel, platform-error('create-temp', parent))
+        return
+    }
+    source-fd = platform-open(source-path, false)
+    source-fd < 0 -> {
+        cleanup-copy(temp, temp-fd, -1, -1)
+        ok = execute-fail(item, rel, platform-error('open', source-path))
+        return
+    }
+    target-fd = -1
+    target-size = 0
+    target-exists -> target-size = target-info.size
+    used-delta = false
+    ! opts.whole-file && item.kind == ACTION-UPDATE-FILE && target-exists -> {
+        target-fd = platform-open(destination-path, false)
+        target-fd < 0 -> {
+            cleanup-copy(temp, temp-fd, source-fd, -1)
+            ok = execute-fail(item, rel, platform-error('open', destination-path))
+            return
+        }
+        old-literal = STATS.literal-bytes
+        old-reused = STATS.reused-bytes
+        old-matched = STATS.matched-blocks
+        old-hits = STATS.weak-hits
+        old-false = STATS.false-alarms
+        streamed, fallback = delta-stream(source-fd, target-fd, temp-fd, source.size, target-size, opts.block-size, opts.memory-limit)
+        release-signature()
+        ! streamed -> {
+            cleanup-copy(temp, temp-fd, source-fd, target-fd)
+            ok = execute-fail(item, rel, 'delta transfer failed')
+            return
+        }
+        fallback -> {
+            STATS.literal-bytes = old-literal
+            STATS.reused-bytes = old-reused
+            STATS.matched-blocks = old-matched
+            STATS.weak-hits = old-hits
+            STATS.false-alarms = old-false
+            record-fallback()
+            platform-close(target-fd)
+            target-fd = -1
+            platform-close(temp-fd)
+            temp-fd = platform-open(temp, true)
+            temp-fd < 0 -> {
+                cleanup-copy(temp, -1, source-fd, -1)
+                ok = execute-fail(item, rel, platform-error('reopen-temp', temp))
+                return
+            }
+        }
+        ! fallback -> used-delta = true
+    }
+    ! used-delta -> {
+        ! platform-seek(source-fd, 0) -> {
+            cleanup-copy(temp, temp-fd, source-fd, target-fd)
+            ok = execute-fail(item, rel, 'source seek failed')
+            return
+        }
+        copied, complete = copy-stream(source-fd, temp-fd, source.size)
+        ! complete -> {
+            cleanup-copy(temp, temp-fd, source-fd, target-fd)
+            ok = execute-fail(item, rel, 'file copy failed')
+            return
+        }
+        STATS.literal-bytes = add-index(STATS.literal-bytes, copied)
+    }
+    source-closed = platform-close(source-fd)
+    source-fd = -1
+    target-closed = true
+    target-fd >= 0 -> {
+        target-closed = platform-close(target-fd)
+        target-fd = -1
+    }
+    temp-closed = platform-close(temp-fd)
+    temp-fd = -1
+    ! source-closed || ! target-closed || ! temp-closed -> {
+        cleanup-copy(temp, -1, -1, -1)
+        ok = execute-fail(item, rel, 'file close failed')
+        return
+    }
+    ! source-unchanged(source-path, source) -> {
+        cleanup-copy(temp, -1, -1, -1)
+        ok = execute-fail(item, rel, 'source changed during transfer')
+        return
+    }
+    used-delta && target-exists -> {
+        current-target, still-exists = platform-stat(destination-path)
+        ! still-exists || current-target.kind != target-info.kind || current-target.size != target-info.size || current-target.mtime != target-info.mtime -> {
+            cleanup-copy(temp, -1, -1, -1)
+            ok = execute-fail(item, rel, 'destination changed after signature')
+            return
+        }
+    }
+    ! verify-rebuilt(source-path, temp, source.size) -> {
+        cleanup-copy(temp, -1, -1, -1)
+        ok = execute-fail(item, rel, 'rebuilt file checksum mismatch')
+        return
+    }
+    applied = apply-metadata(temp, source, opts)
+    ! applied -> {
+        cleanup-copy(temp, -1, -1, -1)
+        ok = execute-fail(item, rel, platform-error('metadata', temp))
+        return
+    }
+    ! platform-replace(temp, destination-path) -> {
+        cleanup-copy(temp, -1, -1, -1)
+        ok = execute-fail(item, rel, platform-error('replace', destination-path))
+        return
+    }
+    item.kind == ACTION-COPY-FILE -> STATS.created = add-index(STATS.created, 1)
+    item.kind == ACTION-UPDATE-FILE -> STATS.updated = add-index(STATS.updated, 1)
+    STATS.source-bytes = add-index(STATS.source-bytes, source.size)
+    STATS.target-bytes = add-index(STATS.target-bytes, target-size)
+    ok = true
+}
+
+link-action = (item action, rel str, opts options) (ok bool) {
+    source, found = entry-at(STATE.src-entries, item.source-index)
+    ! found -> {
+        ok = execute-fail(item, rel, 'invalid source manifest index')
+        return
+    }
+    loaded-target = load-source-link(source)
+    ! loaded-target -> {
+        ok = execute-fail(item, rel, 'invalid symbolic link target')
+        return
+    }
+    target = STATE.scratch-source-link
+    loaded = load-source-rel(source)
+    ! loaded -> {
+        ok = execute-fail(item, rel, 'invalid source path')
+        return
+    }
+    source-rel = STATE.scratch-rel
+    source-path = join-path(STATE.src-root, source-rel)
+    ! link-unchanged(source-path, STATE.scratch-source-link, source.link-directory) -> {
+        ok = execute-fail(item, rel, 'source link changed before transfer')
+        return
+    }
+    destination-path = join-path(STATE.dst-root, rel)
+    parent = parent-path(destination-path)
+    temp, temp-fd, created = platform-create-temp(parent)
+    ! created -> {
+        ok = execute-fail(item, rel, platform-error('create-temp', parent))
+        return
+    }
+    closed = platform-close(temp-fd)
+    ! closed -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, 'temporary link close failed')
+        return
+    }
+    ! platform-remove-file(temp) -> {
+        ok = execute-fail(item, rel, platform-error('unlink-temp', temp))
+        return
+    }
+    ! platform-create-link(target, temp, source.link-directory) -> {
+        ok = execute-fail(item, rel, platform-error('symlink', destination-path))
+        return
+    }
+    ! link-unchanged(source-path, STATE.scratch-source-link, source.link-directory) -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, 'source link changed during transfer')
+        return
+    }
+    current, exists = platform-stat(destination-path)
+    item.kind == ACTION-CREATE-LINK && exists -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, 'destination appeared during transfer')
+        return
+    }
+    item.kind == ACTION-UPDATE-LINK && ! exists -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, 'destination link disappeared during transfer')
+        return
+    }
+    exists && current.kind != KIND-LINK -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, 'destination type changed before transfer')
+        return
+    }
+    exists -> {
+        destination, valid-index = entry-at(STATE.dst-entries, item.destination-index)
+        ! valid-index -> {
+            platform-remove-file(temp)
+            ok = execute-fail(item, rel, 'invalid destination manifest index')
+            return
+        }
+        current.link-directory != destination.link-directory -> {
+            platform-remove-file(temp)
+            ok = execute-fail(item, rel, 'destination link type changed before transfer')
+            return
+        }
+        loaded-old-target = load-destination-link(destination)
+        ! loaded-old-target || ! link-unchanged(destination-path, STATE.scratch-destination-link, destination.link-directory) -> {
+            platform-remove-file(temp)
+            ok = execute-fail(item, rel, 'destination link changed before transfer')
+            return
+        }
+    }
+    ! platform-replace(temp, destination-path) -> {
+        platform-remove-file(temp)
+        ok = execute-fail(item, rel, platform-error('replace', destination-path))
+        return
+    }
+    item.kind == ACTION-CREATE-LINK -> STATS.created = add-index(STATS.created, 1)
+    item.kind == ACTION-UPDATE-LINK -> STATS.updated = add-index(STATS.updated, 1)
+    ok = true
+}
+
+execute-one = (item action, opts options) (ok bool) {
+    loaded = prepare-action-path(item)
+    ! loaded -> {
+        ok = walk-fail('execute', STATE.dst-root, 'invalid action manifest index')
+        return
+    }
+    rel = STATE.scratch-mapped
+    item.kind == ACTION-CREATE-DIR -> {
+        destination-path = join-path(STATE.dst-root, rel)
+        ! platform-mkdir(destination-path, 448) -> {
+            ok = execute-fail(item, rel, platform-error('mkdir', destination-path))
+            return
+        }
+        STATS.created = add-index(STATS.created, 1)
+        ok = true
+        return
+    }
+    item.kind == ACTION-COPY-FILE || item.kind == ACTION-UPDATE-FILE -> {
+        ok = copy-file-action(item, rel, opts)
+        return
+    }
+    item.kind == ACTION-CREATE-LINK || item.kind == ACTION-UPDATE-LINK -> {
+        ok = link-action(item, rel, opts)
+        return
+    }
+    item.kind == ACTION-METADATA -> {
+        source, found = entry-at(STATE.src-entries, item.source-index)
+        ! found -> {
+            ok = execute-fail(item, rel, 'invalid metadata source')
+            return
+        }
+        destination-path = join-path(STATE.dst-root, rel)
+        ! apply-metadata(destination-path, source, opts) -> {
+            ok = execute-fail(item, rel, platform-error('metadata', destination-path))
+            return
+        }
+        STATS.metadata-only = add-index(STATS.metadata-only, 1)
+        ok = true
+        return
+    }
+    item.kind == ACTION-DELETE-FILE || item.kind == ACTION-DELETE-LINK -> {
+        destination-path = join-path(STATE.dst-root, rel)
+        ! platform-remove-file(destination-path) -> {
+            ok = execute-fail(item, rel, platform-error('unlink', destination-path))
+            return
+        }
+        STATS.deleted = add-index(STATS.deleted, 1)
+        ok = true
+        return
+    }
+    item.kind == ACTION-DELETE-DIR -> {
+        destination-path = join-path(STATE.dst-root, rel)
+        ! platform-remove-dir(destination-path) -> {
+            ok = execute-fail(item, rel, platform-error('rmdir', destination-path))
+            return
+        }
+        STATS.deleted = add-index(STATS.deleted, 1)
+        ok = true
+        return
+    }
+    item.kind == ACTION-RESTORE-DIR -> {
+        source, found = entry-at(STATE.src-entries, item.source-index)
+        ! found -> {
+            ok = execute-fail(item, rel, 'invalid directory metadata source')
+            return
+        }
+        destination-path = join-path(STATE.dst-root, rel)
+        ! apply-metadata(destination-path, source, opts) -> {
+            ok = execute-fail(item, rel, platform-error('metadata', destination-path))
+            return
+        }
+        ok = true
+        return
+    }
+    ok = execute-fail(item, rel, 'unknown action')
+}
+
+execute-plan = (opts options) (ok bool) {
+    ok = false
+    opts.dry-run -> {
+        ok = true
+        return
+    }
+    i <- [0..STATE.actions.len()): {
+        item, found = action-entry(i)
+        ! found -> {
+            ok = walk-fail('execute', STATE.dst-root, 'invalid action index')
+            return
+        }
+        done = execute-one(item, opts)
+        ! done -> {
+            STATE.error-message = STATE.error-message - '; deletion skipped after failure'
+            opts.verbose -> {
+                io.out('completed-actions: ' - STATE.completed-actions.to-str())
+                io.out('\n')
+            }
+            return
+        }
+        STATE.completed-actions = add-index(STATE.completed-actions, 1)
+    }
+    ok = true
+}

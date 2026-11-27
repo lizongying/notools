@@ -17,8 +17,8 @@
 ### 方式一：从 Releases 下载预编译二进制
 
 ```bash
-# Linux amd64 示例
-curl -fsSL -o nogit https://github.com/lizongying/notools/releases/latest/download/nogit-linux-amd64
+# Linux amd64 示例（将 v0.1.38 替换为所需版本）
+curl -fsSL -o nogit https://github.com/lizongying/notools/releases/download/v0.1.38/nogit-linux-amd64-v0.1.38
 chmod +x nogit && sudo mv nogit /usr/local/bin/
 ```
 
@@ -36,7 +36,7 @@ no build
 
 ### 方式四：作为 Nolang 依赖引入
 
-Release 同时发布与平台无关的预编 AST 包 `nogit-ast.zip`（需 Nolang v0.4.32+）：
+Release 同时发布与平台无关的预编 AST 包 `nogit-ast.zip`（需 Nolang v0.4.37+）：
 
 ```bash
 no add nogit@github.com/lizongying/notools

@@ -1,0 +1,350 @@
+; 根路径规范化、manifest 收集与开放寻址索引。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/platform
+# /nosync/src/walk
+
+canonical-within = (root str, path str) (inside bool) {
+    inside = false
+    root == '' -> return
+    path == root || platform-path-equal(path, root) -> {
+        inside = true
+        return
+    }
+    root.ends-with('/') -> {
+        path.len-bytes() >= root.len-bytes() -> {
+            component = path.slice(0, root.len-bytes())
+            platform-path-equal(component, root) -> inside = true
+        }
+        return
+    }
+    path.len-bytes() <= root.len-bytes() -> return
+    component = path.slice(0, root.len-bytes())
+    ! platform-path-equal(component, root) -> return
+    separator = path.byte(root.len-bytes())
+    separator: {
+        ok -> inside = it == 47
+
+        -> return
+    }
+}
+
+trim-root-path = (path str) (trimmed str) {
+    trimmed = path
+    drive-root = trimmed.len-bytes() == 3 && trimmed.byte(1) == 58
+    ! drive-root && trimmed.len-bytes() > 1 -> {
+        trimmed.ends-with('/') -> trimmed = trimmed.slice(0, sub-index(trimmed.len-bytes(), 1))
+    }
+}
+
+resolve-ancestor = (path str) (ok bool) {
+    current = path
+    suffix = ''
+    !! {
+        canonical = platform-canonical(current)
+        canonical -> {
+            STATE.scratch-resolved = STATE.scratch-canonical
+            has-suffix = suffix != ''
+            has-suffix -> {
+                ends-slash = STATE.scratch-canonical.ends-with('/')
+                ends-slash -> STATE.scratch-resolved = STATE.scratch-canonical - suffix
+                ! ends-slash -> STATE.scratch-resolved = STATE.scratch-canonical - '/' - suffix
+            }
+            ok = true
+            return
+        }
+        slash = current.rindex('/')
+        slash < 0 -> {
+            component = current
+            suffix == '' -> suffix = component
+            suffix != '' -> suffix = component - '/' - suffix
+            current = '.'
+            continue
+        }
+        slash == 0 -> {
+            component = current.slice(1, current.len-bytes())
+            suffix == '' -> suffix = component
+            suffix != '' -> suffix = component - '/' - suffix
+            current = '/'
+            continue
+        }
+        component = current.slice(add-index(slash, 1), current.len-bytes())
+        {
+            suffix == '' -> suffix = component
+
+            -> suffix = component - '/' - suffix
+        }
+        current = current.slice(0, slash)
+    }
+}
+
+preflight = (opts options) (ok bool) {
+    ok = false
+    ! platform-supported() -> {
+        ok = walk-fail('preflight', opts.dst, 'native platform adapter is not available')
+        return
+    }
+    opts.src.starts-with('\\\\') || opts.dst.starts-with('\\\\') -> {
+        ok = walk-fail('preflight', opts.dst, 'UNC paths are not supported')
+        return
+    }
+    STATE.src-root = opts.src
+    STATE.dst-root = opts.dst
+    STATE.content-mode = opts.src.ends-with('/')
+    resolved = resolve-ancestor(opts.src)
+    ! resolved -> {
+        ok = walk-fail('preflight', opts.src, 'cannot resolve source path')
+        return
+    }
+    STATE.src-real = STATE.scratch-resolved
+    resolved = resolve-ancestor(opts.dst)
+    ! resolved -> {
+        ok = walk-fail('preflight', opts.dst, 'cannot resolve destination ancestor')
+        return
+    }
+    STATE.dst-real = STATE.scratch-resolved
+    canonical-within(STATE.src-real, STATE.dst-real) || canonical-within(STATE.dst-real, STATE.src-real) -> {
+        ok = walk-fail('preflight', opts.dst, 'source and destination overlap')
+        return
+    }
+    dst-path = trim-root-path(opts.dst)
+    src-path = trim-root-path(opts.src)
+    dst-info, dst-exists = platform-stat(dst-path)
+    dst-exists && dst-info.kind == KIND-LINK -> {
+        ok = walk-fail('preflight', opts.dst, 'destination root must not be a symbolic link')
+        return
+    }
+    dst-exists && dst-info.kind != KIND-DIR -> {
+        src-info, src-exists = platform-stat(src-path)
+        src-exists && src-info.kind == KIND-DIR -> {
+            ok = walk-fail('preflight', opts.dst, 'destination is not a directory')
+            return
+        }
+    }
+    src-info, src-exists = platform-stat(src-path)
+    ! src-exists -> {
+        ok = walk-fail('preflight', opts.src, 'source does not exist')
+        return
+    }
+    STATE.source-directory = src-info.kind == KIND-DIR
+    src-info.kind == KIND-LINK && opts.src.ends-with('/') -> {
+        ok = walk-fail('preflight', opts.src, 'symbolic link source cannot have a trailing slash')
+        return
+    }
+    src-info.kind == KIND-OTHER -> {
+        ok = walk-fail('preflight', opts.src, 'unsupported source file type')
+        return
+    }
+    opts.delete && ! STATE.source-directory || opts.delete && ! opts.recursive -> {
+        ok = walk-fail('preflight', opts.src, '--delete requires a recursive directory source')
+        return
+    }
+    ok = true
+}
+
+#{win-amd64, win-arm64}
+hash-path = (path str) (hash i64) {
+    hash = windows-path-hash(path)
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+hash-path = (path str) (hash i64) {
+    hash = 1469598103934665603
+    bytes = path.to-bytes()
+    b <- bytes: {
+        mixed = hash ^ b
+        mixed: {
+            ok -> hash = it
+
+            -> return
+        }
+
+        #{overflow=wrap}
+        product = hash * 1099511628211
+        product: {
+            ok -> hash = it
+
+            -> return
+        }
+    }
+}
+
+hash-capacity = (count i64, limit i64) (capacity i64, ok bool) {
+    capacity = 16
+    (capacity < mul-index(count, 2)) {
+        capacity = mul-index(capacity, 2)
+    }
+    cost = mul-index(capacity, 8)
+    cost > sub-index(limit, STATE.memory-used) -> return
+    STATE.memory-used = add-index(STATE.memory-used, cost)
+    ok = true
+}
+
+; 哈希槽helper只暴露标量，避免 []str 与 []i64 在同一帧交接。
+hash-slot = (source bool, slot i64) (stored i64, ok bool) {
+    source -> {
+        STATE.src-table[slot]: {
+            ok -> stored = it
+
+            -> return
+        }
+    }
+    ! source -> {
+        STATE.dst-table[slot]: {
+            ok -> stored = it
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+hash-store = (source bool, slot i64, value i64) (ok bool) {
+    source -> {
+        STATE.src-table[slot]: {
+            ok -> it = value
+
+            -> return
+        }
+    }
+    ! source -> {
+        STATE.dst-table[slot]: {
+            ok -> it = value
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+build-index = (paths []str, source bool, limit i64) (ok bool) {
+    capacity, sized = hash-capacity(paths.len(), limit)
+    ! sized -> {
+        ok = walk-fail('preflight', STATE.src-root, 'memory limit exceeded building path index')
+        return
+    }
+    table []i64 = with-len(capacity)
+    table.fill(-1)
+    source -> {
+        STATE.src-table = table
+        STATE.src-hash-cap = capacity
+    }
+    ! source -> {
+        STATE.dst-table = table
+        STATE.dst-hash-cap = capacity
+    }
+    i <- [0..paths.len()): {
+        paths[i]: {
+            ok -> {
+                path = it
+                hash = hash-path(path)
+                slot = hash & (capacity - 1)
+                !! {
+                    stored, present = hash-slot(source, slot)
+                    ! present -> return
+                    stored == -1 -> {
+                        saved = hash-store(source, slot, i)
+                        ! saved -> return
+                        break
+                    }
+                    slot = add-index(slot, 1)
+                    slot == capacity -> slot = 0
+                }
+            }
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+find-index = (paths []str, capacity i64, path str, source bool) (index i64) {
+    index = -1
+    capacity < 2 -> return
+    hash = hash-path(path)
+    slot = hash & (capacity - 1)
+    probes = 0
+    finished = false
+    found = false
+    (probes < capacity && ! finished) {
+        stored, present = hash-slot(source, slot)
+        ! present -> finished = true
+        present -> {
+            stored == -1 -> finished = true
+            stored != -1 -> {
+                stored < 0 || stored >= paths.len() -> finished = true
+                stored >= 0 && stored < paths.len() -> {
+                    paths[stored]: {
+                        ok -> {
+                            platform-path-equal(it, path) -> {
+                                index = stored
+                                found = true
+                                finished = true
+                            }
+                        }
+
+                        -> finished = true
+                    }
+                }
+            }
+        }
+        ! finished -> {
+            slot = add-index(slot, 1)
+            slot == capacity -> slot = 0
+            probes = add-index(probes, 1)
+        }
+    }
+    ! found -> index = -1
+}
+
+collect-manifests = (opts options, rules []filter-rule) (ok bool) {
+    STATE.memory-used = 0
+    collected = collect-root(opts.src, true, opts)
+    ! collected -> {
+        ok = walk-fail('manifest', opts.src, 'collect source root failed')
+        return
+    }
+    collected = collect-root(opts.dst, false, opts)
+    ! collected -> {
+        ok = walk-fail('manifest', opts.dst, 'collect destination root failed')
+        return
+    }
+    STATE.src-entries[0]: {
+        ok -> src-root-entry = it
+
+        -> return
+    }
+    src-root-entry.kind == KIND-DIR -> {
+        collected = walk-directory(opts.src, '', 0, 1, true, opts, rules)
+        ! collected -> {
+            STATE.error-stage == '' -> ok = walk-fail('manifest', opts.src, 'walk source failed')
+            STATE.error-stage != '' -> ok = false
+            return
+        }
+    }
+    STATE.dst-entries[0]: {
+        ok -> dst-root-entry = it
+
+        -> return
+    }
+    dst-root-entry.kind == KIND-DIR -> {
+        collected = walk-directory(opts.dst, '', 0, 1, false, opts, rules)
+        ! collected -> {
+            STATE.error-stage == '' -> ok = walk-fail('manifest', opts.dst, 'walk destination failed')
+            STATE.error-stage != '' -> ok = false
+            return
+        }
+    }
+    indexed = build-index(STATE.src-paths, true, opts.memory-limit)
+    ! indexed -> {
+        ok = walk-fail('manifest', opts.src, 'build source index failed')
+        return
+    }
+    indexed = build-index(STATE.dst-paths, false, opts.memory-limit)
+    ! indexed -> {
+        ok = walk-fail('manifest', opts.dst, 'build destination index failed')
+        return
+    }
+    ok = true
+}

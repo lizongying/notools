@@ -1,0 +1,103 @@
+; 校验和固定向量与滚动一致性回归。
+# /nosync/src/checksum
+# /nosync/src/numeric
+
+checksum-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+checksum-byte-at = (data []byte, index i64) (value byte, ok bool) {
+    index < 0 || index >= data.len() -> return
+    data[index]: {
+        ok -> value = it
+        -> return
+    }
+    ok = true
+}
+
+checksum-digest-equal = (digest [32]byte, expected []byte) (equal bool) {
+    expected.len() != 32 -> return
+    equal = true
+    i <- [0..32): {
+        actual, valid = checksum-byte-at(expected, i)
+        ! valid -> {
+            equal = false
+            return
+        }
+        digest[i]: {
+            ok -> {
+                it != actual -> equal = false
+            }
+            -> equal = false
+        }
+    }
+}
+
+checksum-fixed-vectors = () () {
+    empty = sha256-final(sha256-init())
+    expected-empty []byte = [227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184, 85]
+    checksum-check(checksum-digest-equal(empty, expected-empty), 'SHA-256 empty vector')
+
+    abc = 'abc'.to-bytes()
+    state = sha256-init()
+    state, valid = sha256-update(state, abc)
+    checksum-check(valid, 'SHA-256 update')
+    digest = sha256-final(state)
+    expected-abc []byte = [186, 120, 22, 191, 143, 1, 207, 234, 65, 65, 64, 222, 93, 174, 34, 35, 176, 3, 97, 163, 150, 23, 122, 156, 180, 16, 255, 97, 242, 0, 21, 173]
+    checksum-check(checksum-digest-equal(digest, expected-abc), 'SHA-256 abc vector')
+
+    vector []byte = [0, 1, 2, 3, 254, 255]
+    checksum-check(u32-to-i64(weak-direct(vector)) == 51446275, 'rsync weak fixed vector')
+    all-bytes []byte = with-len(256)
+    i <- [0..256): {
+        all-bytes[i]: {
+            ok -> it = to-byte(i)
+            -> checksum-check(false, 'build all-byte vector')
+        }
+    }
+    checksum-check(u32-to-i64(weak-direct(all-bytes)) == 2860547968, 'rsync weak all-byte vector')
+}
+
+checksum-roll-vectors = () () {
+    data []byte = with-len(131072)
+    i <- [0..data.len()): {
+        value = add-index(mul-index(i, 37), mul-index(div-index(i, 251), 19))
+        data[i]: {
+            ok -> it = to-byte(value & 255)
+            -> checksum-check(false, 'build rolling vector')
+        }
+    }
+    lengths []i64 = [1, 2, 3, 4, 7, 16, 64, 65536]
+    li <- [0..lengths.len()): {
+        lengths[li]: {
+            ok -> {
+                length = it
+                first = data.slice(0, length)
+                s1, s2 = weak-direct-parts(first)
+                offset = length
+                (offset < data.len()) {
+                    old, old-ok = checksum-byte-at(data, sub-index(offset, length))
+                    new-byte, new-ok = checksum-byte-at(data, offset)
+                    ! old-ok || ! new-ok -> checksum-check(false, 'rolling bounds')
+                    s1, s2 = weak-roll-parts(s1, s2, length, old, new-byte)
+                    direct = weak-direct(data.slice(add-index(sub-index(offset, length), 1), add-index(offset, 1)))
+                    checksum-check(weak-pack(s1, s2) == direct, 'rolling equals direct')
+                    offset = add-index(offset, 1)
+                }
+            }
+
+            -> checksum-check(false, 'rolling length index')
+        }
+    }
+}
+
+run-checksum-tests = () () {
+    checksum-fixed-vectors()
+    checksum-roll-vectors()
+}
+
+run-checksum-tests()
+print('ALL CHECKSUM TESTS PASSED')

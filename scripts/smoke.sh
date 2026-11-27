@@ -29,7 +29,7 @@ for arg in "$@"; do
     *) TARGETS+=("$arg") ;;
   esac
 done
-[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm noagent)
+[ ${#TARGETS[@]} -eq 0 ] && TARGETS=(notools nogit noimg nouv nonpm noagent nosync)
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -390,6 +390,208 @@ if want nonpm; then
     fi
   fi
   suite_footer nonpm
+fi
+
+# ── nosync ────────────────────────────────────────────────────────
+if want nosync; then
+  PASS=0; FAIL=0
+  nosync_required() {
+    local desc="$1"
+    shift
+    if "$@"; then
+      return 0
+    fi
+    echo "  FAIL: $desc"; FAIL=$((FAIL+1))
+    return 1
+  }
+  suite_header nosync
+  BIN="$ROOT/nosync/dist/nosync"
+  [ "$BUILD_FIRST" -eq 1 ] && do_build nosync
+  if [ ! -x "$BIN" ]; then
+    echo "  FAIL: binary missing: $BIN"; FAIL=$((FAIL+1))
+  else
+    VER="$(version_of nosync)"
+    WORK="$(mktemp -d "$ROOT/tmp/nosync-smoke.XXXXXX")"
+    SRC="$WORK/src"
+    DST="$WORK/dst"
+    mkdir -p "$SRC"
+    printf 'alpha' > "$SRC/a"
+
+    echo "=== nosync version ==="
+    if out=$("$BIN" --version); then
+      check "version" "$out" "nosync $VER"
+    else
+      echo "  FAIL: version command"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== first copy ==="
+    if "$BIN" -a "$SRC/" "$DST"; then
+      echo "  PASS: initial copy"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: initial copy"; FAIL=$((FAIL+1))
+    fi
+    if cmp -s "$SRC/a" "$DST/a"; then
+      echo "  PASS: copied bytes"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: copied bytes"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== unchanged ==="
+    if out=$("$BIN" -a --stats "$SRC/" "$DST"); then
+      check "unchanged updates" "$(printf '%s\n' "$out" | awk '$1 == "updated:" {print $2}')" "0"
+    else
+      echo "  FAIL: unchanged sync command"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== delta ==="
+    if python3 - "$SRC/data" <<'PY'
+import hashlib, sys
+blocks = [hashlib.sha256(str(i).encode()).digest() * 128 for i in range(10)]
+open(sys.argv[1], 'wb').write(b''.join(blocks))
+PY
+    then
+      :
+    else
+      echo "  FAIL: create delta fixture"; FAIL=$((FAIL+1))
+    fi
+    nosync_required 'copy delta fixture' "$BIN" -a "$SRC/" "$DST"
+    if python3 - "$SRC/data" <<'PY'
+import hashlib, sys
+path = sys.argv[1]
+data = open(path, 'rb').read()
+prefix = hashlib.sha256(b'prepend').digest() * 128
+open(path, 'wb').write(prefix + data)
+PY
+    then
+      :
+    else
+      echo "  FAIL: prepend delta fixture"; FAIL=$((FAIL+1))
+    fi
+    if out=$("$BIN" -a --stats --block-size 4096 "$SRC/" "$DST"); then
+      reused=$(printf '%s\n' "$out" | awk '$1 == "reused-bytes:" {print $2}')
+      case "$reused" in
+        ''|*[!0-9]*) echo "  FAIL: delta reuse >= 95% (invalid reused=$reused)"; FAIL=$((FAIL+1)) ;;
+        *) if [ "$reused" -ge 38912 ]; then
+          echo "  PASS: delta reuse >= 95%"; PASS=$((PASS+1))
+        else
+          echo "  FAIL: delta reuse >= 95% (reused=$reused)"; FAIL=$((FAIL+1))
+        fi ;;
+      esac
+    else
+      echo "  FAIL: delta sync command"; FAIL=$((FAIL+1))
+      reused=''
+    fi
+    if cmp -s "$SRC/data" "$DST/data"; then
+      echo "  PASS: delta bytes"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: delta bytes"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== checksum ==="
+    printf 'omega' > "$DST/a"
+    if python3 - "$SRC/a" "$DST/a" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    os.utime(path, (1700000000, 1700000000))
+PY
+    then
+      :
+    else
+      echo "  FAIL: set checksum fixture mtimes"; FAIL=$((FAIL+1))
+    fi
+    nosync_required 'checksum sync command' "$BIN" -a --checksum "$SRC/" "$DST"
+    if cmp -s "$SRC/a" "$DST/a"; then
+      echo "  PASS: checksum detects equal size/mtime"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: checksum detects equal size/mtime"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== delete ==="
+    printf 'stale' > "$DST/stale"
+    nosync_required 'delete sync command' "$BIN" -a --delete "$SRC/" "$DST"
+    if [ ! -e "$DST/stale" ]; then
+      echo "  PASS: stale entry deleted"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: stale entry deleted"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== dry-run ==="
+    if python3 - "$BIN" "$SRC" "$DST" <<'PY'
+import hashlib, os, stat, subprocess, sys
+binary, source, target = sys.argv[1:]
+def snapshot(root):
+    result = {}
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in ['.', *sorted(dirs), *sorted(files)]:
+            path = directory if name == '.' else os.path.join(directory, name)
+            rel = '.' if name == '.' else os.path.relpath(path, root)
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                payload = ('link', os.readlink(path))
+            elif stat.S_ISDIR(info.st_mode):
+                payload = ('dir',)
+            else:
+                with open(path, 'rb') as handle:
+                    payload = ('file', hashlib.sha256(handle.read()).hexdigest())
+            result[rel] = (info.st_mode, info.st_mtime_ns, payload)
+    return result
+before = snapshot(target)
+subprocess.run([binary, '-a', '--checksum', '--delete', '--dry-run', source + '/', target], check=True)
+assert snapshot(target) == before, 'dry-run changed target tree'
+PY
+    then
+      echo "  PASS: dry-run full-tree snapshot"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: dry-run full-tree snapshot"; FAIL=$((FAIL+1))
+    fi
+
+    echo "=== mode and mtime ==="
+    chmod 640 "$SRC/a"
+    touch -t 202001010000 "$SRC/a"
+    nosync_required 'metadata sync command' "$BIN" -a "$SRC/" "$DST"
+    if [ "$(uname)" = Darwin ]; then
+      mode_of() { stat -f '%Lp' "$1"; }
+      mtime_of() { stat -f '%m' "$1"; }
+    else
+      mode_of() { stat -c '%a' "$1"; }
+      mtime_of() { stat -c '%Y' "$1"; }
+    fi
+    check "preserved mode" "$(mode_of "$DST/a")" "$(mode_of "$SRC/a")"
+    check "preserved mtime" "$(mtime_of "$DST/a")" "$(mtime_of "$SRC/a")"
+
+    echo "=== links and overlap ==="
+    mkdir "$WORK/outside"
+    printf 'outside' > "$WORK/outside/sentinel"
+    ln -s "$WORK/outside" "$SRC/escape"
+    nosync_required 'skip links by default command' "$BIN" -r "$SRC/" "$DST"
+    if [ ! -e "$DST/escape" ] && [ ! -L "$DST/escape" ]; then
+      echo "  PASS: links skipped by default"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: links skipped by default"; FAIL=$((FAIL+1))
+    fi
+    nosync_required 'copy links without following command' "$BIN" -a "$SRC/" "$DST"
+    if [ -L "$DST/escape" ]; then
+      echo "  PASS: link copied without following"; PASS=$((PASS+1))
+    else
+      echo "  FAIL: link copied without following"; FAIL=$((FAIL+1))
+    fi
+    if "$BIN" -a "$SRC" "$SRC/child" >/dev/null 2>&1; then
+      echo "  FAIL: overlapping roots rejected"; FAIL=$((FAIL+1))
+    else
+      echo "  PASS: overlapping roots rejected"; PASS=$((PASS+1))
+    fi
+
+    if python3 - "$WORK" <<'PY'
+import shutil, sys
+shutil.rmtree(sys.argv[1])
+PY
+    then
+      :
+    else
+      echo "  FAIL: clean nosync smoke workspace"; FAIL=$((FAIL+1))
+    fi
+  fi
+  suite_footer nosync
 fi
 
 # ── noagent ────────────────────────────────────────────────────────

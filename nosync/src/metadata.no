@@ -1,0 +1,36 @@
+; 标量元数据映射；符号链接不通过会跟随链接的 chmod/chown/utime 修改。
+
+# /nosync/src/model
+# /nosync/src/platform
+
+metadata-differs = (entry manifest-entry, current manifest-entry, opts options) (different bool) {
+    different = false
+    opts.perms && entry.mode != current.mode -> different = true
+    opts.times && entry.mtime != current.mtime -> different = true
+    opts.owner && entry.uid != current.uid -> different = true
+    opts.group && entry.gid != current.gid -> different = true
+}
+
+apply-metadata = (path str, entry manifest-entry, opts options) (ok bool) {
+    ok = false
+    entry.kind == KIND-LINK -> {
+        ok = true
+        return
+    }
+    current, exists = platform-stat(path)
+    ! exists -> return
+    opts.owner || opts.group -> {
+        uid = current.uid
+        gid = current.gid
+        opts.owner -> uid = entry.uid
+        opts.group -> gid = entry.gid
+        ! platform-set-owner(path, uid, gid) -> return
+    }
+    opts.perms -> {
+        ! platform-set-mode(path, entry.mode) -> return
+    }
+    opts.times -> {
+        ! platform-set-time(path, entry.mtime) -> return
+    }
+    ok = true
+}

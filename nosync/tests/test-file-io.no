@@ -1,0 +1,240 @@
+; 有界顺序读写、随机偏移读取与短读写/EOF/关闭错误回归。
+
+# /nosync/src/file-io
+# /nosync/src/checksum
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/platform
+
+#{c, mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+_malloc = (size i64) (pointer i64)
+
+#{c, mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+_memcpy = (destination *byte, source str, length i64) (result i64)
+
+#{c, mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+_setrlimit = (resource i32, limits *byte) (result i32)
+
+fileio-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+ensure-fileio-tmp = () {
+    info, exists = platform-stat('tmp')
+    exists && info.kind == KIND-DIR -> return
+    created = platform-mkdir('tmp', 448)
+    fileio-check(created, 'create test tmp directory')
+}
+
+run-file-io-tests = () {
+    ensure-fileio-tmp()
+    path = 'tmp/nosync-file-io'
+    data []byte = with-len(196608)
+    i <- [0..data.len()): {
+        value = add-index(mul-index(i, 37), 11)
+        data[i]: {
+            ok -> it = to-byte(value & 255)
+
+            -> return
+        }
+    }
+    fs.remove(path)
+    fileio-check(fs.write-file(path, data), 'write input')
+    fd = platform-open(path, false)
+    fileio-check(fd >= 0, 'open input')
+    fileio-check(platform-seek(fd, 4096), 'direct seek')
+    direct []byte = with-len(4096)
+    got = platform-read(fd, direct, 4096)
+    fileio-check(got == 4096, 'direct read count')
+    fileio-check(weak-direct(direct) == weak-direct(data.slice(4096, 8192)), 'direct offset bytes')
+    random []byte = with-len(4096)
+    read, complete = read-exact-at(fd, random, 4096, 4096)
+    fileio-check(complete && read == 4096, 'random read count')
+    fileio-check(weak-direct(random) == weak-direct(data.slice(4096, 8192)), 'random offset bytes')
+    fileio-check(platform-seek(fd, 8192), 'current seek')
+    current []byte = with-len(4096)
+    read, complete = read-exact-from-current(fd, current, 4096)
+    fileio-check(complete && read == 4096, 'current read count')
+    fileio-check(weak-direct(current) == weak-direct(data.slice(8192, 12288)), 'current offset bytes')
+    output = 'tmp/nosync-file-io-copy'
+    fs.remove(output)
+    output-fd = platform-open(output, true)
+    fileio-check(output-fd >= 0, 'open copy output')
+    copied, complete = copy-stream(fd, output-fd, data.len())
+    fileio-check(complete && copied == data.len(), 'sequential copy crosses buffer boundaries')
+    copied-digest, copied-valid = file-digest(output, data.len())
+    expected-state, expected-valid = sha256-update(sha256-init(), data)
+    expected-digest = sha256-final(expected-state)
+    fileio-check(copied-valid && expected-valid && sha256-equal(copied-digest, expected-digest), 'sequential copy bytes match source')
+
+    invalid []byte = with-len(8)
+    read, complete = read-exact-from-current(fd, invalid, -1)
+    fileio-check(read == 0 && ! complete, 'negative read count rejected')
+    read, complete = read-exact-from-current(fd, invalid, 9)
+    fileio-check(read == 0 && ! complete, 'oversized read count rejected')
+    read, complete = read-exact-from-current(fd, invalid, 0)
+    fileio-check(read == 0 && complete, 'zero read count succeeds')
+    read, complete = read-exact-at(fd, invalid, 1, -1)
+    fileio-check(read == 0 && ! complete, 'negative read offset rejected')
+    read, complete = read-exact-from-current(-1, invalid, 1)
+    fileio-check(read == 0 && ! complete, 'invalid read descriptor rejected')
+
+    written, complete = write-all(fd, invalid, 1)
+    fileio-check(written == 0 && ! complete, 'write to read-only descriptor fails')
+    written, complete = write-all(output-fd, invalid, -1)
+    fileio-check(written == 0 && ! complete, 'negative write count rejected')
+    written, complete = write-all(output-fd, invalid, 9)
+    fileio-check(written == 0 && ! complete, 'oversized write count rejected')
+    written, complete = write-all(output-fd, invalid, 0)
+    fileio-check(written == 0 && complete, 'zero write count succeeds')
+
+    copied, complete = copy-stream(fd, output-fd, add-index(data.len(), 1))
+    fileio-check(! complete && copied == data.len(), 'copy stream rejects early EOF')
+    copied, complete = copy-stream(-1, output-fd, 1)
+    fileio-check(! complete && copied == 0, 'copy stream rejects invalid source')
+    copied, complete = copy-stream(fd, -1, 1)
+    fileio-check(! complete && copied == 0, 'copy stream rejects invalid destination')
+
+    short-digest, short-valid = file-digest(path, sub-index(data.len(), 1))
+    fileio-check(! short-valid, 'digest rejects shorter expected length')
+    long-digest, long-valid = file-digest(path, add-index(data.len(), 1))
+    fileio-check(! long-valid, 'digest rejects longer expected length')
+    negative-digest, negative-valid = file-digest(path, -1)
+    fileio-check(! negative-valid, 'digest rejects negative expected length')
+    missing-digest, missing-valid = file-digest(output - '-missing', 0)
+    fileio-check(! missing-valid, 'digest rejects open failure')
+
+    run-fileio-short-read-tests()
+    run-fileio-short-write-tests()
+    fileio-check(platform-close(output-fd), 'close copy output')
+    fileio-check(platform-close(fd), 'close input')
+    fileio-check(! platform-close(fd), 'double close reports failure')
+    fileio-check(! platform-close(-1), 'invalid close reports failure')
+    fs.remove(output)
+    fs.remove(path)
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+run-fileio-short-read-tests = () {
+    packed = process.process-pipe()
+    fileio-check(packed >= 0, 'create short-read pipe')
+    read-fd = packed >> 32
+    write-fd = packed & 4294967295
+    first []byte = [65]
+    fileio-check(fs.write(write-fd, first, 1) == 1, 'write first short-read byte')
+    pid = process.process-fork()
+    fileio-check(pid >= 0, 'fork short-read writer')
+    pid == 0 -> {
+        platform-close(read-fd)
+        time.sleep-ms(20)
+        tail []byte = [66, 67]
+        wrote = fs.write(write-fd, tail, 2)
+        platform-close(write-fd)
+        wrote == 2 -> exit(0)
+        exit(1)
+    }
+    platform-close(write-fd)
+    assembled []byte = with-len(8)
+    read, complete = read-exact-from-current(read-fd, assembled, 3)
+    fileio-check(complete && read == 3, 'short reads continue until requested count')
+    assembled[0]: {
+        ok -> fileio-check(it == 65, 'short-read first byte')
+
+        -> fileio-check(false, 'short-read first byte index')
+    }
+    assembled[1]: {
+        ok -> fileio-check(it == 66, 'short-read second byte')
+
+        -> fileio-check(false, 'short-read second byte index')
+    }
+    assembled[2]: {
+        ok -> fileio-check(it == 67, 'short-read third byte')
+
+        -> fileio-check(false, 'short-read third byte index')
+    }
+    eof []byte = with-len(1)
+    read, complete = read-exact-from-current(read-fd, eof, 1)
+    fileio-check(read == 0 && ! complete, 'pipe EOF reported explicitly')
+    fileio-check(platform-close(read-fd), 'close short-read pipe')
+    fileio-check(process.process-waitpid(pid, 0) == 0, 'reap short-read writer')
+
+    packed = process.process-pipe()
+    fileio-check(packed >= 0, 'create partial EOF pipe')
+    read-fd = packed >> 32
+    write-fd = packed & 4294967295
+    partial []byte = [68, 69, 70]
+    fileio-check(fs.write(write-fd, partial, 3) == 3, 'write partial EOF payload')
+    fileio-check(platform-close(write-fd), 'close partial EOF writer')
+    buffer []byte = with-len(8)
+    read, complete = read-exact-from-current(read-fd, buffer, 4)
+    fileio-check(read == 3 && ! complete, 'partial EOF preserves bytes read')
+    fileio-check(platform-close(read-fd), 'close partial EOF reader')
+}
+
+#{win-amd64, win-arm64}
+run-fileio-short-read-tests = () {
+}
+
+run-fileio-short-write-child = (path str) {
+    data []byte = with-len(8192)
+    i <- [0..data.len()): {
+        data[i]: {
+            ok -> it = to-byte(i & 255)
+
+            -> fileio-check(false, 'build short-write payload')
+        }
+    }
+    fd = platform-open(path, true)
+    fileio-check(fd >= 0, 'open short-write output')
+    written, complete = write-all(fd, data, data.len())
+    fileio-check(written > 0 && written < data.len() && ! complete, 'short write retries then propagates failure')
+    fileio-check(platform-close(fd), 'close short-write output')
+    size = fs.stat-size(path)
+    size: {
+        ok -> fileio-check(it == written, 'short write preserves partial byte count')
+
+        -> fileio-check(false, 'stat short-write output')
+    }
+    fs.remove(path)
+    print('SHORT WRITE CHILD PASSED')
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+run-fileio-short-write-tests = () {
+    output = 'tmp/nosync-file-io-short-write'
+    fs.remove(output)
+    pid = process.process-fork()
+    fileio-check(pid >= 0, 'fork short-write child')
+    pid == 0 -> {
+
+        ; 子进程退出即回收该 FFI 缓冲区；父进程和其他测试不受 RLIMIT_FSIZE 影响。
+        pointer = _malloc(16)
+        fileio-check(pointer != 0, 'allocate short-write rlimit')
+        limits []byte = [
+            0, 2, 0, 0, 0, 0, 0, 0,
+            0, 2, 0, 0, 0, 0, 0, 0,
+        ]
+        encoded = limits.to-str()
+        encoded: {
+            ok -> fileio-check(_memcpy(pointer, it, 16) != 0, 'initialize short-write rlimit')
+
+            -> fileio-check(false, 'encode short-write rlimit')
+        }
+        os.signal(25, 1)
+        fileio-check(_setrlimit(1, pointer) == 0, 'set short-write file size limit')
+        run-fileio-short-write-child(output)
+        exit(0)
+    }
+    fileio-check(process.process-waitpid(pid, 0) == 0, 'reap short-write child')
+    fileio-check(! fs.lstat(output), 'short write child cleaned output')
+}
+
+#{win-amd64, win-arm64}
+run-fileio-short-write-tests = () {
+}
+
+run-file-io-tests()
+print('ALL FILE IO TESTS PASSED')

@@ -1,0 +1,268 @@
+; 三平台原生回归：Windows 路径与链接只使用宽字符平台适配，不走 ANSI fs shim。
+
+# /nosync/tests/test-checksum
+# /nosync/tests/test-cli
+# /nosync/tests/test-delta
+# /nosync/tests/test-file-io
+# /nosync/tests/test-sort
+# /nosync/src/checksum
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/platform
+# /nosync/src/file-io
+# /nosync/src/sync
+
+native-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+ensure-test-tmp = () {
+    info, exists = platform-stat('tmp')
+    exists && info.kind == KIND-DIR -> return
+    created = platform-mkdir('tmp', 448)
+    native-check(created, 'create test tmp directory')
+}
+
+native-options = (source str, destination str) (opts options) {
+    opts.recursive = true
+    opts.links = true
+    opts.perms = true
+    opts.times = true
+    opts.owner = true
+    opts.group = true
+    opts.block-size = 4096
+    opts.memory-limit = 16777216
+    opts.src = source
+    opts.dst = destination
+}
+
+native-write = (path str, text str) (ok bool) {
+    data = text.to-bytes()
+    fd = platform-open(path, true)
+    fd < 0 -> return
+    written, complete = write-all(fd, data, data.len())
+    closed = platform-close(fd)
+    ok = complete && closed && written == data.len()
+}
+
+native-cleanup = (path str) {
+    info, exists = platform-stat(path)
+    ! exists -> return
+    info.kind != KIND-DIR -> {
+        platform-remove-file(path)
+        return
+    }
+    names, listed = platform-list-dir(path)
+    listed -> {
+        name <- names: {
+            ! valid-relative-path(name) -> return
+            native-cleanup(join-path(path, name))
+        }
+    }
+    platform-remove-dir(path)
+}
+
+native-content-equal = (a str, b str) (same bool) {
+    a-info, a-exists = platform-stat(a)
+    b-info, b-exists = platform-stat(b)
+    ! a-exists || ! b-exists || a-info.kind != KIND-FILE || b-info.kind != KIND-FILE -> return
+    a-info.size != b-info.size -> return
+    a-digest, a-ok = file-digest(a, a-info.size)
+    b-digest, b-ok = file-digest(b, b-info.size)
+    same = a-ok && b-ok && checksum.sha256-equal(a-digest, b-digest)
+}
+
+native-run = (opts options) (ok bool) {
+    code = run-sync(opts, [])
+    code != 0 -> eprint('native sync: ' - STATE.error-stage - ' ' - STATE.error-path - ' ' - STATE.error-message)
+    ok = code == 0
+}
+
+test-native-unicode = (root str) {
+    native-check(platform-mkdir(root, 448), 'create Unicode case root')
+    source = root - '/源 目录'
+    destination = root - '/目标 目录'
+    native-check(platform-mkdir(source, 448), 'create Unicode source')
+    native-check(platform-mkdir(destination, 448), 'create Unicode destination')
+    source-file = source - '/文件-😀.txt'
+    destination-file = destination - '/文件-😀.txt'
+    native-check(native-write(source-file, '新内容-😀'), 'write Unicode source')
+    native-check(native-write(destination-file, 'old'), 'write Unicode destination')
+    native-check(platform-set-time(source-file, 1700000123), 'set Unicode source mtime')
+    opts = native-options(source - '/', destination)
+    native-check(native-run(opts), 'sync Unicode file')
+    native-check(native-content-equal(source-file, destination-file), 'Unicode replacement content')
+    target-info, target-exists = platform-stat(destination-file)
+    native-check(target-exists && target-info.mtime == 1700000123, 'Unicode replacement mtime')
+
+    opts.dry-run = true
+    opts.checksum = true
+    opts.delete = true
+    stale = destination - '/stale'
+    native-check(native-write(stale, 'keep during dry-run'), 'write native dry-run stale file')
+    native-check(native-write(source-file, 'dry-run source'), 'change native dry-run source')
+    before, before-exists = platform-stat(destination-file)
+    expected = root - '/expected-content'
+    native-check(native-write(expected, '新内容-😀'), 'save native dry-run expected content')
+    native-check(native-run(opts), 'native dry-run')
+    after, after-exists = platform-stat(destination-file)
+    native-check(before-exists && after-exists && before.size == after.size && before.mtime == after.mtime, 'native dry-run metadata unchanged')
+    native-check(native-content-equal(expected, destination-file), 'native dry-run content unchanged')
+    stale-info, stale-exists = platform-stat(stale)
+    native-check(stale-exists, 'native dry-run preserves deletion candidate')
+}
+
+test-native-long-path = (root str) {
+    native-check(platform-mkdir(root, 448), 'create long-path case root')
+    source = root - '/long-src'
+    destination = root - '/long-dst'
+    native-check(platform-mkdir(source, 448), 'create long-path source')
+    native-check(platform-mkdir(destination, 448), 'create long-path destination')
+    source-current = source
+    destination-current = destination
+    i <- [0..24): {
+        component = 'segment-' - i.to-str() - '-abcdefghij'
+        source-current = join-path(source-current, component)
+        destination-current = join-path(destination-current, component)
+        native-check(platform-mkdir(source-current, 448), 'create deep source component')
+        native-check(platform-mkdir(destination-current, 448), 'create deep destination component')
+    }
+    native-check(source-current.len-bytes() > 260, 'test path exceeds legacy Windows MAX_PATH')
+    source-file = join-path(source-current, '深层-😀.bin')
+    destination-file = join-path(destination-current, '深层-😀.bin')
+    native-check(native-write(source-file, 'long-path-new-content'), 'write deep Unicode source')
+    native-check(native-write(destination-file, 'old'), 'write deep Unicode destination')
+    opts = native-options(source-file, destination-file)
+    native-check(native-run(opts), 'replace deep Unicode file')
+    native-check(native-content-equal(source-file, destination-file), 'deep Unicode replacement content')
+    native-check(platform-set-time(source-file, 1700000456), 'set deep source mtime')
+    native-check(native-run(opts), 'apply deep source metadata')
+    target-info, target-exists = platform-stat(destination-file)
+    native-check(target-exists && target-info.mtime == 1700000456, 'deep Unicode mtime preserved')
+}
+
+#{win-amd64, win-arm64}
+native-directory-link-expected = () (expected bool) {
+    expected = true
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+native-directory-link-expected = () (expected bool) {
+}
+
+#{win-amd64, win-arm64}
+native-test-link-type-update = (source str, destination str, type-target str, opts options) {
+    native-check(platform-remove-file(source - '/type-link'), 'remove source directory symlink before type update')
+    native-check(platform-create-link(type-target, source - '/type-link', false), 'replace source directory symlink with file symlink')
+    native-check(native-run(opts), 'update symlink type with unchanged target text')
+    type-info, type-exists = platform-stat(destination - '/type-link')
+    native-check(type-exists && type-info.kind == KIND-LINK && ! type-info.link-directory, 'symlink type update replaces directory link with file link')
+    native-check(STATS.updated == 1, 'symlink type update counted once')
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+native-test-link-type-update = (source str, destination str, type-target str, opts options) {
+}
+
+test-native-links = (root str) {
+    native-check(platform-mkdir(root, 448), 'create link case root')
+    source = root - '/link-src'
+    destination = root - '/link-dst'
+    outside = root - '/outside'
+    native-check(platform-mkdir(source, 448), 'create link source')
+    native-check(platform-mkdir(destination, 448), 'create link destination')
+    native-check(platform-mkdir(outside, 448), 'create link outside directory')
+    native-check(native-write(outside - '/sentinel', 'outside'), 'write link sentinel')
+    file-name = '链接-😀.txt'
+    native-check(native-write(join-path(source, file-name), 'linked-content'), 'write Unicode link target')
+    native-check(platform-create-link(file-name, source - '/file-link', false), 'create Unicode file symlink')
+    native-check(platform-create-link('missing-目标', source - '/broken-link', false), 'create dangling Unicode symlink')
+    native-check(platform-create-link('../outside', source - '/dir-link', true), 'create directory symlink')
+    type-target = 'missing-type-target'
+    native-check(platform-create-link(type-target, source - '/type-link', true), 'create dangling directory symlink')
+
+    opts = native-options(source - '/', destination)
+    opts.links = false
+    native-check(native-run(opts), 'sync without following source links')
+    skipped, skipped-exists = platform-stat(destination - '/file-link')
+    native-check(! skipped-exists, 'skipped link creates no destination')
+    opts.links = true
+    native-check(native-run(opts), 'copy source links themselves')
+    target, read = platform-read-link(destination - '/file-link')
+    native-check(read && STATE.scratch-link-target.compare(file-name) == 0, 'copy Unicode link target')
+    target, read = platform-read-link(destination - '/broken-link')
+    native-check(read && STATE.scratch-link-target.compare('missing-目标') == 0, 'copy dangling Unicode link')
+    file-info, file-exists = platform-stat(destination - '/file-link')
+    native-check(file-exists && file-info.kind == KIND-LINK && ! file-info.link-directory, 'file symlink keeps file type')
+    broken-info, broken-exists = platform-stat(destination - '/broken-link')
+    native-check(broken-exists && broken-info.kind == KIND-LINK && ! broken-info.link-directory, 'dangling file symlink keeps file type')
+    link-info, link-exists = platform-stat(destination - '/dir-link')
+    native-check(link-exists && link-info.kind == KIND-LINK, 'directory symlink is not traversed')
+    native-check(link-info.link-directory == native-directory-link-expected(), 'directory symlink keeps platform directory type')
+    type-info, type-exists = platform-stat(destination - '/type-link')
+    native-check(type-exists && type-info.kind == KIND-LINK && type-info.link-directory == native-directory-link-expected(), 'dangling directory symlink keeps platform directory type')
+    copied, copied-exists = platform-stat(destination - '/sentinel')
+    native-check(! copied-exists, 'directory symlink target is not enumerated into destination')
+    native-check(native-content-equal(outside - '/sentinel', outside - '/sentinel'), 'outside link sentinel remains intact')
+
+    native-test-link-type-update(source, destination, type-target, opts)
+
+    native-check(platform-remove-file(source - '/dir-link'), 'remove source directory symlink before delete')
+    opts.delete = true
+    native-check(native-run(opts), 'delete stale directory symlink')
+    deleted-link, deleted-link-exists = platform-stat(destination - '/dir-link')
+    native-check(! deleted-link-exists, 'directory symlink itself is deleted')
+    outside-info, outside-exists = platform-stat(outside)
+    native-check(outside-exists && outside-info.kind == KIND-DIR, 'directory symlink target directory is preserved')
+    native-check(native-content-equal(outside - '/sentinel', outside - '/sentinel'), 'directory symlink target content is preserved')
+    native-check(STATS.deleted == 1, 'directory symlink deletion counted once')
+}
+
+#{win-amd64, win-arm64}
+test-native-case-insensitive = (root str) {
+    native-check(platform-mkdir(root, 448), 'create case-insensitive case root')
+    source = root - '/case-src'
+    destination = root - '/case-dst'
+    native-check(platform-mkdir(source, 448), 'create case source')
+    native-check(platform-mkdir(destination, 448), 'create case destination')
+    native-check(native-write(join-path(source, 'Case-Ä.txt'), 'new-case-content'), 'write mixed-case Unicode source')
+    native-check(native-write(join-path(destination, 'case-ä.txt'), 'old'), 'write case-variant Unicode destination')
+    opts = native-options(source - '/', destination)
+    opts.delete = true
+    native-check(native-run(opts), 'match Unicode paths case-insensitively')
+    native-check(native-content-equal(source - '/Case-Ä.txt', destination - '/case-ä.txt'), 'case-variant destination updated in place')
+    native-check(STATS.updated == 1 && STATS.deleted == 0, 'case-variant destination is not deleted')
+
+    reset-state()
+    opts.src = source
+    opts.dst = root - '/CASE-SRC'
+    ok = preflight(opts)
+    native-check(! ok && STATE.error-message.compare('source and destination overlap') == 0, 'case-insensitive overlap rejected')
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+test-native-case-insensitive = (root str) {
+}
+
+run-native-tests = () {
+    ensure-test-tmp()
+    run-checksum-tests()
+    run-cli-tests()
+    run-delta-tests()
+    run-file-io-tests()
+    run-sort-tests()
+    root = 'tmp/nosync-native-' - os.get-pid().to-str()
+    native-cleanup(root)
+    native-check(platform-mkdir(root, 448), 'create native test root')
+    test-native-unicode(root - '/unicode')
+    test-native-long-path(root - '/long')
+    test-native-links(root - '/links')
+    test-native-case-insensitive(root - '/case')
+    native-cleanup(root)
+}
+
+run-native-tests()
+print('ALL NATIVE TESTS PASSED')

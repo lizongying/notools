@@ -535,17 +535,15 @@ build-tree-from-flat = (git-dir str, paths str, hexoids str, modes-str str, coun
                 }
 
                 ; recursively build subtree
-                sub-oid-opt = build-tree-from-flat(git-dir, sub-paths, sub-hexoids, sub-modes, sub-count)
                 sub-oid oid
                 sub-ok bool = false
-                sub-oid-opt: {
+                object.build-tree-from-flat(git-dir, sub-paths, sub-hexoids, sub-modes, sub-count): {
                     ok -> {
-                        sub-oid = sub-oid-opt
+                        sub-oid = it
                         sub-ok = true
                     }
 
-                    nil || err -> {
-                    }
+                    -> _
                 }
                 sub-ok -> {
 
@@ -831,14 +829,14 @@ hex-char = (b byte) (s str) {
 
         -> "0"
     }
-    s = s.set-byte(0, d9v1)
+    s = set-byte-at(s, 0, d9v1)
 
     d9v2 = hc[lo]: {
         ok -> it
 
         -> "0"
     }
-    s = s.set-byte(1, d9v2)
+    s = set-byte-at(s, 1, d9v2)
 }
 
 ; object-path: <git-dir>/objects/<aa>/<bbbb...> path string.
@@ -1132,17 +1130,15 @@ read-commit-full = (git-dir str, o oid) (tree-oid oid, parenthex str, a-name str
         line str = util.str-range(text, pos, nl)
         line.starts-with('tree ') -> {
             hx str = util.str-range(line, 5, line.len())
-            toid-opt = oid.oid-from-hex(hx)
             toid oid
             tok bool = false
-            toid-opt: {
+            oid.oid-from-hex(hx): {
                 ok -> {
-                    toid = toid-opt
+                    toid = it
                     tok = true
                 }
 
-                nil || err -> {
-                }
+                -> _
             }
             tok -> tree-oid = toid
         }
@@ -1200,17 +1196,15 @@ parse-commit-from-data = (d str) (tree-oid oid, parenthex str, a-name str, a-ema
         line str = util.str-range(text, pos, nl)
         line.starts-with('tree ') -> {
             hx str = util.str-range(line, 5, line.len())
-            toid-opt = oid.oid-from-hex(hx)
             toid oid
             tok bool = false
-            toid-opt: {
+            oid.oid-from-hex(hx): {
                 ok -> {
-                    toid = toid-opt
+                    toid = it
                     tok = true
                 }
 
-                nil || err -> {
-                }
+                -> _
             }
             tok -> tree-oid = toid
         }
@@ -1289,17 +1283,15 @@ read-tag-full = (git-dir str, o oid) (obj oid, obj-type str, tag str, t-name str
         line str = util.str-range(text, pos, nl)
         line.starts-with('object ') -> {
             hx str = util.str-range(line, 7, line.len())
-            tobj-opt = oid.oid-from-hex(hx)
             tobj oid
             took bool = false
-            tobj-opt: {
+            oid.oid-from-hex(hx): {
                 ok -> {
-                    tobj = tobj-opt
+                    tobj = it
                     took = true
                 }
 
-                nil || err -> {
-                }
+                -> _
             }
             took -> obj = tobj
         }
@@ -1344,17 +1336,15 @@ object-roundtrip-test = (git-dir str) (ok bool) {
     ; --- tree round trip ---
     traw = tree-add-raw('', 33188, 'hello.txt', b)
     tid = tree-write-raw(git-dir, traw)
-    back-opt = tree-read-raw(git-dir, tid)
     back str
     tok = false
-    back-opt: {
+    object.tree-read-raw(git-dir, tid): {
         ok -> {
             back = it
             tok = true
         }
 
-        nil || err -> {
-        }
+        -> _
     }
     ok = ok && tok
     n = tree-count-raw(back)
@@ -1415,13 +1405,13 @@ tree-to-flat = (git-dir str, tree-oid oid, prefix str) (paths str, hexoids str, 
             continue
         }
 
-        ; build full path: prefix/nm or just nm if prefix is empty
+        ; build full path: prefix/nm or just nm if prefix is empty.
+        ; Compute the path first, then branch on mode: a combined cond block
+        ; would stop at the first matching arm and skip the mode dispatch.
         full-path = nm
-        {
-            prefix.len-bytes() > 0 -> {
-                full-path = prefix - '/' - nm
-            }
+        prefix.len-bytes() > 0 -> full-path = prefix - '/' - nm
 
+        {
             mode == 16384 -> {
 
                 ; subtree — recurse
@@ -1487,18 +1477,19 @@ checkout-tree = (git-dir str, tree-oid oid, dest-dir str) (ok bool) {
             continue
         }
 
-        ; build full path: dest-dir/nm
-        full-path = dest-dir
+        ; build full path: dest-dir/nm. Compute it first, then dispatch on
+        ; mode — a combined cond block would stop at the first matching arm
+        ; and never reach the blob/subtree branches.
+        full-path = nm
+        dest-dir.len-bytes() > 0 -> {
+
+            #{overflow=wrap}
+            last = dest-dir.byte(dest-dir.len-bytes() - 1)
+            last == 47 -> full-path = dest-dir - nm
+            last != 47 -> full-path = dest-dir - '/' - nm
+        }
+
         {
-            dest-dir.len-bytes() > 0 -> {
-
-                #{overflow=wrap}
-                last = dest-dir.byte(dest-dir.len-bytes() - 1)
-                last != 47 -> full-path = dest-dir - '/' - nm
-            }
-
-            dest-dir.len-bytes() == 0 -> full-path = nm
-
             mode == 16384 -> {
 
                 ; subtree — create directory and recurse
@@ -1563,17 +1554,15 @@ remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-
     fe-ok = true
     !! {
         ! fe-ok -> break
-        fname-opt = fs.read-dir(dirp)
         fname = ''
         fe-ok = false
-        fname-opt: {
+        fs.read-dir(dirp): {
             ok -> {
                 fname = it
                 fe-ok = true
             }
 
-            -> {
-            }
+            -> _
         }
         fe-ok -> {
 
@@ -1630,4 +1619,22 @@ remove-stale-dir = (base-dir str, dir str, cur-prefix str, flat-paths str, flat-
         }
     }
     fs.close-dir(dirp)
+}
+
+; set-byte-at: replacement for std str.set-byte. The std body concatenates
+; []byte slices, which v0.4.37 lowers to invalid LLVM IR; write through a
+; []byte buffer with a place-match index store instead.
+set-byte-at = (s str, i i64, b byte) (out str) {
+    bs []byte = s.to-bytes()
+    bs[i]: {
+        ok -> it = b
+
+        -> _
+    }
+    so = bs.to-str()
+    out = so: {
+        ok -> it
+
+        nil || err -> ''
+    }
 }

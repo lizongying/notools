@@ -17,8 +17,8 @@ Unix 常用命令行工具集，使用 [Nolang](https://github.com/lizongying/no
 ### 方式一：从 Releases 下载预编译二进制（推荐）
 
 ```bash
-# Linux amd64 示例
-curl -fsSL -o notools https://github.com/lizongying/notools/releases/latest/download/notools-linux-amd64
+# Linux amd64 示例（将 v0.1.38 替换为所需版本）
+curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/v0.1.38/notools-linux-amd64-v0.1.38
 chmod +x notools && sudo mv notools /usr/local/bin/
 ```
 

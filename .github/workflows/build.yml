@@ -3,10 +3,11 @@ name: Build
 # 使用 nolang 的 build-nolang action 构建多平台二进制文件。
 # 本工作流同时充当 nolang 构建系统的集成测试：
 #   1. detect-changes: 通过 GitHub API 比较当前 tag 与上一个 release tag，
-#      判断 notools / nogit / noimg / nouv / nonpm / noagent 哪些子项目有变更，决定是否需要构建
+#      判断 notools / nogit / noimg / nouv / nonpm / noagent / nosync 哪些子项目有变更，决定是否需要构建
 #   2. 浅克隆 (fetch-depth: 1)，只拉取当前 tag 源码，不拉历史
 #   3. sed 注入 VERSION（从 tag 提取，去掉 v 前缀）
-#   4. no build 交叉编译 6 个目标平台（按需构建）
+#   4. no build 交叉编译 6 个目标平台（按需构建），产物名追加 -v<版本> 后缀
+#      例如 notools-darwin-amd64-v0.1.38 / notools-windows-amd64-v0.1.38.exe
 #   5. 对产物运行 smoke test 验证正确性
 #   6. tag 推送时发布 GitHub Release（跳过的子项目从上一个 release 继承）
 #
@@ -30,6 +31,7 @@ jobs:
       needs-nouv: ${{ steps.detect.outputs.needs-nouv }}
       needs-nonpm: ${{ steps.detect.outputs.needs-nonpm }}
       needs-noagent: ${{ steps.detect.outputs.needs-noagent }}
+      needs-nosync: ${{ steps.detect.outputs.needs-nosync }}
       last-tag: ${{ steps.detect.outputs.last-tag }}
     steps:
       - name: Detect changed subprojects via GitHub API
@@ -91,6 +93,7 @@ jobs:
             echo "needs-nouv=true"       >> "$GITHUB_OUTPUT"
             echo "needs-nonpm=true"      >> "$GITHUB_OUTPUT"
             echo "needs-noagent=true"    >> "$GITHUB_OUTPUT"
+            echo "needs-nosync=true"     >> "$GITHUB_OUTPUT"
             echo "last-tag="             >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -111,7 +114,7 @@ jobs:
           echo ""
 
           # ── 4. 判断每个子项目是否有变更 ──
-          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/  nonpm/  noagent/
+          # 子项目路径前缀：notools/  nogit/  noimg/  nouv/  nonpm/  noagent/  nosync/
           # 额外：根目录的 .github/workflows/ 或 package.jsonc 变更也触发全部构建
           NEEDS_NOTOOLS=false
           NEEDS_NOGIT=false
@@ -119,19 +122,21 @@ jobs:
           NEEDS_NOUV=false
           NEEDS_NONPM=false
           NEEDS_NOAGENT=false
+          NEEDS_NOSYNC=false
 
           while IFS= read -r f; do
             [ -z "$f" ] && continue
 
             # 根级 CI/配置变更 → 全部构建
             case "$f" in
-              .github/workflows/*|package.jsonc|workspace.jsonc)
+              .github/workflows/*|package.jsonc|workspace.jsonc|workspace.noml|scripts/smoke.sh)
                 NEEDS_NOTOOLS=true
                 NEEDS_NOGIT=true
                 NEEDS_NOIMG=true
                 NEEDS_NOUV=true
                 NEEDS_NONPM=true
                 NEEDS_NOAGENT=true
+                NEEDS_NOSYNC=true
                 echo "  [root-config] $f → triggers all"
                 continue
                 ;;
@@ -163,6 +168,10 @@ jobs:
                 NEEDS_NOAGENT=true
                 echo "  [noagent] $f"
                 ;;
+              nosync/*)
+                NEEDS_NOSYNC=true
+                echo "  [nosync] $f"
+                ;;
             esac
           done <<< "$CHANGED_FILES"
 
@@ -176,6 +185,7 @@ jobs:
           echo "  nouv:    $NEEDS_NOUV"
           echo "  nonpm:   $NEEDS_NONPM"
           echo "  noagent: $NEEDS_NOAGENT"
+          echo "  nosync:   $NEEDS_NOSYNC"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
@@ -185,6 +195,7 @@ jobs:
           echo "needs-nouv=$NEEDS_NOUV"        >> "$GITHUB_OUTPUT"
           echo "needs-nonpm=$NEEDS_NONPM"      >> "$GITHUB_OUTPUT"
           echo "needs-noagent=$NEEDS_NOAGENT"  >> "$GITHUB_OUTPUT"
+          echo "needs-nosync=$NEEDS_NOSYNC"    >> "$GITHUB_OUTPUT"
           echo "last-tag=$LAST_TAG"           >> "$GITHUB_OUTPUT"
 
   # ── 构建 notools ──────────────────────────────────────────────────
@@ -210,7 +221,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: notools/main.no
           name: notools
           targets: >-
@@ -222,6 +233,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: notools
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -253,7 +286,9 @@ jobs:
       - name: Smoke test notools (linux/amd64)
         run: |
           set -e
-          BIN="dist/notools-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="dist/notools-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::notools linux/amd64 binary not found — critical build failure"
             exit 1
@@ -280,8 +315,6 @@ jobs:
           check "echo stdin" "$out" "hello notools"
 
           echo "=== version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "notools v$VER (pure Nolang)"
 
@@ -354,9 +387,9 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          # v0.4.32 是首个把 no pack 输出改成逐模块 <modulePath>.gob 的版本；
+          # v0.4.37 是首个把 no pack 输出改成逐模块 <modulePath>.gob 的版本；
           # v0.4.31 的 zip 仍只有 ast.gob，消费端无法按模块取用。
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: nogit/main.no
           # Publish the platform-independent AST package alongside the binaries:
           # dist/nogit-ast.zip -> release asset nogit-ast.zip, consumed by
@@ -373,6 +406,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: nogit
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -406,7 +461,9 @@ jobs:
       - name: Smoke test nogit (linux/amd64)
         run: |
           set -e
-          BIN="$GITHUB_WORKSPACE/dist/nogit-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="$GITHUB_WORKSPACE/dist/nogit-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::nogit linux/amd64 binary not found — critical build failure"
             exit 1
@@ -429,8 +486,6 @@ jobs:
           }
 
           echo "=== nogit version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "nolang-git v$VER (pure nolang)"
 
@@ -520,7 +575,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: noimg/main.no
           name: noimg
           targets: >-
@@ -532,6 +587,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: noimg
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -563,7 +640,9 @@ jobs:
       - name: Smoke test noimg (linux/amd64)
         run: |
           set -e
-          BIN="dist/noimg-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="dist/noimg-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::noimg linux/amd64 binary not found — critical build failure"
             exit 1
@@ -586,8 +665,6 @@ jobs:
           }
 
           echo "=== noimg version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "img v$VER (pure Nolang image processing)"
 
@@ -689,7 +766,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: nouv/main.no
           name: nouv
           targets: >-
@@ -701,6 +778,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: nouv
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -732,7 +831,9 @@ jobs:
       - name: Smoke test nouv (linux/amd64)
         run: |
           set -e
-          BIN="dist/nouv-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="dist/nouv-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::nouv linux/amd64 binary not found — critical build failure"
             exit 1
@@ -755,8 +856,6 @@ jobs:
           }
 
           echo "=== nouv version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "nouv $VER"
 
@@ -827,7 +926,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: nonpm/main.no
           name: nonpm
           targets: >-
@@ -839,6 +938,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: nonpm
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -870,7 +991,9 @@ jobs:
       - name: Smoke test nonpm (linux/amd64)
         run: |
           set -e
-          BIN="dist/nonpm-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="dist/nonpm-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::nonpm linux/amd64 binary not found — critical build failure"
             exit 1
@@ -893,8 +1016,6 @@ jobs:
           }
 
           echo "=== nonpm version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "nonpm $VER"
 
@@ -955,7 +1076,7 @@ jobs:
         id: build
         uses: lizongying/nolang/.github/actions/build-nolang@main
         with:
-          version: "v0.4.32"
+          version: "v0.4.37"
           entry: noagent/main.no
           name: noagent
           targets: >-
@@ -967,6 +1088,28 @@ jobs:
             windows/arm64
           cc: zig
           fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: noagent
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
 
       - name: Build report
         if: always()
@@ -998,7 +1141,9 @@ jobs:
       - name: Smoke test noagent (linux/amd64, offline)
         run: |
           set -e
-          BIN="dist/noagent-linux-amd64"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          BIN="dist/noagent-linux-amd64-v$VER"
           if [ ! -f "$BIN" ]; then
             echo "::error::noagent linux/amd64 binary not found — critical build failure"
             exit 1
@@ -1021,8 +1166,6 @@ jobs:
           }
 
           echo "=== noagent version ==="
-          TAG="${GITHUB_REF_NAME:-dev}"
-          VER="${TAG#v}"
           out=$("$BIN" version)
           check "version" "$out" "noagent $VER"
 
@@ -1056,10 +1199,161 @@ jobs:
           path: dist/noagent-*
           if-no-files-found: warn
 
+  # ── 构建 nosync（六目标发布资产）────────────────────────────────
+  build-nosync:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          sed -i "s/VERSION = 'dev'/VERSION = '$VER'/" nosync/main.no
+          grep -n '^VERSION' nosync/main.no
+
+      - name: Build nosync for six platforms
+        id: build
+        uses: lizongying/nolang/.github/actions/build-nolang@main
+        with:
+          version: "v0.4.37"
+          entry: nosync/main.no
+          name: nosync
+          targets: >-
+            linux/amd64,
+            linux/arm64,
+            darwin/amd64,
+            darwin/arm64,
+            windows/amd64,
+            windows/arm64
+          cc: zig
+          fail-on-error: "true"
+
+      - name: Append version to binary names
+        shell: bash
+        env:
+          NAME: nosync
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          shopt -s nullglob
+          for f in dist/"${NAME}"-*; do
+            case "$f" in
+              *.zip) continue ;;
+            esac
+            if [[ "$f" == *.exe ]]; then
+              mv -n "$f" "${f%.exe}-v${VER}.exe"
+            else
+              mv -n "$f" "${f}-v${VER}"
+            fi
+          done
+          echo "--- Versioned binaries ---"
+          ls -lh dist/"${NAME}"-*
+
+      - name: Smoke test nosync Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          mkdir -p nosync/dist
+          cp "dist/nosync-linux-amd64-v$VER" nosync/dist/nosync
+          chmod +x nosync/dist/nosync
+          bash nosync/tests/test-smoke.sh nosync/dist/nosync
+          scripts/smoke.sh nosync
+
+      - name: Upload nosync artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nosync-binaries
+          path: dist/nosync-*
+          if-no-files-found: error
+
+  # ── nosync 三桌面平台原生门禁（链接测试不可跳过）──────────────
+  native-nosync:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: lizongying/nolang/.github/actions/setup-nolang@main
+        with:
+          version: "v0.4.37"
+          flavor: embedded
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Enable Windows Developer Mode and long paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
+          reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
+            /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Vet nosync entry
+        shell: bash
+        run: no vet nosync/main.no
+
+      - name: Run nosync native unit CLI and E2E tests
+        shell: bash
+        env:
+          NOLANG_AST_CACHE_OFF: '1'
+        run: |
+          set -euo pipefail
+          no run -cc zig nosync/tests/test-native.no
+          if [ "$RUNNER_OS" != Windows ]; then
+            no run -cc zig nosync/tests/test.no
+          fi
+          no build -cc zig -o dist/nosync nosync/main.no
+
+  # ── Linux 发布 artifact 容器 smoke ──────────────────────────────
+  container-nosync:
+    needs: [detect-changes, build-nosync]
+    if: needs.detect-changes.outputs.needs-nosync == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: nosync-binaries
+          path: artifacts
+      - name: Smoke test Linux artifact in Debian container
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VER="${TAG#v}"
+          mkdir -p nosync/dist tmp
+          cp "artifacts/nosync-linux-amd64-v$VER" nosync/dist/nosync
+          chmod +x nosync/dist/nosync
+          sed -i "s/VERSION = 'dev'/VERSION = '${TAG#v}'/" nosync/main.no
+          docker run --rm -v "$PWD:/work" -w /work debian:12-slim bash -c \
+            'apt-get update && apt-get install -y --no-install-recommends python3 && bash scripts/smoke.sh nosync'
+
   # ── 发布 Release ─────────────────────────────────────────────────
   release:
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent]
+    needs: [detect-changes, build-notools, build-nogit, build-noimg, build-nouv, build-nonpm, build-noagent, build-nosync, native-nosync, container-nosync]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1108,6 +1402,13 @@ jobs:
           name: noagent-binaries
           path: artifacts
 
+      - name: Download nosync artifacts
+        if: needs.detect-changes.outputs.needs-nosync == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nosync-binaries
+          path: artifacts
+
       - name: Generate checksums and build release notes
         id: prep
         shell: bash
@@ -1118,6 +1419,7 @@ jobs:
           NEEDS_NOUV: ${{ needs.detect-changes.outputs.needs-nouv }}
           NEEDS_NONPM: ${{ needs.detect-changes.outputs.needs-nonpm }}
           NEEDS_NOAGENT: ${{ needs.detect-changes.outputs.needs-noagent }}
+          NEEDS_NOSYNC: ${{ needs.detect-changes.outputs.needs-nosync }}
           LAST_TAG: ${{ needs.detect-changes.outputs.last-tag }}
           REPO: ${{ github.repository }}
         run: |
@@ -1133,6 +1435,7 @@ jobs:
           echo "  nouv:    $NEEDS_NOUV"
           echo "  nonpm:   $NEEDS_NONPM"
           echo "  noagent: $NEEDS_NOAGENT"
+          echo "  nosync:   $NEEDS_NOSYNC"
           echo "  last-tag: $LAST_TAG"
           echo "============================================"
 
@@ -1148,12 +1451,13 @@ jobs:
 
           # 构建未变更子项目提示
           UNCHANGED=""
-          [ "$NEEDS_NOTOOLS" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### notools\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/notools-linux-amd64) 下载。\n\n"
-          [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64) 下载。\n\n"
-          [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64) 下载。\n\n"
-          [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64) 下载。\n\n"
-          [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64) 下载。\n\n"
-          [ "$NEEDS_NOAGENT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noagent\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noagent-linux-amd64) 下载。\n\n"
+          [ "$NEEDS_NOTOOLS" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### notools\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/notools-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOGIT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nogit\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nogit-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOIMG" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noimg\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noimg-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOUV" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nouv\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nouv-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NONPM" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nonpm\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nonpm-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOAGENT" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### noagent\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/noagent-linux-amd64-${LAST_TAG}) 下载。\n\n"
+          [ "$NEEDS_NOSYNC" != "true" ] && [ -n "$LAST_TAG" ] && UNCHANGED="${UNCHANGED}### nosync\n\n本次未变更，二进制请从 [${LAST_TAG}](https://github.com/${REPO}/releases/download/${LAST_TAG}/nosync-linux-amd64-${LAST_TAG}) 下载。\n\n"
 
           # 输出到 GITHUB_ENV 供 release step 的 body 引用
           {
@@ -1185,44 +1489,50 @@ jobs:
             artifacts/nouv-*
             artifacts/nonpm-*
             artifacts/noagent-*
+            artifacts/nosync-*
             artifacts/checksums-sha256.txt
           body: |
             ## notools ${{ github.ref_name }}
 
-            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
+            Unix 常用命令行工具集 + 纯 Nolang Git 实现 + 纯 Nolang 图像处理工具库 + 纯 Nolang Python 包管理器 + 纯 Nolang Node.js 包管理器 + 纯 Nolang 自主 LLM 智能体 CLI + 纯 Nolang 本地增量同步工具，使用 [Nolang](https://github.com/lizongying/nolang) 语言实现。
 
             ### 下载与安装
 
             ```bash
             # notools (Linux amd64 示例)
-            curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/notools-linux-amd64
+            curl -fsSL -o notools https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/notools-linux-amd64-${{ github.ref_name }}
             chmod +x notools
             sudo mv notools /usr/local/bin/
 
             # nogit (纯 Nolang Git 实现)
-            curl -fsSL -o nogit https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nogit-linux-amd64
+            curl -fsSL -o nogit https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nogit-linux-amd64-${{ github.ref_name }}
             chmod +x nogit
             sudo mv nogit /usr/local/bin/nogit
 
             # noimg (纯 Nolang 图像处理工具)
-            curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noimg-linux-amd64
+            curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noimg-linux-amd64-${{ github.ref_name }}
             chmod +x noimg
             sudo mv noimg /usr/local/bin/noimg
 
             # nouv (纯 Nolang Python 包管理器，uv 兼容)
-            curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nouv-linux-amd64
+            curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nouv-linux-amd64-${{ github.ref_name }}
             chmod +x nouv
             sudo mv nouv /usr/local/bin/nouv
 
             # nonpm (纯 Nolang Node.js 包管理器，pnpm 兼容)
-            curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nonpm-linux-amd64
+            curl -fsSL -o nonpm https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nonpm-linux-amd64-${{ github.ref_name }}
             chmod +x nonpm
             sudo mv nonpm /usr/local/bin/nonpm
 
             # noagent (纯 Nolang 自主 LLM 智能体 CLI)
-            curl -fsSL -o noagent https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noagent-linux-amd64
+            curl -fsSL -o noagent https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/noagent-linux-amd64-${{ github.ref_name }}
             chmod +x noagent
             sudo mv noagent /usr/local/bin/noagent
+
+            # nosync (纯 Nolang 本地增量同步工具)
+            curl -fsSL -o nosync https://github.com/lizongying/notools/releases/download/${{ github.ref_name }}/nosync-linux-amd64-${{ github.ref_name }}
+            chmod +x nosync
+            sudo mv nosync /usr/local/bin/nosync
             ```
 
             ### 作为 Nolang 依赖使用

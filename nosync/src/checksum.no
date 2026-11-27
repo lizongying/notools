@@ -1,0 +1,320 @@
+; 流式 SHA-256 与 rsync 官方弱滚动校验和。
+
+# /nosync/src/numeric
+
+sha-state {
+    h0 u32
+    h1 u32
+    h2 u32
+    h3 u32
+    h4 u32
+    h5 u32
+    h6 u32
+    h7 u32
+    used i64
+    total i64
+    buf [64]byte
+}
+
+weak-state {
+    s1 u32
+    s2 u32
+}
+
+sha256-init = () (state sha-state) {
+    state.h0 = 1779033703
+    state.h1 = 3144134277
+    state.h2 = 1013904242
+    state.h3 = 2773480762
+    state.h4 = 1359893119
+    state.h5 = 2600822924
+    state.h6 = 528734635
+    state.h7 = 1541459225
+}
+
+load-be-u32 = (data []byte, offset i64) (value u32, ok bool) {
+    offset1 = add-index(offset, 1)
+    offset2 = add-index(offset, 2)
+    offset3 = add-index(offset, 3)
+    b0 byte = 0
+    b1 byte = 0
+    b2 byte = 0
+    b3 byte = 0
+    data[offset]: {
+        ok -> b0 = it
+
+        -> return
+    }
+    data[offset1]: {
+        ok -> b1 = it
+
+        -> return
+    }
+    data[offset2]: {
+        ok -> b2 = it
+
+        -> return
+    }
+    data[offset3]: {
+        ok -> b3 = it
+
+        -> return
+    }
+    v0 = byte-to-u32(b0)
+    v1 = byte-to-u32(b1)
+    v2 = byte-to-u32(b2)
+    v3 = byte-to-u32(b3)
+    value = (v0 << 24) | (v1 << 16) | (v2 << 8) | v3
+    ok = true
+}
+
+sha256-compress = (state sha-state, data []byte) (out sha-state) {
+    out = state
+    words []u32 = with-len(16)
+    i <- [0..16): {
+        word, valid = load-be-u32(data, mul-index(i, 4))
+        ! valid -> return
+        words[i]: {
+            ok -> it = word
+
+            -> return
+        }
+    }
+    h0, h1, h2, h3, h4, h5, h6, h7 = sha256.sha256-block(words, state.h0, state.h1, state.h2, state.h3, state.h4, state.h5, state.h6, state.h7)
+    out.h0 = h0
+    out.h1 = h1
+    out.h2 = h2
+    out.h3 = h3
+    out.h4 = h4
+    out.h5 = h5
+    out.h6 = h6
+    out.h7 = h7
+}
+
+sha256-update = (state sha-state, data []byte) (out sha-state, ok bool) {
+    out = state
+    ok = false
+    i <- [0..data.len()): {
+        b byte = 0
+        data[i]: {
+            ok -> b = it
+
+            -> return
+        }
+        out.buf[out.used]: {
+            ok -> it = b
+
+            -> return
+        }
+
+        #{overflow=wrap}
+        out.used = out.used + 1: {
+            ok -> it
+
+            -> 0
+        }
+        out.used == 64 -> {
+            out = sha256-compress(out, out.buf)
+            out.used = 0
+        }
+    }
+    out.total = add-index(out.total, data.len())
+    ok = true
+}
+
+store-be-u32 = (digest [32]byte, offset i64, value u32) (out [32]byte, ok bool) {
+    out = digest
+    shifts []u32 = [24, 16, 8, 0]
+    i <- [0..4): {
+        shift u32 = 0
+        shifts[i]: {
+            ok -> shift = it
+
+            -> return
+        }
+        narrowed = (value >> shift) & 255
+        b = to-byte(narrowed)
+        target = add-index(offset, i)
+        out[target]: {
+            ok -> it = b
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+sha256-final = (state sha-state) (digest [32]byte) {
+    tail []byte = with-len(64)
+    i <- [0..state.used): {
+        state.buf[i]: {
+            ok -> {
+                b = it
+                tail[i]: {
+                    ok -> it = b
+
+                    -> return
+                }
+            }
+
+            -> return
+        }
+    }
+    tail[state.used]: {
+        ok -> it = 128
+
+        -> return
+    }
+    current = state
+    state.used >= 56 -> {
+        current = sha256-compress(current, tail)
+        i <- [0..64): {
+            tail[i]: {
+                ok -> it = 0
+
+                -> return
+            }
+        }
+    }
+
+    #{overflow=wrap}
+    bit-length = state.total * 8: {
+        ok -> it
+
+        -> 0
+    }
+    i <- [0..8): {
+        shift = mul-index(sub-index(7, i), 8)
+        b = to-byte((bit-length >> shift) & 255)
+        target = add-index(56, i)
+        tail[target]: {
+            ok -> it = b
+
+            -> return
+        }
+    }
+    current = sha256-compress(current, tail)
+    result [32]byte
+    result, valid0 = store-be-u32(result, 0, current.h0)
+    result, valid1 = store-be-u32(result, 4, current.h1)
+    result, valid2 = store-be-u32(result, 8, current.h2)
+    result, valid3 = store-be-u32(result, 12, current.h3)
+    result, valid4 = store-be-u32(result, 16, current.h4)
+    result, valid5 = store-be-u32(result, 20, current.h5)
+    result, valid6 = store-be-u32(result, 24, current.h6)
+    result, valid7 = store-be-u32(result, 28, current.h7)
+    digest = result
+}
+
+sha256-equal = (a [32]byte, b [32]byte) (equal bool) {
+    equal = true
+    i <- [0..32): {
+        a[i]: {
+            ok -> {
+                av = it
+                b[i]: {
+                    ok -> {
+                        av != it -> equal = false
+                    }
+
+                    -> equal = false
+                }
+            }
+
+            -> equal = false
+        }
+    }
+}
+
+weak-init = () (state weak-state) {
+    state.s1 = 0
+    state.s2 = 0
+}
+
+weak-add-u32 = (a u32, b u32) (result u32) {
+
+    #{overflow=wrap}
+    value u32 = a + b
+    result = value
+}
+
+weak-sub-u32 = (a u32, b u32) (result u32) {
+
+    #{overflow=wrap}
+    value u32 = a - b
+    result = value
+}
+
+weak-mul-u32 = (a u32, b u32) (result u32) {
+
+    #{overflow=wrap}
+    value u32 = a * b
+    result = value
+}
+
+weak-add-byte = (state weak-state, b byte) (out weak-state) {
+    out = state
+    out.s1 = weak-add-u32(out.s1, byte-to-u32(b))
+    out.s2 = weak-add-u32(out.s2, out.s1)
+}
+
+weak-direct = (data []byte) (value u32) {
+    state = weak-init()
+    i <- [0..data.len()): {
+        data[i]: {
+            ok -> state = weak-add-byte(state, it)
+
+            -> return
+        }
+    }
+    value = (state.s2 << 16) | (state.s1 & 65535)
+}
+
+; 标量端口避免 v0.4.35-dirty 在循环 phi 中丢失 weak-state.s2；公式与官方 rsync 一致。
+weak-direct-parts = (data []byte) (s1 u32, s2 u32) {
+    i <- [0..data.len()): {
+        data[i]: {
+            ok -> {
+                s1 = weak-add-u32(s1, byte-to-u32(it))
+                s2 = weak-add-u32(s2, s1)
+            }
+
+            -> return
+        }
+    }
+}
+
+weak-pack = (s1 u32, s2 u32) (value u32) {
+    value = (s2 << 16) | (s1 & 65535)
+}
+
+; 完整混合弱校验和，避免重复字节模式只命中桶表的低位。
+weak-bucket = (value u32, capacity i64) (bucket i64) {
+    mixed = value ^ (value >> 16)
+    mixed = weak-mul-u32(mixed, 2246822519)
+    mixed = mixed ^ (mixed >> 13)
+    mixed = weak-mul-u32(mixed, 3266489917)
+    mixed = mixed ^ (mixed >> 16)
+    bucket = u32-to-i64(mixed) & (capacity - 1)
+}
+
+weak-roll-parts = (s1 u32, s2 u32, window-len i64, old byte, new byte) (r1 u32, r2 u32) {
+    old-value = byte-to-u32(old)
+    new-value = byte-to-u32(new)
+    length-value = i64-to-u32(window-len)
+    added = weak-add-u32(s1, new-value)
+    r1 = weak-sub-u32(added, old-value)
+    product = weak-mul-u32(old-value, length-value)
+    added = weak-add-u32(s2, r1)
+    r2 = weak-sub-u32(added, product)
+}
+
+weak-roll = (state weak-state, window-len i64, old byte, new byte) (out weak-state) {
+    r1, r2 = weak-roll-parts(state.s1, state.s2, window-len, old, new)
+    out.s1 = r1
+    out.s2 = r2
+}
+
+weak-value = (state weak-state) (value u32) {
+    value = weak-pack(state.s1, state.s2)
+}

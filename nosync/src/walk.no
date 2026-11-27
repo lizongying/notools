@@ -1,0 +1,154 @@
+; 安全枚举：先取链接状态，再决定是否进入目录；过滤与跳过项受删除保护。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/filter
+# /nosync/src/safe-path
+# /nosync/src/platform
+# /nosync/src/sort
+
+walk-fail = (stage str, path str, message str) (ok bool) {
+    STATE.error-stage = stage
+    STATE.error-path = path
+    STATE.error-message = message
+    ok = false
+}
+
+reserve-entry = (path str, limit i64) (ok bool) {
+    cost = add-index(path.len-bytes(), 200)
+    STATE.memory-used > sub-index(limit, cost) -> return
+    STATE.memory-used = add-index(STATE.memory-used, cost)
+    ok = true
+}
+
+add-entry = (rel str, parent i64, depth i64, info stat-info, flags i64, link-index i64, source bool, limit i64) (index i64, ok bool) {
+    index = -1
+    ok = true
+    ! reserve-entry(rel, limit) -> {
+        ok = false
+        return
+    }
+    entry manifest-entry = {}
+    entry.path-index = STATE.src-paths.len()
+    entry.parent-index = parent
+    entry.kind = info.kind
+    entry.size = info.size
+    entry.mtime = info.mtime
+    entry.mode = info.mode
+    entry.uid = info.uid
+    entry.gid = info.gid
+    entry.depth = depth
+    entry.source-index = link-index
+    entry.flags = flags
+    entry.link-directory = info.link-directory
+    source -> {
+        index = STATE.src-entries.len()
+        entry.path-index = STATE.src-paths.len()
+        STATE.src-paths.push(rel)
+        STATE.src-entries.push(entry)
+        return
+    }
+    index = STATE.dst-entries.len()
+    entry.path-index = STATE.dst-paths.len()
+    STATE.dst-paths.push(rel)
+    STATE.dst-entries.push(entry)
+    ok = true
+}
+
+collect-root = (root str, source bool, opts options) (ok bool) {
+    info, exists = platform-stat(root)
+    ! exists -> {
+        source -> {
+            ok = walk-fail('preflight', root, 'source does not exist or cannot be inspected')
+            return
+        }
+        index, added = add-entry('', -1, 0, info, FLAG-ROOT, -1, source, opts.memory-limit)
+        ok = added && index == 0
+        return
+    }
+    index, added = add-entry('', -1, 0, info, FLAG-ROOT, -1, source, opts.memory-limit)
+    ok = added && index == 0
+}
+
+walk-directory = (root str, rel str, parent i64, depth i64, source bool, opts options, rules []filter-rule) (ok bool) {
+    ok = false
+    full = join-path(root, rel)
+    names, listed = platform-list-dir(full)
+    ! listed -> {
+        ok = walk-fail('enumerate', full, platform-error('list-dir', full))
+        return
+    }
+    order = sort-indices(names)
+    count = names.len()
+    position <- [0..count): {
+        order[position]: {
+            ok -> position-index = it
+
+            -> {
+                ok = walk-fail('enumerate', full, 'invalid sorted index')
+                return
+            }
+        }
+        names[position-index]: {
+            ok -> name = it
+
+            -> {
+                ok = walk-fail('enumerate', full, 'sorted name index out of range')
+                return
+            }
+        }
+        ! valid-relative-path(name) -> {
+            ok = walk-fail('enumerate', full, 'unsafe directory entry name')
+            return
+        }
+        child-rel = join-path(rel, name)
+        child = join-path(root, child-rel)
+        info, exists = platform-stat(child)
+        ! exists -> {
+            ok = walk-fail('enumerate', child, platform-error('lstat', child))
+            return
+        }
+        included = filter-includes(rules, child-rel, info.kind == KIND-DIR)
+        protected = false
+        ! included -> protected = true
+        source && info.kind == KIND-DIR && ! opts.recursive -> protected = true
+        source && info.kind == KIND-LINK && ! opts.links -> protected = true
+        source && info.kind == KIND-OTHER -> {
+            ok = walk-fail('preflight', child, 'unsupported source file type')
+            return
+        }
+        ! source && info.kind == KIND-OTHER -> {
+            ok = walk-fail('preflight', child, 'unsupported destination file type')
+            return
+        }
+        link-index = -1
+        info.kind == KIND-LINK -> {
+            link-target, read = platform-read-link(child)
+            ! read -> {
+                ok = walk-fail('enumerate', child, platform-error('readlink', child))
+                return
+            }
+            source -> {
+                link-index = STATE.src-links.len()
+                STATE.src-links.push(STATE.scratch-link-target)
+            }
+            ! source -> {
+                link-index = STATE.dst-links.len()
+                STATE.dst-links.push(STATE.scratch-link-target)
+            }
+        }
+        flags = 0
+        protected -> flags = FLAG-PROTECTED
+        index, added = add-entry(child-rel, parent, depth, info, flags, link-index, source, opts.memory-limit)
+        ! added -> {
+            ok = walk-fail('preflight', child, 'memory limit exceeded before destination writes')
+            return
+        }
+        included && info.kind == KIND-DIR && opts.recursive -> {
+            child-depth = add-index(depth, 1)
+            walked = walk-directory(root, child-rel, index, child-depth, source, opts, rules)
+            ! walked -> return
+        }
+    }
+    ok = true
+}

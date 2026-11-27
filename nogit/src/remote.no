@@ -19,6 +19,27 @@ r-add-i = (a i64, b i64) (out i64) {
     }
 }
 
+; slice-to-str: copy the byte range [a, b) of s into a new str. On any
+; failure the result is the empty string. Passing ?[]byte directly into a
+; str parameter would implicitly capture the option, so always convert here.
+slice-to-str = (s str, a i64, b i64) (out str) {
+    out = ''
+    raw = s.slice-bytes(a, b)
+    raw: {
+        ok -> {
+            bb []byte = it
+            t = bb.to-str()
+            t: {
+                ok -> out = it
+
+                nil || err -> out = ''
+            }
+        }
+
+        -> {}
+    }
+}
+
 ; 判断字符串前 n 个字节是否都是小写十六进制字符。
 is-hex-prefix = (s str, n i64) (yes bool) {
     yes = true
@@ -30,7 +51,7 @@ is-hex-prefix = (s str, n i64) (yes bool) {
 
             -> i
         }
-        ch = s.slice-bytes(i, j)
+        ch = slice-to-str(s, i, j)
         {
             hex-chars.contains(ch) -> _
 
@@ -41,7 +62,26 @@ is-hex-prefix = (s str, n i64) (yes bool) {
 
 strip-lf = (s str) (out str) {
     out = s
-    out.ends-with('\n') -> out = out.slice-bytes(0, r-add-i(out.len-bytes(), -1))
+    out.ends-with('\n') -> {
+
+        ; slice-bytes yields ?[]byte; convert it back to str before assigning
+        ; to the str output. Match in statement context so the arms may
+        ; assign directly.
+        raw = out.slice-bytes(0, r-add-i(out.len-bytes(), -1))
+        raw: {
+            ok -> {
+                bb []byte = it
+                t = bb.to-str()
+                t: {
+                    ok -> out = it
+
+                    nil || err -> out = ''
+                }
+            }
+
+            -> {}
+        }
+    }
 }
 
 ; 将 Git Smart HTTP advertisement 解析成 git ls-remote 风格文本。
@@ -51,12 +91,12 @@ parse-advertisement = (body str) (out str) {
     n = body.len-bytes()
     !! {
         r-add-i(pos, 4) > n -> break
-        len-str = body.slice-bytes(pos, r-add-i(pos, 4))
+        len-str = slice-to-str(body, pos, r-add-i(pos, 4))
         pkt-len = httpclient.hc-parse-hex(len-str)
         pkt-len < 4 -> break
         end = r-add-i(pos, pkt-len)
         end > n -> break
-        payload = strip-lf(body.slice-bytes(r-add-i(pos, 4), end))
+        payload = strip-lf(slice-to-str(body, r-add-i(pos, 4), end))
         pos = end
         payload.len-bytes() == 0 -> continue
         payload.starts-with('#') -> continue
@@ -66,8 +106,8 @@ parse-advertisement = (body str) (out str) {
             -> {
                 sp = payload.index(' ')
                 sp < 0 -> continue
-                sha = payload.slice-bytes(0, sp)
-                name = payload.slice-bytes(r-add-i(sp, 1), payload.len-bytes())
+                sha = slice-to-str(payload, 0, sp)
+                name = slice-to-str(payload, r-add-i(sp, 1), payload.len-bytes())
                 {
                     is-hex-prefix(sha, sha.len-bytes()) && name.len-bytes() > 0 -> {
                         out = out - sha - '\t' - name - '\n'
@@ -84,7 +124,25 @@ ls-remote = (url str) (out str, err str, ok bool) {
     err = ''
     ok = false
     base = url.trim()
-    base.ends-with('/') -> base = base.slice-bytes(0, r-add-i(base.len-bytes(), -1))
+    base.ends-with('/') -> {
+
+        ; slice-bytes yields ?[]byte; convert it back to str. Match in
+        ; statement context so the arms may assign directly.
+        raw = base.slice-bytes(0, r-add-i(base.len-bytes(), -1))
+        raw: {
+            ok -> {
+                bb []byte = it
+                t = bb.to-str()
+                t: {
+                    ok -> base = it
+
+                    nil || err -> base = ''
+                }
+            }
+
+            -> {}
+        }
+    }
     info-url = base - '/info/refs?service=git-upload-pack'
     status, body, ferr, good = httpclient.fetch-accept(info-url, 'git/2.39.0', 'application/x-git-upload-pack-advertisement')
     {
@@ -117,10 +175,10 @@ parse-ls-remote = (text str) (names str, shas str, count i64, default-branch str
                 tab = line.find-byte-from('\t', 0)
                 {
                     tab > 0 -> {
-                        tail = line.slice-bytes(tab + 1, line.len-bytes())
+                        tail = slice-to-str(line, tab + 1, line.len-bytes())
                         {
                             tail == 'HEAD' -> {
-                                branch = line.slice-bytes(sym-prefix.len-bytes(), tab)
+                                branch = slice-to-str(line, sym-prefix.len-bytes(), tab)
                                 {
                                     branch.len-bytes() > 0 -> default-branch = branch
                                 }
@@ -143,10 +201,10 @@ parse-ls-remote = (text str) (names str, shas str, count i64, default-branch str
                         }
                         {
                             tab-ok -> {
-                                sha = line.slice-bytes(0, 40)
+                                sha = slice-to-str(line, 0, 40)
                                 {
                                     is-hex-prefix(sha, 40) -> {
-                                        name = line.slice-bytes(41, l)
+                                        name = slice-to-str(line, 41, l)
                                         {
                                             name.len-bytes() > 0 -> {
                                                 names = names - name - '\n'

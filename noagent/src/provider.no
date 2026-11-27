@@ -301,6 +301,42 @@ SLOTS = 0; number of allocated tool_call slots
 GOT-DONE = false; terminal `data: [DONE]` observed
 DO-RENDER = false; echo content deltas live to stdout
 
+; v0.4.37 loses assignments to module globals when they sit inside deeply
+; nested match/for blocks. Route every slot state write through these small
+; helpers so the store lands in a shallow function body.
+set-slots = (v i64) {
+    SLOTS = v
+}
+
+slot-put-id = (i i64, v str) {
+    IDS[i]: {
+        ok -> it = v
+
+        -> _
+    }
+}
+
+slot-put-name = (i i64, v str) {
+    NAMES[i]: {
+        ok -> it = v
+
+        -> _
+    }
+}
+
+slot-append-args = (i i64, tail str) {
+    cur = ARGSS[i]: {
+        ok -> it
+
+        -> ''
+    }
+    ARGSS[i]: {
+        ok -> it = cur - tail
+
+        -> _
+    }
+}
+
 ; stream-reset — clear all incremental state before a new stream (in-place)
 stream-reset = () {
     CONTENT-FRAGS.truncate(0)
@@ -370,30 +406,35 @@ process-sse-line = (line str) {
                                     ; huge one (would grow the vec unbounded).
                                     idx < 0 -> idx = 0
                                     idx > 255 -> idx = 255
-                                    ; Grow in a LOOP across any index gaps —
-                                    ; a single if only made room for one slot,
-                                    ; so a skipped index silently lost a call.
-                                    (SLOTS <= idx) {
+                                    ; Grow in a single bounded for-range: a
+                                    ; while loop whose condition reads a global
+                                    ; that the body writes does not re-evaluate
+                                    ; under v0.4.37.
+                                    need = idx - SLOTS + 1: {
+                                        ok -> it
+
+                                        -> 0
+                                    }
+                                    p <- [0..need): {
                                         IDS.push('')
                                         NAMES.push('')
                                         ARGSS.push('')
-
-                                        #{overflow=wrap}
-                                        slots-opt = SLOTS + 1
-                                        SLOTS = slots-opt: {
-                                            ok -> it
-
-                                            -> 0
-                                        }
                                     }
+                                    #{overflow=wrap}
+                                    sn = idx + 1: {
+                                        ok -> it
+
+                                        -> 0
+                                    }
+                                    set-slots(sn)
                                     id = stream.tc-id(it)
-                                    id != '' -> IDS[idx] = id
+                                    id != '' -> slot-put-id(idx, id)
                                     nm = stream.tc-name(it)
-                                    nm != '' -> NAMES[idx] = nm
+                                    nm != '' -> slot-put-name(idx, nm)
                                     ag = stream.tc-args(it)
 
                                     #{overflow=wrap}
-                                    ag != '' -> ARGSS[idx] = ARGSS[idx] - ag
+                                    ag != '' -> slot-append-args(idx, ag)
                                 }
                             }
                         }
@@ -469,7 +510,12 @@ stream-feed = (text str) {
         process-sse-line(line)
 
         #{overflow=wrap}
-        PART-OFF = nl + 1
+        pn = nl + 1: {
+            ok -> it
+
+            -> _
+        }
+        PART-OFF = pn
         nl = find-nl-from(PART-OFF)
     }
 }

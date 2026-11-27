@@ -15,8 +15,16 @@ parse-commit-message = (d str) (message str) {
     message = ''
     idx = d.index('\n\n')
 
+    ; unwrap the option produced by `idx + 2` before passing it to str-range.
     #{overflow=wrap}
-    idx >= 0 -> message = util.str-range(d, idx + 2, d.len-bytes())
+    idx2 = idx + 2: {
+        ok -> it
+
+        -> 0
+    }
+
+    #{overflow=wrap}
+    idx >= 0 -> message = util.str-range(d, idx2, d.len-bytes())
 }
 
 ; parse-commit-parent: extract parent hex from commit data
@@ -36,7 +44,11 @@ parse-commit-parent = (d str) (parent-hex str) {
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> pos
+        }
     }
 }
 
@@ -65,7 +77,11 @@ parse-commit-author-name = (d str) (name str) {
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> pos
+        }
     }
 }
 
@@ -86,12 +102,23 @@ parse-commit-author-email = (d str) (email str) {
             lt = ap.index('<')
             gt = ap.index('>')
 
+            ; unwrap the option produced by `lt + 1`, otherwise the implicit
+            ; capture propagates ?i64 into str-range and makes its output ?str.
             #{overflow=wrap}
-            email = util.str-range(ap, lt + 1, gt)
+            lt1 = lt + 1: {
+                ok -> it
+
+                -> lt
+            }
+            email = util.str-range(ap, lt1, gt)
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> pos
+        }
     }
 }
 
@@ -111,8 +138,15 @@ parse-commit-author-time = (d str) (time i64) {
             ap = util.str-range(line, 7, line.len())
             gt = ap.index('>')
 
+            ; unwrap the option produced by `gt + 1` before it reaches
+            ; str-range, otherwise the output becomes ?str.
             #{overflow=wrap}
-            rest = util.str-range(ap, gt + 1, ap.len())
+            gt1 = gt + 1: {
+                ok -> it
+
+                -> gt
+            }
+            rest = util.str-range(ap, gt1, ap.len())
 
             ; rest starts with a space, skip it
             sp = util.find-byte-str(rest, 32, 1)
@@ -131,7 +165,11 @@ parse-commit-author-time = (d str) (time i64) {
         }
 
         #{overflow=wrap}
-        pos = nl + 1
+        pos = nl + 1: {
+            ok -> it
+
+            -> pos
+        }
     }
 }
 
@@ -142,17 +180,15 @@ cwd = os.get-wd()
 test-dir = cwd - '/tests/tmp-obj-commit'
 
 git-dir = test-dir - '/.git'
-gd-opt = repository.repo-init(test-dir, false)
 gd str
 init-ok = false
-gd-opt: {
+repository.repo-init(test-dir, false): {
     ok -> {
         gd = it
         init-ok = true
     }
 
-    nil || err -> {
-    }
+    -> _
 }
 
 print('debug init-ok=' - util.i64-to-str(init-ok))

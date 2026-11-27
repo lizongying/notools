@@ -8,7 +8,7 @@
 ; returns s str: a 1-byte string
 char-str = (c byte) (s str) {
     s str = with-len(1)
-    s = s.set-byte(0, c)
+    s = set-byte-at(s, 0, c)
 }
 
 ; bytes-range: take a byte slice [start, end) and view it as a string
@@ -162,7 +162,7 @@ mkdir-all = (p str) (ok bool) {
     p.byte(p.len-bytes() - 1) != 47 -> full = p - '/'
 
     #{overflow=wrap}
-    prefix = full.slice-bytes(0, full.len-bytes() - 1)
+    prefix = full.slice(0, full.len() - 1)
     parts = prefix.split('/')
     n = parts.len()
     made-count = 0
@@ -217,6 +217,10 @@ remove-tree = (p str) (ok bool) {
 ; pos i64: offset of the most-significant byte
 ; returns v i64: the integer value
 read-u32-be = (data []byte, pos i64) (v i64) {
+    ; v/b1..b3 are declared plain i64: leaving them inferred makes the
+    ; byte-index value matches synthesise ?i64, and mixing those into the
+    ; shift/or accumulation matches the wrong arm on v0.4.37.
+    v i64 = 0
     v = data[pos]: {
         ok -> it
 
@@ -224,36 +228,39 @@ read-u32-be = (data []byte, pos i64) (v i64) {
     }
 
     #{overflow=wrap}
+    b1 i64 = 0
     b1 = data[pos + 1]: {
         ok -> it
 
         -> 0
     }
-    v = (v << 8) | b1: {
+    v = v * 256 + b1: {
         ok -> it
 
         -> _
     }
 
     #{overflow=wrap}
+    b2 i64 = 0
     b2 = data[pos + 2]: {
         ok -> it
 
         -> 0
     }
-    v = (v << 8) | b2: {
+    v = v * 256 + b2: {
         ok -> it
 
         -> _
     }
 
     #{overflow=wrap}
+    b3 i64 = 0
     b3 = data[pos + 3]: {
         ok -> it
 
         -> 0
     }
-    v = (v << 8) | b3: {
+    v = v * 256 + b3: {
         ok -> it
 
         -> _
@@ -298,6 +305,7 @@ write-u32-be = (buf []byte, pos i64, v i64) {
 ; pos i64: offset
 ; returns v i64: value
 read-u16-be = (data []byte, pos i64) (v i64) {
+    v i64 = 0
     v = data[pos]: {
         ok -> it
 
@@ -305,12 +313,13 @@ read-u16-be = (data []byte, pos i64) (v i64) {
     }
 
     #{overflow=wrap}
+    b1 i64 = 0
     b1 = data[pos + 1]: {
         ok -> it
 
         -> 0
     }
-    v = (v << 8) | b1: {
+    v = v * 256 + b1: {
         ok -> it
 
         -> _
@@ -534,7 +543,7 @@ i64-to-str = (n i64) (out str) {
 
             -> 0
         }
-        cb = cb.set-byte(0, d9v3)
+        cb = set-byte-at(cb, 0, d9v3)
         out = out - cb
     }
 }
@@ -604,4 +613,22 @@ write-file-simple = (p str, content str) (ok bool) {
         return
     }
     ok = true
+}
+
+; set-byte-at: replacement for std str.set-byte. The std body concatenates
+; []byte slices, which v0.4.37 lowers to invalid LLVM IR; write through a
+; []byte buffer with a place-match index store instead.
+set-byte-at = (s str, i i64, b byte) (out str) {
+    bs []byte = s.to-bytes()
+    bs[i]: {
+        ok -> it = b
+
+        -> _
+    }
+    so = bs.to-str()
+    out = so: {
+        ok -> it
+
+        nil || err -> ''
+    }
 }

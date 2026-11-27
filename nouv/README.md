@@ -23,8 +23,8 @@
 ### 方式一：从 Releases 下载预编译二进制
 
 ```bash
-# Linux amd64 示例
-curl -fsSL -o nouv https://github.com/lizongying/notools/releases/latest/download/nouv-linux-amd64
+# Linux amd64 示例（将 v0.1.38 替换为所需版本）
+curl -fsSL -o nouv https://github.com/lizongying/notools/releases/download/v0.1.38/nouv-linux-amd64-v0.1.38
 chmod +x nouv && sudo mv nouv /usr/local/bin/
 ```
 

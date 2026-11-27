@@ -162,22 +162,14 @@ parse-metadata = (metadata-content str) (metadata ?str) {
 
     lines = utils.split-str(metadata-content, '\n')
     n = lines.len()
-    i = 0
-    (i < n) {
+    i <- [0..n): {
         line = lines[i]: {
-            ok -> it
-
-            -> ''
-        }
-
-        #{overflow=wrap}
-        i = i + 1: {
             ok -> it
 
             -> _
         }
         {
-            line == '' -> break
+            line == '' -> continue
 
             -> {
                 colon = utils.index-str(line, ':')
@@ -187,34 +179,44 @@ parse-metadata = (metadata-content str) (metadata ?str) {
                         key = utils.trim-str(key)
                         key = utils.to-lower-str(key)
 
-                        #{overflow=wrap}
-                        val = utils.slice-str(line, colon + 1, line.len-bytes())
+                        len-i i64 = line.len-bytes()
+                        val = utils.slice-str(line, colon + 1, len-i)
                         val = utils.trim-str(val)
+
+                        ; v0.4.37 mis-lowers multi-term str-concat chains into an
+                        ; invalid `sub`; append one term per statement.
+                        key-match = ''
                         {
-                            key == 'name' -> metadata-b = metadata-b - 'name=' - val - '\n'
+                            key == 'name' -> key-match = 'name='
 
-                            key == 'version' -> metadata-b = metadata-b - 'version=' - val - '\n'
+                            key == 'version' -> key-match = 'version='
 
-                            key == 'summary' -> metadata-b = metadata-b - 'summary=' - val - '\n'
+                            key == 'summary' -> key-match = 'summary='
 
-                            key == 'requires-python' -> metadata-b = metadata-b - 'requires-python=' - val - '\n'
+                            key == 'requires-python' -> key-match = 'requires-python='
 
-                            key == 'license' -> metadata-b = metadata-b - 'license=' - val - '\n'
+                            key == 'license' -> key-match = 'license='
 
-                            key == 'author' -> metadata-b = metadata-b - 'author=' - val - '\n'
+                            key == 'author' -> key-match = 'author='
 
-                            key == 'home-page' -> metadata-b = metadata-b - 'home-page=' - val - '\n'
+                            key == 'home-page' -> key-match = 'home-page='
 
-                            key == 'requires-dist' -> metadata-b = metadata-b - 'requires-dist=' - val - '\n'
+                            key == 'requires-dist' -> key-match = 'requires-dist='
 
-                            key == 'requires-external' -> metadata-b = metadata-b - 'requires-external=' - val - '\n'
+                            key == 'requires-external' -> key-match = 'requires-external='
 
-                            key == 'project-url' -> metadata-b = metadata-b - 'project-url=' - val - '\n'
+                            key == 'project-url' -> key-match = 'project-url='
 
-                            key == 'classifier' -> metadata-b = metadata-b - 'classifier=' - val - '\n'
+                            key == 'classifier' -> key-match = 'classifier='
 
-                            key == 'provides-extra' -> metadata-b = metadata-b - 'provides-extra=' - val - '\n'
+                            key == 'provides-extra' -> key-match = 'provides-extra='
+
+                            -> {
+                            }
                         }
+                        metadata-b = metadata-b - key-match
+                        metadata-b = metadata-b - val
+                        metadata-b = metadata-b - '\n'
                     }
                 }
             }
@@ -236,22 +238,14 @@ parse-wheel-file = (wheel-content str) (info ?str) {
 
     lines = utils.split-str(wheel-content, '\n')
     n = lines.len()
-    i = 0
-    (i < n) {
+    i <- [0..n): {
         line = lines[i]: {
-            ok -> it
-
-            -> ''
-        }
-
-        #{overflow=wrap}
-        i = i + 1: {
             ok -> it
 
             -> _
         }
         {
-            line == '' -> break
+            line == '' -> continue
 
             -> {
                 colon = utils.index-str(line, ':')
@@ -261,10 +255,14 @@ parse-wheel-file = (wheel-content str) (info ?str) {
                         key = utils.trim-str(key)
                         key = utils.to-lower-str(key)
 
-                        #{overflow=wrap}
-                        val = utils.slice-str(line, colon + 1, line.len-bytes())
+                        len-i i64 = line.len-bytes()
+                        val = utils.slice-str(line, colon + 1, len-i)
                         val = utils.trim-str(val)
-                        info-b = info-b - key - '=' - val - '\n'
+
+                        info-b = info-b - key
+                        info-b = info-b - '='
+                        info-b = info-b - val
+                        info-b = info-b - '\n'
                     }
                 }
             }
@@ -286,16 +284,8 @@ parse-entry-points = (content str) (eps str) {
 
     lines = utils.split-str(content, '\n')
     n = lines.len()
-    i = 0
-    (i < n) {
-        line = lines[i]: {
-            ok -> it
-
-            -> ''
-        }
-
-        #{overflow=wrap}
-        i = i + 1: {
+    i <- [0..n): {
+        line str = lines[i]: {
             ok -> it
 
             -> _
@@ -306,9 +296,12 @@ parse-entry-points = (content str) (eps str) {
 
             utils.starts-with-str(line, '[') -> {
                 utils.ends-with-str(line, ']') -> {
+                    cl i64 = line.len-bytes() - 1: {
+                        ok -> it
 
-                    #{overflow=wrap}
-                    current-section = utils.slice-str(line, 1, line.len-bytes() - 1)
+                        -> _
+                    }
+                    current-section = utils.slice-str(line, 1, cl)
                 }
             }
 
@@ -317,16 +310,19 @@ parse-entry-points = (content str) (eps str) {
                 {
                     eq >= 0 -> {
                         name = utils.trim-str(utils.slice-str(line, 0, eq))
-
-                        #{overflow=wrap}
-                        target-opt = utils.trim-str(utils.slice-str(line, eq + 1, line.len-bytes()))
-                        target = ''
-                        target-opt: {
-                            ok -> target = it
+                        st i64 = eq + 1: {
+                            ok -> it
 
                             -> _
                         }
-                        eps = eps - current-section - ':' - name - '=' - target - '\n'
+                        len-i i64 = line.len-bytes()
+                        target = utils.trim-str(utils.slice-str(line, st, len-i))
+                        eps = eps - current-section
+                        eps = eps - ':'
+                        eps = eps - name
+                        eps = eps - '='
+                        eps = eps - target
+                        eps = eps - '\n'
                     }
                 }
             }
@@ -562,7 +558,12 @@ get-name-version = (filename str) (result str) {
     }
 
     name = utils.replace-char-str(name, "_", "-")
-    result = name - '|' - ver
+
+    ; v0.4.37 mis-lowers multi-term str-concat chains into an invalid `sub`;
+    ; build the result with one binary concat per statement.
+    result = name
+    result = result - '|'
+    result = result - ver
 }
 
 ; ═══════════════════════════════════════════════

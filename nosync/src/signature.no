@@ -1,0 +1,171 @@
+; 旧文件 signature：固定块读取、weak 桶与强校验和碰撞链。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/file-io
+# /nosync/src/checksum
+
+FALLBACK-NONE = 0
+FALLBACK-EXPLICIT = 1
+FALLBACK-MISSING = 2
+FALLBACK-SMALL = 3
+FALLBACK-MEMORY = 4
+FALLBACK-LOW-REUSE = 5
+FALLBACK-IO = 6
+
+block-digest = (data []byte) (digest [32]byte) {
+    state = sha256-init()
+    state, valid = sha256-update(state, data)
+    valid -> digest = sha256-final(state)
+}
+
+signature-entry-at = (index i64) (entry signature-entry, ok bool) {
+    index < 0 || index >= SIGNATURE.count -> return
+    entry.next = -1
+    SIGNATURE.weak[index]: {
+        ok -> entry.weak = it
+
+        -> return
+    }
+    SIGNATURE.offsets[index]: {
+        ok -> entry.offset = it
+
+        -> return
+    }
+    SIGNATURE.lengths[index]: {
+        ok -> entry.length = it
+
+        -> return
+    }
+    SIGNATURE.next[index]: {
+        ok -> entry.next = it
+
+        -> return
+    }
+    i <- [0..32): {
+        SIGNATURE.strong[add-index(mul-index(index, 32), i)]: {
+            ok -> {
+                b = it
+                entry.strong[i]: {
+                    ok -> it = b
+
+                    -> return
+                }
+            }
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+release-signature = () {
+    SIGNATURE.memory-cost > 0 -> STATE.memory-used = sub-index(STATE.memory-used, SIGNATURE.memory-cost)
+    SIGNATURE.weak = []
+    SIGNATURE.strong = []
+    SIGNATURE.offsets = []
+    SIGNATURE.lengths = []
+    SIGNATURE.next = []
+    SIGNATURE.buckets = []
+    SIGNATURE.count = 0
+    SIGNATURE.capacity = 0
+    SIGNATURE.memory-cost = 0
+}
+
+build-signature = (fd i64, size i64, block-size i64, limit i64) (ok bool) {
+    ok = false
+    release-signature()
+    SIGNATURE.weak = []
+    SIGNATURE.strong = []
+    SIGNATURE.offsets = []
+    SIGNATURE.lengths = []
+    SIGNATURE.next = []
+    SIGNATURE.buckets = []
+    SIGNATURE.count = 0
+    SIGNATURE.capacity = 0
+    SIGNATURE.block-size = block-size
+    SIGNATURE.fallback-reason = FALLBACK-NONE
+    block-size < 4096 -> block-size = 4096
+    block-size > 1048576 -> block-size = 1048576
+    size <= 0 -> {
+        SIGNATURE.fallback-reason = FALLBACK-MISSING
+        ok = true
+        return
+    }
+    size < mul-index(block-size, 4) -> {
+        SIGNATURE.fallback-reason = FALLBACK-SMALL
+        ok = true
+        return
+    }
+    count = size / block-size
+    size % block-size != 0 -> count = add-index(count, 1)
+    capacity = 16
+    (capacity < mul-index(count, 2)) {
+        capacity = mul-index(capacity, 2)
+    }
+
+    ; 每个 entry 的 parallel arrays 实际约 72 字节，桶 8 字节。
+    cost = add-index(mul-index(count, 72), mul-index(capacity, 8))
+    cost > sub-index(limit, STATE.memory-used) -> {
+        SIGNATURE.fallback-reason = FALLBACK-MEMORY
+        ok = true
+        return
+    }
+    STATE.memory-used = add-index(STATE.memory-used, cost)
+    SIGNATURE.memory-cost = cost
+    SIGNATURE.weak = with-cap(count)
+    SIGNATURE.strong = with-cap(mul-index(count, 32))
+    SIGNATURE.offsets = with-cap(count)
+    SIGNATURE.lengths = with-cap(count)
+    SIGNATURE.next = with-cap(count)
+    SIGNATURE.buckets = with-len(capacity)
+    j <- [0..capacity): {
+        SIGNATURE.buckets[j]: {
+            ok -> it = -1
+
+            -> return
+        }
+    }
+    SIGNATURE.count = count
+    SIGNATURE.capacity = capacity
+    buf []byte = with-len(block-size)
+    target-state = sha256-init()
+    offset = 0
+    i <- [0..count): {
+        remaining = sub-index(size, offset)
+        remaining > block-size -> remaining = block-size
+        got, complete = read-exact-at(fd, buf, remaining, offset)
+        ! complete -> return
+        view = buf.slice(0, got)
+        target-state, valid = sha256-update(target-state, view)
+        ! valid -> return
+        digest = block-digest(view)
+        weak = weak-direct(view)
+        bucket = weak-bucket(weak, capacity)
+        head = -1
+        SIGNATURE.buckets[bucket]: {
+            ok -> head = it
+
+            -> return
+        }
+        SIGNATURE.weak.push(weak)
+        SIGNATURE.offsets.push(offset)
+        SIGNATURE.lengths.push(got)
+        SIGNATURE.next.push(head)
+        j <- [0..32): {
+            digest[j]: {
+                ok -> SIGNATURE.strong.push(it)
+
+                -> return
+            }
+        }
+        SIGNATURE.buckets[bucket]: {
+            ok -> it = i
+
+            -> return
+        }
+        offset = add-index(offset, got)
+    }
+    SIGNATURE.target-digest = sha256-final(target-state)
+    ok = true
+}

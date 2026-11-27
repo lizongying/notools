@@ -1,0 +1,125 @@
+; 有界读写原语：短读、短写、EOF 与关闭错误均显式传播。
+
+# /nosync/src/numeric
+# /nosync/src/platform
+# /nosync/src/checksum
+
+read-byte-at = (data []byte, index i64) (value byte, ok bool) {
+    index < 0 || index >= data.len() -> return
+    data[index]: {
+        ok -> value = it
+
+        -> return
+    }
+    ok = true
+}
+
+IO-BUFFER-SIZE = 65536
+
+read-exact-from-current = (fd i64, buf []byte, count i64) (read i64, ok bool) {
+    read = 0
+    ok = false
+    count < 0 || count > buf.len() -> return
+    (read < count) {
+        remaining = sub-index(count, read)
+
+        ; fs.read 需要直接接收缓冲变量；传入 slice 临时值不会回写底层数据。
+        chunk []byte = with-len(remaining)
+        got = platform-read(fd, chunk, remaining)
+        got < 0 -> return
+        got == 0 -> return
+        j <- [0..got): {
+            value, present = read-byte-at(chunk, j)
+            ! present -> return
+            target = add-index(read, j)
+            buf[target]: {
+                ok -> it = value
+
+                -> return
+            }
+        }
+        read = add-index(read, got)
+    }
+    read == count -> ok = true
+}
+
+read-exact = (fd i64, buf []byte, count i64) (read i64, ok bool) {
+    ! platform-seek(fd, 0) -> return
+    read, ok = read-exact-from-current(fd, buf, count)
+}
+
+read-exact-at = (fd i64, buf []byte, count i64, offset i64) (read i64, ok bool) {
+    offset < 0 -> return
+    ! platform-seek(fd, offset) -> return
+    read, ok = read-exact-from-current(fd, buf, count)
+}
+
+write-all = (fd i64, buf []byte, count i64) (written i64, ok bool) {
+    written = 0
+    ok = false
+    count < 0 || count > buf.len() -> return
+    (written < count) {
+        remaining-buf = buf.slice(written, count)
+        got = platform-write(fd, remaining-buf, sub-index(count, written))
+        got <= 0 -> return
+        written = add-index(written, got)
+    }
+    ok = true
+}
+
+copy-stream = (source i64, destination i64, expected i64) (copied i64, ok bool) {
+    copied = 0
+    ok = false
+    expected < 0 -> return
+    buf []byte = with-len(IO-BUFFER-SIZE)
+
+    ; 顺序复制只在入口 seek 一次；read-exact 会重置到开头，不能用于循环分块。
+    ! platform-seek(source, 0) -> return
+    (copied < expected) {
+        remaining = sub-index(expected, copied)
+        remaining > IO-BUFFER-SIZE -> remaining = IO-BUFFER-SIZE
+        got, valid = read-exact-from-current(source, buf, remaining)
+        ! valid -> return
+        wrote, complete = write-all(destination, buf, got)
+        ! complete -> return
+        copied = add-index(copied, wrote)
+    }
+    ok = copied == expected
+}
+
+fd-digest = (fd i64, expected i64) (digest [32]byte, ok bool) {
+    ok = false
+    expected < 0 -> {
+        platform-close(fd)
+        return
+    }
+    ! platform-seek(fd, 0) -> {
+        platform-close(fd)
+        return
+    }
+    state = sha256-init()
+    buf []byte = with-len(IO-BUFFER-SIZE)
+    total = 0
+    !! {
+        got = platform-read(fd, buf, IO-BUFFER-SIZE)
+        got < 0 -> break
+        got == 0 -> break
+        total = add-index(total, got)
+        total > expected -> break
+        view = buf.slice(0, got)
+        state, valid = sha256-update(state, view)
+        ! valid -> break
+    }
+    closed = platform-close(fd)
+    ! closed -> return
+    total == expected -> {
+        digest = sha256-final(state)
+        ok = true
+    }
+}
+
+file-digest = (path str, expected i64) (digest [32]byte, ok bool) {
+    fd = platform-open(path, false)
+    fd < 0 -> return
+    digest, ok = fd-digest(fd, expected)
+}

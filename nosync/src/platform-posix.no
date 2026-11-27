@@ -1,0 +1,197 @@
+; POSIX 平台适配：普通文件打开拒绝符号链接，随机读使用 lseek。
+
+# /nosync/src/model
+
+#{c}
+_lseek = (fd i64, offset i64, whence i64) (pos i64)
+
+#{mac-amd64, mac-arm64}
+O-NOFOLLOW = 256
+
+#{linux-amd64, linux-arm64}
+O-NOFOLLOW = 131072
+
+#{mac-amd64, mac-arm64}
+O-CREAT = 512
+
+#{mac-amd64, mac-arm64}
+O-TRUNC = 1024
+
+#{linux-amd64, linux-arm64}
+O-CREAT = 64
+
+#{linux-amd64, linux-arm64}
+O-TRUNC = 512
+
+O-RDONLY = 0
+
+posix-supported = () (ok bool) {
+    ok = true
+}
+
+posix-error = (stage str, path str) (message str) {
+    message = stage - ' ' - path - ': ' - os.strerror(os.get-errno())
+}
+
+posix-open = (path str, write bool) (fd i64) {
+    fd = -1
+    write -> {
+        fd = fs.open-file(path, O-RDONLY + 1 + O-CREAT + O-TRUNC + O-NOFOLLOW, 384)
+        return
+    }
+    fd = fs.open-file(path, O-RDONLY + O-NOFOLLOW, 0)
+}
+
+posix-read = (fd i64, buf []byte, count i64) (got i64) {
+    got = fs.read(fd, buf, count)
+}
+
+posix-write = (fd i64, buf []byte, count i64) (written i64) {
+    written = fs.write(fd, buf, count)
+}
+
+posix-close = (fd i64) (ok bool) {
+    ok = fs.close(fd) == 0
+}
+
+posix-seek = (fd i64, offset i64) (ok bool) {
+    pos = _lseek(fd, offset, 0)
+    ok = pos >= 0
+}
+
+posix-stat = (path str) (info stat-info, ok bool) {
+    ok = false
+    info.kind = KIND-OTHER
+    ! fs.lstat(path) -> return
+
+    ; os.stat-mode/stat-* 会跟随链接；先用 readlink 识别 lstat 链接，避免损坏链接被当作文件。
+    link-target = fs.readlink(path)
+    link-target: {
+        ok -> {
+            target = it
+            info.kind = KIND-LINK
+            info.size = target.len-bytes()
+            info.mode = 40960
+            STATE.scratch-link-target = target
+            ok = true
+            return
+        }
+
+        -> {
+        }
+    }
+    os.stat-mode(path): {
+        ok -> {
+            mode = it
+            info.mode = mode
+            mode & 61440 == 32768 -> info.kind = KIND-FILE
+            mode & 61440 == 16384 -> info.kind = KIND-DIR
+            mode & 61440 == 40960 -> {
+                info.kind = KIND-LINK
+                ok = true
+                return
+            }
+            mode & 61440 != 32768 && mode & 61440 != 16384 -> info.kind = KIND-OTHER
+            info.kind == KIND-FILE || info.kind == KIND-DIR -> {
+                fs.stat-size(path): {
+                    ok -> info.size = it
+
+                    -> return
+                }
+                os.stat-mtime(path): {
+                    ok -> info.mtime = it
+
+                    -> return
+                }
+                os.stat-uid(path): {
+                    ok -> info.uid = it
+
+                    -> return
+                }
+                os.stat-gid(path): {
+                    ok -> info.gid = it
+
+                    -> return
+                }
+                ok = true
+            }
+        }
+
+        -> return
+    }
+}
+
+posix-list-dir = (path str) (names []str, ok bool) {
+    names = []
+    handle = fs.open-dir(path)
+    handle == 0 -> return
+    closed = fs.close-dir(handle)
+    ! closed -> return
+    names = fs.dir-entries(path)
+    ok = true
+}
+
+posix-create-temp = (directory str) (path str, fd i64, ok bool) {
+    template = directory
+    ! template.ends-with('/') -> template = template - '/'
+    template = template - '.nosync-XXXXXX'
+    path, fd = fs.mkstemp(template)
+    ok = fd >= 0 && path != ''
+}
+
+posix-mkdir = (path str, mode i64) (ok bool) {
+    ok = os.mkdir(path, mode)
+}
+
+posix-remove-file = (path str) (ok bool) {
+    ok = fs.remove(path)
+}
+
+posix-remove-dir = (path str) (ok bool) {
+    ok = fs.rmdir(path)
+}
+
+posix-read-link = (path str) (target str, ok bool) {
+    value = fs.readlink(path)
+    target = ''
+    STATE.scratch-link-target = ''
+    value: {
+        ok -> {
+            STATE.scratch-link-target = it
+            target = it
+            ok = true
+        }
+
+        -> {
+        }
+    }
+}
+
+posix-create-link = (target str, path str) (ok bool) {
+    ok = fs.symlink(target, path)
+}
+
+posix-replace = (source str, destination str) (ok bool) {
+    ok = fs.rename(source, destination)
+}
+
+posix-set-mode = (path str, mode i64) (ok bool) {
+    ok = os.ch-mod(path, mode)
+}
+
+posix-set-owner = (path str, uid i64, gid i64) (ok bool) {
+    ok = os.chown(path, uid, gid)
+}
+
+posix-set-time = (path str, mtime i64) (ok bool) {
+    ok = fs.utime(path, mtime, mtime)
+}
+
+posix-canonical = (path str) (ok bool) {
+    STATE.scratch-canonical = fs.realpath(path)
+    ok = STATE.scratch-canonical != ''
+}
+
+posix-path-equal = (a str, b str) (equal bool) {
+    equal = a.compare(b) == 0
+}

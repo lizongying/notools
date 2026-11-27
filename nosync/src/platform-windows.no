@@ -1,0 +1,814 @@
+; Windows 宽字符 Win32 适配：不跟随链接，拒绝 UNC，并使用扩展长路径。
+; MIR 尚不支持 fixed as *byte；缓冲区统一由 VirtualAlloc 返回 i64 指针，
+; 通过显式长度 Win32 API 访问，不把固定数组或 vec 描述符误当数据指针。
+
+# /nosync/src/model
+# /nosync/src/numeric
+
+#{c}
+_CreateFileW = (path *byte, access i32, share i32, security *byte, disposition i32, flags i32, template *byte) (handle i64)
+
+#{c}
+_CloseHandle = (handle i64) (ok i32)
+
+#{c}
+_SetFilePointerEx = (handle i64, distance i64, position *byte, method i32) (ok i32)
+
+#{c}
+_GetFileInformationByHandle = (handle i64, info *byte) (ok i32)
+
+#{c}
+_GetFileAttributesW = (path *byte) (attributes i32)
+
+#{c}
+_SetFileAttributesW = (path *byte, attributes i32) (ok i32)
+
+#{c}
+_CreateDirectoryW = (path *byte, security *byte) (ok i32)
+
+#{c}
+_DeleteFileW = (path *byte) (ok i32)
+
+#{c}
+_RemoveDirectoryW = (path *byte) (ok i32)
+
+#{c}
+_MoveFileExW = (source *byte, destination *byte, flags i32) (ok i32)
+
+#{c}
+_FindFirstFileW = (path *byte, data *byte) (handle i64)
+
+#{c}
+_FindNextFileW = (handle i64, data *byte) (ok i32)
+
+#{c}
+_FindClose = (handle i64) (ok i32)
+
+#{c}
+_GetLastError = () (error i32)
+
+#{c}
+_MultiByteToWideChar = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32) (written i32)
+
+#{c}
+_WideCharToMultiByte = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32, used *byte) (written i32)
+
+#{c}
+_GetCurrentDirectoryW = (buffer *byte, capacity i32) (written i32)
+
+#{c}
+_GetFullPathNameW = (path *byte, capacity i32, buffer *byte, file-part *byte) (written i32)
+
+#{c}
+_CompareStringOrdinal = (a *byte, a-length i32, b *byte, b-length i32, ignore-case i32) (order i32)
+
+#{c}
+_LCMapStringEx = (locale *byte, flags i32, source *byte, source-length i32, destination *byte, destination-length i32, version *byte, reserved *byte, sort-handle i64) (written i32)
+
+#{c}
+_GetCurrentProcessId = () (process i32)
+
+#{c}
+_DeviceIoControl = (handle i64, code i32, input *byte, input-size i32, output *byte, output-size i32, returned *byte, overlapped *byte) (ok i32)
+
+#{c}
+_CreateSymbolicLinkW = (path *byte, target *byte, flags i32) (ok i32)
+
+#{c}
+_SetFileTime = (handle i64, creation *byte, access *byte, write *byte) (ok i32)
+
+#{c}
+_VirtualAlloc = (address *byte, size i64, allocation i32, protect i32) (base i64)
+
+#{c}
+_VirtualFree = (address *byte, size i64, kind i32) (ok i32)
+
+#{c}
+_memset = (destination *byte, value i32, length i64) (result i64)
+
+#{c}
+_memcpy = (destination *byte, source str, length i64) (result i64)
+
+#{c}
+_strstr = (haystack *byte, needle str) (result str)
+
+WIN-WIDE-PTR = 0
+WIN-WIDE-2-PTR = 0
+WIN-UTF8-PTR = 0
+WIN-FILE-DATA-PTR = 0
+WIN-REPARSE-PTR = 0
+WIN-RETURNED-PTR = 0
+WIN-TIME-PTR = 0
+WIN-FOLD-PTR = 0
+WIN-TEMP-COUNTER = 0
+WINDOWS-BUFFERS-READY = false
+
+windows-release-buffers = () {
+    WIN-UTF8-PTR != 0 -> _VirtualFree(WIN-UTF8-PTR, 131072, 32768)
+    WIN-WIDE-2-PTR != 0 -> _VirtualFree(WIN-WIDE-2-PTR, 65536, 32768)
+    WIN-WIDE-PTR != 0 -> _VirtualFree(WIN-WIDE-PTR, 65536, 32768)
+    WIN-TIME-PTR != 0 -> _VirtualFree(WIN-TIME-PTR, 16, 32768)
+    WIN-FOLD-PTR != 0 -> _VirtualFree(WIN-FOLD-PTR, 262144, 32768)
+    WIN-REPARSE-PTR != 0 -> _VirtualFree(WIN-REPARSE-PTR, 16384, 32768)
+    WIN-RETURNED-PTR != 0 -> _VirtualFree(WIN-RETURNED-PTR, 4, 32768)
+    WIN-FILE-DATA-PTR != 0 -> _VirtualFree(WIN-FILE-DATA-PTR, 592, 32768)
+    WIN-WIDE-PTR = 0
+    WIN-WIDE-2-PTR = 0
+    WIN-UTF8-PTR = 0
+    WIN-FILE-DATA-PTR = 0
+    WIN-REPARSE-PTR = 0
+    WIN-RETURNED-PTR = 0
+    WIN-TIME-PTR = 0
+    WIN-FOLD-PTR = 0
+    WINDOWS-BUFFERS-READY = false
+}
+
+windows-ensure-buffers = () (ok bool) {
+    WINDOWS-BUFFERS-READY -> {
+        ok = true
+        return
+    }
+    WIN-WIDE-PTR = _VirtualAlloc(0, 65536, 12288, 4)
+    WIN-WIDE-PTR == 0 -> return
+    WIN-WIDE-2-PTR = _VirtualAlloc(0, 65536, 12288, 4)
+    WIN-WIDE-2-PTR == 0 -> return
+    WIN-UTF8-PTR = _VirtualAlloc(0, 131072, 12288, 4)
+    WIN-UTF8-PTR == 0 -> return
+    WIN-FILE-DATA-PTR = _VirtualAlloc(0, 592, 12288, 4)
+    WIN-FILE-DATA-PTR == 0 -> return
+    WIN-REPARSE-PTR = _VirtualAlloc(0, 16384, 12288, 4)
+    WIN-REPARSE-PTR == 0 -> return
+    WIN-RETURNED-PTR = _VirtualAlloc(0, 4, 12288, 4)
+    WIN-RETURNED-PTR == 0 -> return
+    WIN-TIME-PTR = _VirtualAlloc(0, 16, 12288, 4)
+    WIN-TIME-PTR == 0 -> return
+    WIN-FOLD-PTR = _VirtualAlloc(0, 262144, 12288, 4)
+    WIN-FOLD-PTR == 0 -> return
+    _memset(WIN-WIDE-PTR, 0, 65536)
+    _memset(WIN-WIDE-2-PTR, 0, 65536)
+    _memset(WIN-UTF8-PTR, 0, 131072)
+    _memset(WIN-FILE-DATA-PTR, 0, 592)
+    _memset(WIN-REPARSE-PTR, 0, 16384)
+    _memset(WIN-RETURNED-PTR, 0, 4)
+    _memset(WIN-TIME-PTR, 0, 16)
+    _memset(WIN-FOLD-PTR, 0, 262144)
+    WINDOWS-BUFFERS-READY = true
+    ok = true
+}
+
+windows-supported = () (ok bool) {
+    ok = windows-ensure-buffers()
+}
+
+windows-push-wide = (bytes []byte, code i64) (out []byte, ok bool) {
+    out = bytes
+    code < 0 || code > 65535 -> return
+    add-index(out.len(), 2) > 65534 -> return
+    out.push(code & 255)
+    out.push((code >> 8) & 255)
+    ok = true
+}
+
+windows-wide-bytes = (path str) (bytes []byte, ok bool) {
+    bytes = []
+    path == '' -> return
+    ch <- path: {
+        code i64 = ch
+        code <= 65535 -> {
+            bytes, ok = windows-push-wide(bytes, code)
+            ! ok -> return
+        }
+        code > 65535 -> {
+            adjusted = sub-index(code, 65536)
+            high = add-index(55296, adjusted >> 10)
+            low = add-index(56320, adjusted & 1023)
+            bytes, ok = windows-push-wide(bytes, high)
+            ! ok -> return
+            bytes, ok = windows-push-wide(bytes, low)
+            ! ok -> return
+        }
+    }
+    bytes, ok = windows-push-wide(bytes, 0)
+}
+
+windows-copy-wide = (path str, secondary bool) (ok bool, count i64) {
+    ! windows-ensure-buffers() -> return
+    bytes, valid = windows-wide-bytes(path)
+    ! valid -> return
+    encoded = bytes.to-str()
+    encoded: {
+        ok -> {
+            destination = WIN-WIDE-PTR
+            secondary -> destination = WIN-WIDE-2-PTR
+            count = div-index(bytes.len(), 2)
+            _memcpy(destination, it, bytes.len())
+            ok = true
+        }
+
+        -> return
+    }
+}
+
+windows-load-wide = (path str) (ok bool) {
+    loaded, count = windows-copy-wide(path, false)
+    ok = loaded
+}
+
+windows-load-wide-2 = (path str) (ok bool) {
+    loaded, count = windows-copy-wide(path, true)
+    ok = loaded
+}
+
+windows-wide-pointer-string = (pointer i64, count i64) (value str) {
+    value = ''
+    ! windows-ensure-buffers() -> return
+    length = count
+    length < 0 -> length = -1
+    written = _WideCharToMultiByte(65001, 0, pointer, length, WIN-UTF8-PTR, 131071, 0)
+    written <= 0 || written >= 131071 -> return
+    length >= 0 -> _memset(add-index(WIN-UTF8-PTR, written), 0, 1)
+
+    ; strstr 的空 needle 返回原缓冲区指针；FFI 将其复制为 owned str，不产生 CRT 分配。
+    copied = _strstr(WIN-UTF8-PTR, '')
+    value = copied
+}
+
+windows-wide-string = (count i64) (value str) {
+    value = ''
+    ! windows-ensure-buffers() -> return
+    count < 0 || count > 32767 -> return
+    value = windows-wide-pointer-string(WIN-WIDE-2-PTR, count)
+}
+
+windows-base64-value = (code i64) (value i64) {
+    value = -1
+    code >= 65 && code <= 90 -> value = sub-index(code, 65)
+    code >= 97 && code <= 122 -> value = add-index(sub-index(code, 97), 26)
+    code >= 48 && code <= 57 -> value = add-index(sub-index(code, 48), 52)
+    code == 43 -> value = 62
+    code == 47 -> value = 63
+}
+
+windows-low-mask = (bits i64) (mask i64) {
+    mask = 1
+    i <- [0..bits): mask = mul-index(mask, 2)
+    mask = sub-index(mask, 1)
+}
+
+windows-decode-utf7 = (encoded str) (bytes []byte) {
+
+    ; UTF-7 只用于把 Win32 结构字段无损搬进 Nolang；路径与文件名走 UTF-8。
+    bytes = []
+    shifted = false
+    accumulator = 0
+    bits = 0
+    ch <- encoded: {
+        code i64 = ch
+        shifted -> {
+            value = windows-base64-value(code)
+            value >= 0 -> {
+                accumulator = (accumulator << 6) | value
+                bits = add-index(bits, 6)
+                bits >= 16 -> {
+                    bits = sub-index(bits, 16)
+                    unit = accumulator >> bits
+                    bytes.push(unit & 255)
+                    accumulator = accumulator & windows-low-mask(bits)
+                }
+                continue
+            }
+            shifted = false
+            code == 45 -> continue
+        }
+        code == 43 -> {
+            shifted = true
+            accumulator = 0
+            bits = 0
+            continue
+        }
+        bytes.push(code & 255)
+    }
+}
+
+windows-memory-bytes = (pointer i64, count i64) (bytes []byte) {
+    bytes = []
+    ! windows-ensure-buffers() -> return
+    count <= 0 || count > 32767 -> return
+    wide-count = _MultiByteToWideChar(28591, 0, pointer, count, WIN-WIDE-PTR, 32767)
+    wide-count != count -> return
+    written = _WideCharToMultiByte(65000, 0, WIN-WIDE-PTR, wide-count, WIN-UTF8-PTR, 131071, 0)
+    written <= 0 -> return
+    _memset(add-index(WIN-UTF8-PTR, written), 0, 1)
+    encoded = _strstr(WIN-UTF8-PTR, '')
+    bytes = windows-decode-utf7(encoded)
+}
+
+windows-byte-at = (data []byte, index i64) (value i64) {
+    value = -1
+    data[index]: {
+        ok -> value = it
+
+        -> return
+    }
+}
+
+windows-u32-memory = (pointer i64, index i64) (value i64) {
+    value = -1
+    data = windows-memory-bytes(add-index(pointer, index), 4)
+    data.len() != 4 -> return
+    b0 = windows-byte-at(data, 0)
+    b1 = windows-byte-at(data, 1)
+    b2 = windows-byte-at(data, 2)
+    b3 = windows-byte-at(data, 3)
+    b0 >= 0 && b1 >= 0 && b2 >= 0 && b3 >= 0 -> value = add-index(add-index(add-index(b0, mul-index(b1, 256)), mul-index(b2, 65536)), mul-index(b3, 16777216))
+}
+
+windows-u64-memory = (pointer i64, index i64) (value i64) {
+    value = -1
+    low = windows-u32-memory(pointer, index)
+    high = windows-u32-memory(pointer, add-index(index, 4))
+    low >= 0 && high >= 0 -> value = add-index(low, mul-index(high, 4294967296))
+}
+
+windows-error = (stage str, path str) (message str) {
+    code = _GetLastError()
+    message = stage - ' ' - path - ': Windows error ' - code.to-str()
+}
+
+windows-path-byte = (path str, index i64) (value i64) {
+    value = -1
+    path.byte(index): {
+        ok -> value = it
+
+        -> return
+    }
+}
+
+windows-prefix-drive-path = (path str) (extended str) {
+    extended = ''
+    path.starts-with('\\\\?\\') -> {
+        extended = path
+        return
+    }
+    drive = path.len-bytes() >= 3 && windows-path-byte(path, 1) == 58
+    ! drive -> return
+    data []byte = []
+    data.push(92)
+    data.push(92)
+    data.push(63)
+    data.push(92)
+    i <- [0..path.len-bytes()): {
+        ch = path.byte(i)
+        ch: {
+            ok -> {
+                it == 47 -> data.push(92)
+
+                it != 47 -> data.push(it)
+            }
+
+            nil -> return
+
+            err -> return
+        }
+    }
+
+    ; byte.to-str() 是十进制数字；扩展路径必须原样保留 UTF-8 字节。
+    encoded = data.to-str()
+    encoded: {
+        ok -> extended = it
+
+        -> return
+    }
+}
+
+windows-extended-path = (path str) (extended str) {
+    path.starts-with('\\\\?\\') -> {
+        extended = path
+        return
+    }
+    absolute = windows-absolute-path(path)
+    absolute == '' -> return
+    extended = windows-prefix-drive-path(absolute)
+}
+
+windows-absolute-path = (path str) (absolute str) {
+    ! windows-ensure-buffers() -> return
+    path.starts-with('\\\\?\\') -> {
+        absolute = path
+        return
+    }
+    drive-absolute = path.len-bytes() >= 3 && windows-path-byte(path, 1) == 58
+    drive-absolute -> {
+        separator = windows-path-byte(path, 2)
+        separator == 47 || separator == 92 -> {
+            absolute = windows-prefix-drive-path(path)
+            absolute == '' -> return
+            ! windows-load-wide(absolute) -> return
+            written = _GetFullPathNameW(WIN-WIDE-PTR, 32768, WIN-WIDE-2-PTR, 0)
+            written <= 0 || written >= 32768 -> return
+            absolute = windows-wide-pointer-string(WIN-WIDE-2-PTR, written)
+            return
+        }
+    }
+
+    ; 相对路径先把当前目录与输入拼成扩展绝对路径，再让 GetFullPathNameW
+    ; 解析 . / ..；不能先对超长相对路径调用受 MAX_PATH 影响的旧 API。
+    written = _GetCurrentDirectoryW(WIN-WIDE-2-PTR, 32768)
+    written <= 0 || written >= 32768 -> return
+    current = windows-wide-pointer-string(WIN-WIDE-2-PTR, written)
+    current == '' -> return
+    first = windows-path-byte(path, 0)
+    combined = current
+    first == 47 || first == 92 -> {
+        drive = current.len-bytes() >= 2 && windows-path-byte(current, 1) == 58
+        drive -> combined = current.slice(0, 2) - path
+    }
+    first != 47 && first != 92 -> {
+        current.ends-with('\\') -> combined = current - path
+        ! current.ends-with('\\') -> combined = current - '\\' - path
+    }
+    extended = windows-prefix-drive-path(combined)
+    extended == '' -> return
+    ! windows-load-wide(extended) -> return
+    written = _GetFullPathNameW(WIN-WIDE-PTR, 32768, WIN-WIDE-2-PTR, 0)
+    written <= 0 || written >= 32768 -> return
+    absolute = windows-wide-pointer-string(WIN-WIDE-2-PTR, written)
+}
+
+windows-open = (path str, write bool) (fd i64) {
+    fd = -1
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    access = -2147483648
+    write -> access = -1073741824
+    disposition = 3
+    write -> disposition = 2
+    fd = _CreateFileW(WIN-WIDE-PTR, access, 7, 0, disposition, 35651584, 0)
+}
+
+windows-read = (fd i64, buf []byte, count i64) (got i64) {
+    got = -1
+    count < 0 || count > buf.len() || count > 65536 -> return
+    chunk = ''
+    returned = 0
+    chunk, returned = process.win-read-pipe(fd, count)
+    returned < 0 -> return
+    i <- [0..returned): {
+        value = chunk.byte(i)
+        value: {
+            ok -> {
+                byte-value = it
+                buf[i]: {
+                    ok -> it = byte-value
+
+                    -> return
+                }
+            }
+
+            -> return
+        }
+    }
+    got = returned
+}
+
+windows-write = (fd i64, buf []byte, count i64) (written i64) {
+    written = -1
+    count < 0 || count > buf.len() || count > 65536 -> return
+    bytes []byte = []
+    i <- [0..count): {
+        buf[i]: {
+            ok -> bytes.push(it)
+
+            -> return
+        }
+    }
+    encoded = bytes.to-str()
+    encoded: {
+        ok -> written = process.win-write-pipe(fd, it)
+
+        -> return
+    }
+}
+
+windows-close = (fd i64) (ok bool) {
+    ok = _CloseHandle(fd) != 0
+}
+
+windows-seek = (fd i64, offset i64) (ok bool) {
+    ok = _SetFilePointerEx(fd, offset, 0, 0) != 0
+}
+
+windows-stat = (path str) (info stat-info, ok bool) {
+    info.kind = KIND-OTHER
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 35651584, 0)
+    handle == -1 -> return
+    valid = _GetFileInformationByHandle(handle, WIN-FILE-DATA-PTR)
+    closed = windows-close(handle)
+    ! valid || ! closed -> return
+    attributes = windows-u32-memory(WIN-FILE-DATA-PTR, 0)
+    size-high = windows-u32-memory(WIN-FILE-DATA-PTR, 32)
+    size-low = windows-u32-memory(WIN-FILE-DATA-PTR, 36)
+    write-low = windows-u32-memory(WIN-FILE-DATA-PTR, 20)
+    write-high = windows-u32-memory(WIN-FILE-DATA-PTR, 24)
+    attributes < 0 || size-high < 0 || size-low < 0 || write-low < 0 || write-high < 0 -> return
+    info.flags = attributes
+    info.size = add-index(size-low, mul-index(size-high, 4294967296))
+    filetime = add-index(write-low, mul-index(write-high, 4294967296))
+    seconds = filetime / 10000000
+    seconds: {
+        ok -> info.mtime = sub-index(it, 11644473600)
+
+        -> return
+    }
+    attributes & 1024 != 0 -> {
+        info.kind = KIND-LINK
+        target, link-directory, read = windows-read-link(path)
+        ! read -> return
+        info.size = STATE.scratch-link-target.len-bytes()
+        info.mode = 40960
+        info.link-directory = link-directory
+        ok = true
+        return
+    }
+    attributes & 16 != 0 -> {
+        info.kind = KIND-DIR
+        info.mode = 493
+        info.size = 0
+        ok = true
+        return
+    }
+    info.kind = KIND-FILE
+    info.mode = 438
+    ok = true
+}
+
+windows-list-dir = (path str) (names []str, ok bool) {
+    names = []
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    pattern = extended - '\\' - '*'
+    ! windows-load-wide(pattern) -> return
+    handle = _FindFirstFileW(WIN-WIDE-PTR, WIN-FILE-DATA-PTR)
+    handle == -1 -> return
+    failed = false
+    !! {
+        name = windows-wide-pointer-string(add-index(WIN-FILE-DATA-PTR, 44), -1)
+        name == '' -> {
+            failed = true
+            break
+        }
+        name != '.' && name != '..' -> names.push(name)
+        found = _FindNextFileW(handle, WIN-FILE-DATA-PTR)
+        found != 0 -> continue
+        error = _GetLastError()
+        error == 18 -> break
+        failed = true
+        break
+    }
+    closed = _FindClose(handle)
+    ! closed -> return
+    ok = ! failed
+}
+
+windows-mkdir = (path str, mode i64) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    ok = _CreateDirectoryW(WIN-WIDE-PTR, 0) != 0
+}
+
+windows-remove-file = (path str) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    attributes = _GetFileAttributesW(WIN-WIDE-PTR)
+    attributes >= 0 && attributes & 1024 != 0 && attributes & 16 != 0 -> {
+        ok = _RemoveDirectoryW(WIN-WIDE-PTR) != 0
+        return
+    }
+    attributes >= 0 && attributes & 1 != 0 -> {
+        ! windows-set-attributes(attributes - 1) -> return
+    }
+    ok = _DeleteFileW(WIN-WIDE-PTR) != 0
+}
+
+windows-remove-dir = (path str) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    ok = _RemoveDirectoryW(WIN-WIDE-PTR) != 0
+}
+
+windows-read-link = (path str) (target str, directory bool, ok bool) {
+    target = ''
+    directory = false
+    STATE.scratch-link-target = ''
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 35651584, 0)
+    handle == -1 -> return
+    _memset(WIN-RETURNED-PTR, 0, 4)
+    valid = _DeviceIoControl(handle, 589992, 0, 0, WIN-REPARSE-PTR, 16384, WIN-RETURNED-PTR, 0)
+    closed = windows-close(handle)
+    ! valid || ! closed -> return
+    returned = windows-u32-memory(WIN-RETURNED-PTR, 0)
+    returned < 24 -> return
+    tag = windows-u32-memory(WIN-REPARSE-PTR, 0)
+    tag != -1610612724 -> return
+    substitute-offset = windows-u32-memory(WIN-REPARSE-PTR, 8)
+    substitute-length = windows-u32-memory(WIN-REPARSE-PTR, 10)
+    print-offset = windows-u32-memory(WIN-REPARSE-PTR, 12)
+    print-length = windows-u32-memory(WIN-REPARSE-PTR, 14)
+    link-flags = windows-u32-memory(WIN-REPARSE-PTR, 16)
+    substitute-offset < 0 || substitute-length < 0 || print-offset < 0 || print-length < 0 || link-flags < 0 -> return
+    directory = link-flags & 1 != 0
+    offset = print-offset
+    length = print-length
+    length == 0 -> {
+        offset = substitute-offset
+        length = substitute-length
+    }
+    length <= 0 || length & 1 != 0 -> return
+    add-index(add-index(20, offset), length) > returned -> return
+    path-pointer = add-index(add-index(WIN-REPARSE-PTR, 20), offset)
+    target = windows-wide-pointer-string(path-pointer, div-index(length, 2))
+    target != '' -> {
+        STATE.scratch-link-target = target
+        ok = true
+    }
+}
+
+windows-create-link = (target str, path str, directory bool) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    ! windows-load-wide-2(target) -> return
+    flags = 2
+    directory -> flags = add-index(flags, 1)
+    ok = _CreateSymbolicLinkW(WIN-WIDE-PTR, WIN-WIDE-2-PTR, flags) != 0
+}
+
+windows-replace = (source str, destination str) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    source-wide = windows-extended-path(source)
+    destination-wide = windows-extended-path(destination)
+    ! windows-load-wide(source-wide) -> return
+    ! windows-load-wide-2(destination-wide) -> return
+    ok = _MoveFileExW(WIN-WIDE-PTR, WIN-WIDE-2-PTR, 9) != 0
+}
+
+windows-set-attributes = (attributes i64) (ok bool) {
+    ok = _SetFileAttributesW(WIN-WIDE-PTR, attributes) != 0
+}
+
+windows-set-mode = (path str, mode i64) (ok bool) {
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    attributes = _GetFileAttributesW(WIN-WIDE-PTR)
+    attributes < 0 -> return
+    mode & 146 == 0 -> {
+        ! windows-set-attributes(attributes | 1) -> return
+    }
+    mode & 146 != 0 && attributes & 1 != 0 -> {
+        ! windows-set-attributes(attributes - 1) -> return
+    }
+    ok = true
+}
+
+windows-set-owner = (path str, uid i64, gid i64) (ok bool) {
+    ok = true
+}
+
+windows-set-time = (path str, mtime i64) (ok bool) {
+    mtime < 0 -> return
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    ! windows-load-wide(extended) -> return
+    handle = _CreateFileW(WIN-WIDE-PTR, 256, 7, 0, 3, 35651584, 0)
+    handle == -1 -> return
+    ticks = add-index(mul-index(mtime, 10000000), 116444736000000000)
+    low = ticks & 4294967295
+    high = ticks >> 32
+    encoded-low = low.to-bytes-le()
+    encoded-high = high.to-bytes-le()
+    bytes []byte = []
+    i <- [0..4): {
+        encoded-low[i]: {
+            ok -> bytes.push(it)
+
+            -> {
+                windows-close(handle)
+                return
+            }
+        }
+        encoded-high[i]: {
+            ok -> bytes.push(it)
+
+            -> {
+                windows-close(handle)
+                return
+            }
+        }
+    }
+    encoded = bytes.to-str()
+    encoded: {
+        ok -> _memcpy(WIN-TIME-PTR, it, 8)
+
+        -> {
+            windows-close(handle)
+            return
+        }
+    }
+    applied = _SetFileTime(handle, 0, 0, WIN-TIME-PTR) != 0
+    closed = windows-close(handle)
+    ok = applied && closed
+}
+
+windows-canonical = (path str) (ok bool) {
+    STATE.scratch-canonical = ''
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(path)
+    extended == '' -> return
+    ! windows-load-wide(extended) -> return
+    written = _GetFullPathNameW(WIN-WIDE-PTR, 32768, WIN-WIDE-2-PTR, 0)
+    written <= 0 || written >= 32768 -> return
+    canonical = windows-wide-pointer-string(WIN-WIDE-2-PTR, written)
+    canonical == '' -> return
+    STATE.scratch-canonical = canonical.replace-str('\\', '/')
+    ok = STATE.scratch-canonical != ''
+}
+
+windows-path-hash = (path str) (hash i64) {
+
+    ; 与 CompareStringOrdinal(ignoreCase) 使用同一 invariant 大小写映射，
+    ; 避免大小写不同的已有目标在 manifest 索引中变成“缺失”而被误删。
+    ! windows-ensure-buffers() -> return
+    loaded, length = windows-copy-wide(path, false)
+    ! loaded -> return
+    count = sub-index(length, 1)
+    count <= 0 || count > 32767 -> return
+    folded = _LCMapStringEx(0, 256, WIN-WIDE-PTR, count, WIN-FOLD-PTR, 131071, 0, 0, 0)
+    folded <= 0 || folded > 131071 -> return
+    bytes = windows-memory-bytes(WIN-FOLD-PTR, mul-index(folded, 2))
+    bytes.len() != mul-index(folded, 2) -> return
+    hash = 1469598103934665603
+    b <- bytes: {
+        mixed = hash ^ b
+        mixed: {
+            ok -> hash = it
+
+            -> return
+        }
+
+        #{overflow=wrap}
+        product = hash * 1099511628211
+        product: {
+            ok -> hash = it
+
+            -> return
+        }
+    }
+}
+
+windows-path-equal = (a str, b str) (equal bool) {
+    loaded, a-length = windows-copy-wide(a, false)
+    ! loaded -> return
+    loaded, b-length = windows-copy-wide(b, true)
+    ! loaded -> return
+    order = _CompareStringOrdinal(WIN-WIDE-PTR, a-length, WIN-WIDE-2-PTR, b-length, 1)
+    equal = order == 2
+}
+
+windows-create-temp = (directory str) (path str, fd i64, ok bool) {
+    path = ''
+    fd = -1
+    ! windows-ensure-buffers() -> return
+    extended = windows-extended-path(directory)
+    extended == '' -> return
+    process = _GetCurrentProcessId()
+    attempt = 0
+    !! {
+        WIN-TEMP-COUNTER = add-index(WIN-TEMP-COUNTER, 1)
+        separator = '\\'
+        candidate = extended - separator - '.nosync-' - process.to-str() - '-' - WIN-TEMP-COUNTER.to-str() - '.tmp'
+        ! windows-load-wide(candidate) -> return
+
+        ; CREATE_NEW 保证不会覆盖已有文件或跟随链接；不使用受 MAX_PATH 限制的 GetTempFileNameW。
+        fd = _CreateFileW(WIN-WIDE-PTR, -1073741824, 0, 0, 1, 0, 0)
+        fd != -1 -> {
+            path = candidate
+            ok = true
+            return
+        }
+        error = _GetLastError()
+        error != 80 && error != 183 -> return
+        attempt = add-index(attempt, 1)
+        attempt >= 1024 -> return
+    }
+}

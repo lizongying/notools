@@ -1,0 +1,234 @@
+; signature 与流式 delta 的正确性、复用率和回退回归。
+
+# /nosync/src/model
+# /nosync/src/file-io
+# /nosync/src/delta
+# /nosync/src/platform
+
+delta-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+ensure-delta-tmp = () {
+    info, exists = platform-stat('tmp')
+    exists && info.kind == KIND-DIR -> return
+    created = platform-mkdir('tmp', 448)
+    delta-check(created, 'create test tmp directory')
+}
+
+make-block = (block i64, seed i64) (data []byte) {
+    data = with-len(4096)
+    i <- [0..data.len()): {
+        value = add-index(mul-index(block, 29), mul-index(i, 37))
+        value = add-index(value, seed)
+        data[i]: {
+            ok -> it = to-byte(value & 255)
+
+            -> return
+        }
+    }
+}
+
+append-bytes = (data []byte, extra []byte) (out []byte) {
+    out = data
+    i <- [0..extra.len()): {
+        extra[i]: {
+            ok -> out.push(it)
+
+            -> return
+        }
+    }
+}
+
+append-block = (data []byte, block []byte) (out []byte) {
+    out = append-bytes(data, block)
+}
+
+run-case-block = (name str, source []byte, target []byte, expect-fallback bool, block-size i64, limit i64) (ok bool, reused i64) {
+    ok = false
+    src-path = 'tmp/nosync-delta-src'
+    dst-path = 'tmp/nosync-delta-dst'
+    out-path = 'tmp/nosync-delta-out'
+    fs.remove(src-path)
+    fs.remove(dst-path)
+    fs.remove(out-path)
+    delta-check(fs.write-file(src-path, source), 'write delta source')
+    delta-check(fs.write-file(dst-path, target), 'write delta target')
+    src-fd = platform-open(src-path, false)
+    dst-fd = platform-open(dst-path, false)
+    out-fd = platform-open(out-path, true)
+    delta-check(src-fd >= 0 && dst-fd >= 0 && out-fd >= 0, 'open delta files')
+    reset-state()
+    streamed, fallback = delta-stream(src-fd, dst-fd, out-fd, source.len(), target.len(), block-size, limit)
+    delta-check(streamed, name - ' stream')
+    delta-check(fallback == expect-fallback, name - ' fallback decision')
+    src-closed = platform-close(src-fd)
+    dst-closed = platform-close(dst-fd)
+    out-closed = platform-close(out-fd)
+    delta-check(src-closed && dst-closed && out-closed, name - ' close')
+    ! fallback -> {
+        source-digest, source-ok = file-digest(src-path, source.len())
+        output-digest, output-ok = file-digest(out-path, source.len())
+        delta-check(source-ok && output-ok && sha256-equal(source-digest, output-digest), name - ' byte equality')
+    }
+    reused = STATS.reused-bytes
+    ok = true
+    fs.remove(src-path)
+    fs.remove(dst-path)
+    fs.remove(out-path)
+}
+
+run-case-with-limit = (name str, source []byte, target []byte, expect-fallback bool, limit i64) (ok bool, reused i64) {
+    ok, reused = run-case-block(name, source, target, expect-fallback, 4096, limit)
+}
+
+run-case = (name str, source []byte, target []byte, expect-fallback bool) (ok bool, reused i64) {
+    ok, reused = run-case-with-limit(name, source, target, expect-fallback, 10485760)
+}
+
+make-weak-collision-block = (block i64, seed i64) (data []byte) {
+    data = with-len(65536)
+    pattern []byte = with-len(32)
+    state u32 = i64-to-u32(add-index(block, seed))
+    i <- [0..32): {
+        state = weak-add-u32(weak-mul-u32(state, 1664525), 1013904223)
+        pattern[i]: {
+            ok -> it = to-byte(u32-to-i64((state >> 24) & 255))
+
+            -> return
+        }
+    }
+    i <- [0..data.len()): {
+        value, present = read-byte-at(pattern, i & 31)
+        ! present -> return
+        data[i]: {
+            ok -> it = value
+
+            -> return
+        }
+    }
+}
+
+make-random-io-block = (block i64, seed i64) (data []byte) {
+    data = with-len(65536)
+    state u32 = i64-to-u32(add-index(block, seed))
+    i <- [0..data.len()): {
+        state = weak-add-u32(weak-mul-u32(state, 1664525), 1013904223)
+        data[i]: {
+            ok -> it = to-byte(u32-to-i64((state >> 24) & 255))
+
+            -> return
+        }
+    }
+}
+
+run-delta-tests = () {
+    ensure-delta-tmp()
+    target []byte = []
+    i <- [0..32): {
+        target = append-block(target, make-block(i, 3))
+    }
+
+    inserted = append-block([], make-block(99, 7))
+    i <- [0..32): {
+        inserted = append-block(inserted, make-block(i, 3))
+    }
+    ok, reused = run-case('insert', inserted, target, false)
+    delta-check(ok && reused == target.len(), 'insert reuses every old block')
+    delta-check(mul-index(reused, 100) >= mul-index(inserted.len(), 95), 'insert reuse at least 95 percent')
+
+    io-target []byte = []
+    io-source = append-block([], make-random-io-block(1000, 7))
+    i <- [0..300): {
+        io-target = append-block(io-target, make-weak-collision-block(i, 3))
+        io-source = append-block(io-source, make-weak-collision-block(i, 3))
+    }
+    ok, reused = run-case-block('io-buffer-boundary', io-source, io-target, false, 65536, 67108864)
+    delta-check(ok && reused == io-target.len(), 'weak bucket mixing survives repeated low-bit collisions')
+
+    deleted []byte = []
+    i <- [0..32): {
+        i == 5 -> continue
+        deleted = append-block(deleted, make-block(i, 3))
+    }
+    ok, reused = run-case('delete', deleted, target, false)
+    delta-check(ok && reused == deleted.len(), 'delete block reuse')
+
+    reordered []byte = []
+    i <- [0..32): {
+        reordered = append-block(reordered, make-block(sub-index(31, i), 3))
+    }
+    ok, reused = run-case('reorder', reordered, target, false)
+    delta-check(ok && reused == target.len(), 'reorder reuses every old block')
+
+    shifted []byte = [99]
+    shifted = append-bytes(shifted, target)
+    ok, reused = run-case('byte-shift', shifted, target, false)
+    delta-check(ok && reused == target.len(), 'unaligned window rolls to every old block')
+
+    boundary []byte = []
+    i <- [0..4): {
+        boundary = append-block(boundary, make-block(add-index(i, 200), 11))
+    }
+    ok, reused = run-case('four-block-boundary', boundary, boundary, false)
+    delta-check(ok && reused == boundary.len(), 'exact four block boundary')
+
+    repeated []byte = []
+    i <- [0..64): {
+        repeated = append-block(repeated, make-block(7, 3))
+    }
+    ok, reused = run-case('repeat', repeated, target, false)
+    delta-check(ok, 'repeated blocks terminate with bounded candidate search')
+
+    with-tail = append-block([], make-block(88, 9))
+    i <- [0..32): {
+        with-tail = append-block(with-tail, make-block(i, 3))
+    }
+    tail []byte = with-len(100)
+    i <- [0..tail.len()): {
+        tail[i]: {
+            ok -> it = to-byte(i)
+
+            -> return
+        }
+    }
+    with-tail = append-bytes(with-tail, tail)
+    tail-target = append-block(target, tail)
+    ok, reused = run-case('short-tail', with-tail, tail-target, false)
+    delta-check(ok && reused == tail-target.len(), 'short tail signature matches')
+
+    low []byte = []
+    i <- [0..32): {
+        constant []byte = with-len(4096)
+        j <- [0..4096): {
+            constant[j]: {
+                ok -> it = to-byte(add-index(i, 100))
+
+                -> return
+            }
+        }
+        low = append-block(low, constant)
+    }
+    ok, reused = run-case('low-reuse', low, target, true)
+    delta-check(ok, 'low reuse falls back')
+    delta-check(SIGNATURE.fallback-reason == FALLBACK-LOW-REUSE, 'low reuse reason')
+
+    small = make-block(1, 1)
+    ok, reused = run-case('small', small, target, true)
+    delta-check(ok && SIGNATURE.fallback-reason == FALLBACK-SMALL, 'small source fallback')
+    ok, reused = run-case('empty-target', inserted, [], true)
+    delta-check(ok && SIGNATURE.fallback-reason == FALLBACK-MISSING, 'empty target fallback')
+    ok, reused = run-case('empty-source', [], target, true)
+    delta-check(ok && SIGNATURE.fallback-reason == FALLBACK-SMALL, 'empty source fallback')
+    single []byte = [255]
+    ok, reused = run-case('single-byte', single, target, true)
+    delta-check(ok && SIGNATURE.fallback-reason == FALLBACK-SMALL, 'single byte fallback')
+    ok, reused = run-case-with-limit('memory-limit', inserted, target, true, 1)
+    delta-check(ok && SIGNATURE.fallback-reason == FALLBACK-MEMORY, 'signature memory fallback')
+}
+
+run-delta-tests()
+print('ALL DELTA TESTS PASSED')

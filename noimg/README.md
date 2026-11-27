@@ -15,8 +15,8 @@
 ### 方式一：从 Releases 下载预编译二进制
 
 ```bash
-# Linux amd64 示例
-curl -fsSL -o noimg https://github.com/lizongying/notools/releases/latest/download/noimg-linux-amd64
+# Linux amd64 示例（将 v0.1.38 替换为所需版本）
+curl -fsSL -o noimg https://github.com/lizongying/notools/releases/download/v0.1.38/noimg-linux-amd64-v0.1.38
 chmod +x noimg && sudo mv noimg /usr/local/bin/
 ```
 

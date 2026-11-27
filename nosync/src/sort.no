@@ -1,0 +1,122 @@
+; 稳定 bottom-up merge sort，避免标准库插入排序在大目录退化。
+
+# /nosync/src/numeric
+
+; 整段排序必须留在独立函数帧：当前编译器在同一帧内持有动态 []str 并
+; 下标写 []i64 时会覆盖字符串描述符；最小复现 tmp/nosync-alloc-{helper,return}.no。
+sort-store = (indices []i64, index i64, value i64) (ok bool) {
+    index < 0 || index >= indices.len() -> return
+    indices[index]: {
+        ok -> it = value
+
+        -> return
+    }
+    ok = true
+}
+
+sort-name-order = (names []str, left i64, right i64) (take-left bool, ok bool) {
+    left-name = ''
+    right-name = ''
+    names[left]: {
+        ok -> left-name = it
+
+        -> return
+    }
+    names[right]: {
+        ok -> right-name = it
+
+        -> return
+    }
+    take-left = left-name.compare(right-name) <= 0
+    ok = true
+}
+
+sort-indices = (names []str) (sorted []i64) {
+    n = names.len()
+    sorted = with-len(n)
+    i <- [0..n): {
+        stored = sort-store(sorted, i, i)
+        ! stored -> return
+    }
+    n < 2 -> return
+    target []i64 = with-len(n)
+    width = 1
+    (width < n) {
+        left = 0
+        (left < n) {
+            middle = add-index(left, width)
+            middle > n -> middle = n
+            right = add-index(middle, width)
+            right > n -> right = n
+            i = left
+            j = middle
+            out = left
+            (i < middle && j < right) {
+                left-value = 0
+                right-value = 0
+                sorted[i]: {
+                    ok -> left-value = it
+
+                    -> return
+                }
+                sorted[j]: {
+                    ok -> right-value = it
+
+                    -> return
+                }
+                take-left, ordered = sort-name-order(names, left-value, right-value)
+                ! ordered -> return
+                take-left -> {
+                    stored = sort-store(target, out, left-value)
+                    ! stored -> return
+                    i = add-index(i, 1)
+                }
+                ! take-left -> {
+                    stored = sort-store(target, out, right-value)
+                    ! stored -> return
+                    j = add-index(j, 1)
+                }
+                out = add-index(out, 1)
+            }
+            (i < middle) {
+                sorted[i]: {
+                    ok -> {
+                        value = it
+                        stored = sort-store(target, out, value)
+                        ! stored -> return
+                    }
+
+                    -> return
+                }
+                i = add-index(i, 1)
+                out = add-index(out, 1)
+            }
+            (j < right) {
+                sorted[j]: {
+                    ok -> {
+                        value = it
+                        stored = sort-store(target, out, value)
+                        ! stored -> return
+                    }
+
+                    -> return
+                }
+                j = add-index(j, 1)
+                out = add-index(out, 1)
+            }
+            left = right
+        }
+        k <- [0..n): {
+            target[k]: {
+                ok -> {
+                    value = it
+                    stored = sort-store(sorted, k, value)
+                    ! stored -> return
+                }
+
+                -> return
+            }
+        }
+        width = mul-index(width, 2)
+    }
+}

@@ -1,0 +1,72 @@
+; CLI 契约回归：参数、组合短选项、过滤、错误码与远程语法拒绝。
+# /nosync/src/cli
+# /nosync/src/model
+
+cli-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+cli-parse = (args []str) (opts options, rules []filter-rule) {
+    opts, rules = parse-cli(args)
+}
+
+run-cli-tests = () () {
+    opts, rules = cli-parse(['nosync', '-avn', '--block-size=4096', '--memory-limit', '2M', '--exclude', '*.tmp', '--include=keep.tmp', '--stats', 'src', 'dst'])
+    cli-check(opts.code == 0, 'valid combined options')
+    cli-check(opts.recursive && opts.links && opts.perms && opts.times && opts.owner && opts.group && opts.dry-run && opts.verbose && opts.stats, 'short and long flags')
+    cli-check(opts.block-size == 4096 && opts.memory-limit == 2097152, 'option values')
+    cli-check(opts.src == 'src' && opts.dst == 'dst', 'source and destination')
+    cli-check(rules.len() == 2, 'repeatable filters')
+
+    opts, rules = cli-parse(['nosync', '--', '-src', '-dst'])
+    cli-check(opts.code == 0 && opts.src == '-src' && opts.dst == '-dst', 'double dash operands')
+
+    opts, rules = cli-parse(['nosync', '--help'])
+    cli-check(opts.code == 0 && opts.help, 'help without operands')
+    opts, rules = cli-parse(['nosync', '--version'])
+    cli-check(opts.code == 0 && opts.version, 'version without operands')
+
+    opts, rules = cli-parse(['nosync', '--unknown', 'src', 'dst'])
+    cli-check(opts.code == 2, 'unknown long option')
+    opts, rules = cli-parse(['nosync', '-z', 'src', 'dst'])
+    cli-check(opts.code == 2, 'unknown short option')
+    opts, rules = cli-parse(['nosync', 'src'])
+    cli-check(opts.code == 2, 'missing destination')
+    opts, rules = cli-parse(['nosync', 'a', 'b', 'c'])
+    cli-check(opts.code == 2, 'extra operand')
+    opts, rules = cli-parse(['nosync', '--block-size', '1024', 'src', 'dst'])
+    cli-check(opts.code == 2, 'block size lower bound')
+    opts, rules = cli-parse(['nosync', '--block-size', '2097152', 'src', 'dst'])
+    cli-check(opts.code == 2, 'block size upper bound')
+    opts, rules = cli-parse(['nosync', '--memory-limit', '512K', 'src', 'dst'])
+    cli-check(opts.code == 2, 'memory limit lower bound')
+    opts, rules = cli-parse(['nosync', '--delete', 'src', 'dst'])
+    cli-check(opts.code == 2, 'delete requires recursive')
+    opts, rules = cli-parse(['nosync', 'host:path', 'dst'])
+    cli-check(opts.code == 2, 'remote syntax rejected')
+    opts, rules = cli-parse(['nosync', 'C:relative', 'dst'])
+    cli-check(opts.code == 2, 'drive-relative path rejected')
+    opts, rules = cli-parse(['nosync', '\\\\server\\share', 'dst'])
+    cli-check(opts.code == 2, 'UNC path rejected')
+    opts, rules = cli-parse(['nosync', 'C:/file:stream', 'dst'])
+    cli-check(opts.code == 2, 'alternate data stream rejected')
+    run-windows-cli-tests()
+}
+
+#{win-amd64, win-arm64}
+run-windows-cli-tests = () () {
+    opts, rules = cli-parse(['nosync', 'C:\\src', 'D:\\dst'])
+    cli-check(opts.code == 0 && opts.src == 'C:/src' && opts.dst == 'D:/dst', 'absolute drive paths accepted and normalized')
+    opts, rules = cli-parse(['nosync', 'C:/src', 'D:/dst'])
+    cli-check(opts.code == 0 && opts.src == 'C:/src' && opts.dst == 'D:/dst', 'forward slash drive paths accepted')
+}
+
+#{mac-amd64, mac-arm64, linux-amd64, linux-arm64}
+run-windows-cli-tests = () () {
+}
+
+run-cli-tests()
+print('ALL CLI TESTS PASSED')

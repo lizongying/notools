@@ -1,0 +1,123 @@
+; 同步编排：预检、枚举、比较、执行与统计输出。
+
+# /nosync/src/model
+# /nosync/src/manifest
+# /nosync/src/plan
+# /nosync/src/execute
+
+action-name = (kind i64) (name str) {
+    name = kind: {
+        ACTION-CREATE-DIR -> 'create-dir'
+
+        ACTION-COPY-FILE -> 'copy-file'
+
+        ACTION-UPDATE-FILE -> 'update-file'
+
+        ACTION-METADATA -> 'metadata'
+
+        ACTION-CREATE-LINK -> 'create-link'
+
+        ACTION-UPDATE-LINK -> 'update-link'
+
+        ACTION-DELETE-FILE -> 'delete-file'
+
+        ACTION-DELETE-LINK -> 'delete-link'
+
+        ACTION-DELETE-DIR -> 'delete-dir'
+
+        ACTION-RESTORE-DIR -> 'restore-dir'
+
+        -> 'action'
+    }
+}
+
+output-line = (text str) {
+    io.out(text)
+    io.out('\n')
+}
+
+print-plan = (opts options) (ok bool) {
+    ok = false
+    ! opts.verbose && ! opts.dry-run -> {
+        ok = true
+        return
+    }
+    i <- [0..STATE.actions.len()): {
+        STATE.actions[i]: {
+            ok -> {
+                item = it
+                loaded = prepare-action-path(item)
+                ! loaded -> return
+                rel = STATE.scratch-mapped
+                rel == '' -> rel = '.'
+                output-line(action-name(item.kind) - ' ' - rel)
+            }
+
+            -> return
+        }
+    }
+    ok = true
+}
+
+print-stats = (opts options) {
+    ! opts.stats -> return
+    output-line('files: ' - STATS.files.to-str())
+    output-line('source-bytes: ' - STATS.source-bytes.to-str())
+    opts.dry-run -> {
+        output-line('target-bytes: n/a')
+        output-line('literal-bytes: n/a')
+        output-line('reused-bytes: n/a')
+        output-line('matched-blocks: n/a')
+        output-line('weak-hits: n/a')
+        output-line('false-alarms: n/a')
+        output-line('whole-file-fallbacks: n/a')
+    }
+    ! opts.dry-run -> {
+        output-line('target-bytes: ' - STATS.target-bytes.to-str())
+        output-line('literal-bytes: ' - STATS.literal-bytes.to-str())
+        output-line('reused-bytes: ' - STATS.reused-bytes.to-str())
+        output-line('matched-blocks: ' - STATS.matched-blocks.to-str())
+        output-line('weak-hits: ' - STATS.weak-hits.to-str())
+        output-line('false-alarms: ' - STATS.false-alarms.to-str())
+        output-line('whole-file-fallbacks: ' - STATS.fallbacks.to-str())
+        output-line('fallback-missing: ' - STATS.fallback-missing.to-str())
+        output-line('fallback-small: ' - STATS.fallback-small.to-str())
+        output-line('fallback-memory: ' - STATS.fallback-memory.to-str())
+        output-line('fallback-low-reuse: ' - STATS.fallback-low-reuse.to-str())
+        output-line('fallback-io: ' - STATS.fallback-io.to-str())
+    }
+    output-line('created: ' - STATS.created.to-str())
+    output-line('updated: ' - STATS.updated.to-str())
+    output-line('deleted: ' - STATS.deleted.to-str())
+    output-line('metadata-only: ' - STATS.metadata-only.to-str())
+}
+
+run-sync = (opts options, rules []filter-rule) (code i64) {
+    code = 1
+    reset-state()
+    preflighted = preflight(opts)
+    ! preflighted -> {
+        eprint('nosync: ' - STATE.error-stage - ': ' - STATE.error-path - ': ' - STATE.error-message)
+        return
+    }
+    collected = collect-manifests(opts, rules)
+    ! collected -> {
+        eprint('nosync: ' - STATE.error-stage - ': ' - STATE.error-path - ': ' - STATE.error-message)
+        return
+    }
+    planned = build-plan(opts)
+    ! planned -> {
+        eprint('nosync: ' - STATE.error-stage - ': ' - STATE.error-path - ': ' - STATE.error-message)
+        return
+    }
+    printed = print-plan(opts)
+    ! printed -> return
+    executed = execute-plan(opts)
+    ! executed -> {
+        eprint('nosync: ' - STATE.error-stage - ': ' - STATE.error-path - ': ' - STATE.error-message)
+        print-stats(opts)
+        return
+    }
+    print-stats(opts)
+    code = 0
+}

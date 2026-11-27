@@ -1,0 +1,208 @@
+; 流式 delta：固定窗口、literal 累积缓冲与旧文件随机块复制。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/file-io
+# /nosync/src/signature
+
+byte-at = (data []byte, index i64) (value byte, ok bool) {
+    index < 0 || index >= data.len() -> return
+    data[index]: {
+        ok -> value = it
+
+        -> return
+    }
+    ok = true
+}
+
+flush-literal = (fd i64, data []byte) (ok bool) {
+    data.len() == 0 -> {
+        ok = true
+        return
+    }
+    written, complete = write-all(fd, data, data.len())
+    ! complete -> return
+    STATS.literal-bytes = add-index(STATS.literal-bytes, written)
+    ok = true
+}
+
+window-weak-parts = (data []byte, start i64, length i64) (s1 u32, s2 u32) {
+    view = data.slice(start, add-index(start, length))
+    s1, s2 = weak-direct-parts(view)
+}
+
+; 返回 fallback=true 表示尚未替换目标，调用方应重置临时文件并 whole-file。
+delta-stream = (source-fd i64, target-fd i64, output-fd i64, source-size i64, target-size i64, block-size i64, limit i64) (ok bool, fallback bool) {
+    ok = false
+    fallback = false
+    release-signature()
+    ! platform-seek(source-fd, 0) -> return
+    ! platform-seek(output-fd, 0) -> return
+    block-size < 4096 -> block-size = 4096
+    block-size > 1048576 -> block-size = 1048576
+    source-size < mul-index(block-size, 4) -> {
+        fallback = true
+        ok = true
+        SIGNATURE.fallback-reason = FALLBACK-SMALL
+        return
+    }
+    built = build-signature(target-fd, target-size, block-size, limit)
+    ! built -> {
+        SIGNATURE.fallback-reason = FALLBACK-IO
+        return
+    }
+    SIGNATURE.fallback-reason != FALLBACK-NONE -> {
+        fallback = true
+        ok = true
+        return
+    }
+    block-size = SIGNATURE.block-size
+    pending []byte = with-cap(add-index(block-size, IO-BUFFER-SIZE))
+    literal []byte = with-cap(block-size)
+    read-buf []byte = with-len(IO-BUFFER-SIZE)
+    copy-buf []byte = with-len(block-size)
+    start = 0
+    total-read = 0
+    eof = false
+    source-state = sha256-init()
+    output-state = sha256-init()
+    window-s1 u32 = 0
+    window-s2 u32 = 0
+    window-ready = false
+    !! {
+        available = sub-index(pending.len(), start)
+
+        ; 非 EOF 窗口必须预取下一个字节，块大小等于 I/O 缓冲时才能正确滚动。
+        available <= block-size && ! eof -> {
+            start >= IO-BUFFER-SIZE -> {
+                rest = pending.slice(start, pending.len())
+                compacted []byte = with-cap(add-index(rest.len(), IO-BUFFER-SIZE))
+                j <- [0..rest.len()): {
+                    rest[j]: {
+                        ok -> compacted.push(it)
+
+                        -> return
+                    }
+                }
+                pending = compacted
+                start = 0
+            }
+            got = platform-read(source-fd, read-buf, IO-BUFFER-SIZE)
+            got < 0 -> return
+            got == 0 -> {
+                eof = true
+            }
+            got > 0 -> {
+                total-read = add-index(total-read, got)
+                total-read > source-size -> return
+                view = read-buf.slice(0, got)
+                j <- [0..view.len()): {
+                    view[j]: {
+                        ok -> pending.push(it)
+
+                        -> return
+                    }
+                }
+                source-state, valid = sha256-update(source-state, view)
+                ! valid -> return
+            }
+            continue
+        }
+        available = sub-index(pending.len(), start)
+        available <= 0 -> {
+            eof -> break
+            continue
+        }
+        window-length = block-size
+        available < block-size -> window-length = available
+        ! window-ready -> {
+            window-s1, window-s2 = window-weak-parts(pending, start, window-length)
+            window-ready = true
+        }
+        weak = weak-pack(window-s1, window-s2)
+        bucket = weak-bucket(weak, SIGNATURE.capacity)
+        candidate = -1
+        SIGNATURE.buckets[bucket]: {
+            ok -> candidate = it
+
+            -> return
+        }
+        candidate >= 0 -> STATS.weak-hits = add-index(STATS.weak-hits, 1)
+        weak-hit = candidate >= 0
+        source-strong [32]byte
+        strong-ready = false
+        matched = false
+        matched-entry signature-entry = {}
+        checked = 0
+        (candidate >= 0 && checked < 256) {
+            entry, present = signature-entry-at(candidate)
+            ! present -> break
+            entry.length == window-length -> {
+                ! strong-ready -> {
+                    view = pending.slice(start, add-index(start, window-length))
+                    source-strong = block-digest(view)
+                    strong-ready = true
+                }
+                sha256-equal(source-strong, entry.strong) -> {
+                    matched = true
+                    matched-entry = entry
+                    break
+                }
+            }
+            candidate = entry.next
+            checked = add-index(checked, 1)
+        }
+        matched -> {
+            flushed = flush-literal(output-fd, literal)
+            ! flushed -> return
+            output-state, valid = sha256-update(output-state, literal)
+            ! valid -> return
+            literal.truncate(0)
+            copied, complete = read-exact-at(target-fd, copy-buf, matched-entry.length, matched-entry.offset)
+            ! complete -> return
+            wrote, complete = write-all(output-fd, copy-buf, copied)
+            ! complete -> return
+            copied-view = copy-buf.slice(0, wrote)
+            output-state, valid = sha256-update(output-state, copied-view)
+            ! valid -> return
+            STATS.reused-bytes = add-index(STATS.reused-bytes, wrote)
+            STATS.matched-blocks = add-index(STATS.matched-blocks, 1)
+            start = add-index(start, matched-entry.length)
+        }
+        ! matched -> {
+            weak-hit -> STATS.false-alarms = add-index(STATS.false-alarms, 1)
+            old, present = byte-at(pending, start)
+            ! present -> return
+            literal.push(old)
+            available > block-size -> {
+                new-byte, present = byte-at(pending, add-index(start, block-size))
+                ! present -> return
+                window-s1, window-s2 = weak-roll-parts(window-s1, window-s2, block-size, old, new-byte)
+            }
+            start = add-index(start, 1)
+        }
+        start == pending.len() -> {
+            pending.truncate(0)
+            start = 0
+            window-ready = false
+        }
+        matched -> window-ready = false
+        start < pending.len() && eof -> window-ready = false
+    }
+    total-read != source-size -> return
+    flushed = flush-literal(output-fd, literal)
+    ! flushed -> return
+    output-state, valid = sha256-update(output-state, literal)
+    ! valid -> return
+    SIGNATURE.source-digest = sha256-final(source-state)
+    output-digest = sha256-final(output-state)
+    ! sha256-equal(SIGNATURE.source-digest, output-digest) -> return
+    reused-ten = mul-index(STATS.reused-bytes, 10)
+    reused-ten < source-size -> {
+        fallback = true
+        ok = true
+        SIGNATURE.fallback-reason = FALLBACK-LOW-REUSE
+        return
+    }
+    ok = true
+}

@@ -1,7 +1,7 @@
 ; value — jq value system (jv equivalent)
 ;
 ; Mirrors jq's src/jv.h / src/jv.c value model. All JSON values live in one
-; global pool (`G-pv`) and are referenced by i64 index ("handle"), the same
+; global pool (`_G-PV`) and are referenced by i64 index ("handle"), the same
 ; interned-node design std/json.no uses. jq's reference counting is replaced
 ; by the pool's scope-based lifetime: everything allocated by the pool is
 ; freed when the program's scope exits, so nojq never frees individual values.
@@ -48,7 +48,7 @@ jv-pool {
     nodes []jv-value
 }
 
-G-pv jv-pool
+_G-PV jv-pool
 
 ; zero-jv-value: reset a value node to null (free function — v is an
 ; in/out parameter so nested `v.field =` persists, per nolang param model)
@@ -63,28 +63,28 @@ zero-jv-value = (v jv-value) {
 
 ; jv-reset-pool: empty the pool (called once from main)
 jv-reset-pool = () {
-    G-pv.nodes = with-len(0)
+    _G-PV.nodes = with-len(0)
     v jv-value
     zero-jv-value(v)
     a <- [0..16): {
-        G-pv.nodes.push(v)
+        _G-PV.nodes.push(v)
     }
 }
 
 ; jv-alloc-node: claim a fresh node, growing the arena as needed
 ; returns idx i64: index of the new (zeroed) node
 jv-alloc-node = () (idx i64) {
-    idx = G-pv.nodes.len()
+    idx = _G-PV.nodes.len()
     v jv-value
     zero-jv-value(v)
-    G-pv.nodes.push(v)
+    _G-PV.nodes.push(v)
 }
 
 ; jv-null: allocate a null value
 ; returns idx i64: pool index
 jv-null = () (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-NULL
+    _G-PV.nodes[idx].kind = JV-NULL
 }
 
 ; jv-bool: allocate true/false
@@ -93,10 +93,10 @@ jv-null = () (idx i64) {
 jv-bool = (on bool) (idx i64) {
     idx = jv-alloc-node()
     on -> {
-        G-pv.nodes[idx].kind = JV-TRUE
+        _G-PV.nodes[idx].kind = JV-TRUE
     }
     ! on -> {
-        G-pv.nodes[idx].kind = JV-FALSE
+        _G-PV.nodes[idx].kind = JV-FALSE
     }
 }
 
@@ -114,8 +114,8 @@ jv-false = () (idx i64) {
 ; returns idx i64: pool index
 jv-number = (n f64) (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-NUMBER
-    G-pv.nodes[idx].num = n
+    _G-PV.nodes[idx].kind = JV-NUMBER
+    _G-PV.nodes[idx].num = n
 }
 
 ; jv-number-literal: allocate a literal-number value preserving the exact
@@ -129,26 +129,26 @@ jv-number = (n f64) (idx i64) {
 ; returns idx i64: pool index
 jv-number-literal = (text str) (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-NUMBER
+    _G-PV.nodes[idx].kind = JV-NUMBER
     d dec-num = dec-parse(text)
     d.is-nan -> {
-        G-pv.nodes[idx].num = 0.0 / 0.0
+        _G-PV.nodes[idx].num = 0.0 / 0.0
     }
     d.is-inf -> {
         v f64 = 1.0 / 0.0
         d.neg -> v = 0.0 - v
-        G-pv.nodes[idx].num = v
+        _G-PV.nodes[idx].num = v
     }
     ! d.is-nan && ! d.is-inf -> {
-        G-pv.nodes[idx].literal = dec-to-str(d)
-        G-pv.nodes[idx].num = jvp-strtod(text)
+        _G-PV.nodes[idx].literal = dec-to-str(d)
+        _G-PV.nodes[idx].num = jvp-strtod(text)
     }
 }
 
 ; jv-literal: preserved literal text ('' when native)
 jv-literal = (idx i64) (s str) {
     s = ''
-    G-pv.nodes[idx].kind == JV-NUMBER -> s = G-pv.nodes[idx].literal
+    _G-PV.nodes[idx].kind == JV-NUMBER -> s = _G-PV.nodes[idx].literal
 }
 
 ; jv-number-literal-neg: negate preserving the literal (jq's `-1e16` path
@@ -157,10 +157,10 @@ jv-literal = (idx i64) (s str) {
 ; returns out i64: new handle
 jv-number-literal-neg = (idx i64) (out i64) {
     out = idx
-    G-pv.nodes[idx].kind == JV-NUMBER -> {
-        G-pv.nodes[idx].literal.empty() -> out = jv-number(0.0 - G-pv.nodes[idx].num)
-        ! G-pv.nodes[idx].literal.empty() -> {
-            d dec-num = dec-parse(G-pv.nodes[idx].literal)
+    _G-PV.nodes[idx].kind == JV-NUMBER -> {
+        _G-PV.nodes[idx].literal.empty() -> out = jv-number(0.0 - _G-PV.nodes[idx].num)
+        ! _G-PV.nodes[idx].literal.empty() -> {
+            d dec-num = dec-parse(_G-PV.nodes[idx].literal)
             nd dec-num = dec-neg(d)
             out = jv-number-literal(dec-to-str(nd))
         }
@@ -179,15 +179,15 @@ jv-number-i64 = (n i64) (idx i64) {
 ; returns idx i64: pool index
 jv-string = (s str) (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-STRING
-    G-pv.nodes[idx].str-val = s
+    _G-PV.nodes[idx].kind = JV-STRING
+    _G-PV.nodes[idx].str-val = s
 }
 
 ; jv-array: allocate an empty array
 ; returns idx i64: pool index
 jv-array = () (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-ARRAY
+    _G-PV.nodes[idx].kind = JV-ARRAY
 }
 
 ; jv-break: allocate a break carrier holding the resolved label id.
@@ -195,61 +195,61 @@ jv-array = () (idx i64) {
 ; returns idx i64: pool index
 jv-break = (id i64) (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-BREAK
-    G-pv.nodes[idx].num = (id).to-f64()
+    _G-PV.nodes[idx].kind = JV-BREAK
+    _G-PV.nodes[idx].num = (id).to-f64()
 }
 
 ; jv-break-id: the label ordinal carried by a break carrier.
 jv-break-id = (idx i64) (id i64) {
-    id = (G-pv.nodes[idx].num).to-i64()
+    id = (_G-PV.nodes[idx].num).to-i64()
 }
 
 ; jv-object: allocate an empty object
 ; returns idx i64: pool index
 jv-object = () (idx i64) {
     idx = jv-alloc-node()
-    G-pv.nodes[idx].kind = JV-OBJECT
+    _G-PV.nodes[idx].kind = JV-OBJECT
 }
 
 ; jv-kind: the type tag of a value
 ; idx i64: pool index
 ; returns kind i64: one of JV-*
 jv-kind = (idx i64) (kind i64) {
-    kind = G-pv.nodes[idx].kind
+    kind = _G-PV.nodes[idx].kind
 }
 
 ; jv-is-*: type predicates
 jv-is-null = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-NULL
+    yes = _G-PV.nodes[idx].kind == JV-NULL
 }
 
 jv-is-true = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-TRUE
+    yes = _G-PV.nodes[idx].kind == JV-TRUE
 }
 
 jv-is-false = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-FALSE
+    yes = _G-PV.nodes[idx].kind == JV-FALSE
 }
 
 jv-is-boolean = (idx i64) (yes bool) {
-    k i64 = G-pv.nodes[idx].kind
+    k i64 = _G-PV.nodes[idx].kind
     yes = k == JV-TRUE || k == JV-FALSE
 }
 
 jv-is-number = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-NUMBER
+    yes = _G-PV.nodes[idx].kind == JV-NUMBER
 }
 
 jv-is-string = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-STRING
+    yes = _G-PV.nodes[idx].kind == JV-STRING
 }
 
 jv-is-array = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-ARRAY
+    yes = _G-PV.nodes[idx].kind == JV-ARRAY
 }
 
 jv-is-object = (idx i64) (yes bool) {
-    yes = G-pv.nodes[idx].kind == JV-OBJECT
+    yes = _G-PV.nodes[idx].kind == JV-OBJECT
 }
 
 ; jv-get-number: numeric payload; nil for non-numbers
@@ -257,12 +257,12 @@ jv-is-object = (idx i64) (yes bool) {
 ; returns n ?f64
 jv-get-number = (idx i64) (n ?f64) {
     n = nil
-    G-pv.nodes[idx].kind == JV-NUMBER -> n = G-pv.nodes[idx].num
+    _G-PV.nodes[idx].kind == JV-NUMBER -> n = _G-PV.nodes[idx].num
 }
 
 ; jv-number-val: raw numeric payload (caller must have checked kind)
 jv-number-val = (idx i64) (n f64) {
-    n = G-pv.nodes[idx].num
+    n = _G-PV.nodes[idx].num
 }
 
 ; jv-get-string: string payload; nil for non-strings
@@ -270,39 +270,39 @@ jv-number-val = (idx i64) (n f64) {
 ; returns s ?str
 jv-get-string = (idx i64) (s ?str) {
     s = nil
-    G-pv.nodes[idx].kind == JV-STRING -> s = G-pv.nodes[idx].str-val
+    _G-PV.nodes[idx].kind == JV-STRING -> s = _G-PV.nodes[idx].str-val
 }
 
 ; jv-str-val: raw string payload (caller must have checked kind)
 jv-str-val = (idx i64) (s str) {
-    s = G-pv.nodes[idx].str-val
+    s = _G-PV.nodes[idx].str-val
 }
 
 ; jv-length: jq `.length` primitive for strings (codepoint count),
 ; arrays/objects (element count); others handled by the caller
 jv-length = (idx i64) (n i64) {
     n = 0
-    k i64 = G-pv.nodes[idx].kind
-    k == JV-STRING -> n = G-pv.nodes[idx].str-val.count()
-    k == JV-ARRAY -> n = G-pv.nodes[idx].elems.len()
-    k == JV-OBJECT -> n = G-pv.nodes[idx].keys.len()
+    k i64 = _G-PV.nodes[idx].kind
+    k == JV-STRING -> n = _G-PV.nodes[idx].str-val.count()
+    k == JV-ARRAY -> n = _G-PV.nodes[idx].elems.len()
+    k == JV-OBJECT -> n = _G-PV.nodes[idx].keys.len()
 }
 
 ; jv-arr-len: element count of an array/object (-1 otherwise)
 jv-arr-len = (idx i64) (n i64) {
     n = -1
-    k i64 = G-pv.nodes[idx].kind
-    k == JV-ARRAY -> n = G-pv.nodes[idx].elems.len()
-    k == JV-OBJECT -> n = G-pv.nodes[idx].keys.len()
+    k i64 = _G-PV.nodes[idx].kind
+    k == JV-ARRAY -> n = _G-PV.nodes[idx].elems.len()
+    k == JV-OBJECT -> n = _G-PV.nodes[idx].keys.len()
 }
 
 ; jv-arr-get: element handle at position i of an array (-1 if out of range)
 jv-arr-get = (idx i64, i i64) (elem i64) {
     elem = -1
-    G-pv.nodes[idx].kind == JV-ARRAY -> {
+    _G-PV.nodes[idx].kind == JV-ARRAY -> {
         i >= 0 -> {
-            i < G-pv.nodes[idx].elems.len() -> {
-                elem = G-pv.nodes[idx].elems[i]: {
+            i < _G-PV.nodes[idx].elems.len() -> {
+                elem = _G-PV.nodes[idx].elems[i]: {
                     ok -> it
 
                     -> 0
@@ -317,15 +317,15 @@ jv-arr-get = (idx i64, i i64) (elem i64) {
 ; arithmetic on the hot path.
 jv-obj-get = (idx i64, key str) (val i64) {
     val = -1
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
-        i <- [0..G-pv.nodes[idx].keys.len()): {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
+        i <- [0.._G-PV.nodes[idx].keys.len()): {
             jv-key-str(idx, i) == key -> {
-                val = G-pv.nodes[idx].elems[i]: {
+                val = _G-PV.nodes[idx].elems[i]: {
                     ok -> it
 
                     -> 0
                 }
-                i = G-pv.nodes[idx].keys.len()
+                i = _G-PV.nodes[idx].keys.len()
             }
         }
     }
@@ -334,11 +334,11 @@ jv-obj-get = (idx i64, key str) (val i64) {
 ; jv-key-str: the key string of object entry i
 jv-key-str = (idx i64, i i64) (s str) {
     s = ''
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
         i >= 0 -> {
-            i < G-pv.nodes[idx].keys.len() -> {
-                kid = G-pv.nodes[idx].keys[i]
-                s = G-pv.nodes[kid].str-val
+            i < _G-PV.nodes[idx].keys.len() -> {
+                kid = _G-PV.nodes[idx].keys[i]
+                s = _G-PV.nodes[kid].str-val
             }
         }
     }
@@ -347,10 +347,10 @@ jv-key-str = (idx i64, i i64) (s str) {
 ; jv-key-idx: the key VALUE handle of object entry i
 jv-key-idx = (idx i64, i i64) (kid i64) {
     kid = -1
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
         i >= 0 -> {
-            i < G-pv.nodes[idx].keys.len() -> {
-                kid = G-pv.nodes[idx].keys[i]: {
+            i < _G-PV.nodes[idx].keys.len() -> {
+                kid = _G-PV.nodes[idx].keys[i]: {
                     ok -> it
 
                     -> 0
@@ -363,11 +363,11 @@ jv-key-idx = (idx i64, i i64) (kid i64) {
 ; jv-val-idx: the value handle of array/object entry i (-1 if out of range)
 jv-val-idx = (idx i64, i i64) (val i64) {
     val = -1
-    k i64 = G-pv.nodes[idx].kind
+    k i64 = _G-PV.nodes[idx].kind
     k == JV-ARRAY -> {
         i >= 0 -> {
-            i < G-pv.nodes[idx].elems.len() -> {
-                val = G-pv.nodes[idx].elems[i]: {
+            i < _G-PV.nodes[idx].elems.len() -> {
+                val = _G-PV.nodes[idx].elems[i]: {
                     ok -> it
 
                     -> 0
@@ -377,8 +377,8 @@ jv-val-idx = (idx i64, i i64) (val i64) {
     }
     k == JV-OBJECT -> {
         i >= 0 -> {
-            i < G-pv.nodes[idx].elems.len() -> {
-                val = G-pv.nodes[idx].elems[i]: {
+            i < _G-PV.nodes[idx].elems.len() -> {
+                val = _G-PV.nodes[idx].elems[i]: {
                     ok -> it
 
                     -> 0
@@ -389,15 +389,21 @@ jv-val-idx = (idx i64, i i64) (val i64) {
 }
 
 ; jv-arr-push: append an element to an array (jq `. + [x]` core)
-; NOTE: G-pv.nodes[idx] yields a struct rvalue, so mutating .elems via .push
+; NOTE: _G-PV.nodes[idx] yields a struct rvalue, so mutating .elems via .push
 ; only changes a copied slice header. Read-modify-write-back so the grown
 ; header is stored into the pool node (field assignment persists).
 jv-arr-push = (idx i64, elem i64) (ok bool) {
     ok = false
-    G-pv.nodes[idx].kind == JV-ARRAY -> {
-        node jv-value = G-pv.nodes[idx]
+    _G-PV.nodes[idx].kind == JV-ARRAY -> {
+        node jv-value
+        zero-jv-value(node)
+        _G-PV.nodes[idx]: {
+            ok -> node = it
+
+            -> _
+        }
         node.elems.push(elem)
-        G-pv.nodes[idx] = node
+        _G-PV.nodes[idx] = node
         ok = true
     }
 }
@@ -408,16 +414,16 @@ jv-arr-push = (idx i64, elem i64) (ok bool) {
 jv-obj-sort = (idx i64) {
 
     #{overflow=wrap}
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
-        n i64 = G-pv.nodes[idx].keys.len()
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
+        n i64 = _G-PV.nodes[idx].keys.len()
         a <- [1..n): {
             j = a
             j > 0 -> {
                 ka str = jv-key-str(idx, j - 1)
                 kb str = jv-key-str(idx, j)
                 kb.compare(ka) < 0 -> {
-                    G-pv.nodes[idx].keys.swap(j - 1, j)
-                    G-pv.nodes[idx].elems.swap(j - 1, j)
+                    _G-PV.nodes[idx].keys.swap(j - 1, j)
+                    _G-PV.nodes[idx].elems.swap(j - 1, j)
                     j = j - 1
                 }
                 j <= 0 -> j = 0
@@ -429,11 +435,11 @@ jv-obj-sort = (idx i64) {
 ; jv-obj-pos: position of `key` in an object's entry list (-1 if absent)
 jv-obj-pos = (idx i64, key str) (pos i64) {
     pos = -1
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
-        i <- [0..G-pv.nodes[idx].keys.len()): {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
+        i <- [0.._G-PV.nodes[idx].keys.len()): {
             jv-key-str(idx, i) == key -> {
                 pos = i
-                i = G-pv.nodes[idx].keys.len()
+                i = _G-PV.nodes[idx].keys.len()
             }
         }
     }
@@ -446,9 +452,15 @@ jv-obj-pos = (idx i64, key str) (pos i64) {
 ; key str: key string
 ; val i64: value handle
 jv-obj-insert = (idx i64, key str, val i64) {
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
         pos = jv-obj-pos(idx, key)
-        node jv-value = G-pv.nodes[idx]
+        node jv-value
+        zero-jv-value(node)
+        _G-PV.nodes[idx]: {
+            ok -> node = it
+
+            -> _
+        }
         pos >= 0 -> {
             node.elems[pos]: {
                 ok -> it = val
@@ -465,27 +477,27 @@ jv-obj-insert = (idx i64, key str, val i64) {
             node.keys.push(jv-string(key))
             node.elems.push(val)
         }
-        G-pv.nodes[idx] = node
+        _G-PV.nodes[idx] = node
     }
 }
 
 ; jv-obj-del: remove a key from an object (no-op if absent)
 jv-obj-del = (idx i64, key str) {
-    G-pv.nodes[idx].kind == JV-OBJECT -> {
+    _G-PV.nodes[idx].kind == JV-OBJECT -> {
         pos i64 = jv-obj-pos(idx, key)
         pos >= 0 -> {
             nk []i64 = with-len(0)
             ne []i64 = with-len(0)
-            n i64 = G-pv.nodes[idx].keys.len()
+            n i64 = _G-PV.nodes[idx].keys.len()
             k i64 = 0
             (k < n) {
                 k != pos -> {
-                    kv i64 = G-pv.nodes[idx].keys[k]: {
+                    kv i64 = _G-PV.nodes[idx].keys[k]: {
                         ok -> it
 
                         -> 0
                     }
-                    evx i64 = G-pv.nodes[idx].elems[k]: {
+                    evx i64 = _G-PV.nodes[idx].elems[k]: {
                         ok -> it
 
                         -> 0
@@ -501,13 +513,13 @@ jv-obj-del = (idx i64, key str) {
             }
 
             ; Assign straight into the pool slot: a wholesale reassignment of
-            ; a vec field on a LOCAL struct copy followed by `G-pv.nodes[idx] =
+            ; a vec field on a LOCAL struct copy followed by `_G-PV.nodes[idx] =
             ; node` is silently dropped by the current codegen (the write-back
             ; only persists in-place push/element edits), so we target the slot
             ; field directly. `.remove(runtime-idx)` is also unusable here
             ; (lowers to a malformed 3-operand `sub`).
-            G-pv.nodes[idx].keys = nk
-            G-pv.nodes[idx].elems = ne
+            _G-PV.nodes[idx].keys = nk
+            _G-PV.nodes[idx].elems = ne
         }
     }
 }
@@ -516,30 +528,42 @@ jv-obj-del = (idx i64, key str) {
 ; idx i64: source handle
 ; returns out i64: new handle
 jv-copy = (idx i64) (out i64) {
-    k i64 = G-pv.nodes[idx].kind
+    k i64 = _G-PV.nodes[idx].kind
     out = idx
-    k == JV-NUMBER -> out = jv-number(G-pv.nodes[idx].num)
-    k == JV-STRING -> out = jv-string(G-pv.nodes[idx].str-val)
+    k == JV-NUMBER -> out = jv-number(_G-PV.nodes[idx].num)
+    k == JV-STRING -> out = jv-string(_G-PV.nodes[idx].str-val)
     k == JV-ARRAY -> {
         out = jv-array()
-        i <- [0..G-pv.nodes[idx].elems.len()): {
-            e = G-pv.nodes[idx].elems[i]
+        i <- [0.._G-PV.nodes[idx].elems.len()): {
+            e = _G-PV.nodes[idx].elems[i]
             ce i64 = jv-copy(e)
-            node jv-value = G-pv.nodes[out]
+            node jv-value
+            zero-jv-value(node)
+            _G-PV.nodes[out]: {
+                ok -> node = it
+
+                -> _
+            }
             node.elems.push(ce)
-            G-pv.nodes[out] = node
+            _G-PV.nodes[out] = node
         }
     }
     k == JV-OBJECT -> {
         out = jv-object()
-        i <- [0..G-pv.nodes[idx].keys.len()): {
+        i <- [0.._G-PV.nodes[idx].keys.len()): {
             kk = jv-key-str(idx, i)
             ck i64 = jv-string(kk)
-            cv i64 = jv-copy(G-pv.nodes[idx].elems[i])
-            node jv-value = G-pv.nodes[out]
+            cv i64 = jv-copy(_G-PV.nodes[idx].elems[i])
+            node jv-value
+            zero-jv-value(node)
+            _G-PV.nodes[out]: {
+                ok -> node = it
+
+                -> _
+            }
             node.keys.push(ck)
             node.elems.push(cv)
-            G-pv.nodes[out] = node
+            _G-PV.nodes[out] = node
         }
     }
 }
@@ -548,8 +572,8 @@ jv-copy = (idx i64) (out i64) {
 ; a i64, b i64: handles
 ; returns r i64: -1 / 0 / 1
 jv-cmp = (a i64, b i64) (r i64) {
-    ka i64 = G-pv.nodes[a].kind
-    kb i64 = G-pv.nodes[b].kind
+    ka i64 = _G-PV.nodes[a].kind
+    kb i64 = _G-PV.nodes[b].kind
     r = 0
     ka != kb -> {
         ka < kb -> r = -1
@@ -560,10 +584,10 @@ jv-cmp = (a i64, b i64) (r i64) {
         ka == JV-FALSE -> r = 0
         ka == JV-TRUE -> r = 0
         ka == JV-NUMBER -> {
-            na f64 = G-pv.nodes[a].num
-            nb f64 = G-pv.nodes[b].num
-            la str = G-pv.nodes[a].literal
-            lb str = G-pv.nodes[b].literal
+            na f64 = _G-PV.nodes[a].num
+            nb f64 = _G-PV.nodes[b].num
+            la str = _G-PV.nodes[a].literal
+            lb str = _G-PV.nodes[b].literal
             la.empty() || lb.empty() -> {
                 na < nb -> r = -1
                 na > nb -> r = 1
@@ -574,7 +598,7 @@ jv-cmp = (a i64, b i64) (r i64) {
                 r = dec-cmp(da, db)
             }
         }
-        ka == JV-STRING -> r = G-pv.nodes[a].str-val.compare(G-pv.nodes[b].str-val)
+        ka == JV-STRING -> r = _G-PV.nodes[a].str-val.compare(_G-PV.nodes[b].str-val)
         ka == JV-ARRAY -> r = jv-cmp-seq(a, b)
         ka == JV-OBJECT -> r = jv-cmp-seq(a, b)
     }
@@ -582,19 +606,19 @@ jv-cmp = (a i64, b i64) (r i64) {
 
 ; jv-cmp-seq: lexicographic comparison of array/object entries
 jv-cmp-seq = (a i64, b i64) (r i64) {
-    na i64 = G-pv.nodes[a].elems.len()
-    nb i64 = G-pv.nodes[b].elems.len()
+    na i64 = _G-PV.nodes[a].elems.len()
+    nb i64 = _G-PV.nodes[b].elems.len()
     r = 0
     lim = na
     na > nb -> lim = nb
     i = 0
     (i < lim) {
-        ca = G-pv.nodes[a].elems[i]
-        cb = G-pv.nodes[b].elems[i]
-        ka i64 = G-pv.nodes[a].kind
-        kb i64 = G-pv.nodes[b].kind
-        ka == JV-OBJECT -> ca = G-pv.nodes[a].keys[i]
-        kb == JV-OBJECT -> cb = G-pv.nodes[b].keys[i]
+        ca = _G-PV.nodes[a].elems[i]
+        cb = _G-PV.nodes[b].elems[i]
+        ka i64 = _G-PV.nodes[a].kind
+        kb i64 = _G-PV.nodes[b].kind
+        ka == JV-OBJECT -> ca = _G-PV.nodes[a].keys[i]
+        kb == JV-OBJECT -> cb = _G-PV.nodes[b].keys[i]
         r = jv-cmp(ca, cb)
         r != 0 -> i = lim
         i = i + 1: {

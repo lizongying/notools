@@ -1,0 +1,115 @@
+; 安全相对路径与组件边界判断。
+
+valid-relative-path = (path str) (ok bool) {
+    ok = false
+    n = path.len-bytes()
+    n == 0 -> return
+    path == '.' || path == '..' -> return
+    path.starts-with('/') || path.starts-with('\\') -> return
+    path.contains('\\') || path.contains(':') -> return
+    component-start = 0
+    i <- [0..n): {
+        b byte = 0
+        path.byte(i): {
+            ok -> b = it
+
+            -> return
+        }
+        b < 32 || b == 127 -> return
+        b == 47 -> {
+            i == component-start -> return
+            component-len = i - component-start
+            component-len == 1 -> {
+                path.byte(component-start): {
+                    ok -> {
+                        it == 46 -> return
+                    }
+
+                    -> return
+                }
+            }
+            component-len == 2 -> {
+                first = 0
+                second = 0
+                path.byte(component-start): {
+                    ok -> first = it
+
+                    -> return
+                }
+                path.byte(component-start + 1): {
+                    ok -> second = it
+
+                    -> return
+                }
+                first == 46 && second == 46 -> return
+            }
+            component-start = i + 1
+        }
+    }
+    i == component-start -> return
+    component-len = n - component-start
+    component-len == 1 -> {
+        path.byte(component-start): {
+            ok -> {
+                it == 46 -> return
+            }
+
+            -> return
+        }
+    }
+    component-len == 2 -> {
+        first = 0
+        second = 0
+        path.byte(component-start): {
+            ok -> first = it
+
+            -> return
+        }
+        path.byte(component-start + 1): {
+            ok -> second = it
+
+            -> return
+        }
+        first == 46 && second == 46 -> return
+    }
+    ok = true
+}
+
+path-within = (root str, path str) (inside bool) {
+    inside = false
+    ! valid-relative-path(path) -> return
+    root == '' -> {
+        inside = true
+        return
+    }
+    ! valid-relative-path(root) -> return
+    path == root -> {
+        inside = true
+        return
+    }
+    prefix = root - '/'
+    path.starts-with(prefix) -> inside = true
+}
+
+join-path = (root str, rel str) (out str) {
+    rel == '' -> {
+        out = root
+        return
+    }
+    ! valid-relative-path(rel) -> return
+    root == '' -> {
+        out = rel
+        return
+    }
+
+    ; 编译器 v0.4.34-dirty 对 []byte.to-bytes-str() 报 unknown callee；拼接保留相同 UTF-8 字节语义。
+    root == '/' -> {
+        out = '/' - rel
+        return
+    }
+    root.ends-with('/') -> {
+        out = root - rel
+        return
+    }
+    out = root - '/' - rel
+}

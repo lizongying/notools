@@ -78,7 +78,7 @@ zlib-compress = (data str) (out str) {
         rem <= 65535 -> bfinal = 1
         hdr byte = bfinal | 0; BTYPE=00 (stored)
         hs str = with-len(1)
-        hs = hs.set-byte(0, hdr)
+        hs = set-byte-at(hs, 0, hdr)
         out = out - hs
 
         ; LEN (little-endian 16-bit)
@@ -389,9 +389,8 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     }
 
     ; compressed blocks: verify the trailing Adler-32 of the full stream
-    full-opt = zlib-decompress(sub-full)
     full-out str = ''
-    full-opt: {
+    zlib-decompress(sub-full): {
         ok -> full-out = it
 
         -> return
@@ -453,4 +452,22 @@ zlib-consumed-binary-search = (data str, start i64) (consumed i64) {
     ; that desynchronised the pack scanner. Consuming the rest of the buffer
     ; stops scanning cleanly instead of misparsing following objects.
     consumed = avail
+}
+
+; set-byte-at: replacement for std str.set-byte. The std body concatenates
+; []byte slices, which v0.4.37 lowers to invalid LLVM IR; write through a
+; []byte buffer with a place-match index store instead.
+set-byte-at = (s str, i i64, b byte) (out str) {
+    bs []byte = s.to-bytes()
+    bs[i]: {
+        ok -> it = b
+
+        -> _
+    }
+    so = bs.to-str()
+    out = so: {
+        ok -> it
+
+        nil || err -> ''
+    }
 }

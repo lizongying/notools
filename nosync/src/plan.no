@@ -1,0 +1,412 @@
+; 不可变动作计划：源项按父到子排序，删除与目录元数据恢复后置。
+
+# /nosync/src/model
+# /nosync/src/numeric
+# /nosync/src/safe-path
+# /nosync/src/platform
+# /nosync/src/file-io
+# /nosync/src/metadata
+# /nosync/src/manifest
+
+source-basename = (path str) (name str) {
+    trimmed = path
+    trimmed.ends-with('/') -> trimmed = trimmed.slice(0, sub-index(trimmed.len-bytes(), 1))
+    slash = trimmed.rindex('/')
+    slash >= 0 -> name = trimmed.slice(add-index(slash, 1), trimmed.len-bytes())
+    slash < 0 -> name = trimmed
+    name = name.copy()
+}
+
+map-source-path = (rel str) (mapped str) {
+    mapped = rel
+    STATE.source-directory && ! STATE.content-mode -> {
+        base = source-basename(STATE.src-root)
+        rel == '' -> {
+            mapped = base
+        }
+        rel != '' -> mapped = join-path(base, rel)
+    }
+    ! STATE.source-directory && STATE.destination-directory -> mapped = source-basename(STATE.src-root)
+    mapped = mapped.copy()
+}
+
+add-action = (kind i64, source-index i64, destination-index i64, depth i64) (index i64) {
+    item action = {}
+    item.kind = kind
+    item.path-index = 0
+    item.source-index = source-index
+    item.destination-index = destination-index
+    item.depth = depth
+    index = STATE.actions.len()
+    STATE.actions.push(item)
+}
+
+entry-at = (entries []manifest-entry, index i64) (entry manifest-entry, ok bool) {
+    index < 0 || index >= entries.len() -> return
+    entries[index]: {
+        ok -> entry = it
+
+        -> return
+    }
+    ok = true
+}
+
+path-at = (paths []str, entry manifest-entry) (path str, ok bool) {
+    entry.path-index < 0 || entry.path-index >= paths.len() -> return
+    paths[entry.path-index]: {
+        ok -> path = it.copy()
+
+        -> return
+    }
+    ok = true
+}
+
+files-equal = (source-path str, destination-path str, source manifest-entry, destination manifest-entry, checksum bool) (equal bool, ok bool) {
+    equal = false
+    source.size != destination.size -> {
+        ok = true
+        return
+    }
+    ! checksum -> {
+        equal = source.mtime == destination.mtime
+        ok = true
+        return
+    }
+    source-digest, source-valid = file-digest(source-path, source.size)
+    ! source-valid -> {
+        ok = walk-fail('compare', source-path, platform-error('read', source-path))
+        return
+    }
+    destination-digest, destination-valid = file-digest(destination-path, destination.size)
+    ! destination-valid -> {
+        ok = walk-fail('compare', destination-path, platform-error('read', destination-path))
+        return
+    }
+    equal = sha256-equal(source-digest, destination-digest)
+    ok = true
+}
+
+load-source-link = (entry manifest-entry) (ok bool) {
+    STATE.scratch-source-link = ''
+    entry.source-index < 0 || entry.source-index >= STATE.src-links.len() -> return
+    STATE.src-links[entry.source-index]: {
+        ok -> STATE.scratch-source-link = it
+
+        -> return
+    }
+    ok = true
+}
+
+load-destination-link = (entry manifest-entry) (ok bool) {
+    STATE.scratch-destination-link = ''
+    entry.source-index < 0 || entry.source-index >= STATE.dst-links.len() -> return
+    STATE.dst-links[entry.source-index]: {
+        ok -> STATE.scratch-destination-link = it
+
+        -> return
+    }
+    ok = true
+}
+
+; 路径与链接读取留在独立帧，避免跨函数字符串载荷和 option 释放破坏。
+load-source-rel = (entry manifest-entry) (ok bool) {
+    STATE.scratch-rel = ''
+    entry.path-index < 0 || entry.path-index >= STATE.src-paths.len() -> return
+    STATE.src-paths[entry.path-index]: {
+        ok -> STATE.scratch-rel = it
+
+        -> return
+    }
+    ok = true
+}
+
+load-destination-rel = (entry manifest-entry) (ok bool) {
+    STATE.scratch-rel = ''
+    entry.path-index < 0 || entry.path-index >= STATE.dst-paths.len() -> return
+    STATE.dst-paths[entry.path-index]: {
+        ok -> STATE.scratch-rel = it
+
+        -> return
+    }
+    ok = true
+}
+
+append-mapped-source = () {
+    STATE.scratch-mapped = ''
+    ! STATE.source-directory && STATE.destination-directory -> {
+        STATE.scratch-mapped.push-str(source-basename(STATE.src-root))
+        return
+    }
+    STATE.source-directory && ! STATE.content-mode -> {
+        trimmed = STATE.src-root
+        trimmed.ends-with('/') -> trimmed = trimmed.slice(0, sub-index(trimmed.len-bytes(), 1))
+        slash = trimmed.rindex('/')
+        slash >= 0 -> STATE.scratch-mapped.push-str(trimmed.slice(add-index(slash, 1), trimmed.len-bytes()))
+        slash < 0 -> STATE.scratch-mapped.push-str(trimmed)
+        STATE.scratch-rel != '' -> {
+            STATE.scratch-mapped.push-str('/')
+            STATE.scratch-mapped.push-str(STATE.scratch-rel)
+        }
+    }
+    STATE.source-directory && STATE.content-mode -> STATE.scratch-mapped.push-str(STATE.scratch-rel)
+    ! STATE.source-directory -> STATE.scratch-mapped.push-str(STATE.scratch-rel)
+}
+
+; []str 与 []i64 不得在同一调用帧直接交接；见 sort.no 的同帧下标写复现。
+find-destination-index = (rel str) (index i64) {
+    index = find-index(STATE.dst-paths, STATE.dst-hash-cap, rel, false)
+}
+
+find-source-index = (rel str) (index i64) {
+    index = find-index(STATE.src-paths, STATE.src-hash-cap, rel, true)
+}
+
+; 动作只保存 manifest 下标；执行和打印前从对应 manifest 重建相对路径。
+prepare-action-path = (item action) (ok bool) {
+    STATE.scratch-mapped = ''
+    STATE.scratch-rel = ''
+    item.destination-index >= 0 -> {
+        item.destination-index == 0 -> {
+            STATE.scratch-mapped = ''
+            ok = true
+            return
+        }
+        destination, found = entry-at(STATE.dst-entries, item.destination-index)
+        ! found -> return
+        loaded = load-destination-rel(destination)
+        ! loaded -> return
+        STATE.scratch-mapped = STATE.scratch-rel
+        ok = true
+        return
+    }
+    item.source-index >= 0 -> {
+        item.source-index == 0 -> {
+            STATE.scratch-rel = ''
+            append-mapped-source()
+            ok = true
+            return
+        }
+        source, found = entry-at(STATE.src-entries, item.source-index)
+        ! found -> return
+        loaded = load-source-rel(source)
+        ! loaded -> return
+        append-mapped-source()
+        ok = true
+        return
+    }
+}
+
+plan-missing-source = (source manifest-entry, index i64, destination-index i64) (handled bool, ok bool) {
+    destination-index >= 0 -> {
+        ok = true
+        return
+    }
+    action-kind = ACTION-COPY-FILE
+    source.kind == KIND-DIR -> action-kind = ACTION-CREATE-DIR
+    source.kind == KIND-LINK -> action-kind = ACTION-CREATE-LINK
+    source.kind == KIND-OTHER -> {
+        ok = walk-fail('preflight', STATE.src-root, 'unsupported source file type')
+        return
+    }
+    added-index = add-action(action-kind, index, -1, source.depth)
+    handled = true
+    ok = true
+}
+
+plan-source-entry = (index i64, opts options) (ok bool) {
+    ok = true
+    source, found = entry-at(STATE.src-entries, index)
+    ! found -> {
+        ok = walk-fail('plan', STATE.src-root, 'invalid source manifest index')
+        return
+    }
+    loaded = load-source-rel(source)
+    ! loaded -> return
+    source.flags & FLAG-PROTECTED != 0 -> return
+    source.kind == KIND-LINK && ! opts.links -> return
+    append-mapped-source()
+    destination-index = find-destination-index(STATE.scratch-mapped)
+    destination-index == 0 -> {
+        placeholder, valid-placeholder = entry-at(STATE.dst-entries, 0)
+        valid-placeholder && placeholder.kind == KIND-OTHER -> destination-index = -1
+    }
+    handled, planned = plan-missing-source(source, index, destination-index)
+    ! planned -> ok = false
+    planned && ! handled -> {
+        destination, exists = entry-at(STATE.dst-entries, destination-index)
+        ! exists -> {
+            ok = walk-fail('plan', STATE.dst-root, 'invalid destination manifest index')
+        }
+        exists -> {
+            STATE.scratch-source-path = join-path(STATE.src-root, STATE.scratch-rel)
+            STATE.scratch-destination-path = join-path(STATE.dst-root, STATE.scratch-mapped)
+            conflict = source.kind == KIND-DIR && destination.kind != KIND-DIR || source.kind != KIND-DIR && destination.kind == KIND-DIR
+            conflict -> {
+                ok = walk-fail('preflight', STATE.scratch-destination-path, 'file/directory type conflict')
+            }
+            ! conflict -> {
+                source.kind == KIND-LINK && destination.kind == KIND-LINK -> {
+                    source-read = load-source-link(source)
+                    destination-read = load-destination-link(destination)
+                    ! source-read || ! destination-read -> {
+                        ok = walk-fail('plan', STATE.scratch-source-path, 'invalid symbolic link manifest')
+                    }
+                    source-read && destination-read -> {
+                        STATE.scratch-source-link.compare(STATE.scratch-destination-link) != 0 || source.link-directory != destination.link-directory -> add-action(ACTION-UPDATE-LINK, index, destination-index, source.depth)
+                    }
+                }
+                source.kind == KIND-FILE && destination.kind == KIND-FILE -> {
+                    equal, compared = files-equal(STATE.scratch-source-path, STATE.scratch-destination-path, source, destination, opts.checksum)
+                    ! compared -> ok = false
+                    compared && equal -> {
+                        metadata-differs(source, destination, opts) -> add-action(ACTION-METADATA, index, destination-index, source.depth)
+                    }
+                    compared && ! equal -> add-action(ACTION-UPDATE-FILE, index, destination-index, source.depth)
+                }
+                source.kind != destination.kind -> {
+                    ok = walk-fail('preflight', STATE.scratch-destination-path, 'file type conflict')
+                }
+            }
+        }
+    }
+}
+
+source-protects-destination = (rel str, opts options) (protected bool) {
+    protected = false
+    STATE.source-directory -> {
+        ! STATE.content-mode -> {
+            base = source-basename(STATE.src-root)
+            rel == base -> {
+                protected = true
+                return
+            }
+            prefix = base - '/'
+            ! rel.starts-with(prefix) -> {
+                protected = true
+                return
+            }
+            rel = rel.slice(base.len-bytes() + 1, rel.len-bytes())
+        }
+    }
+    index = find-source-index(rel)
+    index < 0 -> return
+    protected = true
+}
+
+plan-deletions = (opts options) (ok bool) {
+    ! opts.delete || ! STATE.source-directory -> {
+        ok = true
+        return
+    }
+    STATE.dst-entries[0]: {
+        ok -> root-entry = it
+
+        -> return
+    }
+    root-entry.kind != KIND-DIR -> {
+        ok = true
+        return
+    }
+    ! STATE.content-mode -> {
+        base = source-basename(STATE.src-root)
+        found = find-destination-index(base)
+        found < 0 -> {
+            ok = true
+            return
+        }
+    }
+    count = STATE.dst-entries.len()
+    i <- [sub-index(count, 1)..0): {
+        STATE.dst-entries[i]: {
+            ok -> entry = it
+
+            -> return
+        }
+        i == 0 -> continue
+        entry.flags & FLAG-PROTECTED != 0 -> continue
+        loaded = load-destination-rel(entry)
+        ! loaded -> return
+        rel = STATE.scratch-rel
+        source-protects-destination(rel, opts) -> continue
+        entry.kind == KIND-DIR -> add-action(ACTION-DELETE-DIR, -1, i, entry.depth)
+        entry.kind == KIND-LINK -> add-action(ACTION-DELETE-LINK, -1, i, entry.depth)
+        entry.kind == KIND-FILE -> add-action(ACTION-DELETE-FILE, -1, i, entry.depth)
+    }
+    ok = true
+}
+
+plan-directory-metadata = (opts options) (ok bool) {
+    count = STATE.src-entries.len()
+    i <- [sub-index(count, 1)..0): {
+        STATE.src-entries[i]: {
+            ok -> entry = it
+
+            -> return
+        }
+        entry.kind != KIND-DIR || entry.flags & FLAG-PROTECTED != 0 -> continue
+        rel = ''
+        found = true
+        i != 0 -> {
+            loaded = load-source-rel(entry)
+            ! loaded -> return
+            rel = STATE.scratch-rel
+        }
+        ! found -> return
+        source-index = find-source-index(rel)
+        add-action(ACTION-RESTORE-DIR, source-index, -1, entry.depth)
+    }
+    ok = true
+}
+
+build-plan = (opts options) (ok bool) {
+    action-capacity = add-index(add-index(STATE.src-entries.len(), STATE.dst-entries.len()), 4)
+    STATE.actions = with-cap(action-capacity)
+    STATE.action-paths = []
+    STATS.files = 0
+    i <- [0..STATE.src-entries.len()): {
+        STATE.src-entries[i]: {
+            ok -> {
+                it.kind == KIND-FILE -> STATS.files = add-index(STATS.files, 1)
+            }
+
+            -> return
+        }
+    }
+    STATE.dst-entries[0]: {
+        ok -> destination-root = it
+
+        -> return
+    }
+    destination-root.kind != KIND-DIR -> {
+        STATE.destination-directory = false
+        STATE.source-directory -> add-action(ACTION-CREATE-DIR, -1, 0, 0)
+    }
+    destination-root.kind == KIND-DIR -> STATE.destination-directory = true
+    STATE.source-directory && ! STATE.content-mode -> {
+        base = source-basename(STATE.src-root)
+        wrapped-index = find-destination-index(base)
+        wrapped-index < 0 -> {
+            root-action = add-action(ACTION-CREATE-DIR, 0, -1, 0)
+        }
+        wrapped-index >= 0 -> {
+            wrapped, exists = entry-at(STATE.dst-entries, wrapped-index)
+            ! exists -> {
+                ok = walk-fail('plan', STATE.dst-root, 'invalid destination manifest index')
+                return
+            }
+            wrapped.kind != KIND-DIR -> {
+                ok = walk-fail('preflight', join-path(STATE.dst-root, base), 'file/directory type conflict')
+                return
+            }
+        }
+    }
+    first-source = 0
+    STATE.source-directory -> first-source = 1
+    i <- [first-source..STATE.src-entries.len()): {
+        planned = plan-source-entry(i, opts)
+        ! planned -> return
+    }
+    planned = plan-deletions(opts)
+    ! planned -> return
+    ok = plan-directory-metadata(opts)
+}

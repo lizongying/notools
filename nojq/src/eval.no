@@ -477,9 +477,9 @@ ev-arr-of-elems = (e []i64) (arr i64) {
 
 ; in-place vec set on a pooled array node (read-modify-write-back)
 jv-arr-set = (idx i64, i i64, x i64) {
-    node jv-value = G-pv.nodes[idx]
+    node jv-value = _G-PV.nodes[idx]
     node.elems[i] = x
-    G-pv.nodes[idx] = node
+    _G-PV.nodes[idx] = node
 }
 
 ; insertion sort a pooled array by jv-cmp (values stay in place)
@@ -524,8 +524,8 @@ b64-enc = (s str) (r str) {
         b1 i64 = 0
         b2 i64 = 0
         rem i64 = 0
-        rem-opt = n - i #{overflow=wrap}
-        rem-opt: {
+        #{overflow=wrap}
+        n - i: {
             ok -> {
                 rem = it
             }
@@ -1438,8 +1438,8 @@ ev = (node i64, in i64) (outs []i64, threw bool, errv i64) {
                     nv i64 = w
                     asg >= ASG-PLUS -> {
                         binop i64 = 0
-                        binop-opt = asg - 2 #{overflow=wrap}
-                        binop-opt: {
+                        #{overflow=wrap}
+                        asg - 2: {
                             ok -> {
                                 binop = it
                             }
@@ -2349,28 +2349,28 @@ ev-builtin = (node i64, in i64) (outs []i64, threw bool, errv i64) {
         }
     }
     c == BI-INPUT -> {
-        p i64 = G-ist.pos
-        p < G-ist.vals.len() -> {
+        p i64 = _G-IST.pos
+        p < _G-IST.vals.len() -> {
             #{overflow=wrap}
-            G-ist.pos = p + 1: {
+            _G-IST.pos = p + 1: {
                 ok -> it
 
                 -> 0
             }
-            outs.push(G-ist.vals[p])
+            outs.push(_G-IST.vals[p])
         }
-        p >= G-ist.vals.len() -> {
+        p >= _G-IST.vals.len() -> {
             threw = true
             errv = ev-msg('break')
         }
     }
     c == BI-INPUTS -> {
-        p i64 = G-ist.pos
-        n i64 = G-ist.vals.len()
+        p i64 = _G-IST.pos
+        n i64 = _G-IST.vals.len()
         i <- [p..n): {
-            outs.push(G-ist.vals[i])
+            outs.push(_G-IST.vals[i])
         }
-        G-ist.pos = n
+        _G-IST.pos = n
     }
     c == BI-PATH -> {
         tp []i64 = with-len(0)
@@ -2630,39 +2630,39 @@ bi-has = (in i64, k i64) (outs []i64, threw bool, errv i64) {
 
 ; ── public API ────────────────────────────────
 ; jq-named: global table of named values ($name bindings from --arg etc.).
-; A struct global mirrors the G-pv pool pattern (bare global vec mutation
+; A struct global mirrors the _G-PV pool pattern (bare global vec mutation
 ; does not persist).
 jq-named {
     keys []str
     vals []i64
 }
-G-pn jq-named
+_G-PN jq-named
 
 jq-clear-named = () {
-    G-pn.keys = with-len(0)
-    G-pn.vals = with-len(0)
+    _G-PN.keys = with-len(0)
+    _G-PN.vals = with-len(0)
 }
 
 ; jq-set-named: bind $name to v. jq keeps the FIRST binding when a name is
 ; passed twice (--arg a 1 --arg a 2 => "1"), so an existing name is ignored.
 jq-set-named = (name str, v i64) {
-    i <- [0..G-pn.keys.len()): {
-        G-pn.keys[i] == name -> return
+    i <- [0.._G-PN.keys.len()): {
+        _G-PN.keys[i] == name -> return
     }
-    G-pn.keys.push(name)
-    G-pn.vals.push(v)
+    _G-PN.keys.push(name)
+    _G-PN.vals.push(v)
 }
 
 ; ev-named-get: handle of $name, or -1 when unbound.
 ev-named-get = (name str) (v i64) {
     v = -1
-    i <- [0..G-pn.keys.len()): {
-        kv str = G-pn.keys[i]: {
+    i <- [0.._G-PN.keys.len()): {
+        kv str = _G-PN.keys[i]: {
             ok -> it
 
             -> ''
         }
-        kv == name -> v = G-pn.vals[i]: {
+        kv == name -> v = _G-PN.vals[i]: {
             ok -> it
 
             -> -1
@@ -2672,43 +2672,43 @@ ev-named-get = (name str) (v i64) {
 
 ; named-table scalar accessors (for the CLI's $ARGS builder).
 jq-named-count = () (n i64) {
-    n = G-pn.keys.len()
+    n = _G-PN.keys.len()
 }
 
 ; ── input stream state ────────────────────────
 ; input/inputs consume the SAME queue the CLI main loop feeds: appending a
 ; value advances the shared cursor so the top-level loop skips it (jq's
 ; semantics, verified: `1 2 3 | input` prints 2 then breaks on the 3rd run).
-; A struct global mirrors G-pn (bare global vec mutation does not persist).
+; A struct global mirrors _G-PN (bare global vec mutation does not persist).
 input-state {
     vals []i64
     pos i64
 }
-G-ist input-state
+_G-IST input-state
 
 jq-inputs-reset = () {
-    G-ist.vals = with-len(0)
-    G-ist.pos = 0
+    _G-IST.vals = with-len(0)
+    _G-IST.pos = 0
 }
 
 jq-inputs-append = (v i64) {
-    G-ist.vals.push(v)
+    _G-IST.vals.push(v)
 }
 
 jq-inputs-len = () (n i64) {
-    n = G-ist.vals.len()
+    n = _G-IST.vals.len()
 }
 
 jq-inputs-pos = () (p i64) {
-    p = G-ist.pos
+    p = _G-IST.pos
 }
 
 jq-inputs-setpos = (p i64) {
-    G-ist.pos = p
+    _G-IST.pos = p
 }
 
 jq-inputs-get = (i i64) (v i64) {
-    v = G-ist.vals[i]: {
+    v = _G-IST.vals[i]: {
         ok -> it
 
         -> 0
@@ -2716,7 +2716,7 @@ jq-inputs-get = (i i64) (v i64) {
 }
 
 jq-named-key = (i i64) (s str) {
-    s = G-pn.keys[i]: {
+    s = _G-PN.keys[i]: {
         ok -> it
 
         -> ''
@@ -2724,7 +2724,7 @@ jq-named-key = (i i64) (s str) {
 }
 
 jq-named-val = (i i64) (v i64) {
-    v = G-pn.vals[i]: {
+    v = _G-PN.vals[i]: {
         ok -> it
 
         -> 0
@@ -2776,10 +2776,10 @@ jq-eval = (prog str, in i64) (lines []str, err str) {
 ; `sub i64 len, idx, 1` (LLVM-verifier failure), so removal is done manually.
 jv-arr-del-at = (idx i64, i i64) {
     ne []i64 = with-len(0)
-    n i64 = G-pv.nodes[idx].elems.len()
+    n i64 = _G-PV.nodes[idx].elems.len()
     k = 0
     (k < n) {
-        ek i64 = G-pv.nodes[idx].elems[k]: {
+        ek i64 = _G-PV.nodes[idx].elems[k]: {
             ok -> it
 
             -> 0
@@ -2791,7 +2791,7 @@ jv-arr-del-at = (idx i64, i i64) {
             -> _
         } #{overflow=wrap}
     }
-    G-pv.nodes[idx].elems = ne
+    _G-PV.nodes[idx].elems = ne
 }
 
 ; ev-is-slice-seg: does the path element carry the slice object shape?
@@ -3226,8 +3226,8 @@ ev-delpaths-rec = (cur i64, pathsarr i64) (out i64, err i64) {
         ; delete from the HIGHEST position down so removals never shift the
         ; still-pending lower targets (batch semantics, jq del(.[0],.[1])).
         r i64 = 0
-        r-opt = nlen - 1 #{overflow=wrap}
-        r-opt: {
+        #{overflow=wrap}
+        nlen - 1: {
             ok -> {
                 r = it
             }

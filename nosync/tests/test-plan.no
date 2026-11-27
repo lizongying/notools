@@ -1,0 +1,155 @@
+; 预检、manifest 与动作计划回归。
+
+# /nosync/src/model
+# /nosync/src/manifest
+# /nosync/src/plan
+# /nosync/src/sync
+# /nosync/src/platform
+
+plan-check = (condition bool, name str) {
+    ! condition -> {
+        eprint('FAIL: ' - name)
+        exit(1)
+    }
+}
+
+ensure-plan-tmp = () {
+    info, exists = platform-stat('tmp')
+    exists && info.kind == KIND-DIR -> return
+    created = platform-mkdir('tmp', 448)
+    plan-check(created, 'create test tmp directory')
+}
+
+test-preflight-boundaries = () {
+    root = 'tmp/nosync-plan-cases-' - os.get-pid().to-str()
+    fs.rmdir(root)
+    plan-check(fs.mkdir(root, 448), 'create preflight case root')
+    plan-check(fs.mkdir(root - '/a', 448), 'create component prefix source')
+    plan-check(fs.mkdir(root - '/ab', 448), 'create component prefix destination')
+    plan-check(path-within('a', 'ab') == false, 'component boundary does not use bare prefix')
+
+    reset-state()
+    opts options = {}
+    opts.src = root - '/a'
+    opts.dst = root - '/ab'
+    opts.recursive = true
+    ok = preflight(opts)
+    plan-check(ok, 'sibling paths sharing a name prefix are disjoint')
+
+    plan-check(fs.symlink(root - '/ab', root - '/destination-link'), 'create destination root link')
+    reset-state()
+    opts.dst = root - '/destination-link'
+    ok = preflight(opts)
+    plan-check(! ok && STATE.error-message.compare('destination root must not be a symbolic link') == 0, 'destination root link rejected')
+    plan-check(fs.remove(root - '/destination-link'), 'remove destination root link')
+
+    plan-check(fs.write-file(root - '/a/item', 'source'.to-bytes()), 'create conflicting source file')
+    plan-check(fs.mkdir(root - '/ab/item', 448), 'create conflicting target directory')
+    reset-state()
+    opts.src = root - '/a/'
+    opts.dst = root - '/ab'
+    opts.memory-limit = 1048576
+    code = run-sync(opts, [])
+    plan-check(code == 1 && STATE.error-stage == 'preflight', 'file source and target directory conflict rejected')
+    plan-check(fs.lstat(root - '/ab/item'), 'type conflict leaves target directory intact')
+
+    plan-check(fs.remove(root - '/a/item'), 'remove conflicting source file')
+    plan-check(fs.rmdir(root - '/ab/item'), 'remove conflicting target directory')
+    plan-check(fs.write-file(root - '/destination-file', 'target'.to-bytes()), 'create conflicting destination file')
+    reset-state()
+    opts.src = root - '/a'
+    opts.dst = root - '/destination-file'
+    ok = preflight(opts)
+    plan-check(! ok, 'directory source and file destination rejected')
+
+    plan-check(fs.remove(root - '/destination-file'), 'remove conflicting destination file')
+    plan-check(fs.rmdir(root - '/a'), 'remove prefix source directory')
+    plan-check(fs.rmdir(root - '/ab'), 'remove prefix destination directory')
+    plan-check(fs.rmdir(root), 'remove preflight case root')
+}
+
+test-memory-before-writes = () {
+    root = 'tmp/nosync-plan-memory-' - os.get-pid().to-str()
+    fs.rmdir(root)
+    plan-check(fs.mkdir(root, 448), 'create memory case root')
+    plan-check(fs.mkdir(root - '/src', 448), 'create memory source')
+    i <- [0..6000): {
+        name = 'file-' - i.to-str()
+        plan-check(fs.write-file(root - '/src/' - name, 'x'.to-bytes()), 'create memory budget input')
+    }
+    reset-state()
+    opts options = {}
+    opts.src = root - '/src'
+    opts.dst = root - '/dst'
+    opts.recursive = true
+    opts.memory-limit = 1048576
+    code = run-sync(opts, [])
+    plan-check(code == 1 && STATE.error-stage == 'preflight', 'manifest budget fails before execution')
+    plan-check(! fs.lstat(opts.dst), 'manifest budget failure creates no destination')
+}
+
+run-plan-tests = () {
+    ensure-plan-tmp()
+    opts options = {}
+    opts.recursive = true
+    opts.links = true
+    opts.perms = true
+    opts.times = true
+    opts.memory-limit = 1048576
+    opts.src = 'tmp/nosync-plan-src'
+    opts.dst = 'tmp/nosync-plan-dst'
+
+    fs.remove(opts.src - '/link')
+    fs.remove(opts.src - '/a.txt')
+    fs.remove(opts.src - '/sub/b.txt')
+    fs.rmdir(opts.src - '/sub')
+    fs.rmdir(opts.src)
+    fs.rmdir(opts.dst)
+    plan-check(fs.mkdir(opts.src, 448), 'create source root')
+    plan-check(fs.mkdir(opts.src - '/sub', 448), 'create source directory')
+    plan-check(fs.write-file(opts.src - '/a.txt', 'alpha'.to-bytes()), 'create source file')
+    plan-check(fs.write-file(opts.src - '/sub/b.txt', 'beta'.to-bytes()), 'create nested source file')
+    plan-check(fs.symlink('a.txt', opts.src - '/link'), 'create source link')
+
+    reset-state()
+    ok = preflight(opts)
+    plan-check(ok, 'preflight accepts disjoint roots')
+    ok = collect-manifests(opts, [])
+    ! ok -> eprint('collect: ' - STATE.error-stage - ' ' - STATE.error-path - ' ' - STATE.error-message)
+    plan-check(ok, 'collect source and missing destination manifests')
+    STATE.src-entries[0]: {
+        ok -> {
+        }
+
+        -> {
+        }
+    }
+    ok = build-plan(opts)
+    plan-check(ok, 'build initial action plan')
+    plan-check(STATE.actions.len() == 7, 'initial plan action count')
+
+    reset-state()
+    opts.src = 'tmp/nosync-plan-src'
+    opts.dst = 'tmp/nosync-plan-src/child'
+    ok = preflight(opts)
+    plan-check(! ok && STATE.error-stage == 'preflight', 'nested destination rejected before writes')
+
+    reset-state()
+    opts.src = 'tmp/nosync-plan-src'
+    opts.dst = 'tmp/nosync-plan-src'
+    ok = preflight(opts)
+    plan-check(! ok, 'identical roots rejected')
+
+    test-preflight-boundaries()
+    test-memory-before-writes()
+
+    fs.remove(opts.src - '/link')
+    fs.remove(opts.src - '/a.txt')
+    fs.remove(opts.src - '/sub/b.txt')
+    fs.rmdir(opts.src - '/sub')
+    fs.rmdir(opts.src)
+    fs.rmdir(opts.dst)
+}
+
+run-plan-tests()
+print('ALL PLAN TESTS PASSED')

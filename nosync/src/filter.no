@@ -1,0 +1,137 @@
+; first-match 过滤规则与字节语义通配符。
+
+# /nosync/src/numeric
+
+filter-rule {
+    pattern str
+    include bool
+    anchored bool
+    directory-only bool
+}
+
+match-here = (pattern str, pi i64, path str, si i64) (matched bool) {
+    matched = match-bytes-here(pattern.to-bytes(), pi, path.to-bytes(), si)
+}
+
+match-bytes-here = (pattern []byte, pi i64, path []byte, si i64) (matched bool) {
+    matched = false
+    pn = pattern.len()
+    sn = path.len()
+    pi >= pn -> {
+        matched = si == sn
+        return
+    }
+    p byte = 0
+    pattern[pi]: {
+        ok -> p = it
+
+        -> return
+    }
+    p == 42 && add-index(pi, 1) < pn -> {
+        star byte = 0
+        pattern[add-index(pi, 1)]: {
+            ok -> star = it
+
+            -> return
+        }
+        star == 42 -> {
+            next = add-index(pi, 2)
+            match-bytes-here(pattern, next, path, si) -> {
+                matched = true
+                return
+            }
+            si < sn -> {
+                path[si]: {
+                    ok -> match-bytes-here(pattern, pi, path, add-index(si, 1)) -> matched = true
+
+                    -> return
+                }
+            }
+            return
+        }
+    }
+    p == 42 -> {
+        match-bytes-here(pattern, add-index(pi, 1), path, si) -> {
+            matched = true
+            return
+        }
+        si < sn -> {
+            path[si]: {
+                ok -> {
+                    it != 47 -> match-bytes-here(pattern, pi, path, add-index(si, 1)) -> matched = true
+                }
+
+                -> return
+            }
+        }
+        return
+    }
+    si >= sn -> return
+    s byte = 0
+    path[si]: {
+        ok -> s = it
+
+        -> return
+    }
+    p == 63 -> {
+        matched = match-bytes-here(pattern, add-index(pi, 1), path, add-index(si, 1))
+        return
+    }
+    p == s -> matched = match-bytes-here(pattern, add-index(pi, 1), path, add-index(si, 1))
+}
+
+rule-matches = (rule filter-rule, rel str, is-dir bool) (matched bool) {
+    matched = false
+    rule.directory-only && ! is-dir -> return
+    rule.anchored -> {
+        matched = match-here(rule.pattern, 0, rel, 0)
+        return
+    }
+    ! rule.pattern.contains('/') -> {
+        start = 0
+        n = rel.len-bytes()
+        rel-bytes = rel.to-bytes()
+        i <- [0..n): {
+            rel-bytes[i]: {
+                ok -> {
+                    it == 47 -> start = add-index(i, 1)
+                }
+
+                -> return
+            }
+        }
+        matched = match-bytes-here(rule.pattern.to-bytes(), 0, rel-bytes, start)
+        return
+    }
+    matched = match-here(rule.pattern, 0, rel, 0)
+}
+
+filter-includes = (rules []filter-rule, rel str, is-dir bool) (include bool) {
+    include = true
+    i <- [0..rules.len()): {
+        rules[i]: {
+            ok -> {
+                rule = it
+                rule-matches(rule, rel, is-dir) -> {
+                    include = rule.include
+                    break
+                }
+            }
+
+            -> break
+        }
+    }
+}
+
+make-rule = (pattern str, include bool) (rule filter-rule, ok bool) {
+    ok = false
+    pattern.len-bytes() == 0 -> return
+    rule.include = include
+    rule.directory-only = pattern.ends-with('/')
+    rule.directory-only -> pattern = pattern.slice(0, sub-index(pattern.len-bytes(), 1))
+    rule.anchored = pattern.starts-with('/')
+    rule.anchored -> pattern = pattern.slice(1, pattern.len-bytes())
+    pattern.len-bytes() == 0 -> return
+    rule.pattern = pattern
+    ok = true
+}

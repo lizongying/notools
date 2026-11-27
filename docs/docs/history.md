@@ -7,9 +7,15 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.39
+
+- refactor(downstream): replace to-bytes-str with to-str and explicit option unwrap
+- refactor(downstream): replace str index writes with str.set-byte and byte reads
+- docs(downstream): update byte-copy semantics in AGENTS and nogit docs
+
 ## v0.1.38
 
-- build(ci): bump the pinned Nolang compiler to v0.4.32 in CI and all seven package manifests
+- build(ci): bump the pinned Nolang compiler to v0.4.37 in CI and all seven package manifests
 - feat(nogit): publish a platform-independent `nogit-ast.zip` with one gob entry per module for `no add nogit@github.com/lizongying/notools`
 - docs(release): document importing `# nogit/src/remote` and `# nogit/src/httpclient` from the AST package
 
@@ -42,7 +48,7 @@ sidebar_position: 2
 - fix(noimg): replace removed number width-cast functions with f64/i64 to-i64/to-f64 methods
 - fix(nojq): rename a colliding variable in main and move bi-code into the parser module for codegen
 - fix(nonpm): bind indexed vec reads to plain locals so fs.is-dir and is-file marshal correctly
-- fix(ci): repoint build-nolang to main and bump the pinned compiler to v0.4.27
+- fix(ci): repoint build-nolang to main and bump the pinned compiler to v0.4.37
 - refactor: remove redundant overflow annotations and explicit type annotations
 - docs(design): mark the unified option-migration document as review-complete
 - refactor(release): drop the dirty-tree blocker and use the history section as the commit message
@@ -53,7 +59,7 @@ sidebar_position: 2
 - refactor(notools): migrate index writes to option form and replace set-byte usage
 - docs(skills): update stdlib docs and skill references for noml format and syntax changes
 - fix(noimg): repair VP8L color-index decode for multi-color WebP images
-- fix(nogit): adapt oid hex encoding and SHA-1 helpers to v0.4.27 option and char semantics
+- fix(nogit): adapt oid hex encoding and SHA-1 helpers to v0.4.37 option and char semantics
 - fix(nogit): simplify string range slicing with plain integer bounds
 - fix(nogit): bind value-match results to locals before passing them to hexdigit
 - fix(noimg): unwrap co-o option into a variable to avoid the co coroutine keyword

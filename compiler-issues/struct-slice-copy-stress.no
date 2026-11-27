@@ -1,0 +1,78 @@
+P {
+    name str
+    ver str
+    deps []P
+}
+G {
+    nodes []P
+    count i64
+}
+
+; 经函数引数传递 graph，在函数内 push（模拟 resolve-deps-recursive）
+add-node = (g G, nm str, vr str) {
+    p P
+    p.name = nm
+    p.ver = vr
+    p.deps = []
+    j <- [0..2): {
+        c P
+        c.name = nm - '-c' - j.to-str()
+        c.ver = vr
+        c.deps = []
+        p.deps.push(c)
+    }
+    g.nodes.push(p)
+    #{overflow=wrap}
+    g.count = g.count + 1: { ok -> it
+
+        -> 0 }
+}
+
+; 读函数：把 []P 当引数传入后读（模拟 lockfile.build）
+read-as-arg = (tag str, xs []P) {
+    i <- [0..3): {
+        x P = xs[i]: {
+            ok -> it
+            -> Z
+        }
+        print(tag - ' ' - x.name - '/' - x.ver - ' d=' - x.deps.len().to-str())
+    }
+}
+
+Z P
+Z.name = '?'
+Z.ver = '?'
+Z.deps = []
+
+g G
+g.nodes = []
+g.count = 0
+add-node(g, 'alpha', '1.0')
+add-node(g, 'beta', '2.0')
+add-node(g, 'gamma', '3.0')
+
+; 读取前做大量堆分配（模拟下载/解压的重分配）
+noise []str
+k <- [0..200): {
+    noise.push('x' - k.to-str() - 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy')
+}
+
+; 第一次遍历（主函数内）；先把 nodes 提到局部变量避开 struct-field 索引的 codegen 限制
+nodes = g.nodes
+i <- [0..3): {
+    p1 P = nodes[i]: {
+        ok -> it
+        -> Z
+    }
+    print('A ' - p1.name - '/' - p1.ver - ' d=' - p1.deps.len().to-str())
+}
+; 第二次遍历（同一 slice）
+i <- [0..3): {
+    p2 P = nodes[i]: {
+        ok -> it
+        -> Z
+    }
+    print('B ' - p2.name - '/' - p2.ver - ' d=' - p2.deps.len().to-str())
+}
+; 作为引数传递后读
+read-as-arg('C', nodes)

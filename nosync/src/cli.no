@@ -1,0 +1,370 @@
+; CLI 解析无文件系统副作用，错误码沿用计划契约。
+
+# /nosync/src/model
+# /nosync/src/filter
+# /nosync/src/platform
+
+HELP-TEXT = 'nosync - local rsync-style synchronization
+
+Usage: nosync [OPTIONS] SRC DST
+       nosync --help
+       nosync --version
+
+Options:
+  -r, --recursive       recurse into directories
+  -l, --links           copy symbolic links without following them
+  -p, --perms           preserve POSIX permissions / Windows read-only attribute
+  -t, --times           preserve modification time (second precision)
+  -g, --group           preserve gid (no-op on Windows)
+  -o, --owner           preserve uid (no-op on Windows)
+  -a, --archive          equivalent to -rlptgo
+  -n, --dry-run          show actions without changing the destination
+  -v, --verbose          print each action
+      --delete          delete destination-only entries; requires --recursive
+      --checksum        compare equal-size files with SHA-256
+      --whole-file      disable delta transfer
+      --block-size N    delta block size, 4096..1048576 (default 65536)
+      --exclude PATTERN exclude rule; repeatable
+      --include PATTERN include rule; repeatable, first match wins
+      --stats           print transfer statistics
+      --memory-limit N  manifest/signature budget, K/M/G suffix (default 256M)
+      --help            show this help
+      --version         show version
+      --                end option parsing
+
+Filters support *, ?, and **. Parent directory exclusion prunes its subtree.
+Excluded paths are protected from --delete.
+
+Not supported: SSH, remote shell, daemon, rsync wire protocol, compression,
+hard links, devices/FIFOs/sockets, ACL/xattr, sparse preservation, or rollback.'
+
+next-index = (i i64) (next i64, ok bool) {
+    advanced = i + 1
+    advanced: {
+        ok -> {
+            next = it
+            ok = true
+        }
+
+        -> return
+    }
+}
+
+parse-size = (text str) (size i64, ok bool) {
+    size = 0
+    ok = false
+    text.len-bytes() == 0 -> return
+    n = text.len-bytes()
+    multiplier = 1
+    maximum = 9223372036854775807
+    text.byte(n - 1): {
+        ok -> {
+            last = it
+            {
+                last == 75 || last == 107 -> {
+                    multiplier = 1024
+                    maximum = 9007199254740991
+                    n = n - 1
+                }
+
+                last == 77 || last == 109 -> {
+                    multiplier = 1024 * 1024
+                    maximum = 8796093022207
+                    n = n - 1
+                }
+
+                last == 71 || last == 103 -> {
+                    multiplier = 1024 * 1024 * 1024
+                    maximum = 8589934591
+                    n = n - 1
+                }
+
+                last >= 48 && last <= 57 -> {
+                }
+
+                -> return
+            }
+        }
+
+        -> return
+    }
+    digits = text.slice(0, n)
+    digits.to-i64(): {
+        ok -> {
+            value = it
+            value < 0 || value > maximum -> return
+            size = value * multiplier: {
+                ok -> it
+
+                -> return
+            }
+        }
+
+        -> return
+    }
+    size > 0 -> ok = true
+}
+
+set-flag = (opts options, flag str) (out options, handled bool) {
+    out = opts
+    handled = true
+    flag: {
+        'r' -> out.recursive = true
+
+        'l' -> out.links = true
+
+        'p' -> out.perms = true
+
+        't' -> out.times = true
+
+        'g' -> out.group = true
+
+        'o' -> out.owner = true
+
+        'a' -> {
+            out.recursive = true
+            out.links = true
+            out.perms = true
+            out.times = true
+            out.group = true
+            out.owner = true
+        }
+
+        'n' -> out.dry-run = true
+
+        'v' -> out.verbose = true
+
+        -> handled = false
+    }
+}
+
+apply-long = (opts options, name str, value str, has-value bool) (out options, handled bool) {
+    out = opts
+    handled = true
+    name: {
+        'recursive' -> out.recursive = true
+
+        'links' -> out.links = true
+
+        'perms' -> out.perms = true
+
+        'times' -> out.times = true
+
+        'group' -> out.group = true
+
+        'owner' -> out.owner = true
+
+        'archive' -> {
+            out.recursive = true
+            out.links = true
+            out.perms = true
+            out.times = true
+            out.group = true
+            out.owner = true
+        }
+
+        'dry-run' -> out.dry-run = true
+
+        'verbose' -> out.verbose = true
+
+        'delete' -> out.delete = true
+
+        'checksum' -> out.checksum = true
+
+        'whole-file' -> out.whole-file = true
+
+        'stats' -> out.stats = true
+
+        'help' -> out.help = true
+
+        'version' -> out.version = true
+
+        'block-size' -> {
+            ! has-value -> handled = false
+
+            has-value -> {
+                parsed, valid = parse-size(value)
+                ! valid -> handled = false
+                valid -> {
+                    out.block-size = parsed
+                    parsed < 4096 || parsed > 1048576 -> handled = false
+                }
+            }
+        }
+
+        'memory-limit' -> {
+            ! has-value -> handled = false
+
+            has-value -> {
+                parsed, valid = parse-size(value)
+                ! valid -> handled = false
+                valid -> {
+                    out.memory-limit = parsed
+                    parsed < 1048576 -> handled = false
+                }
+            }
+        }
+
+        -> handled = false
+    }
+}
+
+parse-cli = (args []str) (opts options, rules []filter-rule) {
+    opts.block-size = 65536
+    opts.memory-limit = 256 * 1024 * 1024
+    opts.code = 0
+    parsing-options = true
+    i = 1
+    (i < args.len()) {
+        arg str = ''
+        args[i]: {
+            ok -> arg = it
+
+            -> {
+                opts.code = 2
+                opts.message = 'missing argument'
+                return
+            }
+        }
+        parsing-options && arg == '--' -> {
+            parsing-options = false
+            next-i, advanced = next-index(i)
+            ! advanced -> return
+            i = next-i
+            continue
+        }
+        parsing-options && arg.starts-with('--') -> {
+            eq = arg.index('=')
+            name = arg
+            value = ''
+            has-value = false
+            eq >= 2 -> {
+                name = arg.slice(2, eq)
+                value = arg.slice(eq + 1, arg.len-bytes())
+                has-value = true
+            }
+            eq < 2 -> name = arg.slice(2, arg.len-bytes())
+            name == 'exclude' || name == 'include' -> {
+                ! has-value -> {
+                    next-i, advanced = next-index(i)
+                    ! advanced -> return
+                    i = next-i
+                    i >= args.len() -> {
+                        opts.code = 2
+                        opts.message = 'missing filter pattern'
+                        return
+                    }
+                    args[i]: {
+                        ok -> value = it
+
+                        -> {
+                            opts.code = 2
+                            opts.message = 'missing filter pattern'
+                            return
+                        }
+                    }
+                }
+                rule, valid = make-rule(value, name == 'include')
+                ! valid -> {
+                    opts.code = 2
+                    opts.message = 'invalid filter pattern'
+                    return
+                }
+                rules.push(rule)
+                next-i, advanced = next-index(i)
+                ! advanced -> return
+                i = next-i
+                continue
+            }
+            needs-value = name == 'block-size' || name == 'memory-limit'
+            needs-value && ! has-value -> {
+                next-i, advanced = next-index(i)
+                ! advanced -> return
+                i = next-i
+                i >= args.len() -> {
+                    opts.code = 2
+                    opts.message = 'missing value for --' - name
+                    return
+                }
+                args[i]: {
+                    ok -> value = it
+
+                    -> {
+                        opts.code = 2
+                        opts.message = 'missing value for --' - name
+                        return
+                    }
+                }
+                has-value = true
+            }
+            next, handled = apply-long(opts, name, value, has-value)
+            ! handled -> {
+                opts.code = 2
+                opts.message = 'unsupported option or invalid value: --' - name
+                return
+            }
+            next.code = 0
+            next.message = ''
+            opts = next
+            next-i, advanced = next-index(i)
+            ! advanced -> return
+            i = next-i
+            continue
+        }
+        parsing-options && arg.starts-with('-') && arg.len-bytes() > 1 -> {
+            chars = arg.slice(1, arg.len-bytes())
+            ch <- chars: {
+                next, handled = set-flag(opts, ch.to-str())
+                ! handled -> {
+                    opts.code = 2
+                    opts.message = 'unsupported option: -' - ch.to-str()
+                    return
+                }
+                opts = next
+            }
+            next-i, advanced = next-index(i)
+            ! advanced -> return
+            i = next-i
+            continue
+        }
+        ! platform-valid-cli-path(arg) -> {
+            opts.code = 2
+            opts.message = 'remote, UNC, ADS, and drive-relative paths are not supported'
+            return
+        }
+        arg = platform-normalize-cli-path(arg)
+        take-src = opts.src == ''
+        take-dst = opts.src != '' && opts.dst == ''
+        extra-operand = opts.src != '' && opts.dst != ''
+        matched-operand = false
+        {
+            take-src && ! matched-operand -> {
+                opts.src = arg
+                matched-operand = true
+            }
+
+            take-dst && ! matched-operand -> {
+                opts.dst = arg
+                matched-operand = true
+            }
+
+            extra-operand && ! matched-operand -> {
+                opts.code = 2
+                opts.message = 'expected exactly one SRC and one DST'
+                return
+            }
+        }
+        next-i, advanced = next-index(i)
+        ! advanced -> return
+        i = next-i
+    }
+    ! opts.help && ! opts.version && (opts.src == '' || opts.dst == '') -> {
+        opts.code = 2
+        opts.message = 'missing SRC or DST'
+        return
+    }
+    opts.delete && ! opts.recursive -> {
+        opts.code = 2
+        opts.message = '--delete requires --recursive'
+    }
+}
