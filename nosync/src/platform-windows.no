@@ -687,27 +687,17 @@ windows-set-time = (path str, mtime i64) (ok bool) {
     ticks = add-index(mul-index(mtime, 10000000), 116444736000000000)
     low = ticks & 4294967295
     high = ticks >> 32
-    encoded-low = low.to-bytes-le()
-    encoded-high = high.to-bytes-le()
+    ; FILETIME 必须是 low 32 位在前、high 32 位在后；不能用同一个循环
+    ; 交错 push，否则 _SetFileTime 读到的是乱序字节（mtime 变成 1843 年）。
     bytes []byte = []
-    i <- [0..4): {
-        encoded-low[i]: {
-            ok -> bytes.push(it)
-
-            -> {
-                windows-close(handle)
-                return
-            }
-        }
-        encoded-high[i]: {
-            ok -> bytes.push(it)
-
-            -> {
-                windows-close(handle)
-                return
-            }
-        }
-    }
+    bytes.push(low & 255)
+    bytes.push((low >> 8) & 255)
+    bytes.push((low >> 16) & 255)
+    bytes.push((low >> 24) & 255)
+    bytes.push(high & 255)
+    bytes.push((high >> 8) & 255)
+    bytes.push((high >> 16) & 255)
+    bytes.push((high >> 24) & 255)
     encoded = bytes.to-str()
     encoded: {
         ok -> _memcpy(WIN-TIME-PTR, it, 8)
