@@ -502,7 +502,6 @@ windows-stat = (path str) (info stat-info, ok bool) {
     }
     info.kind = KIND-FILE
     info.mode = 438
-    eprint('STAT file ' - path - ' ft=' - write-time.to-str() - ' mtime=' - info.mtime.to-str())
     ok = true
 }
 
@@ -654,7 +653,6 @@ windows-set-mode = (path str, mode i64) (ok bool) {
     mode & 146 != 0 && attributes & 1 != 0 -> {
         ! windows-set-attributes(attributes - 1) -> return
     }
-    eprint('MODE path=' - path - ' mode=' - mode.to-str() - ' attributes=' - attributes.to-str())
     ok = true
 }
 
@@ -663,27 +661,12 @@ windows-set-owner = (path str, uid i64, gid i64) (ok bool) {
 }
 
 windows-set-time = (path str, mtime i64) (ok bool) {
-    mtime < 0 -> {
-        eprint('TIME fail mtime ' - path)
-        return
-    }
+    mtime < 0 -> return
     ! windows-ensure-buffers() -> return
     extended = windows-extended-path(path)
-    extended == '' -> {
-        eprint('TIME fail extended ' - path)
-        return
-    }
-    ! windows-load-wide(extended) -> {
-        eprint('TIME fail load ' - path)
-        return
-    }
+    ! windows-load-wide(extended) -> return
     handle = _CreateFileW(WIN-WIDE-PTR, 256, 7, 0, 3, 35651584, 0)
-    open-error = _GetLastError()
-    eprint('TIME path=' - path - ' handle=' - handle.to-str() - ' open-err=' - open-error.to-str())
-    handle == -1 -> {
-        eprint('TIME fail open ' - path - ' err=' - open-error.to-str())
-        return
-    }
+    handle == -1 -> return
     ticks = add-index(mul-index(mtime, 10000000), 116444736000000000)
     low = ticks & 4294967295
     high = ticks >> 32
@@ -703,15 +686,12 @@ windows-set-time = (path str, mtime i64) (ok bool) {
         ok -> _memcpy(WIN-TIME-PTR, it, 8)
 
         -> {
-            eprint('TIME fail encode ' - path)
             windows-close(handle)
             return
         }
     }
     applied = _SetFileTime(handle, 0, 0, WIN-TIME-PTR) != 0
-    time-error = _GetLastError()
     closed = windows-close(handle)
-    eprint('TIME ticks=' - ticks.to-str() - ' applied=' - applied.to-str() - ' err=' - time-error.to-str() - ' closed=' - closed.to-str())
     ok = applied && closed
 }
 
@@ -764,6 +744,13 @@ windows-path-hash = (path str) (hash i64) {
 }
 
 windows-path-equal = (a str, b str) (equal bool) {
+    ; 文件根的相对路径是空串；windows-wide-bytes('') 无法产出宽字符，
+    ; 必须在转换前判定，否则根条目永远无法与自身匹配（会被误判为新增）。
+    a == '' && b == '' -> {
+        equal = true
+        return
+    }
+    a == '' || b == '' -> return
     loaded, a-length = windows-copy-wide(a, false)
     ! loaded -> return
     loaded, b-length = windows-copy-wide(b, true)
