@@ -453,7 +453,10 @@ windows-seek = (fd i64, offset i64) (ok bool) {
 windows-stat = (path str) (info stat-info, ok bool) {
     eprint('ST0 enter ' - path)
     info.kind = KIND-OTHER
-    ! windows-ensure-buffers() -> return
+    ! windows-ensure-buffers() -> {
+        eprint('STnb ' - path)
+        return
+    }
     extended = windows-extended-path(path)
     extended == '' -> {
         eprint('ST1 extended ' - path)
@@ -470,7 +473,10 @@ windows-stat = (path str) (info stat-info, ok bool) {
         ; GetFileAttributesW 会跟随符号链接；悬空链接在这里表现为“不存在”。
         ; 仍尝试按 reparse point 打开链接自身，确认后返回 KIND-LINK。
         target, link-directory, read = windows-read-link(path)
-        ! read -> return
+        ! read -> {
+            eprint('STlink ' - path)
+            return
+        }
         info.kind = KIND-LINK
         info.size = STATE.scratch-link-target.len-bytes()
         info.mode = 40960
@@ -485,7 +491,10 @@ windows-stat = (path str) (info stat-info, ok bool) {
     attributes & 1024 != 0 -> {
         info.kind = KIND-LINK
         target, link-directory, read = windows-read-link(path)
-        ! read -> return
+        ! read -> {
+            eprint('STlink ' - path)
+            return
+        }
         info.size = STATE.scratch-link-target.len-bytes()
         info.mode = 40960
         info.link-directory = link-directory
@@ -507,15 +516,24 @@ windows-stat = (path str) (info stat-info, ok bool) {
     write-time = 0
     time-ok = _GetFileTime(handle, 0, 0, WIN-TIME-PTR) != 0
     closed = windows-close(handle)
-    ! time-ok || ! closed -> return
+    ! time-ok || ! closed -> {
+        eprint('STtime ' - path - ' ok=' - time-ok.to-str() - ' closed=' - closed.to-str())
+        return
+    }
     info.size = add-index(size-low, mul-index(size-high, 4294967296))
     write-time = windows-u64-memory(WIN-TIME-PTR, 0)
-    write-time < 0 -> return
+    write-time < 0 -> {
+        eprint('STwt ' - path)
+        return
+    }
     seconds = write-time / 10000000
     seconds: {
         ok -> info.mtime = sub-index(it, 11644473600)
 
-        -> return
+        -> {
+            eprint('STdiv ' - path)
+            return
+        }
     }
     attributes & 16 != 0 -> {
         info.kind = KIND-DIR
@@ -526,6 +544,7 @@ windows-stat = (path str) (info stat-info, ok bool) {
     }
     info.kind = KIND-FILE
     info.mode = 438
+    eprint('STok file ' - path)
     ok = true
 }
 
