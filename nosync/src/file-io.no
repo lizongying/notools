@@ -22,6 +22,8 @@ read-exact-from-current = (fd i64, buf []byte, count i64) (read i64, ok bool) {
     count < 0 || count > buf.len() -> return
     (read < count) {
         remaining = sub-index(count, read)
+        ; Windows 平台单次 ReadFile 上限为 IO-BUFFER-SIZE；必须分块。
+        remaining > IO-BUFFER-SIZE -> remaining = IO-BUFFER-SIZE
 
         ; fs.read 需要直接接收缓冲变量；传入 slice 临时值不会回写底层数据。
         chunk []byte = with-len(remaining)
@@ -59,8 +61,11 @@ write-all = (fd i64, buf []byte, count i64) (written i64, ok bool) {
     ok = false
     count < 0 || count > buf.len() -> return
     (written < count) {
-        remaining-buf = buf.slice(written, count)
-        got = platform-write(fd, remaining-buf, sub-index(count, written))
+        remaining = sub-index(count, written)
+        ; Windows 平台单次 WriteFile 上限为 IO-BUFFER-SIZE；必须分块。
+        remaining > IO-BUFFER-SIZE -> remaining = IO-BUFFER-SIZE
+        remaining-buf = buf.slice(written, add-index(written, remaining))
+        got = platform-write(fd, remaining-buf, remaining)
         got <= 0 -> return
         written = add-index(written, got)
     }
