@@ -15,10 +15,13 @@ _CloseHandle = (handle i64) (ok i32)
 _SetFilePointerEx = (handle i64, distance i64, position *byte, method i32) (ok i32)
 
 #{c}
-_GetFileInformationByHandle = (handle i64, info *byte) (ok i32)
+_GetFileAttributesW = (path *byte) (attributes i32)
 
 #{c}
-_GetFileAttributesW = (path *byte) (attributes i32)
+_GetFileSize = (handle i64, high **byte) (low i32)
+
+#{c}
+_GetFileTime = (handle i64, creation *byte, access *byte, write **byte) (ok i32)
 
 #{c}
 _SetFileAttributesW = (path *byte, attributes i32) (ok i32)
@@ -46,9 +49,6 @@ _FindClose = (handle i64) (ok i32)
 
 #{c}
 _GetLastError = () (error i32)
-
-#{c}
-_MultiByteToWideChar = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32) (written i32)
 
 #{c}
 _WideCharToMultiByte = (codepage i32, flags i32, input *byte, input-length i32, output *byte, output-capacity i32, default-char *byte, used *byte) (written i32)
@@ -88,6 +88,11 @@ _memset = (destination *byte, value i32, length i64) (result i64)
 
 #{c}
 _memcpy = (destination *byte, source str, length i64) (result i64)
+
+; memcmp 的比較長度由呼叫方明確給出，右側 str 由 FFI 層複製完整位元組
+; （包含 embedded NUL），不會像 strstr/strlen 那樣在第一個 NUL 處截斷。
+#{c}
+_memcmp = (left *byte, right str, length i64) (result i32)
 
 #{c}
 _strstr = (haystack *byte, needle str) (result str)
@@ -240,96 +245,32 @@ windows-wide-string = (count i64) (value str) {
     value = windows-wide-pointer-string(WIN-WIDE-2-PTR, count)
 }
 
-windows-base64-value = (code i64) (value i64) {
+; Win32 结构字段必须按原始字节读取：编码成 C 字符串会在第一个 NUL 处
+; 被 strlen 截断。memcmp 显式带长度，候选 str 由 str_cstr 原样复制（含 NUL）。
+windows-memory-byte = (pointer i64) (value i64) {
     value = -1
-    code >= 65 && code <= 90 -> value = sub-index(code, 65)
-    code >= 97 && code <= 122 -> value = add-index(sub-index(code, 97), 26)
-    code >= 48 && code <= 57 -> value = add-index(sub-index(code, 48), 52)
-    code == 43 -> value = 62
-    code == 47 -> value = 63
-}
-
-windows-low-mask = (bits i64) (mask i64) {
-    mask = 1
-    i <- [0..bits): mask = mul-index(mask, 2)
-    mask = sub-index(mask, 1)
-}
-
-windows-decode-utf7 = (encoded str) (bytes []byte) {
-
-    ; UTF-7 只用于把 Win32 结构字段无损搬进 Nolang；路径与文件名走 UTF-8。
-    ; 不用 continue：循环内嵌条件块里的 continue 在此前版本会丢字符。
-    bytes = []
-    shifted = false
-    accumulator = 0
-    bits = 0
-    ch <- encoded: {
-        code i64 = ch
-        value = windows-base64-value(code)
-        shifted -> {
-            value >= 0 -> {
-                accumulator = (accumulator << 6) | value
-                bits = add-index(bits, 6)
-                bits >= 16 -> {
-                    bits = sub-index(bits, 16)
-                    unit = accumulator >> bits
-                    bytes.push(unit & 255)
-                    accumulator = accumulator & windows-low-mask(bits)
-                }
+    i <- [0..256): {
+        value >= 0 -> break
+        candidate []byte = []
+        candidate.push(i)
+        encoded = candidate.to-str()
+        encoded: {
+            ok -> {
+                compared = _memcmp(pointer, it, 1)
+                compared == 0 -> value = i
             }
-            value < 0 -> {
-                shifted = false
-                code != 45 -> bytes.push(code & 255)
-            }
+
+            -> break
         }
-        ! shifted -> {
-            code == 43 -> {
-                shifted = true
-                accumulator = 0
-                bits = 0
-            }
-            code != 43 && code != 45 -> bytes.push(code & 255)
-        }
-    }
-}
-
-windows-memory-bytes = (pointer i64, count i64) (bytes []byte) {
-    bytes = []
-    ! windows-ensure-buffers() -> return
-    count <= 0 || count > 32767 -> return
-    wide-count = _MultiByteToWideChar(28591, 0, pointer, count, WIN-WIDE-PTR, 32767)
-    wide-count != count -> {
-        eprint('PROBE wide-count=' - wide-count.to-str() - ' want=' - count.to-str() - ' err=' - _GetLastError().to-str())
-        return
-    }
-    written = _WideCharToMultiByte(65000, 0, WIN-WIDE-PTR, wide-count, WIN-UTF8-PTR, 131071, 0, 0)
-    written <= 0 -> {
-        eprint('PROBE written=' - written.to-str() - ' err=' - _GetLastError().to-str())
-        return
-    }
-    _memset(add-index(WIN-UTF8-PTR, written), 0, 1)
-    encoded = _strstr(WIN-UTF8-PTR, '')
-    bytes = windows-decode-utf7(encoded)
-    eprint('PROBE ok written=' - written.to-str() - ' enc-len=' - encoded.len().to-str() - ' bytes=' - bytes.len().to-str())
-}
-
-windows-byte-at = (data []byte, index i64) (value i64) {
-    value = -1
-    data[index]: {
-        ok -> value = it
-
-        -> return
     }
 }
 
 windows-u32-memory = (pointer i64, index i64) (value i64) {
     value = -1
-    data = windows-memory-bytes(add-index(pointer, index), 4)
-    data.len() != 4 -> return
-    b0 = windows-byte-at(data, 0)
-    b1 = windows-byte-at(data, 1)
-    b2 = windows-byte-at(data, 2)
-    b3 = windows-byte-at(data, 3)
+    b0 = windows-memory-byte(add-index(pointer, index))
+    b1 = windows-memory-byte(add-index(pointer, add-index(index, 1)))
+    b2 = windows-memory-byte(add-index(pointer, add-index(index, 2)))
+    b3 = windows-memory-byte(add-index(pointer, add-index(index, 3)))
     b0 >= 0 && b1 >= 0 && b2 >= 0 && b3 >= 0 -> value = add-index(add-index(add-index(b0, mul-index(b1, 256)), mul-index(b2, 65536)), mul-index(b3, 16777216))
 }
 
@@ -514,26 +455,12 @@ windows-stat = (path str) (info stat-info, ok bool) {
     ! windows-ensure-buffers() -> return
     extended = windows-extended-path(path)
     ! windows-load-wide(extended) -> return
-    handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 33554688, 0)
-    handle == -1 -> return
-    valid = _GetFileInformationByHandle(handle, WIN-FILE-DATA-PTR)
-    closed = windows-close(handle)
-    ! valid || ! closed -> return
-    attributes = windows-u32-memory(WIN-FILE-DATA-PTR, 0)
-    size-high = windows-u32-memory(WIN-FILE-DATA-PTR, 32)
-    size-low = windows-u32-memory(WIN-FILE-DATA-PTR, 36)
-    write-low = windows-u32-memory(WIN-FILE-DATA-PTR, 20)
-    write-high = windows-u32-memory(WIN-FILE-DATA-PTR, 24)
-    attributes < 0 || size-high < 0 || size-low < 0 || write-low < 0 || write-high < 0 -> return
+    attributes = _GetFileAttributesW(WIN-WIDE-PTR)
+    attributes < 0 -> return
     info.flags = attributes
-    info.size = add-index(size-low, mul-index(size-high, 4294967296))
-    filetime = add-index(write-low, mul-index(write-high, 4294967296))
-    seconds = filetime / 10000000
-    seconds: {
-        ok -> info.mtime = sub-index(it, 11644473600)
 
-        -> return
-    }
+    ; 链接自身直接按 reparse point 处理，不能用「跟随链接」的 handle 是否存在来
+    ; 判定；悬空链接也必须返回 KIND-LINK。
     attributes & 1024 != 0 -> {
         info.kind = KIND-LINK
         target, link-directory, read = windows-read-link(path)
@@ -543,6 +470,26 @@ windows-stat = (path str) (info stat-info, ok bool) {
         info.link-directory = link-directory
         ok = true
         return
+    }
+
+    handle = _CreateFileW(WIN-WIDE-PTR, 128, 7, 0, 3, 33554688, 0)
+    handle == -1 -> return
+    size-high = 0
+    size-low = _GetFileSize(handle, size-high)
+    size-low < 0 -> {
+        windows-close(handle)
+        return
+    }
+    write-time = 0
+    time-ok = _GetFileTime(handle, 0, 0, write-time) != 0
+    closed = windows-close(handle)
+    ! time-ok || ! closed -> return
+    info.size = add-index(size-low, mul-index(size-high, 4294967296))
+    seconds = write-time / 10000000
+    seconds: {
+        ok -> info.mtime = sub-index(it, 11644473600)
+
+        -> return
     }
     attributes & 16 != 0 -> {
         info.kind = KIND-DIR
@@ -765,8 +712,10 @@ windows-path-hash = (path str) (hash i64) {
     count <= 0 || count > 32767 -> return
     folded = _LCMapStringEx(0, 256, WIN-WIDE-PTR, count, WIN-FOLD-PTR, 131071, 0, 0, 0)
     folded <= 0 || folded > 131071 -> return
-    bytes = windows-memory-bytes(WIN-FOLD-PTR, mul-index(folded, 2))
-    bytes.len() != mul-index(folded, 2) -> return
+    ; folded buffer 是文本而非任意结构：按显式长度转 UTF-8，不经 strlen 读原始字节。
+    folded-text = windows-wide-pointer-string(WIN-FOLD-PTR, folded)
+    folded-text == '' -> return
+    bytes = folded-text.to-bytes()
     hash = 1469598103934665603
     b <- bytes: {
         mixed = hash ^ b
