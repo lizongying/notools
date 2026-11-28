@@ -1,0 +1,76 @@
+name: Native Windows Only
+
+on:
+  push:
+    tags: ["v0.1.48-diagnostic.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  native-windows-only:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up nolang on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'nolang-cache'
+          $bin = Join-Path $cache 'bin'
+          $src = Join-Path $cache 'src'
+          New-Item -ItemType Directory -Force -Path $bin, $src | Out-Null
+          $compiler = Join-Path $bin 'no.exe'
+          $asset = 'https://github.com/lizongying/nolang/releases/download/v0.4.40/no-llvm-windows-amd64-v0.4.40.exe'
+          $expected = '50df1d684a413a4796ba760f8ddf091235d3a174b9243e0b3de991b403b3d309'
+          Invoke-WebRequest -Uri $asset -OutFile $compiler
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $compiler).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "nolang compiler checksum mismatch: $actual" }
+          $archive = Join-Path $src 'nolang-src.zip'
+          Invoke-WebRequest -Uri 'https://github.com/lizongying/nolang/archive/refs/tags/v0.4.40.zip' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $src -Force
+          $srcRoot = Join-Path $src 'nolang-0.4.40\src'
+          $stdSrc = Join-Path $srcRoot 'std'
+          if (-not (Test-Path -LiteralPath $stdSrc -PathType Container)) { throw "missing standard library: $stdSrc" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "NOLANG_STD_SRC=$stdSrc"
+          Add-Content -Path $env:GITHUB_ENV -Value "NOLANG_SRC=$srcRoot"
+          & $compiler version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Enable Windows Developer Mode and long paths
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
+          reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
+            /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run nosync native tests
+        shell: bash
+        env:
+          NOLANG_AST_CACHE_OFF: '1'
+        run: |
+          set -euo pipefail
+          diagnostic="$RUNNER_TEMP/nosync-native-windows-only.txt"
+          : > "$diagnostic"
+          trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -f "$diagnostic" ]; then while IFS= read -r line; do printf "::error::%s\n" "$line"; done < "$diagnostic"; fi' EXIT
+          no build -cc zig -o nosync/tests/test-native.exe nosync/tests/test-native.no 2>&1 | tee -a "$diagnostic"
+          ./nosync/tests/test-native.exe 2>&1 | tee -a "$diagnostic"
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nosync-native-windows-only
+          path: ${{ runner.temp }}/nosync-native-windows-only.txt
+          if-no-files-found: warn
+          retention-days: 7
