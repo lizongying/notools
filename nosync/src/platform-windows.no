@@ -265,6 +265,13 @@ windows-memory-byte = (pointer i64) (value i64) {
     }
 }
 
+windows-u16-memory = (pointer i64, index i64) (value i64) {
+    value = -1
+    b0 = windows-memory-byte(add-index(pointer, index))
+    b1 = windows-memory-byte(add-index(pointer, add-index(index, 1)))
+    b0 >= 0 && b1 >= 0 -> value = add-index(b0, mul-index(b1, 256))
+}
+
 windows-u32-memory = (pointer i64, index i64) (value i64) {
     value = -1
     b0 = windows-memory-byte(add-index(pointer, index))
@@ -451,32 +458,15 @@ windows-seek = (fd i64, offset i64) (ok bool) {
 }
 
 windows-stat = (path str) (info stat-info, ok bool) {
-    eprint('ST0 enter ' - path)
     info.kind = KIND-OTHER
-    ! windows-ensure-buffers() -> {
-        eprint('STnb ' - path)
-        return
-    }
+    ! windows-ensure-buffers() -> return
     extended = windows-extended-path(path)
-    extended == '' -> {
-        eprint('ST1 extended ' - path)
-        return
-    }
-    ! windows-load-wide(extended) -> {
-        eprint('ST2 load ' - path)
-        return
-    }
     attributes = _GetFileAttributesW(WIN-WIDE-PTR)
-    attr-error = _GetLastError()
     attributes < 0 -> {
-        eprint('ST3 attrs ' - path - ' err=' - attr-error.to-str())
         ; GetFileAttributesW 会跟随符号链接；悬空链接在这里表现为“不存在”。
         ; 仍尝试按 reparse point 打开链接自身，确认后返回 KIND-LINK。
         target, link-directory, read = windows-read-link(path)
-        ! read -> {
-            eprint('STlink ' - path)
-            return
-        }
+        ! read -> return
         info.kind = KIND-LINK
         info.size = STATE.scratch-link-target.len-bytes()
         info.mode = 40960
@@ -491,10 +481,7 @@ windows-stat = (path str) (info stat-info, ok bool) {
     attributes & 1024 != 0 -> {
         info.kind = KIND-LINK
         target, link-directory, read = windows-read-link(path)
-        ! read -> {
-            eprint('STlink ' - path)
-            return
-        }
+        ! read -> return
         info.size = STATE.scratch-link-target.len-bytes()
         info.mode = 40960
         info.link-directory = link-directory
@@ -503,10 +490,7 @@ windows-stat = (path str) (info stat-info, ok bool) {
     }
 
     handle = _CreateFileW(WIN-WIDE-PTR, 128, 7, 0, 3, 33554688, 0)
-    handle == -1 -> {
-        eprint('ST4 open ' - path - ' attrs=' - attributes.to-str() - ' err=' - _GetLastError().to-str())
-        return
-    }
+    handle == -1 -> return
     size-high = 0
     size-low = _GetFileSize(handle, size-high)
     size-low < 0 -> {
@@ -516,24 +500,15 @@ windows-stat = (path str) (info stat-info, ok bool) {
     write-time = 0
     time-ok = _GetFileTime(handle, 0, 0, WIN-TIME-PTR) != 0
     closed = windows-close(handle)
-    ! time-ok || ! closed -> {
-        eprint('STtime ' - path - ' ok=' - time-ok.to-str() - ' closed=' - closed.to-str())
-        return
-    }
+    ! time-ok || ! closed -> return
     info.size = add-index(size-low, mul-index(size-high, 4294967296))
     write-time = windows-u64-memory(WIN-TIME-PTR, 0)
-    write-time < 0 -> {
-        eprint('STwt ' - path)
-        return
-    }
+    write-time < 0 -> return
     seconds = write-time / 10000000
     seconds: {
         ok -> info.mtime = sub-index(it, 11644473600)
 
-        -> {
-            eprint('STdiv ' - path)
-            return
-        }
+        -> return
     }
     attributes & 16 != 0 -> {
         info.kind = KIND-DIR
@@ -544,7 +519,6 @@ windows-stat = (path str) (info stat-info, ok bool) {
     }
     info.kind = KIND-FILE
     info.mode = 438
-    eprint('STok file ' - path)
     ok = true
 }
 
@@ -626,50 +600,26 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     STATE.scratch-link-target = ''
     ! windows-ensure-buffers() -> return
     extended = windows-extended-path(path)
-    extended == '' -> {
-        eprint('LNK1 extended ' - path)
-        return
-    }
-    ! windows-load-wide(extended) -> {
-        eprint('LNK2 load ' - path)
-        return
-    }
     ; FSCTL_GET_REPARSE_POINT 需要可读句柄；access=0 时 DeviceIoControl
     ; 会失败，悬空链接在 stat 中表现为“不存在”。
     handle = _CreateFileW(WIN-WIDE-PTR, -2147483648, 7, 0, 3, 35651584, 0)
-    open-error = _GetLastError()
-    handle == -1 -> {
-        eprint('LNK3 open ' - path - ' err=' - open-error.to-str())
-        return
-    }
+    handle == -1 -> return
     _memset(WIN-RETURNED-PTR, 0, 4)
     valid = _DeviceIoControl(handle, 589992, 0, 0, WIN-REPARSE-PTR, 16384, WIN-RETURNED-PTR, 0)
-    ioctl-error = _GetLastError()
     closed = windows-close(handle)
-    ! valid || ! closed -> {
-        eprint('LNK4 ioctl ' - path - ' valid=' - valid.to-str() - ' closed=' - closed.to-str() - ' err=' - ioctl-error.to-str())
-        return
-    }
+    ! valid || ! closed -> return
     returned = windows-u32-memory(WIN-RETURNED-PTR, 0)
-    returned < 24 -> {
-        eprint('LNK5 returned ' - path - ' n=' - returned.to-str())
-        return
-    }
+    returned < 24 -> return
     tag = windows-u32-memory(WIN-REPARSE-PTR, 0)
     ; IO_REPARSE_TAG_SYMLINK = 0xA000000C；windows-u32-memory 返回无符号 i64。
-    tag != 2684354572 -> {
-        eprint('LNK6 tag ' - path - ' tag=' - tag.to-str())
-        return
-    }
-    substitute-offset = windows-u32-memory(WIN-REPARSE-PTR, 8)
-    substitute-length = windows-u32-memory(WIN-REPARSE-PTR, 10)
-    print-offset = windows-u32-memory(WIN-REPARSE-PTR, 12)
-    print-length = windows-u32-memory(WIN-REPARSE-PTR, 14)
+    tag != 2684354572 -> return
+    ; REPARSE_DATA_BUFFER 的 name offset/length 都是 WORD（16 位）。
+    substitute-offset = windows-u16-memory(WIN-REPARSE-PTR, 8)
+    substitute-length = windows-u16-memory(WIN-REPARSE-PTR, 10)
+    print-offset = windows-u16-memory(WIN-REPARSE-PTR, 12)
+    print-length = windows-u16-memory(WIN-REPARSE-PTR, 14)
     link-flags = windows-u32-memory(WIN-REPARSE-PTR, 16)
-    substitute-offset < 0 || substitute-length < 0 || print-offset < 0 || print-length < 0 || link-flags < 0 -> {
-        eprint('LNK8 fields ' - path - ' so=' - substitute-offset.to-str() - ' sl=' - substitute-length.to-str() - ' po=' - print-offset.to-str() - ' pl=' - print-length.to-str() - ' flags=' - link-flags.to-str())
-        return
-    }
+    substitute-offset < 0 || substitute-length < 0 || print-offset < 0 || print-length < 0 || link-flags < 0 -> return
     directory = link-flags & 1 != 0
     offset = print-offset
     length = print-length
@@ -677,17 +627,10 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
         offset = substitute-offset
         length = substitute-length
     }
-    length <= 0 || length & 1 != 0 -> {
-        eprint('LNK9 length ' - path - ' n=' - length.to-str())
-        return
-    }
-    add-index(add-index(20, offset), length) > returned -> {
-        eprint('LNK10 range ' - path - ' off=' - offset.to-str() - ' len=' - length.to-str() - ' returned=' - returned.to-str())
-        return
-    }
+    length <= 0 || length & 1 != 0 -> return
+    add-index(add-index(20, offset), length) > returned -> return
     path-pointer = add-index(add-index(WIN-REPARSE-PTR, 20), offset)
     target = windows-wide-pointer-string(path-pointer, div-index(length, 2))
-    target == '' -> eprint('LNK7 target ' - path - ' off=' - offset.to-str() - ' len=' - length.to-str())
     target != '' -> {
         STATE.scratch-link-target = target
         ok = true
