@@ -7,6 +7,11 @@ sidebar_position: 2
 This page collects Nolang release records for each version, kept consistent with the root `HISTORY.md`.
 
 
+## v0.1.47
+
+- fix(nosync): stop dropping UTF-7 decoded bytes so Windows `stat` reads Win32 structure fields correctly
+- fix(nosync): open directories with `FILE_FLAG_BACKUP_SEMANTICS | FILE_ATTRIBUTE_NORMAL` in Windows `stat`
+
 ## v0.1.46
 
 - fix(nosync): pass `GetCurrentDirectoryW` arguments in Win32 order (capacity, buffer) so relative-path stat on Windows no longer segfaults

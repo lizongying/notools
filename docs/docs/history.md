@@ -7,6 +7,11 @@ sidebar_position: 2
 本頁面收錄 Nolang 各版本的發布紀錄，與倉庫根目錄的 `HISTORY.md` 保持一致。
 
 
+## v0.1.47
+
+- fix(nosync): stop dropping UTF-7 decoded bytes so Windows `stat` reads Win32 structure fields correctly
+- fix(nosync): open directories with `FILE_FLAG_BACKUP_SEMANTICS | FILE_ATTRIBUTE_NORMAL` in Windows `stat`
+
 ## v0.1.46
 
 - fix(nosync): pass `GetCurrentDirectoryW` arguments in Win32 order (capacity, buffer) so relative-path stat on Windows no longer segfaults

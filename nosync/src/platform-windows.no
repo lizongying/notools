@@ -258,14 +258,15 @@ windows-low-mask = (bits i64) (mask i64) {
 windows-decode-utf7 = (encoded str) (bytes []byte) {
 
     ; UTF-7 只用于把 Win32 结构字段无损搬进 Nolang；路径与文件名走 UTF-8。
+    ; 不用 continue：循环内嵌条件块里的 continue 在此前版本会丢字符。
     bytes = []
     shifted = false
     accumulator = 0
     bits = 0
     ch <- encoded: {
         code i64 = ch
+        value = windows-base64-value(code)
         shifted -> {
-            value = windows-base64-value(code)
             value >= 0 -> {
                 accumulator = (accumulator << 6) | value
                 bits = add-index(bits, 6)
@@ -275,18 +276,20 @@ windows-decode-utf7 = (encoded str) (bytes []byte) {
                     bytes.push(unit & 255)
                     accumulator = accumulator & windows-low-mask(bits)
                 }
-                continue
             }
-            shifted = false
-            code == 45 -> continue
+            value < 0 -> {
+                shifted = false
+                code != 45 -> bytes.push(code & 255)
+            }
         }
-        code == 43 -> {
-            shifted = true
-            accumulator = 0
-            bits = 0
-            continue
+        ! shifted -> {
+            code == 43 -> {
+                shifted = true
+                accumulator = 0
+                bits = 0
+            }
+            code != 43 -> bytes.push(code & 255)
         }
-        bytes.push(code & 255)
     }
 }
 
@@ -505,14 +508,11 @@ windows-stat = (path str) (info stat-info, ok bool) {
     extended = windows-extended-path(path)
     ! windows-load-wide(extended) -> return
     handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 33554688, 0)
-    eprint('MARK: stat CreateFileW=' - handle.to-str() - ' err=' - _GetLastError().to-str() - ' path=' - extended)
     handle == -1 -> return
     valid = _GetFileInformationByHandle(handle, WIN-FILE-DATA-PTR)
-    eprint('MARK: stat ByHandle=' - valid.to-str() - ' err=' - _GetLastError().to-str())
     closed = windows-close(handle)
     ! valid || ! closed -> return
     attributes = windows-u32-memory(WIN-FILE-DATA-PTR, 0)
-    eprint('MARK: stat attributes=' - attributes.to-str())
     size-high = windows-u32-memory(WIN-FILE-DATA-PTR, 32)
     size-low = windows-u32-memory(WIN-FILE-DATA-PTR, 36)
     write-low = windows-u32-memory(WIN-FILE-DATA-PTR, 20)
