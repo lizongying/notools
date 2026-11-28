@@ -456,7 +456,18 @@ windows-stat = (path str) (info stat-info, ok bool) {
     extended = windows-extended-path(path)
     ! windows-load-wide(extended) -> return
     attributes = _GetFileAttributesW(WIN-WIDE-PTR)
-    attributes < 0 -> return
+    attributes < 0 -> {
+        ; GetFileAttributesW 会跟随符号链接；悬空链接在这里表现为“不存在”。
+        ; 仍尝试按 reparse point 打开链接自身，确认后返回 KIND-LINK。
+        target, link-directory, read = windows-read-link(path)
+        ! read -> return
+        info.kind = KIND-LINK
+        info.size = STATE.scratch-link-target.len-bytes()
+        info.mode = 40960
+        info.link-directory = link-directory
+        ok = true
+        return
+    }
     info.flags = attributes
 
     ; 链接自身直接按 reparse point 处理，不能用「跟随链接」的 handle 是否存在来
@@ -585,29 +596,16 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     extended = windows-extended-path(path)
     ! windows-load-wide(extended) -> return
     handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 35651584, 0)
-    handle == -1 -> {
-        eprint('LINK fail open ' - path - ' err=' - _GetLastError().to-str())
-        return
-    }
+    handle == -1 -> return
     _memset(WIN-RETURNED-PTR, 0, 4)
     valid = _DeviceIoControl(handle, 589992, 0, 0, WIN-REPARSE-PTR, 16384, WIN-RETURNED-PTR, 0)
-    ioctl-error = _GetLastError()
     closed = windows-close(handle)
-    ! valid || ! closed -> {
-        eprint('LINK fail ioctl ' - path - ' valid=' - valid.to-str() - ' closed=' - closed.to-str() - ' err=' - ioctl-error.to-str())
-        return
-    }
+    ! valid || ! closed -> return
     returned = windows-u32-memory(WIN-RETURNED-PTR, 0)
-    returned < 24 -> {
-        eprint('LINK fail returned ' - path - ' returned=' - returned.to-str())
-        return
-    }
+    returned < 24 -> return
     tag = windows-u32-memory(WIN-REPARSE-PTR, 0)
     ; IO_REPARSE_TAG_SYMLINK = 0xA000000C；windows-u32-memory 返回无符号 i64。
-    tag != 2684354572 -> {
-        eprint('LINK fail tag ' - path - ' tag=' - tag.to-str())
-        return
-    }
+    tag != 2684354572 -> return
     substitute-offset = windows-u32-memory(WIN-REPARSE-PTR, 8)
     substitute-length = windows-u32-memory(WIN-REPARSE-PTR, 10)
     print-offset = windows-u32-memory(WIN-REPARSE-PTR, 12)
@@ -625,7 +623,6 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     add-index(add-index(20, offset), length) > returned -> return
     path-pointer = add-index(add-index(WIN-REPARSE-PTR, 20), offset)
     target = windows-wide-pointer-string(path-pointer, div-index(length, 2))
-    target == '' -> eprint('LINK fail target ' - path - ' offset=' - offset.to-str() - ' length=' - length.to-str())
     target != '' -> {
         STATE.scratch-link-target = target
         ok = true
