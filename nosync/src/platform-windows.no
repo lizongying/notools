@@ -585,16 +585,29 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     extended = windows-extended-path(path)
     ! windows-load-wide(extended) -> return
     handle = _CreateFileW(WIN-WIDE-PTR, 0, 7, 0, 3, 35651584, 0)
-    handle == -1 -> return
+    handle == -1 -> {
+        eprint('LINK fail open ' - path - ' err=' - _GetLastError().to-str())
+        return
+    }
     _memset(WIN-RETURNED-PTR, 0, 4)
     valid = _DeviceIoControl(handle, 589992, 0, 0, WIN-REPARSE-PTR, 16384, WIN-RETURNED-PTR, 0)
+    ioctl-error = _GetLastError()
     closed = windows-close(handle)
-    ! valid || ! closed -> return
+    ! valid || ! closed -> {
+        eprint('LINK fail ioctl ' - path - ' valid=' - valid.to-str() - ' closed=' - closed.to-str() - ' err=' - ioctl-error.to-str())
+        return
+    }
     returned = windows-u32-memory(WIN-RETURNED-PTR, 0)
-    returned < 24 -> return
+    returned < 24 -> {
+        eprint('LINK fail returned ' - path - ' returned=' - returned.to-str())
+        return
+    }
     tag = windows-u32-memory(WIN-REPARSE-PTR, 0)
     ; IO_REPARSE_TAG_SYMLINK = 0xA000000C；windows-u32-memory 返回无符号 i64。
-    tag != 2684354572 -> return
+    tag != 2684354572 -> {
+        eprint('LINK fail tag ' - path - ' tag=' - tag.to-str())
+        return
+    }
     substitute-offset = windows-u32-memory(WIN-REPARSE-PTR, 8)
     substitute-length = windows-u32-memory(WIN-REPARSE-PTR, 10)
     print-offset = windows-u32-memory(WIN-REPARSE-PTR, 12)
@@ -612,6 +625,7 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     add-index(add-index(20, offset), length) > returned -> return
     path-pointer = add-index(add-index(WIN-REPARSE-PTR, 20), offset)
     target = windows-wide-pointer-string(path-pointer, div-index(length, 2))
+    target == '' -> eprint('LINK fail target ' - path - ' offset=' - offset.to-str() - ' length=' - length.to-str())
     target != '' -> {
         STATE.scratch-link-target = target
         ok = true
