@@ -594,20 +594,41 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     STATE.scratch-link-target = ''
     ! windows-ensure-buffers() -> return
     extended = windows-extended-path(path)
-    ! windows-load-wide(extended) -> return
+    extended == '' -> {
+        eprint('LNK1 extended ' - path)
+        return
+    }
+    ! windows-load-wide(extended) -> {
+        eprint('LNK2 load ' - path)
+        return
+    }
     ; FSCTL_GET_REPARSE_POINT 需要可读句柄；access=0 时 DeviceIoControl
     ; 会失败，悬空链接在 stat 中表现为“不存在”。
     handle = _CreateFileW(WIN-WIDE-PTR, -2147483648, 7, 0, 3, 35651584, 0)
-    handle == -1 -> return
+    open-error = _GetLastError()
+    handle == -1 -> {
+        eprint('LNK3 open ' - path - ' err=' - open-error.to-str())
+        return
+    }
     _memset(WIN-RETURNED-PTR, 0, 4)
     valid = _DeviceIoControl(handle, 589992, 0, 0, WIN-REPARSE-PTR, 16384, WIN-RETURNED-PTR, 0)
+    ioctl-error = _GetLastError()
     closed = windows-close(handle)
-    ! valid || ! closed -> return
+    ! valid || ! closed -> {
+        eprint('LNK4 ioctl ' - path - ' valid=' - valid.to-str() - ' closed=' - closed.to-str() - ' err=' - ioctl-error.to-str())
+        return
+    }
     returned = windows-u32-memory(WIN-RETURNED-PTR, 0)
-    returned < 24 -> return
+    returned < 24 -> {
+        eprint('LNK5 returned ' - path - ' n=' - returned.to-str())
+        return
+    }
     tag = windows-u32-memory(WIN-REPARSE-PTR, 0)
     ; IO_REPARSE_TAG_SYMLINK = 0xA000000C；windows-u32-memory 返回无符号 i64。
-    tag != 2684354572 -> return
+    tag != 2684354572 -> {
+        eprint('LNK6 tag ' - path - ' tag=' - tag.to-str())
+        return
+    }
     substitute-offset = windows-u32-memory(WIN-REPARSE-PTR, 8)
     substitute-length = windows-u32-memory(WIN-REPARSE-PTR, 10)
     print-offset = windows-u32-memory(WIN-REPARSE-PTR, 12)
@@ -625,6 +646,7 @@ windows-read-link = (path str) (target str, directory bool, ok bool) {
     add-index(add-index(20, offset), length) > returned -> return
     path-pointer = add-index(add-index(WIN-REPARSE-PTR, 20), offset)
     target = windows-wide-pointer-string(path-pointer, div-index(length, 2))
+    target == '' -> eprint('LNK7 target ' - path - ' off=' - offset.to-str() - ' len=' - length.to-str())
     target != '' -> {
         STATE.scratch-link-target = target
         ok = true
